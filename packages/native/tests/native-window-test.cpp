@@ -14688,6 +14688,8 @@ mv -Tf "$root/.current-new" "$root/current"
             return entry;
         };
         QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
+        std::function<void()> finishSourceHistory, finishLookup;
+        bool pagedSourceForTarget = false;
         const auto streamDto = [&] {
             return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Service fixture"},
                 {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
@@ -14713,11 +14715,22 @@ mv -Tf "$root/.current-new" "$root/current"
                 const auto query = QUrlQuery(request.target);
                 const auto wanted = query.queryItemValue("uuid");
                 if (!wanted.isEmpty()) {
-                    if (anchor && wanted == uuidOf(60)) return Response{QJsonArray{announcedRow(60)}};
+                    if (anchor && wanted == uuidOf(60)) {
+                        Response response{QJsonArray{announcedRow(60)}};
+                        response.defer = [&](auto finish) { finishLookup = std::move(finish); };
+                        return response;
+                    }
                     return Response{QJsonArray{}};
                 }
                 const auto marker = query.queryItemValue("page_marker");
                 const auto dir = query.queryItemValue("sort_dir");
+                if (anchor && !query.hasQueryItem("topic_uuid")) {
+                    if (marker == uuidOf(60)) pagedSourceForTarget = true;
+                    Response response{QJsonArray{}};
+                    if (marker.isEmpty())
+                        response.defer = [&](auto finish) { finishSourceHistory = std::move(finish); };
+                    return response;
+                }
                 if (query.queryItemValue("topic_uuid") == topicId)
                     pageGets.append({marker, dir});
                 if (!anchor) {
@@ -14773,9 +14786,17 @@ mv -Tf "$root/.current-new" "$root/current"
         } else {
             click(window, item(window->contentItem(), "stream-" + streamId));
             QTRY_COMPARE(controller.topics().size(), 1);
+            QTRY_VERIFY(finishSourceHistory);
             controller.openMessageInChat(uuidOf(60));
+            QTRY_VERIFY(finishLookup);
+            // Let the source stream finish loading before the link identifies its destination.
+            const auto sourceRevision = controller.historyCommitRevision();
+            finishSourceHistory();
+            QTRY_VERIFY(controller.historyCommitRevision() > sourceRevision);
+            finishLookup();
             QTRY_COMPARE(controller.anchorMessageId(), uuidOf(60));
             QTRY_VERIFY(!controller.messages().isEmpty());
+            QVERIFY(!pagedSourceForTarget);
         }
         QTRY_VERIFY(!controller.busy());
         // Every row on the loaded window is an account-irrelevant announcement
