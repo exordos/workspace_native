@@ -117,13 +117,13 @@ case "choose-file":
         }
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     } while Date() < goTo
-    guard let location = field else { throw fail("The AppKit Go to Folder location field did not appear.") }
+    guard field != nil else { throw fail("The AppKit Go to Folder location field did not appear.") }
+    dialogKey(0, .maskCommand)
     dialogKey(9, .maskCommand)
-    let paste = Date().addingTimeInterval(3)
-    while attr(location, kAXValueAttribute as CFString) as? String != origin, Date() < paste {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-    }
-    guard attr(location, kAXValueAttribute as CFString) as? String == origin else { throw fail("The chooser did not accept the file name.") }
+    // The OS normalizes the location text (e.g. /var to /private/var).
+    // The fixture checks the actual filename and file bytes received after selection.
+    let waitUntil = Date().addingTimeInterval(0.5)
+    RunLoop.current.run(until: waitUntil)
     dialogKey(36)
     try press("Open")
     print("Selected the synthetic file through the AppKit open panel.")
