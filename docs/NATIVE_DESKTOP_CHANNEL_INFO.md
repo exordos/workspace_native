@@ -86,7 +86,10 @@ notification mode is null/empty an unsupported box replaces the switch:
 `rounded-lg bg-bg-elevated px-2 py-2 text-sm text-text-muted`.
 
 The drawer exposes the three levels as radio buttons in the localized
-Notifications group. Its checked state follows the confirmed stream mode.
+Notifications group. Clicking a choice or activating its accessibility action
+submits the same change. Its checked state follows the confirmed stream mode.
+Hovering an idle choice uses the sidebar hover background and primary text
+color. Pending writes dim the complete control, including its icons.
 The drawer and sidebar both use the stream's pending write. Session renewal
 releases interrupted writes and reloads the canonical stream catalog.
 

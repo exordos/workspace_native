@@ -20926,14 +20926,30 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(group->role(), QAccessible::Grouping);
         QCOMPARE(group->text(QAccessible::Name), locale == "ru" ? QString("Уведомления") : QString("Notifications"));
         const QStringList segments{"channelInfoNotifSubscribed", "channelInfoNotifDefault", "channelInfoNotifMuted"};
-        for (const auto &name : segments) {
-            auto *segment = visibleItem(name); QVERIFY(segment);
-            QCOMPARE(segment->height(), qreal(36));
+        const QStringList modes{"all_messages", "mentions_only", "muted"};
+        const QStringList labels = locale == "ru"
+            ? QStringList{"Все сообщения", "Только при упоминаниях", "Без уведомлений"}
+            : QStringList{"All messages", "Mentions only", "Muted"};
+        for (int i = 0; i < segments.size(); ++i) {
+            auto *segment = visibleItem(segments[i]); QVERIFY(segment);
+            QTRY_COMPARE(segment->height(), qreal(36));
             auto *choice = QAccessible::queryAccessibleInterface(segment); QVERIFY(choice);
             QCOMPARE(choice->role(), QAccessible::RadioButton);
             QVERIFY(choice->state().checkable);
-            if (name != segments.first()) click(scene.window, segment);
-            QTRY_VERIFY(choice->state().checked);
+            QCOMPARE(choice->text(QAccessible::Name), labels[i]);
+            if (i == 1) {
+                auto *actions = choice->actionInterface(); QVERIFY(actions);
+                const auto toggle = QAccessibleActionInterface::toggleAction();
+                QVERIFY(actions->actionNames().contains(toggle));
+                actions->doAction(toggle);
+            } else if (i == 2) {
+                click(scene.window, segment);
+            }
+            QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), modes[i]);
+            for (int j = 0; j < segments.size(); ++j) {
+                const auto *option = QAccessible::queryAccessibleInterface(visibleItem(segments[j])); QVERIFY(option);
+                QCOMPARE(option->state().checked, i == j);
+            }
         }
         QTRY_VERIFY(visibleItem("streamNotif-" + streamId));
         QCOMPARE(scene.fixture.notifPosts, 2);
@@ -33632,18 +33648,30 @@ private slots:
     // three levels inactive, a press on a disabled level posts no second
     // request, another stream's menu stays interactive, and the switch
     // re-enables live (menu still open) the moment the held response settles.
+    void windowStreamContextMenuNotificationSwitchDisabledWhileBusy_data()
+    {
+        QTest::addColumn<bool>("renewSession");
+        QTest::newRow("settled-post") << false;
+        QTest::newRow("renewed-session") << true;
+    }
+
     void windowStreamContextMenuNotificationSwitchDisabledWhileBusy()
     {
+        QFETCH(bool, renewSession);
         WindowChannelFixture fixture;
         const QString other = QStringLiteral("97000000-0000-4000-8000-970000000003");
         int notifPosts = 0; QJsonObject notifBody;
         bool deferNext = false;
+        bool renewToken = false;
         std::vector<std::function<void()>> releases;
         const auto fallback = fixture.server.handler;
         auto gate = qScopeGuard([&]{ fixture.server.handler = fallback;
             for (auto &release : releases) if (release) release(); });
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (renewToken && path.endsWith("/actions/get_token/invoke"))
+                return {QJsonObject{{"access_token", "synthetic-renewed-menu"}, {"refresh_token", "synthetic-refresh"},
+                    {"expires_in", 3600}}};
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
                 ++notifPosts; notifBody = request.body;
                 auto row = windowChannel(streamId, "Product team");
@@ -33719,16 +33747,27 @@ private slots:
         // Back on A: disabled again while its write is still held.
         openMenu("stream-" + streamId);
         QVERIFY(!levelEnabled("streamMenuNotifMuted"));
-        // Releasing the held response releases the slot live: the still-open
-        // menu's switch re-enables without reopening.
+        // A changed token retires the held reply; the catalog fixture still
+        // reports the original all-messages mode. A normally settled POST
+        // instead confirms muted.
+        if (renewSession) {
+            QSignalSpy renewed(&session, &Session::authenticated);
+            renewToken = true;
+            session.requestRefresh();
+            QTRY_COMPARE(renewed.size(), 1);
+            QTRY_VERIFY(!controller.busy());
+        }
         releases[0](); releases[0] = {};
         QTRY_VERIFY(!controller.streamNotificationBusy(streamId));
+        if (!menu->property("opened").toBool()) openMenu("stream-" + streamId);
         QTRY_VERIFY(levelEnabled("streamMenuNotifMuted"));
-        // Interactive again: the next level change goes through normally.
-        click(window, visibleItem("streamMenuNotifSubscribed"));
+        const auto current = renewSession ? "streamMenuNotifSubscribed" : "streamMenuNotifMuted";
+        QTRY_VERIFY(visibleItem(current)->property("isCurrent").toBool());
+        // An interaction on this same stream sends a second write.
+        click(window, visibleItem("streamMenuNotifDefault"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 2);
-        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("all_messages"));
+        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("mentions_only"));
     }
 
     // Issue #438 review (finding 4633233517): a selection edge skipped while

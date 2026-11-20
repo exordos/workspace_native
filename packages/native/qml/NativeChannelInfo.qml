@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQuick.Effects
 
@@ -295,7 +296,7 @@ Item {
                                 {mode: "all_messages", objectName: "channelInfoNotifSubscribed",
                                  asset: "bell.svg", label: qsTr("All messages")}
                             ]
-                            delegate: Button {
+                            delegate: CheckBox {
                                 id: segment
                                 required property var modelData
                                 objectName: modelData.objectName
@@ -303,23 +304,34 @@ Item {
                                 Layout.preferredHeight: 36
                                 Layout.minimumWidth: 0
                                 enabled: !page.notificationBusy
-                                property bool isCurrent: page.notificationMode === modelData.mode
-                                display: AbstractButton.IconOnly
+                                readonly property bool isCurrent: page.notificationMode === modelData.mode
+                                checked: isCurrent
+                                nextCheckState: () => isCurrent ? Qt.Checked : Qt.Unchecked
+                                indicator: null
+                                hoverEnabled: true
+                                opacity: enabled ? 1.0 : 0.5
+                                contentItem: ControlsImpl.IconLabel {
+                                    icon: segment.icon
+                                    display: AbstractButton.IconOnly
+                                }
                                 padding: 0
                                 icon.source: "qrc:/workspace/icons/" + modelData.asset
                                 icon.width: 28
                                 icon.height: 28
-                                icon.color: segment.isCurrent ? page.colors["icon-active"] : page.colors["text-muted"]
+                                icon.color: segment.isCurrent ? page.colors["icon-active"]
+                                    : page.colors[segment.hovered ? "text-primary" : "text-muted"]
                                 Accessible.role: Accessible.RadioButton
-                                Accessible.checkable: true
-                                Accessible.checked: segment.isCurrent
                                 Accessible.name: modelData.label
+                                Accessible.onToggleAction: choose()
+                                function choose() {
+                                    if (enabled) page.controller.setChannelInfoNotificationMode(modelData.mode)
+                                }
                                 background: Rectangle {
                                     radius: 8
-                                    color: segment.isCurrent ? page.colors["card-bg"] : "transparent"
-                                    opacity: segment.enabled ? 1.0 : 0.5
+                                    color: segment.isCurrent ? page.colors["card-bg"]
+                                        : segment.hovered ? page.colors["sidebar-item-hover"] : "transparent"
                                 }
-                                onClicked: page.controller.setChannelInfoNotificationMode(segment.modelData.mode)
+                                onClicked: choose()
                             }
                         }
                     }
