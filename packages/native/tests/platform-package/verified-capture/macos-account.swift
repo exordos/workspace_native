@@ -95,8 +95,12 @@ case "login":
 case "choose-file":
     try press("General Chat: Cassi hosted channel")
     try press("# Hosted call")
+    guard let application = NSRunningApplication(processIdentifier: pid), application.activate(options: [.activateIgnoringOtherApps]) else {
+        throw fail("Could not activate the signed-in application.")
+    }
     try press("Attach files")
     _ = try control("Cancel", kAXButtonRole as String)
+    print("Application owns the foreground before selecting:", NSWorkspace.shared.frontmostApplication?.processIdentifier == pid)
     let board = NSPasteboard.general
     board.clearContents()
     board.setString(origin, forType: .string)
@@ -117,7 +121,8 @@ case "choose-file":
         }
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     } while Date() < goTo
-    guard field != nil else { throw fail("The AppKit Go to Folder location field did not appear.") }
+    guard let location = field else { throw fail("The AppKit Go to Folder location field did not appear.") }
+    print("Focused native file panel element:", attr(location, kAXSubroleAttribute as CFString) ?? "unspecified" as CFString)
     dialogKey(0, .maskCommand)
     dialogKey(9, .maskCommand)
     // The OS normalizes the location text (e.g. /var to /private/var).
@@ -125,8 +130,9 @@ case "choose-file":
     let waitUntil = Date().addingTimeInterval(0.5)
     RunLoop.current.run(until: waitUntil)
     dialogKey(36)
-    try press("Open")
-    print("Selected the synthetic file through the AppKit open panel.")
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+    dialogKey(36)
+    print("Confirmed the native AppKit file selection.")
 case "join-call":
     try press("General Chat: Cassi hosted channel")
     try press("Join call")

@@ -149,6 +149,7 @@ class Handler(BaseHTTPRequestHandler):
             check(files[0].get_filename() == selected.name and files[0].get_payload(decode=True) == data,
                   "The application did not upload the selected file intact")
             fixture.uploaded = True
+            print("Received the exactly selected file and bytes through the authenticated HTTP request.", flush=True)
             self.reply(201, {"uuid": str(uuid.uuid4()), "stream_uuid": fixture.capture.stream,
                              "name": selected.name, "content_type": "text/plain", "size_bytes": len(data),
                              "hash": hashlib.sha256(data).hexdigest()})
