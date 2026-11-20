@@ -50,6 +50,20 @@ private slots:
         QCOMPARE(notification->body, preview);
     }
 
+    void inlineSpoilersRespectEscapesAndReferenceTokenBoundaries()
+    {
+        NativeMarkdown renderer;
+        const QString source = R"(\|\|literal\|\| then ||concealed|| and ||**strong**|| and `\|code`)";
+        const auto closed = renderer.render(source);
+        const auto text = closed.value("plain").toString();
+        QVERIFY2(text.contains("||literal||"), qPrintable(text));
+        QVERIFY(!text.contains("concealed"));
+        QVERIFY(text.contains("||strong||"));
+        QVERIFY(text.contains(QStringLiteral("\\|code")));
+        QCOMPARE(closed.value("spoilers").toList().size(), 1);
+        QVERIFY(renderer.renderMessage(source, false, {"1"}).value("plain").toString().contains("concealed"));
+    }
+
     void spoilerCodeAndUnmatchedBarsStayLiteral()
     {
         NativeMarkdown renderer;

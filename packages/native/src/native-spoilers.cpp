@@ -1,6 +1,7 @@
 #include "native-spoilers.h"
 
 #include <QRegularExpression>
+#include <QUuid>
 #include <QTextDocumentFragment>
 #include <md4c-html.h>
 
@@ -44,6 +45,46 @@ QList<Fence> codeFences(const QByteArray &source)
     return scan.fences;
 }
 
+// md4c exposes escaped punctuation as its own normal-text event. Preserve the
+// distinction from a delimiter through HTML export without touching code or URLs.
+QString protectEscapedBars(const QByteArray &source, const QString &html, QByteArray &marker)
+{
+    if (!source.contains("\\|")) return html;
+    struct Scan { const char *begin; QList<qsizetype> offsets; } scan{source.constData(), {}};
+    MD_PARSER parser{};
+    parser.flags = Dialect;
+    parser.enter_block = parser.leave_block = [](MD_BLOCKTYPE, void *, void *) { return 0; };
+    parser.enter_span = parser.leave_span = [](MD_SPANTYPE, void *, void *) { return 0; };
+    parser.text = [](MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *data) {
+        auto &scan = *static_cast<Scan *>(data);
+        if (type == MD_TEXT_NORMAL && size == 1 && *text == '|' && text > scan.begin && text[-1] == '\\') {
+            qsizetype offset = text - scan.begin;
+            qsizetype start = offset;
+            while (start > 0 && scan.begin[start - 1] == '\\') --start;
+            if ((offset - start) % 2) scan.offsets.append(offset - 1);
+        }
+        return 0;
+    };
+    if (md_parse(source.constData(), MD_SIZE(source.size()), &parser, &scan) != 0 || scan.offsets.isEmpty())
+        return html;
+    marker = QUuid::createUuid().toByteArray(QUuid::Id128);
+    QByteArray protectedSource;
+    qsizetype pos = 0;
+    for (const auto offset : std::as_const(scan.offsets)) {
+        protectedSource.append(source.constData() + pos, offset - pos);
+        protectedSource += marker;
+        pos = offset + 2;
+    }
+    protectedSource.append(source.constData() + pos, source.size() - pos);
+    QByteArray generated;
+    const auto append = [](const MD_CHAR *text, MD_SIZE size, void *out) {
+        static_cast<QByteArray *>(out)->append(text, size);
+    };
+    if (md_html(protectedSource.constData(), MD_SIZE(protectedSource.size()), append, &generated, Dialect, 0) != 0)
+        return html;
+    return QString::fromUtf8(generated);
+}
+
 class Renderer {
 public:
     const QSet<QString> &opened;
@@ -70,7 +111,9 @@ public:
         QString out;
         int fenceIndex = 0, occurrence = 0;
         int literalDepth = 0;
-        for (auto it = tokens.globalMatch(html); it.hasNext();) {
+        QByteArray escapedBar;
+        const QString parsed = protectEscapedBars(source, html, escapedBar);
+        for (auto it = tokens.globalMatch(parsed); it.hasNext();) {
             const auto token = it.next().captured();
             if (token.startsWith(QLatin1String("<pre><code"))) {
                 const auto fence = fences.value(fenceIndex++);
@@ -98,7 +141,8 @@ public:
                 for (auto spans = bars.globalMatch(token); spans.hasNext();) {
                     const auto span = spans.next();
                     out += token.mid(pos, span.capturedStart() - pos);
-                    const auto content = span.captured(1);
+                    auto content = span.captured(1);
+                    if (!escapedBar.isEmpty()) content.replace(QString::fromLatin1(escapedBar), QLatin1String("|"));
                     if (content.isEmpty()) {
                         out += span.captured();
                     } else {
@@ -114,6 +158,7 @@ public:
                 out += token;
             }
         }
+        if (!escapedBar.isEmpty()) out.replace(QString::fromLatin1(escapedBar), QLatin1String("|"));
         return out;
     }
 };
