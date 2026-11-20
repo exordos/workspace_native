@@ -751,7 +751,7 @@ QtTest function or `function:row` selector unchanged to its area's executable.
 Find a case from an older feature document with
 `git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
 substituting the function name. At migration the Linux `-datatags` inventories
-contained the same 1,631 function/data-row entries across all 24 executables.
+contained the same 1,645 function/data-row entries across all 24 executables.
 
 | Test areas | Coverage |
 | --- | --- |
