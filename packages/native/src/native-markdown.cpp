@@ -274,10 +274,7 @@ QVariantMap NativeMarkdown::editContent(const QString &markdown) const
     if (paragraphBreak) text.remove(0, 1);
     QVariantList ordered;
     for (const auto &entry : leading) {
-        auto value = entry.toMap();
-        value.insert("retained", first > 0);
-        if (paragraphBreak) value.insert("paragraphBreak", true);
-        ordered.append(value);
+        auto value = entry.toMap(); value.insert("retained", first > 0); ordered.append(value);
     }
     for (const auto &entry : editAttachmentTokens(text)) {
         const auto value = entry.toMap();
@@ -297,6 +294,9 @@ QVariantMap NativeMarkdown::editContent(const QString &markdown) const
             continue;
         }
         positions.insert(raw, attachments.size());
+        // Retained cards share the boundary with the editable paragraph, even
+        // when the user removes the leading cards and keeps a trailing one.
+        if (paragraphBreak) value.insert("paragraphBreak", true);
         value.remove("offset"); value.remove("length"); value.remove("imageSyntax"); value.remove("standalone");
         attachments.append(value);
     }
