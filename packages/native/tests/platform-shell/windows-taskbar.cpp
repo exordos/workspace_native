@@ -180,6 +180,7 @@ private slots:
 
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QTRY_VERIFY_WITH_TIMEOUT(!taskbarPixels().isNull(), 10000);
         QImage withHints;
         QTRY_VERIFY_WITH_TIMEOUT(hintsVisible(withHints = taskbarPixels()), 10000);
         desktop.setUnreadCount(0);

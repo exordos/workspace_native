@@ -23,6 +23,10 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build build-control --config Release --parallel 4
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          $p = Start-Process build-control/Release/shell-control.exe -ArgumentList 'taskbarButtonCreationReplaysCurrentHints','-o','shell-control.txt,txt' -Wait -PassThru
-          Get-Content shell-control.txt -Encoding utf8
-          exit $p.ExitCode
+          $code = 0
+          foreach ($case in @('progressReachesTheExplorerTaskbarAndClears','taskbarButtonCreationReplaysCurrentHints:published-before-window','taskbarButtonCreationReplaysCurrentHints:recreated-button')) {
+            & ./build-control/Release/shell-control.exe $case -o shell-control.txt,txt
+            if ($LASTEXITCODE) { $code = $LASTEXITCODE }
+            Get-Content shell-control.txt -Encoding utf8
+          }
+          exit $code
