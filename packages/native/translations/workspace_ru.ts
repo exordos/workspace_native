@@ -3,7 +3,6 @@
 <TS version="2.1" language="ru_RU">
     <context>
         <name>NativeController</name>
-        <message><source>Please fill in all fields</source><translation>Заполните все поля</translation></message>
             <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
 <message>
             <source>Server address must be a valid HTTPS URL</source>
@@ -1789,6 +1788,7 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message><source>Please fill in all fields</source><translation>Заполните все поля</translation></message>
     <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
     <message>
         <source>The authentication code is invalid. Try again.</source>

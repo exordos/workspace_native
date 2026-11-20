@@ -16883,6 +16883,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::newRow("submit-from-password") << QString("submit-password") << QString("en");
         QTest::newRow("submit-from-username") << QString("submit-username") << QString("en");
         QTest::newRow("empty-credentials") << QString("empty") << QString("en");
+        QTest::newRow("empty-credentials-ru") << QString("empty") << QString("ru");
     }
 
     void loginWizardReferenceSurfaces()
@@ -16953,14 +16954,16 @@ mv -Tf "$root/.current-new" "$root/current"
             field->setProperty("text", server.origin().toString());
             click(window, item(content, "organizationNextButton"));
             QTRY_VERIFY(visibleItem(content, "userInput"));
-            QVERIFY(hasVisibleText(content, "Email or login"));
+            const bool russian = locale == "ru";
+            QVERIFY(hasVisibleText(content, russian ? QString("Email или логин") : QString("Email or login")));
             QCOMPARE(item(content, "userInput")->property("placeholderText").toString(),
-                     QString("email@example.com or login"));
-            QVERIFY(hasVisibleText(content, "Password"));
-            QCOMPARE(item(content, "signInButton")->property("text").toString(), QString("Next"));
+                     russian ? QString("email@example.com или логин") : QString("email@example.com or login"));
+            QVERIFY(hasVisibleText(content, russian ? QString("Пароль") : QString("Password")));
+            QCOMPARE(item(content, "signInButton")->property("text").toString(),
+                     russian ? QString("Далее") : QString("Next"));
             if (surface == "empty") {
                 click(window, item(content, "signInButton"));
-                QVERIFY(hasVisibleText(content, "Please fill in all fields"));
+                QVERIFY(hasVisibleText(content, russian ? QString("Заполните все поля") : QString("Please fill in all fields")));
                 QCOMPARE(server.requests.size(), 1);
             } else if (surface.startsWith("submit-")) {
                 auto *username = visibleItem(content, "userInput");
