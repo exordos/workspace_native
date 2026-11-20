@@ -708,6 +708,61 @@ class Desktop:
             )
         return results
 
+    def exercise_composer(self, peer):
+        self.click("messageComposer")
+        field = self.lookup("messageComposer").get_text_iface()
+        if field is None:
+            raise Blocked("composer-text-unavailable")
+        text = self.atspi.Text
+
+        def read():
+            return text.get_text(field, 0, -1)
+
+        def move_to_end():
+            end = text.get_character_count(field)
+            if not text.set_caret_offset(field, end) or text.get_caret_offset(field) != end:
+                raise Blocked("composer-caret-unavailable")
+            return end
+
+        original = read()
+        sample = "acceptance draft"
+        start = move_to_end()
+        try:
+            with self.action("typing"):
+                self.record(
+                    "type-start",
+                    draftLength=start,
+                    before=self.latest("picture").get("editorSignature", ""),
+                )
+                # Keep this keyboard attached while the peer exercises the editor.
+                self.keyboard = subprocess.Popen(
+                    ["wtype", "-", "-s", "600000"],
+                    env=self.env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self.keyboard.stdin.write(sample.encode())
+                self.keyboard.stdin.close()
+                self.until(lambda: read() == original + sample, "typing-not-observed")
+                peer.exercise(self)
+                time.sleep(0.4)
+        finally:
+            # Qt Quick exposes Text even when it has no EditableText interface.
+            # Remove only a known test suffix and verify the whole saved draft.
+            current = read()
+            suffix = current[len(original):]
+            if current.startswith(original) and suffix and sample.startswith(suffix):
+                self.click("messageComposer")
+                if read() != current:
+                    raise Blocked("synthetic-draft-changed")
+                move_to_end()
+                command(
+                    ["wtype", "-s", "150", *(["-k", "BackSpace"] * len(suffix))],
+                    env=self.env,
+                )
+                self.until(lambda: read() == original, "synthetic-draft-cleanup")
+
     def run(self, extended, peer, network):
         with self.action("cold-start", False):
             self.launch()
@@ -790,66 +845,7 @@ class Desktop:
                 **{k: settled[k] for k in ("anchor", "anchorY") if k in settled},
             ):
                 time.sleep(0.8)
-            with self.action("typing"):
-                self.click("messageComposer")
-                baseline = self.latest("sample").get("draftLength", 0)
-                self.record(
-                    "type-start",
-                    draftLength=baseline,
-                    before=self.latest("picture").get("editorSignature", ""),
-                )
-                # Keep the virtual keyboard present after typing, as on a real desktop.
-                # Removing the last keyboard withdraws Wayland focus from the entire window.
-                self.keyboard = subprocess.Popen(
-                    [
-                        "wtype",
-                        "-M",
-                        "ctrl",
-                        "-k",
-                        "End",
-                        "-m",
-                        "ctrl",
-                        "-",
-                        "-s",
-                        "600000",
-                    ],
-                    env=self.env,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                self.keyboard.stdin.write(b"acceptance draft")
-                self.keyboard.stdin.close()
-                self.until(
-                    lambda: (
-                        self.latest("sample").get("draftLength", 0)
-                        == baseline + len("acceptance draft")
-                    ),
-                    "typing-not-observed",
-                )
-                peer.exercise(self)
-                time.sleep(0.4)
-            if self.latest("sample").get("draftLength") == baseline + len(
-                "acceptance draft"
-            ):
-                self.click("messageComposer")
-                command(
-                    [
-                        "wtype",
-                        "-M",
-                        "ctrl",
-                        "-k",
-                        "End",
-                        "-m",
-                        "ctrl",
-                        *(["-k", "BackSpace"] * len("acceptance draft")),
-                    ],
-                    env=self.env,
-                )
-                self.until(
-                    lambda: self.latest("sample").get("draftLength") == baseline,
-                    "synthetic-draft-cleanup",
-                )
+            self.exercise_composer(peer)
         try:
             self.until(
                 lambda: any(
