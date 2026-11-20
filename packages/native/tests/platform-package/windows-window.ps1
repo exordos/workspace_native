@@ -71,14 +71,16 @@ try {
             $pattern = $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
             $text = "https://cassi-package.invalid/clipboard"
             Set-Clipboard -Value $text
-            [System.Windows.Forms.SendKeys]::SendWait('^a^v')
+            [System.Windows.Forms.SendKeys]::SendWait('^a')
+            [System.Windows.Forms.SendKeys]::SendWait('^v')
             $deadline = (Get-Date).AddSeconds(5)
             while ($pattern.Current.Value -ne $text -and (Get-Date) -lt $deadline) {
                 Start-Sleep -Milliseconds 100
             }
             if ($pattern.Current.Value -ne $text) { throw "The application did not paste the system clipboard." }
             Set-Clipboard -Value 'cassi-copy-control'
-            [System.Windows.Forms.SendKeys]::SendWait('^a^c')
+            [System.Windows.Forms.SendKeys]::SendWait('^a')
+            [System.Windows.Forms.SendKeys]::SendWait('^c')
             if ((Get-Clipboard -Raw).TrimEnd() -ne $text) { throw "The application did not copy the selected text." }
             Write-Output "The native login field pasted and copied text through the Windows clipboard."
             return
