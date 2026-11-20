@@ -23589,6 +23589,7 @@ private:
             return entry;
         };
         for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        int mentionIndexGets = 0;
         QVector<std::function<void()>> heldPage;
         QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
         const auto streamDto = [&] {
@@ -23608,6 +23609,10 @@ private:
             if (path.endsWith("/users/")) return Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (isInitialUnreadMentionIndex(request)) {
+                ++mentionIndexGets;
+                return Response{QJsonArray{}};
+            }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
                 const auto marker = query.queryItemValue("page_marker");
@@ -23705,7 +23710,8 @@ private:
         }
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
-        QTRY_VERIFY(!heldPage.isEmpty());
+        QCOMPARE(mentionIndexGets, 1);
+        QTRY_COMPARE(heldPage.size(), 1);
         // The gesture continues while the page is in flight, including a
         // direction change: coalescing must hold the single request.
         QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
@@ -23781,6 +23787,7 @@ private:
             return entry;
         };
         for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        int mentionIndexGets = 0;
         QVector<std::function<void()>> heldPage;
         QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
         const auto streamDto = [&] {
@@ -23800,6 +23807,10 @@ private:
             if (path.endsWith("/users/")) return Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (isInitialUnreadMentionIndex(request)) {
+                ++mentionIndexGets;
+                return Response{QJsonArray{}};
+            }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
                 const auto marker = query.queryItemValue("page_marker");
@@ -23887,7 +23898,8 @@ private:
         }
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
-        QTRY_VERIFY(!heldPage.isEmpty());
+        QCOMPARE(mentionIndexGets, 1);
+        QTRY_COMPARE(heldPage.size(), 1);
         // Park below the reserve but not at the top: with the reference-notch
         // mapping each 120 notch moves exactly 100 px, so the coarse 1200
         // steps above park at the list top and the restore lands too close to

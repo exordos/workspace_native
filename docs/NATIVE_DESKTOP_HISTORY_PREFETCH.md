@@ -158,6 +158,11 @@ leaves the viewport where it was.
 | Slow/failed page keeps chat usable, position retained | controller failed-page case + window held-page case (messages intact, not busy, anchor kept) |
 | Bound memory/request volume, no eager full-conversation fetch | policy has no timer and no scroll-less request: at most one in-flight page, only after user-attributed scroll, stopped by `canLoadOlder`; existing `historyPage` page/row/byte caps unchanged |
 
+The two window prefetch fixtures serve the sidebar's startup unread-mention
+index separately. Each holds exactly one topic-history response while the
+pointer gesture is in progress. Releasing that response must append the older
+topic rows and preserve the viewport assertions.
+
 ## Recorded deviations
 
 - The #106 view-local trigger constant (`loadMoreThreshold: 100` in
