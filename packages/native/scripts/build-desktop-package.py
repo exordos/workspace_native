@@ -38,7 +38,16 @@ install("keychain", root / "deps/qtkeychain", prefix, "-DBUILD_WITH_QT6=ON",
         "-DBUILD_SHARED_LIBS=OFF", "-DBUILD_TRANSLATIONS=OFF", "-DBUILD_TEST_APPLICATION=OFF")
 install("application", root / "packages/native", stage, "-DBUILD_TESTING=OFF",
         f"-DOPENSSL_ROOT_DIR={openssl}", "-DOPENSSL_USE_STATIC_LIBS=TRUE",
+        "-DWORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE=ON",
         f"-DWORKSPACE_NATIVE_PYTHON3={sys.executable}")
+shell_test = build / "application" / ("Release/native-platform-shell-test.exe" if windows
+                                     else "native-platform-shell-test")
+shell_log = build / "platform-shell.txt"
+result = subprocess.run([str(shell_test), "-o", f"{shell_log},txt"])
+if shell_log.is_file():
+    sys.stdout.buffer.write(shell_log.read_bytes())
+    sys.stdout.buffer.flush()
+result.check_returncode()
 artifacts.mkdir(parents=True, exist_ok=True)
 if windows:
     name = "workspace-native-windows-x64"

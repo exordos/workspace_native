@@ -190,6 +190,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
     Q_PROPERTY(QString composerPreviewBody READ composerPreviewBody NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap outgoingSend READ outgoingSend NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap encryptedOutgoingPresentation READ encryptedOutgoingPresentation NOTIFY stateChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
@@ -780,6 +781,7 @@ public:
     Q_INVOKABLE void checkTopicCreation();
     Q_INVOKABLE void send();
     QVariantMap outgoingSend() const;
+    QVariantMap encryptedOutgoingPresentation() const;
     Q_INVOKABLE void discardPendingSend();
     Q_INVOKABLE void checkPendingSend();
     Q_INVOKABLE void retryPendingSend();
@@ -890,6 +892,7 @@ public:
         const QString &closesAt = QString(), const QString &operation = QString());
     Q_INVOKABLE void votePollOption(const QString &messageUuid, const QString &questionUuid,
         const QString &optionUuid, bool selected);
+    Q_INVOKABLE bool canManagePoll(const QString &messageUuid) const;
     Q_INVOKABLE void closePoll(const QString &messageUuid);
     Q_INVOKABLE void updatePollSettings(const QString &messageUuid, const QString &closesAt,
         bool allowAddingOptions);
@@ -1688,7 +1691,8 @@ private:
     QString m_activeEncryptedSend;
     quint64 m_nextEncryptedSend = 0;
     ApiClient::RequestId request(const QByteArray &method, const QString &path, const QJsonValue &body,
-                 const QUrlQuery &query, ApiClient::Callback callback);
+                 const QUrlQuery &query, ApiClient::Callback callback,
+                 ApiClient::TokenRenewal renewal = ApiClient::TokenRenewal::Cancel);
     void collection(const QString &path, QUrlQuery query,
                     std::function<void(const QJsonArray &)> done,
                     QJsonArray accumulated = {}, QSet<QByteArray> markers = {},
@@ -1861,6 +1865,7 @@ private:
         QString bindingUuid, userUuid, role;
     };
     const Stream *channelInfoStreamRow() const;
+    void updateStreamNotificationMode(QString id, const QString &mode, bool fromDrawer);
     bool channelInfoContext(quint64 ticket, const QString &stream) const;
     void loadChannelInfoPage(const QString &marker, quint64 ticket, const QString &stream,
                              QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers);
@@ -2401,6 +2406,12 @@ private:
     quint64 m_topicMutation = 0;
     bool m_topicChanging = false;
     quint64 m_messageRevision = 0;
+    // Tail arrivals cannot overlap a page requested before the oldest loaded row.
+    quint64 m_historyTailAppends = 0;
+    quint64 historyPageRevision(bool older) const
+    {
+        return older ? m_messageRevision - m_historyTailAppends : m_messageRevision;
+    }
     quint64 m_streamRevision = 0;
     quint64 m_readTicket = 0;
     quint64 m_readCounterRequest = 0;
