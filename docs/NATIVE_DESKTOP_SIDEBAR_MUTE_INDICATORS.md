@@ -208,3 +208,18 @@ fallthrough where a press on the heading or on a disabled segment closes the men
 without posting. The block occupies model slot 0 but is navigation-inert, so that
 test's `currentIndex` pin shifted 2 -> 3 (slot order: block 0, hidden read 1,
 rename 2, new topic 3).
+
+Full-group verification surfaced a second deterministic #97 regression in the same
+group, `chatClickActionLatestTopicOpensTheLastMessageTopic` (deterministic fail or
+intermittent SIGSEGV at tip e29a7b7, green at the pre-#97 tip): the #97
+`topicsChanged -> sidebarStreamsChanged` chain republishes the sidebar row
+projection when opening a chat folds the topic load into the rows (unread/preview
+hydration), and the QVariantList-backed sidebar model rebind destroys all live
+delegates. The test held raw avatar-item and accessible-interface handles across
+those publishes (use-after-free: garbage focus policies or the SIGSEGV). The
+reference reconciles keyed rows so the avatar link survives rerenders; no native
+delegate survives a rebind, so the test now re-queries the avatar row, its
+accessible interface and the Press action after every async phase (each handle is
+taken immediately before use). The pinned #396 assertions themselves - TabFocus
+policy, Press action presence, accessible and keyboard activation semantics - are
+unchanged.
