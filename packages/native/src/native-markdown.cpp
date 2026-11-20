@@ -270,9 +270,14 @@ QVariantMap NativeMarkdown::editContent(const QString &markdown) const
     while (last >= first && attachmentLines.contains(last)) { trailing.prepend(attachmentLines.value(last)); end = last--; }
     auto text = lines.mid(first, end - first).join('\n');
     if (!trailing.isEmpty()) while (text.endsWith('\n')) text.chop(1);
+    const bool paragraphBreak = first > 0 && text.startsWith('\n');
+    if (paragraphBreak) text.remove(0, 1);
     QVariantList ordered;
     for (const auto &entry : leading) {
-        auto value = entry.toMap(); value.insert("retained", first > 0); ordered.append(value);
+        auto value = entry.toMap();
+        value.insert("retained", first > 0);
+        if (paragraphBreak) value.insert("paragraphBreak", true);
+        ordered.append(value);
     }
     for (const auto &entry : editAttachmentTokens(text)) {
         const auto value = entry.toMap();
@@ -342,15 +347,18 @@ QString NativeMarkdown::prependEditAttachments(const QString &markdown, const QV
     for (const auto &entry : editAttachmentTokens(markdown))
         present.insert(entry.toMap().value("markdown").toString());
     QStringList lines;
+    bool paragraphBreak = false;
     for (const auto &entry : attachments) {
         const auto card = entry.toMap();
         if (!card.value("retained").toBool()) continue;
         const auto line = card.value("markdown").toString();
-        if (!line.isEmpty() && !lines.contains(line) && !present.contains(line.trimmed())) lines.append(line);
+        if (line.isEmpty() || lines.contains(line) || present.contains(line.trimmed())) continue;
+        lines.append(line);
+        paragraphBreak |= card.value("paragraphBreak").toBool();
     }
     if (lines.isEmpty()) return markdown;
     if (markdown.isEmpty()) return lines.join('\n');
-    return lines.join('\n') + '\n' + markdown;
+    return lines.join('\n') + (paragraphBreak ? QStringLiteral("\n\n") : QStringLiteral("\n")) + markdown;
 }
 
 QStringList NativeMarkdown::missingAttachmentLinks(const QString &markdown, const QStringList &links)
