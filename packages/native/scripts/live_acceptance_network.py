@@ -111,7 +111,6 @@ class NetworkConditions:
     def __exit__(self, *_):
         async def close():
             self.server.close()
-            await self.server.wait_closed()
             for writer in tuple(self.connections):
                 writer.close()
             current = asyncio.current_task()
@@ -119,6 +118,7 @@ class NetworkConditions:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await self.server.wait_closed()
 
         asyncio.run_coroutine_threadsafe(close(), self.loop).result(5)
         self.loop.call_soon_threadsafe(self.loop.stop)

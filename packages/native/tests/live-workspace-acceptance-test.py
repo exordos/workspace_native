@@ -76,6 +76,11 @@ class Controls(unittest.TestCase):
         rows.insert(-1, {"event": "sample", "ms": 200, "intent": 3, "count": 22})
         self.assertIn("gui-stall", evaluate(rows, LIMITS)["failures"])
 
+    def test_lost_recorder_is_an_infrastructure_failure(self):
+        report = evaluate([e for e in trace() if e["event"] != "picture"], LIMITS)
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertNotIn("no-visible-wheel-response", report["failures"])
+
     def test_one_blank_capture_is_enough(self):
         rows = trace()
         rows.insert(
@@ -118,6 +123,26 @@ class Echo(socketserver.BaseRequestHandler):
 
 
 class NetworkControlTests(unittest.TestCase):
+    def test_shutdown_with_a_connected_client_waiting_for_the_backend(self):
+        with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Echo) as endpoint:
+            threading.Thread(target=endpoint.serve_forever, daemon=True).start()
+            port = endpoint.server_address[1]
+            client = None
+            try:
+                with NetworkConditions(f"https://127.0.0.1:{port}") as network:
+                    client = socket.create_connection(
+                        ("127.0.0.1", network.local_port), 2
+                    )
+                    client.sendall(
+                        f"CONNECT 127.0.0.1:{port} HTTP/1.1\r\n\r\n".encode()
+                    )
+                    self.assertIn(b"200", client.recv(256))
+                self.assertEqual(client.recv(256), b"")
+            finally:
+                if client:
+                    client.close()
+                endpoint.shutdown()
+
     def test_only_the_requested_destination_receives_data_and_disconnect_is_applied(
         self,
     ):

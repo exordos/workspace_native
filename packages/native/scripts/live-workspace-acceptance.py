@@ -212,6 +212,7 @@ class Desktop:
 
     def launch(self):
         self.last_tick = clock()
+        self.record("launch")
         self.authenticated = False
         self.lost_watchdog = False
         self.pane = None
@@ -287,6 +288,9 @@ class Desktop:
         if self.capture_stop.is_set():
             return
         x, y, w, h = self.pane
+        # Capture the conversation and its composer separately from a single presented frame.
+        capture_height = 900 - y
+        pane_bottom = min(143, max(1, round(144 * h / capture_height)))
         recorder = None
         try:
             recorder = subprocess.Popen(
@@ -294,7 +298,7 @@ class Desktop:
                     "wf-recorder",
                     "-D",
                     "-g",
-                    f"{x},{y} {w}x{h}",
+                    f"{x},{y} {w}x{capture_height}",
                     "-c",
                     "rawvideo",
                     "-F",
@@ -322,7 +326,9 @@ class Desktop:
                 buffer.extend(chunk)
                 if len(buffer) != frame_bytes:
                     continue
-                image = Image.frombytes("L", (192, 144), bytes(buffer))
+                full = Image.frombytes("L", (192, 144), bytes(buffer))
+                image = full.crop((0, 0, 192, pane_bottom))
+                editor = full.crop((0, pane_bottom, 192, 144))
                 buffer.clear()
                 background = int(ImageStat.Stat(image).median[0])
                 ink = image.point(
@@ -333,6 +339,7 @@ class Desktop:
                 self.record(
                     "picture",
                     signature=digest,
+                    editorSignature=hashlib.sha256(editor.tobytes()).hexdigest()[:16],
                     occupancy=sum(tiles) / (255 * len(tiles)),
                     cells="".join(format(min(15, v // 16), "x") for v in tiles),
                 )
@@ -342,8 +349,14 @@ class Desktop:
         finally:
             stop(recorder)
 
-    def close_app(self):
+    def close_app(self, graceful=False):
         self.capture_stop.set()
+        if graceful and self.proc and self.proc.poll() is None:
+            command(["swaymsg", f"[pid={self.pid}]", "kill"], env=self.env)
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                raise Blocked("client-window-did-not-close") from exc
         stop(self.proc)
         for thread in self.threads:
             thread.join(timeout=4)
@@ -380,7 +393,8 @@ class Desktop:
             if self.lost_watchdog:
                 raise Blocked("client-observation-unavailable")
             time.sleep(0.08)
-        raise Blocked("visible-control-unavailable")
+        # All lookup prefixes are fixed control names. Never publish fixture identifiers.
+        raise Blocked("visible-control-unavailable-" + suffix.split("-", 1)[0])
 
     def geometry(self, suffix):
         rect = (
@@ -554,9 +568,13 @@ class Desktop:
             self.click("stream-" + self.config["stream"])
             self.reveal_topics()
             self.topic("a")
+            self.until(
+                lambda: bool(self.latest("picture")), "captured-history-unavailable"
+            )
+            time.sleep(0.1)
         self.topic("b")
         self.topic("a")
-        self.close_app()
+        self.close_app(graceful=True)
         with self.action("warm-start", False):
             self.launch()
             self.until(lambda: self.authenticated, "saved-session-restore", 30)
@@ -565,8 +583,10 @@ class Desktop:
                 lambda: self.latest("sample").get("count", 0) > 0,
                 "warm-cache-unavailable",
             )
+            warm_start = self.latest("runtime")["ms"]
             self.until(
-                lambda: bool(self.latest("picture")), "captured-history-unavailable"
+                lambda: self.latest("picture").get("ms", 0) >= warm_start,
+                "captured-history-unavailable",
             )
         try:
             self.lookup("topic-" + self.config["topic_b"], 0.7)
@@ -604,6 +624,9 @@ class Desktop:
             time.sleep(0.8)
         with self.action("typing"):
             self.click("messageComposer")
+            self.record(
+                "type-start", before=self.latest("picture").get("editorSignature", "")
+            )
             command(["wtype", "-"], env=self.env, data=b"acceptance draft")
             self.until(
                 lambda: self.latest("sample").get("draftLength", 0) > 0,
@@ -726,7 +749,9 @@ def main():
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--mode", choices=("smoke", "extended", "controls", "probe"), default="smoke"
+        "--mode",
+        choices=("smoke", "extended", "controls", "probe", "login"),
+        default="smoke",
     )
     parser.add_argument("--peer-role", default="writer")
     parser.add_argument("--limits", type=Path)
@@ -848,7 +873,6 @@ def main():
                 "wayland-click-unobserved",
                 3,
             )
-            desktop.lookup("organizationErrorBanner", 3)
             result = {"status": "PROBE", "runtime": desktop.latest("runtime")}
         else:
             limits = None
@@ -876,7 +900,22 @@ def main():
                 desktop.env["WORKSPACE_NATIVE_ACCEPTANCE_PROXY_PORT"] = str(
                     net.local_port
                 )
-                if args.mode == "controls":
+                if args.mode == "login":
+                    desktop.launch()
+                    desktop.login()
+                    # Let the asynchronous Qt keyring save finish, then verify the real restore.
+                    time.sleep(1)
+                    desktop.close_app(graceful=True)
+                    desktop.launch()
+                    desktop.until(
+                        lambda: desktop.authenticated, "saved-session-restore", 25
+                    )
+                    result = {
+                        "status": "PREFLIGHT",
+                        "authenticated": True,
+                        "restored": True,
+                    }
+                elif args.mode == "controls":
                     checks = desktop.controls(limits)
                     result = {
                         "status": "PASS" if all(checks.values()) else "FAIL",
@@ -918,10 +957,19 @@ def main():
         OSError,
         RuntimeError,
         subprocess.SubprocessError,
-    ):
+    ) as error:
+        # Retain only source line numbers in this runner, never exception values or paths.
+        trace = error.__traceback__
+        lines = []
+        while trace:
+            if trace.tb_frame.f_code.co_filename == __file__:
+                lines.append(trace.tb_lineno)
+            trace = trace.tb_next
         result = {
             "status": "BLOCKED",
             "blocked": ["runner-configuration-or-dependency"],
+            "runner_lines": lines,
+            "cause": type(error).__name__,
         }
     finally:
         if desktop:
@@ -937,7 +985,9 @@ def main():
                     out.write(json.dumps(e, separators=(",", ":")) + "\n")
         (args.output / "report.json").write_text(json.dumps(result, indent=2) + "\n")
     print(result["status"])
-    return {"PASS": 0, "PROBE": 0, "FAIL": 3, "BLOCKED": 2}[result["status"]]
+    return {"PASS": 0, "PROBE": 0, "PREFLIGHT": 0, "FAIL": 3, "BLOCKED": 2}[
+        result["status"]
+    ]
 
 
 if __name__ == "__main__":

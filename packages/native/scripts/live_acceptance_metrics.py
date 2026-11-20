@@ -1,8 +1,8 @@
 """Evaluate an anonymized, monotonic Wayland acceptance trace."""
 
+import itertools
 from collections import Counter
 from statistics import median
-import itertools
 
 
 def sanitize_native_event(raw):
@@ -148,8 +148,18 @@ def evaluate(events, limits):
                     )
                     if later:
                         visible.append(later["ms"] - mark["ms"])
+            metrics["wheel_responses"] = len(visible)
+            metrics["wheel_to_changed_capture_p50_ms"] = percentile(visible, 0.5)
             metrics["wheel_to_changed_capture_p95_ms"] = percentile(visible, 0.95)
-            if not visible:
+            has_comparison = bool(
+                pictures
+                and received
+                and pictures[0]["ms"] < received[0]["ms"]
+                and pictures[-1]["ms"] >= received[0]["ms"]
+            )
+            if not visible and not has_comparison:
+                blocked.add("missing-temporal-evidence")
+            elif not visible:
                 failures.add("no-visible-wheel-response")
             elif (
                 limits
@@ -215,6 +225,46 @@ def evaluate(events, limits):
             )
             if not changed:
                 blocked.add("useful-frame-unobserved")
+            if target and changed:
+                click = next(
+                    (
+                        e
+                        for e in reversed(window)
+                        if e["event"] == "click" and e["ms"] <= changed["ms"]
+                    ),
+                    None,
+                )
+                if click:
+                    metrics["click_to_useful_capture_ms"] = changed["ms"] - click["ms"]
+                else:
+                    blocked.add("click-to-visible-unobserved")
+                if any(
+                    e.get("view") != target
+                    for e in observed
+                    if e["ms"] >= changed["ms"]
+                ):
+                    failures.add("selection-reset")
+            if kind == "typing":
+                mark = next((e for e in window if e["event"] == "type-start"), None)
+                typed = next(
+                    (
+                        pic
+                        for pic in pictures
+                        if ready
+                        and mark
+                        and mark.get("before")
+                        and pic["ms"] >= max(ready["ms"], mark["ms"])
+                        and pic.get("editorSignature")
+                        and pic["editorSignature"] != mark["before"]
+                    ),
+                    None,
+                )
+                if typed:
+                    metrics["keyboard_dispatch_to_visible_ms"] = (
+                        typed["ms"] - mark["ms"]
+                    )
+                else:
+                    blocked.add("typing-to-visible-unobserved")
         if kind == "stopped" and "anchor" not in start:
             blocked.add("viewport-anchor-unobserved")
         if kind == "paged-scroll":
@@ -273,6 +323,14 @@ def evaluate(events, limits):
     if not limits:
         blocked.add("no-reviewed-reference-limits")
     usage = [e for e in events if e["event"] == "process"]
+    cpu_ticks = 0
+    previous_cpu = 0
+    for e in events:
+        if e["event"] == "launch":
+            previous_cpu = 0
+        if e["event"] == "process":
+            cpu_ticks += max(0, e["cpu"] - previous_cpu)
+            previous_cpu = e["cpu"]
     return {
         "status": "FAIL" if failures else "BLOCKED" if blocked else "PASS",
         "failures": sorted(failures),
@@ -281,7 +339,7 @@ def evaluate(events, limits):
         "resources": {
             "rss_peak_kib": max((e["rss"] for e in usage), default=0),
             "rss_final_kib": usage[-1]["rss"] if usage else None,
-            "cpu_ticks": (usage[-1]["cpu"] - usage[0]["cpu"]) if usage else None,
+            "cpu_ticks": cpu_ticks if usage else None,
         },
         "requests": dict(
             Counter(e["category"] for e in events if e["event"] == "request")
