@@ -1,103 +1,12 @@
-name: Windows and macOS desktop packages
-
+name: Check published preview archives on clean native desktops
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [master]
-    paths:
-      - .github/workflows/desktop-platform-packages.yml
-      - packages/native/CMakeLists.txt
-      - packages/native/scripts/build-desktop-package.py
-      - packages/native/tests/platform-package/**
-  push:
-    tags: ['[0-9]*']
-
 permissions:
   contents: read
-
-concurrency:
-  group: desktop-platform-packages-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+  actions: read
 jobs:
-  package:
-    name: Package ${{ matrix.platform }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: windows-x64, runner: windows-2022, arch: win64_msvc2022_64 }
-          - { platform: macos-arm64, runner: macos-15, arch: clang_64 }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: mity/md4c
-          ref: 729e6b8b320caa96328968ab27d7db2235e4fb47 # 0.5.2
-          path: deps/md4c
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          repository: frankosterfeld/qtkeychain
-          ref: ad7344c45a86a4f66cbafc4b081b5f7b876cb0b7 # 0.15.0
-          path: deps/qtkeychain
-          persist-credentials: false
-      - name: Install Qt
-        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
-        with:
-          version: '6.10.2'
-          arch: ${{ matrix.arch }}
-          modules: qtwebsockets qtmultimedia qtpositioning qtwebchannel qtwebengine
-          cache: true
-      - name: Identify the Windows package registry
-        if: runner.os == 'Windows'
-        id: vcpkg
-        shell: pwsh
-        run: |
-          $registry = git -C $env:VCPKG_INSTALLATION_ROOT rev-parse HEAD
-          "registry=$registry" >> $env:GITHUB_OUTPUT
-          $cache = Join-Path $env:RUNNER_TEMP workspace-vcpkg-cache
-          New-Item -ItemType Directory -Force $cache | Out-Null
-          "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
-      - name: Cache Windows OpenSSL binaries
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/workspace-vcpkg-cache
-          key: workspace-openssl-x64-static-md-${{ steps.vcpkg.outputs.registry }}
-      - name: Install OpenSSL for Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          vcpkg install openssl:x64-windows-static-md --classic
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "WORKSPACE_OPENSSL_PREFIX=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md" >> $env:GITHUB_ENV
-      - name: Select OpenSSL for macOS
-        if: runner.os == 'macOS'
-        run: |
-          brew list --versions openssl@3 || brew install openssl@3
-          echo "WORKSPACE_OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Build and archive the desktop application
-        run: python packages/native/scripts/build-desktop-package.py
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-${{ matrix.platform }}
-          path: build/desktop-package/archives/
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
   launch:
     name: Launch ${{ matrix.platform }} archive
-    needs: package
-    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,6 +24,8 @@ jobs:
         with:
           name: desktop-${{ matrix.platform }}
           path: archive
+          github-token: ${{ github.token }}
+          run-id: 44821397480
       - name: Verify and run the relocated Windows package
         if: runner.os == 'Windows'
         shell: pwsh
