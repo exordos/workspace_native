@@ -60,4 +60,18 @@ Both smoke and extended runs failed the offline navigation check. After opening 
 
 ## Cadence
 
-The **Live Wayland acceptance** workflow runs smoke Monday–Saturday and extended on Sunday at 03:19 UTC. Maintainers can dispatch smoke, extended or controls on master. Register a dedicated self-hosted Linux x64 runner with label `workspace-native-wayland`, then configure repository variables `WORKSPACE_NATIVE_FIXTURE_PROVIDER` and `WORKSPACE_NATIVE_ACCEPTANCE_LIMITS` as absolute paths on that runner. Before releases affecting startup, cache, history, scrolling or layout, the release maintainer runs the relevant mode against the actual candidate package and reviews the timeline. The desktop and release maintainers triage failures, distinguish unavailable infrastructure from observed product defects, and keep the associated issue open until the failed transition passes again.
+The **Live Wayland acceptance** workflow packages the selected master revision on GitHub Actions. It runs smoke Monday–Saturday and extended on Sunday at 03:19 UTC. Maintainers can dispatch smoke, extended or controls on master. The Wayland job unpacks the same run’s checksummed Linux archive, then starts an unprivileged, isolated desktop in an Ubuntu 26.04 container. It retains the sanitized timeline, report and frames for 14 days. The hosted reference is `github-ubuntu-24.04-container-26.04-sway-1440`. Collect and review its own initial measurements before supplying thresholds.
+
+The fixture operator manages the `workspace-native-live-acceptance` GitHub environment. Restrict deployments to the master branch and configure the operator as its sole required reviewer. The operator provisions a disposable Workspace with the test dataset and ordinary synthetic member accounts. Its private provider writes the fixture described above to a pipe. The following commands target this repository and require the operator’s authenticated GitHub CLI.
+
+```sh
+lease=packages/native/scripts/live-acceptance-lease.py
+python3 "$lease" pending
+fixture-provider | python3 "$lease" grant "$run_id" "$attempt"
+# If approved tolerances exist, add --limits hosted-reference.json to grant.
+python3 "$lease" release "$run_id" "$attempt"
+```
+
+Grant waits for packaging to finish and verifies the requesting workflow, attempt, master revision and environment rules. It assigns the fixture to that attempt and approves its waiting Wayland job. The operator calls release after the run terminates, verifies that GitHub removed the run-specific secret, and disposes of the fixture. An interrupted grant can be retried for the same waiting attempt. If provisioning fails before credentials have been assigned, `python3 "$lease" unavailable "$run_id" "$attempt"` lets the job record BLOCKED. An unavailable operator leaves the job visibly waiting for its fixture.
+
+Before releases affecting startup, cache, history, scrolling or layout, the release maintainer runs the relevant mode against the candidate package and reviews its timeline. The desktop and release maintainers triage failures and keep an affected issue open until the failed transition passes again.

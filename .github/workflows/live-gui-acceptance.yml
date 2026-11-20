@@ -20,16 +20,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  live-wayland:
+  package-linux:
     if: github.ref == 'refs/heads/master'
-    runs-on: [self-hosted, linux, x64, workspace-native-wayland]
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      DEBIAN_FRONTEND: noninteractive
+    outputs:
+      package_id: ${{ steps.upload.outputs.artifact-id }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Install packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This container uses Ubuntu's signed distribution packages, as does the release job.
+          sed -Ei 's#https?://([^ ]*\.)?(archive|security)\.ubuntu\.com/ubuntu/?#http://mirror.yandex.ru/ubuntu/#g' /etc/apt/sources.list.d/ubuntu.sources
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            ca-certificates git build-essential binutils pkg-config cmake ninja-build patchelf \
+            python3 \
+            qt6-base-dev qt6-declarative-dev qt6-svg-dev qt6-svg-plugins qt6-image-formats-plugins \
+            qt6-websockets-dev qt6-multimedia-dev qt6-l10n-tools qt6-translations-l10n \
+            qt6-wayland qtkeychain-qt6-dev libqt6sql6-sqlite libmd4c-dev libssl-dev \
+            qml6-module-qtquick qml6-module-qtquick-dialogs qml6-module-qtmultimedia \
+            qml6-module-qt-labs-folderlistmodel qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-qtquick-effects qml6-module-qtquick-window qml6-module-qtquick-templates \
+            qml6-module-qtqml-workerscript dbus-daemon
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Check temporal fault controls
-        run: python3 packages/native/tests/live-workspace-acceptance-test.py -v
       - name: Package the checked-out Linux client
         shell: bash
         run: |
@@ -40,26 +62,85 @@ jobs:
           cmake --build "$build" --target workspace-native --parallel 2
           version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$build/CMakeCache.txt")
           python3 packages/native/scripts/package-linux.py --build-dir "$build" --output-dir "$output" --version "$version"
-          echo "LIVE_PACKAGE=$output/workspace-native-$version-linux-x86_64" >> "$GITHUB_ENV"
+      - id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: live-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/live-native-package-*/*.tar.gz
+            ${{ runner.temp }}/live-native-package-*/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  live-wayland:
+    needs: package-linux
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    environment: workspace-native-live-acceptance
+    timeout-minutes: 30
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      LANG: C.UTF-8
+    steps:
+      - name: Install the Wayland session
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -Ei 's#https?://([^ ]*\.)?(archive|security)\.ubuntu\.com/ubuntu/?#http://mirror.yandex.ru/ubuntu/#g' /etc/apt/sources.list.d/ubuntu.sources
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            ca-certificates git gcc libc6-dev pkg-config python3 python3-gi python3-pil python3-requests \
+            gir1.2-atspi-2.0 at-spi2-core sway wtype wf-recorder libwayland-dev libwayland-bin \
+            dbus-daemon gnome-keyring xkb-data fonts-dejavu-core fonts-noto-color-emoji ffmpeg \
+            libegl1 libgl1-mesa-dri libxkbcommon-x11-0
+          useradd -m live-wayland
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check temporal fault controls and fixture ownership
+        run: |
+          python3 packages/native/tests/live-workspace-acceptance-test.py -v
+          python3 packages/native/tests/live-acceptance-lease-test.py -v
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.package-linux.outputs.package_id }}
+          path: live-package
+      - name: Verify and unpack the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd live-package
+          # Artifact roots may include the versioned packaging directory.
+          manifest=$(find . -name SHA256SUMS -print -quit)
+          cd "$(dirname "$manifest")"
+          sha256sum -c SHA256SUMS
+          tar -xzf Exordos-Workspace-Native-*-linux-x86_64.tar.gz
+          packages=(workspace-native-*-linux-x86_64)
+          (( ${#packages[@]} == 1 ))
+          test -x "${packages[0]}/bin/workspace-native"
+          echo "LIVE_PACKAGE=$PWD/${packages[0]}" >> "$GITHUB_ENV"
       - name: Exercise the dedicated backend
         shell: bash
         env:
           MODE: ${{ inputs.mode || (github.event.schedule == '19 3 * * 0' && 'extended' || 'smoke') }}
-          FIXTURE_PROVIDER: ${{ vars.WORKSPACE_NATIVE_FIXTURE_PROVIDER }}
-          LIMITS: ${{ vars.WORKSPACE_NATIVE_ACCEPTANCE_LIMITS }}
+          FIXTURE_LEASE: ${{ secrets[format('LIVE_LEASE_{0}_{1}', github.run_id, github.run_attempt)] }}
         run: |
           set -euo pipefail
           output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 0755 -o live-wayland "$output"
+          # Only the harness receives the fixture. It passes credentials to the client through a pipe.
+          python3 packages/native/scripts/run-hosted-acceptance.py --package "$LIVE_PACKAGE" --output "$output"
+      - name: Record an unavailable runner or package
+        if: failure()
+        shell: bash
+        run: |
+          output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$output"
-          if [[ ! -x "$FIXTURE_PROVIDER" || ( "$MODE" != "controls" && ! -r "$LIMITS" ) ]]; then
-            echo '{"status":"BLOCKED","blocked":["fixture-provider-or-reviewed-limits"]}' > "$output/report.json"
-            exit 2
+          if [[ ! -s "$output/report.json" ]]; then
+            echo '{"status":"BLOCKED","blocked":["hosted-preflight"]}' > "$output/report.json"
           fi
-          limits_args=()
-          if [[ -r "$LIMITS" ]]; then limits_args=(--limits "$LIMITS"); fi
-          "$FIXTURE_PROVIDER" | python3 packages/native/scripts/live-workspace-acceptance.py \
-            --mode "$MODE" --package "$LIVE_PACKAGE" "${limits_args[@]}" --output "$output"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: live-wayland-${{ github.run_id }}-${{ github.run_attempt }}
