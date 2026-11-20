@@ -4064,21 +4064,30 @@ void NativeController::updateStreamNotificationMode(QString id, const QString &m
     request("POST", messenger + "/streams/" + id + "/actions/notifications/invoke",
         QJsonObject{{"notification_mode", mode}}, {},
         [this, owner, generation, id, token, fromDrawer](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
-            || m_channelInfoNotificationInFlight.value(id) != token) return;
+        if (!authenticated() || ownerKey() != owner || m_channelInfoNotificationInFlight.value(id) != token
+            || (m_api->generation() != generation && !result.completedAfterTokenRenewal)) return;
         m_channelInfoNotificationInFlight.remove(id);
         const auto parsed = result.ok() && result.data.isObject()
             ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
         const auto row = std::find_if(m_streams.begin(), m_streams.end(),
             [&id](const Stream &stream) { return stream.uuid == id; });
-        if (parsed && parsed->uuid == id && row != m_streams.end()) {
+        const bool confirmed = parsed && parsed->uuid == id && row != m_streams.end();
+        const QPointer<NativeController> guard(this);
+        if (confirmed) {
             *row = *parsed;
             emit streamsChanged();
         } else if (fromDrawer && m_stream == id) {
             m_channelInfoNotificationError = tr("Something went wrong");
         }
+        if (!guard) return;
+        if (!confirmed && result.completedAfterTokenRenewal) {
+            // The renewal's catalog may have been read before the write
+            // settled. A failed response can still follow a server commit.
+            refresh();
+            if (!guard) return;
+        }
         emit stateChanged();
-    });
+    }, ApiClient::TokenRenewal::AwaitReply);
 }
 
 void NativeController::removeChannelInfoMember(const QString &bindingUuid)
@@ -9497,11 +9506,11 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_loginStep = QStringLiteral("project");
         emit stateChanged();
     });
-    connect(api, &ApiClient::sessionChanged, this, [this] {
+    connect(api, &ApiClient::sessionChanged, this, [this](quint64, bool sameOwnerRenewal) {
         const QPointer<NativeController> lookupGuard(this);
-        // These replies are retired with the old transport. Authentication
-        // refreshes the canonical stream catalog for the current account.
-        m_channelInfoNotificationInFlight.clear();
+        // A same-owner renewal lets the original write finish before another
+        // choice can reach the server. Sign-out and account changes retire it.
+        if (!sameOwnerRenewal) m_channelInfoNotificationInFlight.clear();
         m_channelInfoNotificationError.clear();
         // Transport callbacks from the previous generation will not settle.
         // New projections must be able to resolve their quotes immediately.
@@ -10645,13 +10654,13 @@ void NativeController::useRealtime(RealtimeClient *client)
 
 ApiClient::RequestId NativeController::request(const QByteArray &method, const QString &path,
                                const QJsonValue &body, const QUrlQuery &query,
-                               ApiClient::Callback callback)
+                               ApiClient::Callback callback, ApiClient::TokenRenewal renewal)
 {
     QPointer<NativeController> self(this);
     const auto owner = m_api->generation();
     const auto started = QDateTime::currentMSecsSinceEpoch();
     return m_api->request(method, path, body, query, [self, owner, callback, method, path, started](const ApiResult &result) {
-        if (self && self->m_api->generation() == owner) {
+        if (self && (self->m_api->generation() == owner || result.completedAfterTokenRenewal)) {
             self->observeTransport(result);
             // Issue #50: "API latency from HTTP response timing" — every
             // answered HTTP round feeds the bounded diagnostics ring.
@@ -10687,7 +10696,7 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
             }
             callback(result);
         }
-    });
+    }, false, {}, renewal);
 }
 
 void NativeController::login(const QString &server, const QString &user,

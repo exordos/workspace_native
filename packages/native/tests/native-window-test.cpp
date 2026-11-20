@@ -33679,6 +33679,7 @@ private slots:
                 row["updated_at"] = "2026-01-02T11:00:00Z";
                 Response response{row};
                 if (deferNext) {
+                    if (renewSession) response.status = 503;
                     deferNext = false;
                     response.defer = [&releases](std::function<void()> send)
                     { releases.push_back(std::move(send)); };
@@ -33756,6 +33757,7 @@ private slots:
             session.requestRefresh();
             QTRY_COMPARE(renewed.size(), 1);
             QTRY_VERIFY(!controller.busy());
+            QVERIFY(controller.streamNotificationBusy(streamId));
         }
         releases[0](); releases[0] = {};
         QTRY_VERIFY(!controller.streamNotificationBusy(streamId));

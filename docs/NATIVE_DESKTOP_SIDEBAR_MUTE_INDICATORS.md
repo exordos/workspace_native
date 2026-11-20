@@ -102,7 +102,9 @@ then fires one update; while pending the switch is disabled.
 canonical stream DTO and the store value becomes the response value. The native
 controller already implements exactly this contract for the chat-info panel
 (`NativeController::setChannelInfoNotificationMode`, canonical-response admission,
-per-stream in-flight token, no optimistic write). The sidebar menu reuses the same
+per-stream in-flight token, no optimistic write). A same-account token renewal
+keeps the original notification POST alive, so a later write cannot overtake
+it. Sign-out or replacing the account discards the old slot and response. The sidebar menu reuses the same
 endpoint, payload and guards; it must also work for streams that are not the selected one
 (chat-info only answers for the currently open stream).
 

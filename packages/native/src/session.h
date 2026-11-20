@@ -77,7 +77,7 @@ signals:
 private:
     void invalidateOtpContext();
     void requestLoginToken(const QJsonObject &body, const QString &otp);
-    bool acceptToken(const ApiResult &result, qint64 requestStarted);
+    bool acceptToken(const ApiResult &result, qint64 requestStarted, bool sameOwnerRenewal = false);
     void discoverProjects();
     void failProjectDiscovery(const QString &message);
     void refreshProject();

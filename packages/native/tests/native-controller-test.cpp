@@ -32456,14 +32456,16 @@ private slots:
         QTest::addColumn<bool>("drawer");
         QTest::addColumn<bool>("committed");
         QTest::addColumn<bool>("logout");
-        QTest::newRow("sidebar-committed") << false << true << false;
-        QTest::newRow("drawer-uncommitted") << true << false << false;
-        QTest::newRow("logout") << false << false << true;
+        QTest::addColumn<bool>("lostResult");
+        QTest::newRow("sidebar-committed") << false << true << false << false;
+        QTest::newRow("drawer-uncommitted") << true << false << false << false;
+        QTest::newRow("committed-with-error-response") << true << true << false << true;
+        QTest::newRow("logout") << false << false << true << false;
     }
 
     void streamNotificationRetiresInterruptedWrites()
     {
-        QFETCH(bool, drawer); QFETCH(bool, committed); QFETCH(bool, logout);
+        QFETCH(bool, drawer); QFETCH(bool, committed); QFETCH(bool, logout); QFETCH(bool, lostResult);
         auto stream = creationChannel(streamId);
         QList<std::function<void()>> replies;
         bool rotate = false;
@@ -32480,8 +32482,15 @@ private slots:
             if (r.method != "POST" || !r.target.path().endsWith("/actions/notifications/invoke")) return base(r);
             auto result = stream;
             result["notification_mode"] = r.body.value("notification_mode");
-            if (committed || !replies.isEmpty()) stream = result;
-            return {result, 200, 0, {}, [&](std::function<void()> send) { replies.append(std::move(send)); }};
+            const bool apply = committed || !replies.isEmpty();
+            const bool ok = apply && !(lostResult && replies.isEmpty());
+            return {result, ok ? 200 : 503, 0, {}, [&, result, apply](std::function<void()> send) {
+                replies.append([&, result, apply, send = std::move(send)] {
+                    // The server can commit only now, after the client renewed.
+                    if (apply) stream = result;
+                    send();
+                });
+            }};
         };
         QVERIFY(f.start());
         auto &c = f.controller;
@@ -32501,20 +32510,27 @@ private slots:
         f.session.requestRefresh();
         QTRY_COMPARE(renewed.size(), 1);
         QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.channelInfoNotificationMode(), QString("all_messages"));
+        // A changed token cannot acknowledge or cancel an already accepted
+        // write on the server. Keep the original stream serialized until it
+        // completes; a premature second POST could commit before the first.
+        QVERIFY(c.channelInfoNotificationBusy());
+        c.setStreamNotificationMode(streamId, "mentions_only");
+        QCOMPARE(replies.size(), 1);
+        replies[0]();
+        QTRY_VERIFY(!c.channelInfoNotificationBusy());
         QTRY_COMPARE(c.channelInfoNotificationMode(), committed ? QString("muted") : QString("all_messages"));
-        QVERIFY(!c.channelInfoNotificationBusy());
         QVERIFY(!c.streamNotificationBusy(streamId));
         c.setChannelInfoNotificationMode("mentions_only");
         c.setStreamNotificationMode(streamId, "mentions_only");
         QTRY_COMPARE(replies.size(), 2);
-        replies[0]();
-        QCoreApplication::processEvents();
         QVERIFY(c.channelInfoNotificationBusy());
         QCOMPARE(c.channelInfoNotificationMode(), committed ? QString("muted") : QString("all_messages"));
         replies[1]();
         QTRY_COMPARE(c.channelInfoNotificationMode(), QString("mentions_only"));
         QVERIFY(!c.streamNotificationBusy(streamId));
         QCOMPARE(replies.size(), 2);
+        QCOMPARE(stream.value("notification_mode").toString(), QString("mentions_only"));
     }
 
     // Issue #438: the automatic member-page fetch follows the #434 scoping

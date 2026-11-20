@@ -1624,7 +1624,8 @@ private:
     QString m_activeEncryptedSend;
     quint64 m_nextEncryptedSend = 0;
     ApiClient::RequestId request(const QByteArray &method, const QString &path, const QJsonValue &body,
-                 const QUrlQuery &query, ApiClient::Callback callback);
+                 const QUrlQuery &query, ApiClient::Callback callback,
+                 ApiClient::TokenRenewal renewal = ApiClient::TokenRenewal::Cancel);
     void collection(const QString &path, QUrlQuery query,
                     std::function<void(const QJsonArray &)> done,
                     QJsonArray accumulated = {}, QSet<QByteArray> markers = {},
