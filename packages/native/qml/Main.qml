@@ -11411,7 +11411,7 @@ component NativeMentionChip: Item {
         // the open, else the messenger home (the native chat section).
         NativeLicensesPage {
             colors: root.colors
-            datasetJson: root.controller.licensesDatasetJson()
+            datasetJson: visible ? root.controller.licensesDatasetJson() : ""
             visible: root.controller.section === "licenses"
             canGoBack: root.controller.sectionBeforeLicenses !== "chat"
             Layout.fillWidth: true

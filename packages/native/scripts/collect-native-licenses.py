@@ -59,6 +59,8 @@ def main():
     inputs.add_argument('--inventory', type=Path, help='bundled-libraries.json from the deployed prefix')
     inputs.add_argument('--component', action='append', metavar='SOURCE=VERSION',
                         help='library and version detected for an unpackaged build')
+    parser.add_argument('--qt-sqlite', action='store_true',
+                        help='include SQLite metadata for version detection by the active Qt SQL driver')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     if args.inventory:
@@ -67,7 +69,7 @@ def main():
             parser.error('Expected a nonempty bundled Linux package inventory')
         records = manifest['packages'].values()
     else:
-        records = []
+        records = [{'sourcePackage': 'sqlite3', 'sourceVersion': ''}] if args.qt_sqlite else []
         for component in args.component:
             source, separator, version = component.partition('=')
             if not separator or not source or not version:

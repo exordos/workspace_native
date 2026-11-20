@@ -29749,6 +29749,11 @@ private slots:
         const auto actual = QJsonDocument::fromJson(controller.licensesDatasetJson().toUtf8()).array();
         QVERIFY(!actual.isEmpty());
         QTRY_COMPARE(view("licensesList")->property("count").toInt(), actual.size());
+        const auto sqlite = std::find_if(actual.cbegin(), actual.cend(), [](const auto &entry) {
+            return entry.toObject().value("name") == "SQLite";
+        });
+        QVERIFY2(sqlite != actual.cend(), "The build catalog omitted the active SQLite driver");
+        QVERIFY(!(*sqlite).toObject().value("version").toString().isEmpty());
         QFile catalog(QFINDTESTDATA("fixtures/licenses/ui-catalog.json"));
         QVERIFY(catalog.open(QIODevice::ReadOnly));
         page->setProperty("datasetJson", QString::fromUtf8(catalog.readAll()));

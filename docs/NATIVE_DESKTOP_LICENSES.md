@@ -127,7 +127,9 @@ Tailwind sizes used by the page: `text-xl` = 20 px, `text-sm` = 14 px,
   page and refer to the bundled notice. Qt WebEngine and Chromium require
   corresponding inventory evidence.
 - For unpackaged builds CMake embeds the versions of the libraries it found.
-  Window tests use a fixed catalog to exercise filtering and chip ordering.
+  Opening the Licenses page obtains the SQLite engine version from the active
+  QSQLITE driver using an in-memory database. Window tests use a fixed catalog
+  to exercise filtering and chip ordering.
 - Entry surfaces:
   - `NativeAboutDrawer.qml` gains an "Open Source Licenses" entry link
     (`nativeAboutLicensesLink`) below the update card emitting

@@ -126,7 +126,7 @@ endif()
 set(native_licenses_json "${CMAKE_CURRENT_BINARY_DIR}/licenses/licenses.json")
 add_custom_command(OUTPUT "${native_licenses_json}"
     COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/collect-native-licenses.py"
-        --out "${native_licenses_json}"
+        --out "${native_licenses_json}" --qt-sqlite
         --component "qt6-base=${Qt6Core_VERSION}" --component "qt6-declarative=${Qt6Qml_VERSION}"
         --component "qt6-multimedia=${Qt6Multimedia_VERSION}" --component "qt6-svg=${Qt6Svg_VERSION}"
         --component "qt6-websockets=${Qt6WebSockets_VERSION}" --component "qtkeychain=${Qt6Keychain_VERSION}"

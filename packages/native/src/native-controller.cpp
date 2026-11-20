@@ -4,6 +4,8 @@
 #include "native-deeplink.h"
 #include "native-diagnostics.h"
 #include <QSaveFile>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include "workspace-reference.h"
 #include "native-preferences.h"
 #include "native-auth-guard.h"
@@ -6579,8 +6581,38 @@ QString NativeController::licensesDatasetJson()
     // ELF inventory. An unpackaged executable uses its build-time SDK list.
     QDir bin(QCoreApplication::applicationDirPath());
     const auto packaged = bin.filePath(QStringLiteral("../share/doc/workspace-native-preview/third-party/licenses.json"));
-    QFile file(QFileInfo::exists(packaged) ? packaged : QStringLiteral(":/workspace/licenses/licenses.json"));
-    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString{};
+    if (QFileInfo::exists(packaged)) {
+        QFile file(packaged);
+        return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString{};
+    }
+    QFile sdk(QStringLiteral(":/workspace/licenses/licenses.json"));
+    if (!sdk.open(QIODevice::ReadOnly)) return {};
+    auto rows = QJsonDocument::fromJson(sdk.readAll()).array();
+    // A Qt SQL plugin may use its own SQLite build. Query the same driver
+    // as the cache without opening any user database or requiring SDK headers.
+    QString version;
+    const auto connection = QUuid::createUuid().toString();
+    {
+        auto database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+        database.setDatabaseName(QStringLiteral(":memory:"));
+        if (database.open()) {
+            QSqlQuery query(database);
+            if (query.exec(QStringLiteral("SELECT sqlite_version()")) && query.next())
+                version = query.value(0).toString();
+        }
+    }
+    QSqlDatabase::removeDatabase(connection);
+    for (qsizetype i = 0; i < rows.size(); ++i) {
+        auto row = rows[i].toObject();
+        if (row.value("name") != QStringLiteral("SQLite")) continue;
+        if (version.isEmpty()) rows.removeAt(i);
+        else {
+            row.insert(QStringLiteral("version"), version);
+            rows[i] = row;
+        }
+        break;
+    }
+    return QString::fromUtf8(QJsonDocument(rows).toJson(QJsonDocument::Compact));
 }
 
 namespace {
