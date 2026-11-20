@@ -22154,6 +22154,9 @@ mv -Tf "$root/.current-new" "$root/current"
                         QTest::newRow(qPrintable(locale + '-' + mode + '-' + QString::number(key)
                             + (suffix.isEmpty() ? "-short" : "-multiline")))
                             << locale << mode << int(key) << suffix;
+        QTest::newRow("both-height-controls")
+            << QString("en") << QString("light") << int(Qt::Key_Return)
+            << QString("\nsecond line\nthird line\nfourth line\nfifth line");
     }
 
     void composerToolbarKeyboardNavigationPreservesSelection()
@@ -22210,6 +22213,8 @@ mv -Tf "$root/.current-new" "$root/current"
                 QCOMPARE(controller.draft(), draft);
             }
             if (actionIndex == 0) {
+                if (!suffix.isEmpty()) QVERIFY(view("composerResizeHandle"));
+                if (suffix.count('\n') >= 4) QVERIFY(view("composerHeightButton"));
                 QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
                 QCOMPARE(window->activeFocusItem(), composer);
                 QCOMPARE(composer->property("selectedText").toString(), QString("word"));
@@ -22243,6 +22248,17 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(next && next != view(actions.last()) && next->isVisible() && next->isEnabled());
             QVERIFY(QRectF(0, 0, window->width(), window->height()).contains(
                 next->mapRectToScene(QRectF(0, 0, next->width(), next->height()))));
+            if (suffix.count('\n') >= 4) {
+                auto *grip = view("composerResizeHandle"); QVERIFY(grip);
+                QSet<QQuickItem *> visited;
+                while (window->activeFocusItem() != grip && !visited.contains(window->activeFocusItem())) {
+                    visited.insert(window->activeFocusItem());
+                    QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+                }
+                QVERIFY(grip->hasActiveFocus());
+                QTest::keyClick(window, Qt::Key_Tab);
+                QCOMPARE(window->activeFocusItem(), view("composerHeightButton"));
+            }
             preferences.setComposerToolbarExpanded(false);
             QTRY_VERIFY(!view("composerToolbarRow"));
             click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
