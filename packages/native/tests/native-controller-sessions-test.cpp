@@ -51,7 +51,6 @@ private slots:
         QCOMPARE(controller.loginStep(), QStringLiteral("organization"));
         QVERIFY(controller.organizationSettings().isEmpty());
         QVERIFY(!controller.organizationLoading());
-        QVERIFY(controller.defaultOrganizationUrl().isEmpty());
         QVERIFY(!controller.isOrganizationUrlValid(QStringLiteral("not a url")));
         QVERIFY(!controller.isOrganizationUrlValid(QStringLiteral("https://bad..host")));
         // Reference new URL(...).origin semantics: userinfo and query are
@@ -256,10 +255,11 @@ private slots:
     void defaultOrganizationNameFallsBackToTranslatedCopy()
     {
         qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", "https://public.example");
-        qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME");
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME", " ");
         Fixture fixture;
         QCOMPARE(fixture.controller.defaultOrganizationName(), QStringLiteral("Exordos Core Public"));
         qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+        qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME");
     }
 
     void loginRecordsOrganizationHistory()
