@@ -23,6 +23,10 @@ target_include_directories(workspace-native-support PUBLIC src)
 target_compile_definitions(workspace-native-support PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
 target_link_libraries(workspace-native-support PUBLIC Qt6::Core PRIVATE Qt6::Concurrent)
 
+add_library(workspace-message-time STATIC
+    src/messages/time/message-time.cpp src/messages/time/message-time.h)
+target_link_libraries(workspace-message-time PUBLIC Qt6::Core)
+
 add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
@@ -74,7 +78,7 @@ set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
 target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
-target_link_libraries(workspace-native-core PRIVATE Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+target_link_libraries(workspace-native-core PRIVATE workspace-message-time Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
 endif()
@@ -168,6 +172,7 @@ qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeSupportReport.qml
 qml/NativeDownloadCenter.qml
 qml/NativeUserSearch.qml
+qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml qml/NativeHotkeysDialog.qml qml/NativeShortcutsHelp.qml
@@ -176,7 +181,7 @@ qml/SessionSwitcher.qml
     qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicSummary.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 
 foreach(qml_file IN LISTS native_qml_files)
-    get_filename_component(qml_name "${qml_file}" NAME)
+    string(REGEX REPLACE "^qml/" "" qml_name "${qml_file}")
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
 endforeach()
 set(native_icons chat_bubble calendar mail files folders folder folder_open profile channels add attach smile
@@ -681,3 +686,17 @@ if(WORKSPACE_NATIVE_CALL_SPIKE)
         spike/call/jitsi-loader-attempt.html spike/call/vendor/jitsi-external_api.js)
     qt_finalize_executable(native-call-spike)
 endif()
+
+# Check the final direct dependencies after all platform-specific additions.
+get_target_property(message_time_links workspace-message-time LINK_LIBRARIES)
+if(NOT "${message_time_links}" STREQUAL "Qt6::Core")
+    message(FATAL_ERROR "Message time formatting must depend only on Qt Core: ${message_time_links}")
+endif()
+set(message_time_view "${CMAKE_CURRENT_SOURCE_DIR}/qml/messages/time/MessageTimeView.qml")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${message_time_view}")
+file(STRINGS "${message_time_view}" message_time_imports REGEX "^[ 	]*import[ 	]+")
+foreach(message_time_import IN LISTS message_time_imports)
+    if(NOT message_time_import MATCHES "^import (QtQuick|QtQuick[.]Controls)$")
+        message(FATAL_ERROR "Unexpected dependency in the message time view: ${message_time_import}")
+    endif()
+endforeach()

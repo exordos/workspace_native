@@ -37513,6 +37513,49 @@ private:
     }
 
 private slots:
+    void messageTimeViewOpensWithoutApplicationServices()
+    {
+        QTest::failOnWarning();
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/workspace/qml/messages/time" as MessageTime
+            Window {
+                id: win
+                width: 800
+                height: 480
+                visible: true
+                Item {
+                    id: history
+                    x: 200; y: 35; width: 600; height: 430
+                    Item { id: chip; x: 120; y: 30; width: 44; height: 20 }
+                }
+                MessageTime.MessageTimeView {
+                    historyViewport: history
+                    windowContent: win.contentItem
+                    language: "en"
+                    colors: ({"accent": "blue", "bg-elevated": "white", "border-subtle": "gray",
+                              "text-primary": "black", "text-muted": "gray"})
+                    Component.onCompleted: showInstant("2026-01-02T10:02:03", chip)
+                }
+            }
+        )", QUrl("qrc:/tests/isolated-message-time.qml"));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 2000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        auto *panel = window->findChild<QObject *>("messageTimePanel");
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("selectedDay").toInt(), 2);
+        const auto panelCenter = [&] { return panel->property("x").toReal() + panel->property("width").toReal() / 2; };
+        QTRY_VERIFY(qAbs(panelCenter() - 342.0) < 1.0);
+        QCOMPARE(panel->property("y").toReal(), 93.0);
+        QVERIFY(QMetaObject::invokeMethod(panel, "close"));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeChipOpensReadOnlyTimestampPanel_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
