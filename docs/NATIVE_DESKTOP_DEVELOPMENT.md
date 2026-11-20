@@ -788,10 +788,12 @@ locks. Before tagging, run the full gate on the intended release commit. A
 manual **Linux release artifacts** workflow runs it on a private display. A
 locally configured full build can use
 `bash packages/native/tests/full-linux-gate.sh BUILD_DIR` on a host with
-Xvnc, Openbox, xauth, x11-utils, PulseAudio and the Qt GTK platform theme.
-Tag builds repeat the full gate before publishing. It uses a 1440×900 display, software Qt Quick rendering and an
-audio service for window tests that treat Qt warnings as failures. The Linux
-preferences suite uses the GTK3 platform theme to exercise OS color-scheme changes.
+Xvnc, Openbox, xauth, x11-utils, PulseAudio, Mesa, the Qt GTK platform theme
+and the GTK desktop portal.
+Tag builds repeat the full gate before publishing. It uses a 1440×900 display and Mesa software OpenGL for pixel checks. The GTK3
+platform theme and portal provide system color schemes and keyboard activation.
+Controller fixtures receive a separate session bus so they can own their synthetic
+desktop service names.
 
 ### Updater metadata transport
 

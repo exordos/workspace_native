@@ -7,18 +7,21 @@ if [[ -e /tmp/.X11-unix/X30 || -e /tmp/.X30-lock ]]; then
     exit 1
 fi
 state=$(mktemp -d)
-export DISPLAY=:30 QT_QPA_PLATFORM=xcb QT_QUICK_BACKEND=software QSG_RENDER_LOOP=basic
+export DISPLAY=:30 QT_QPA_PLATFORM=xcb QSG_RHI_BACKEND=opengl QSG_RENDER_LOOP=basic
+export LIBGL_ALWAYS_SOFTWARE=1 LP_NUM_THREADS=2
 export XDG_CURRENT_DESKTOP=Openbox NO_AT_BRIDGE=1 QT_ACCESSIBILITY=0
 export XAUTHORITY="$state/Xauthority" XDG_RUNTIME_DIR="$state/runtime"
 export XDG_CONFIG_HOME="$state/config" XDG_CACHE_HOME="$state/cache" XDG_DATA_HOME="$state/data"
-unset WAYLAND_DISPLAY
+unset WAYLAND_DISPLAY QT_QUICK_BACKEND
 display_pid=
 wm_pid=
 pulse_pid=
+bus_pid=
 cleanup() {
     if [[ -n "$wm_pid" ]]; then kill "$wm_pid" 2>/dev/null || true; wait "$wm_pid" || true; fi
     if [[ -n "$display_pid" ]]; then kill "$display_pid" 2>/dev/null || true; wait "$display_pid" || true; fi
     if [[ -n "$pulse_pid" ]]; then kill "$pulse_pid" 2>/dev/null || true; wait "$pulse_pid" || true; fi
+    if [[ -n "$bus_pid" ]]; then kill "$bus_pid" 2>/dev/null || true; wait "$bus_pid" || true; fi
     rm -rf -- "$state"
 }
 trap cleanup EXIT
@@ -31,7 +34,12 @@ display_pid=$!
 for _ in {1..100}; do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 kill -0 "$display_pid"
 xdpyinfo >/dev/null
-openbox &
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$state/desktop-bus"
+dbus-daemon --session --nofork --address="$DBUS_SESSION_BUS_ADDRESS" &
+bus_pid=$!
+for _ in {1..100}; do [[ -S "$state/desktop-bus" ]] && break; sleep 0.1; done
+test -S "$state/desktop-bus"
+openbox --sm-disable &
 wm_pid=$!
 for _ in {1..100}; do xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id' && break; sleep 0.1; done
 xprop -root _NET_SUPPORTING_WM_CHECK | grep -q 'window id'
@@ -42,8 +50,7 @@ if [[ -z "${PULSE_SERVER:-}" ]]; then
     for _ in {1..100}; do [[ -S "$state/pulse" ]] && break; sleep 0.1; done
     test -S "$state/pulse"
 fi
-# A release stand has no portal desktop session. Prevent a local installed portal
-# from auto-starting and emitting failure-level Qt warnings in synthetic tests.
+# Disable service activation for the fixture bus used by the controller tests.
 cat > "$state/bus.conf" <<'EOF'
 <busconfig>
   <type>session</type>
@@ -55,10 +62,20 @@ cat > "$state/bus.conf" <<'EOF'
   </policy>
 </busconfig>
 EOF
-# The preferences suite exercises Qt's system color-scheme integration. The GTK
-# plugin supplies that integration; application windows use the bare X11 theme.
+# Window paint and keyboard tests exercise OpenGL and the desktop button policy.
+# Start the actual GTK portal before Qt queries system appearance or registers a window.
+mkdir -p "$XDG_CONFIG_HOME/xdg-desktop-portal"
+cat > "$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf" <<'EOF'
+[preferred]
+default=gtk
+EOF
 ctest_args=(--test-dir "$build_dir" --parallel "$(nproc)" --output-on-failure --no-tests=error)
-QT_QPA_PLATFORMTHEME=gtk3 dbus-run-session --config-file "$state/bus.conf" -- \
-    ctest "${ctest_args[@]}" -R '^native-native-preferences$'
+gdbus call --session --timeout 30 --dest org.freedesktop.portal.Desktop \
+    --object-path /org/freedesktop/portal/desktop --method org.freedesktop.portal.Settings.Read \
+    org.freedesktop.appearance color-scheme
+QT_QPA_PLATFORMTHEME=gtk3 ctest "${ctest_args[@]}" -L gui
+
+# The remaining suites execute on X11 as well. A separate empty session bus
+# leaves the well-known desktop service names available to their test fixtures.
 QT_QPA_PLATFORMTHEME=generic dbus-run-session --config-file "$state/bus.conf" -- \
-    ctest "${ctest_args[@]}" -E '^native-native-preferences$'
+    ctest "${ctest_args[@]}" -LE gui
