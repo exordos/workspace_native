@@ -45,6 +45,7 @@ class SessionFixture(ThreadingHTTPServer):
         self.refresh = secrets.token_hex(24)
         self.base = secrets.token_hex(22)
         self.access = secrets.token_hex(23)
+        self.settings_count = 0
         self.login_count = 0
         self.refresh_count = 0
         self.introspect_count = 0
@@ -77,6 +78,7 @@ class Handler(BaseHTTPRequestHandler):
         fixture = self.server
         path = self.path.partition("?")[0]
         if path.endswith("/messenger/server_settings"):
+            fixture.settings_count += 1
             self.reply(200, {"realm_name": "Cassi package fixture"})
         elif path == "/api/core/v1/iam/projects/" and self.headers.get("Authorization") == "Bearer " + fixture.base:
             self.reply(200, [{"uuid": PROJECT, "name": "Package acceptance", "status": "ACTIVE"}])
@@ -146,8 +148,7 @@ def trust_loopback_certificate(directory):
         if WINDOWS:
             run("certutil", "-delstore", "Root", thumbprint, **quiet)
         else:
-            run("sudo", "security", "remove-trusted-cert", "-d", ca, **quiet)
-            run("sudo", "security", "delete-certificate", "-Z", thumbprint, "/Library/Keychains/System.keychain", **quiet)
+            run("sudo", "security", "delete-certificate", "-t", "-Z", thumbprint, "/Library/Keychains/System.keychain", **quiet)
 
 
 def stored(key):
@@ -193,6 +194,11 @@ def scenario(executable):
             thread = threading.Thread(target=fixture.serve_forever, daemon=True)
             thread.start()
             try:
+                # Establish that the runner's native TLS client trusts the same
+                # test origin before asking the package to use it.
+                run("curl.exe" if WINDOWS else "/usr/bin/curl", "--noproxy", "*", "--fail", "--silent",
+                    origin + "/api/workspace/v1/messenger/server_settings", stdout=subprocess.DEVNULL)
+                fixture.settings_count = 0
                 for mode in ("login", "restore"):
                     with (folder / (mode + ".log")).open("wb") as log:
                         app = subprocess.Popen([executable], stdout=log, stderr=log)
@@ -213,7 +219,11 @@ def scenario(executable):
                             drive(app.pid, "quit", origin)
                             check(app.wait(timeout=20) == 0, "The package did not quit normally")
                         except Exception:
-                            print(f"Observed login/refresh/introspection counts: {fixture.login_count}/{fixture.refresh_count}/{fixture.introspect_count}", flush=True)
+                            print(f"Server settings/login/refresh/introspection counts: {fixture.settings_count}/{fixture.login_count}/{fixture.refresh_count}/{fixture.introspect_count}", flush=True)
+                            log.flush()
+                            for line in (folder / (mode + ".log")).read_text(encoding="utf-8", errors="replace").splitlines():
+                                if any(what in line.lower() for what in ("ssl", "tls", "certificate", "keychain", "credential store", "accessibility")):
+                                    print(line[:240], flush=True)
                             raise
                         finally:
                             if app.poll() is None:

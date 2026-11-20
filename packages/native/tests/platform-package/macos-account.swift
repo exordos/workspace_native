@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+setbuf(stdout, nil)
 let pid = pid_t(CommandLine.arguments[1])!
 let mode = CommandLine.arguments[2]
 let origin = CommandLine.arguments[3]
@@ -32,6 +33,17 @@ func control(_ name: String, _ role: String) throws -> AXUIElement {
         if let item = find(root, name, role) { return item }
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     } while Date() < deadline
+    func report(_ item: AXUIElement, _ depth: Int) {
+        if depth > 24 { return }
+        let role = attr(item, kAXRoleAttribute as CFString) as? String ?? "unknown"
+        let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute, kAXValueAttribute]
+            .compactMap { attr(item, $0 as CFString) as? String }
+        let fixed = ["Server address", "Email or login", "Password", "Next", "Login", "Profile", "Sign out",
+                     "Could not load organization settings. Check the server address and try again."]
+        if let label = fixed.first(where: labels.contains) { print("Exposed \(role) \(label)") }
+        for child in attr(item, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] { report(child, depth + 1) }
+    }
+    report(root, 0)
     throw fail("The application did not expose an enabled \(name) control.")
 }
 func command(_ key: CGKeyCode) {

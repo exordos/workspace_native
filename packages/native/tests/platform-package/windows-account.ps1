@@ -22,6 +22,17 @@ function Control([string]$Name, $Type) {
         if ($results.Count -eq 1) { return $results[0] }
         Start-Sleep -Milliseconds 100
     } while ((Get-Date) -lt $deadline)
+    $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition)
+    $allowed = @('Server address','Email or login','Password','Next','Login','Profile','Sign out',
+        'Could not load organization settings. Check the server address and try again.')
+    foreach ($item in $all) {
+        $c = $item.Current
+        if ($c.Name -in $allowed -or $c.IsPassword -or $c.ControlType -eq [System.Windows.Automation.ControlType]::Edit) {
+            $label = if ($c.Name -in $allowed) { $c.Name } else { 'other field' }
+            Write-Output "$label $($c.ControlType.ProgrammaticName) password=$($c.IsPassword) enabled=$($c.IsEnabled) offscreen=$($c.IsOffscreen)" | Out-Host
+        }
+    }
     throw "The application did not expose an enabled $Name control."
 }
 function Key([string]$Value) {
