@@ -15884,10 +15884,18 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
-    const qreal reserve = qMax<qreal>(100.0, viewportHeightPx);
-    // Reference parity (hook :1172-1197): both comparisons are inclusive, so
-    // a note exactly at the reserve arms and proceeds to the trigger check in
-    // the same call; a note strictly above the reserve only re-arms.
+    const qreal base = qMax<qreal>(100.0, viewportHeightPx);
+    qreal reserve = base;
+    if (m_historyTimingSelection == m_selection && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
+        const auto elapsed = m_scrollSampleClock.elapsed();
+        const qreal travel = m_previousTopDistance - distanceFromTopPx;
+        // Exclude layout jumps and idle gestures. Ahead of steady input, keep
+        // enough rows for the last successful page wait plus the normal buffer.
+        if (elapsed > 0 && elapsed <= m_historyPageWaitMs && travel > 0 && travel <= base)
+            reserve += qMin(3 * base, travel * m_historyPageWaitMs / elapsed);
+    }
+    m_scrollSampleClock.start();
+    m_previousTopDistance = distanceFromTopPx;
     if (distanceFromTopPx >= reserve)
         m_olderPrefetchArmed = true;
     if (distanceFromTopPx > reserve || !m_olderPrefetchArmed || !canLoadOlder())
@@ -15908,6 +15916,7 @@ void NativeController::noteScrollRearm(qreal distanceFromTopPx, qreal viewportHe
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
+    m_scrollSampleClock.invalidate();
     if (distanceFromTopPx >= qMax<qreal>(100.0, viewportHeightPx))
         m_olderPrefetchArmed = true;
 }
@@ -16198,8 +16207,10 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     query.addQueryItem("page_limit", "50");
     if (!marker.isEmpty())
         query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    QElapsedTimer requestTimer;
+    requestTimer.start();
     request("GET", messenger + "/messages/", {}, query,
-        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery](const ApiResult &result) mutable {
+        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery, requestTimer](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
         if (revision != m_messageRevision) {
@@ -16279,6 +16290,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             m_messages = mergeMessages({}, accumulated);
         }
         pruneMessageFields();
+        if (selection != m_historyTimingSelection) m_scrollSampleClock.invalidate();
+        m_historyTimingSelection = selection;
+        m_historyPageWaitMs = requestTimer.elapsed();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
         // Issue #156: a freshly established window starts from a known

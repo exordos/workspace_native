@@ -26118,6 +26118,35 @@ private slots:
         QTRY_COMPARE(c.messages().size(), 150);
     }
 
+    void fastHistoryScrollPrefetchesBeforeItsMeasuredPageWait()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        int olderRequests = 0;
+        fixture.messages = [&](const Request &request) {
+            auto response = historyResponse(rows, request);
+            const QUrlQuery query(request.target);
+            if (query.hasQueryItem("topic_uuid")) {
+                response.delay = 500;
+                if (query.hasQueryItem("page_marker")) ++olderRequests;
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        QCOMPARE(controller.messages().size(), 50);
+        // The hosted trace consumes 100 px per wheel notch, about 25 ms apart.
+        // At the old one-viewport threshold the top was reached before the response.
+        for (int distance = 2100; distance >= 1100; distance -= 100) {
+            controller.noteScrollReserve(distance, 670);
+            QTest::qWait(25);
+        }
+        QCOMPARE(olderRequests, 1);
+        QTRY_COMPARE(controller.messages().size(), 100);
+        QCOMPARE(olderRequests, 1);
+    }
+
     void historyPrefetchFiresAtExactReserveBoundary()
     {
         Fixture fixture;
