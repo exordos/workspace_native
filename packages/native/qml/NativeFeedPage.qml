@@ -276,7 +276,10 @@ FocusScope {
         Timer {
             id: glideTimer
             interval: 230
-            onTriggered: feedList.glide = false
+            onTriggered: {
+                feedList.glide = false
+                if (page.visible && page.hasRows) page.anchorToBottom()
+            }
         }
 
         // Top pagination: one request at <= 64 px until re-armed past 96 px
@@ -441,9 +444,15 @@ FocusScope {
         }
         if (!page.initialAnchored) {
             page.initialAnchored = true
-            page.anchorRunning = true
-            initialAnchorTimer.restart()
+            page.anchorToBottom()
         }
+    }
+
+    function anchorToBottom() {
+        page.anchorRunning = true
+        initialAnchorTimer.ticks = 0
+        initialAnchorTimer.ticks_lastHeight = -1
+        initialAnchorTimer.restart()
     }
 
     // The first page anchors at the bottom; delegates incubate in passes, so
@@ -510,6 +519,10 @@ FocusScope {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             onClicked: {
+                // The user's jump supersedes the pending prepend anchor.
+                prependRestoreTimer.stop()
+                page.restoreY = -1
+                page.restoreHeight = -1
                 feedList.glide = true
                 glideTimer.restart()
                 // Direct write (not positionViewAtEnd) so the final position

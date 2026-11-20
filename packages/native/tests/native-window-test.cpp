@@ -2063,8 +2063,8 @@ public:
                 notifBody = request.body;
                 // streams/{uuid}/actions/notifications/invoke: the invoke
                 // answers with the canonical DTO of the stream it addressed.
-                auto row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
-                row["notification_mode"] = request.body.value("notification_mode");
+                auto &row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
+                if (notifStatus == 200) row["notification_mode"] = request.body.value("notification_mode");
                 return {row, notifStatus, notifStatus == 200 ? 180 : 160};
             }
             if (request.method == "DELETE" && path.contains("/stream_bindings/")) {
@@ -6710,6 +6710,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *page = view("nativeFeedPage"); QVERIFY(page);
         auto *list = view("feedList"); QVERIFY(list);
         // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
         const auto atBottom = [list] {
@@ -6717,7 +6718,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 - list->property("contentY").toReal()
                 - list->property("height").toReal() <= 1.0;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("anchorRunning").toBool() && atBottom(), 5000);
         QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
         // Reaching the top fires exactly one marker request; the gated response
         // stays in flight while the user scrolls away and back: the armed flag
@@ -6737,10 +6738,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
         // The prepend restore keeps the visual position: contentY moved down by
         // the merged height instead of jumping to the top.
-        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 10.0, 3000);
         QCOMPARE(fixture.feedMarkerPages, 1);
         // Clicking the button returns to the bottom.
-        click(window, view("feedScrollToBottom"));
+        auto *bottom = view("feedScrollToBottom"); QVERIFY(bottom);
+        clickReadyItem(window, bottom);
         QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
     }
 
@@ -16170,15 +16172,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(controller.draft(), caption); QVERIFY(controller.error().isEmpty());
         QTRY_VERIFY(visibleItem(window->contentItem(), "uploadCard-1"));
         QCOMPARE(controller.uploadEntries().first().toMap().value("status").toString(), QString("ready"));
-        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&size=230>)\n" + caption;
+        uploadedDraft = "![upload.png](<urn:image:" + fileId + "?name=upload.png&content_type=image%2Fpng&w=96&h=64&size=230>)\n" + caption;
         QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
         QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), caption);
         QVERIFY(controller.canSend());
         QTRY_VERIFY(visibleItem(window->contentItem(), "sendButton")
             && visibleItem(window->contentItem(), "sendButton")->isEnabled());
         click(window, visibleItem(window->contentItem(), "sendButton"));
-        QTRY_COMPARE(messagePosts, 1); QTRY_COMPARE(canonicalGets, 1); QVERIFY(postContractOkay);
+        QTRY_COMPARE(messagePosts, 1);
         QCOMPARE(postedRequest.value("payload").toObject().value("content").toString(), uploadedDraft);
+        QVERIFY(postContractOkay);
+        QTRY_COMPARE(canonicalGets, 1);
         QCOMPARE(canonical.value("payload").toObject().value("content").toString(), uploadedDraft);
         QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(controller.draft().isEmpty());
         const auto canonicalLoaded = [&] {
@@ -21230,6 +21234,70 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(scene.fixture.notifPosts, 1);
         QCOMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
             QStringLiteral("muted"));
+    }
+
+    void windowChannelNotificationLevelsAndUnsupportedFallback_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void windowChannelNotificationLevelsAndUnsupportedFallback()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.openChannelInfo();
+        auto *control = visibleItem("channelInfoNotificationSwitch"); QVERIFY(control);
+        auto *group = QAccessible::queryAccessibleInterface(control); QVERIFY(group);
+        QCOMPARE(group->role(), QAccessible::Grouping);
+        QCOMPARE(group->text(QAccessible::Name), locale == "ru" ? QString("Уведомления") : QString("Notifications"));
+        const QStringList segments{"channelInfoNotifSubscribed", "channelInfoNotifDefault", "channelInfoNotifMuted"};
+        const QStringList modes{"all_messages", "mentions_only", "muted"};
+        const QStringList labels = locale == "ru"
+            ? QStringList{"Все сообщения", "Только при упоминаниях", "Без уведомлений"}
+            : QStringList{"All messages", "Mentions only", "Muted"};
+        for (int i = 0; i < segments.size(); ++i) {
+            auto *segment = visibleItem(segments[i]); QVERIFY(segment);
+            QTRY_COMPARE(segment->height(), qreal(36));
+            auto *choice = QAccessible::queryAccessibleInterface(segment); QVERIFY(choice);
+            QCOMPARE(choice->role(), QAccessible::RadioButton);
+            QVERIFY(choice->state().checkable);
+            QCOMPARE(choice->text(QAccessible::Name), labels[i]);
+            if (i == 1) {
+                auto *actions = choice->actionInterface(); QVERIFY(actions);
+                const auto toggle = QAccessibleActionInterface::toggleAction();
+                QVERIFY(actions->actionNames().contains(toggle));
+                actions->doAction(toggle);
+            } else if (i == 2) {
+                click(scene.window, segment);
+            }
+            QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), modes[i]);
+            for (int j = 0; j < segments.size(); ++j) {
+                const auto *option = QAccessible::queryAccessibleInterface(visibleItem(segments[j])); QVERIFY(option);
+                QCOMPARE(option->state().checked, i == j);
+            }
+        }
+        QTRY_VERIFY(visibleItem("streamNotif-" + streamId));
+        QCOMPARE(scene.fixture.notifPosts, 2);
+        scene.controller.refresh();
+        QTRY_VERIFY(!scene.controller.busy());
+        QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), QString("muted"));
+
+        scene.fixture.streamRow.remove("notification_mode");
+        scene.controller.refresh();
+        QTRY_VERIFY(scene.controller.channelInfoNotificationMode().isEmpty());
+        QTRY_VERIFY(!visibleItem("channelInfoNotificationSwitch"));
+        auto *fallback = visibleItem("channelInfoNotificationUnsupported"); QVERIFY(fallback);
+        QVERIFY(!fallback->childItems().isEmpty());
+        QCOMPARE(fallback->childItems().first()->property("text").toString(), locale == "ru"
+            ? QString("Это действие пока недоступно в этом чате.")
+            : QString("This action is not available in this conversation yet."));
     }
 
     // Issue #132: a failed level update keeps the previous mode and surfaces
@@ -34347,8 +34415,15 @@ private slots:
     // Selecting a level closes the menu and posts {notification_mode} against
     // streams/{id}/actions/notifications/invoke; the canonical response flips the
     // sidebar row (indicator + 0.7 dim) and a same-level repeat sends nothing.
+    void windowStreamContextMenuNotificationSwitch_data()
+    {
+        QTest::addColumn<bool>("missingMode");
+        QTest::newRow("all-messages") << false;
+        QTest::newRow("missing-means-mentions") << true;
+    }
     void windowStreamContextMenuNotificationSwitch()
     {
+        QFETCH(bool, missingMode);
         WindowChannelFixture fixture;
         const QString direct = QStringLiteral("97000000-0000-4000-8000-970000000002");
         int notifPosts = 0; QJsonObject notifBody; QString notifPath;
@@ -34365,7 +34440,13 @@ private slots:
             if (request.method == "GET" && path.endsWith("/streams/")) {
                 auto response = fallback(request);
                 auto rows = response.data.toArray();
+                if (missingMode) {
+                    auto channel = rows.first().toObject();
+                    channel.remove("notification_mode");
+                    rows.replace(0, channel);
+                }
                 auto directRow = windowChannel(direct, "Alice Adams");
+                if (missingMode) directRow.remove("notification_mode");
                 directRow["private"] = true; directRow["direct_user_uuid"] = channelPeer;
                 rows.append(directRow);
                 response.data = rows;
@@ -34402,6 +34483,8 @@ private slots:
         QVERIFY(visibleItem("streamMenuNotifMuted"));
         QVERIFY(visibleItem("streamMenuNotifSubscribed"));
         // Switching to Muted closes the menu and persists through the invoke endpoint.
+        QVERIFY(visibleItem(missingMode ? "streamMenuNotifDefault" : "streamMenuNotifSubscribed")
+            ->property("isCurrent").toBool());
         click(window, visibleItem("streamMenuNotifMuted"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 1);
@@ -34419,7 +34502,7 @@ private slots:
         openMenu("stream-" + direct);
         QVERIFY(!visibleItem("streamMenuNotifDefault"));
         QVERIFY(visibleItem("streamMenuNotifMuted"));
-        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        QVERIFY(visibleItem("streamMenuNotifSubscribed")->property("isCurrent").toBool());
         menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
         menu->setProperty("visible", false);
     }
@@ -34431,18 +34514,30 @@ private slots:
     // three levels inactive, a press on a disabled level posts no second
     // request, another stream's menu stays interactive, and the switch
     // re-enables live (menu still open) the moment the held response settles.
+    void windowStreamContextMenuNotificationSwitchDisabledWhileBusy_data()
+    {
+        QTest::addColumn<bool>("renewSession");
+        QTest::newRow("settled-post") << false;
+        QTest::newRow("renewed-session") << true;
+    }
+
     void windowStreamContextMenuNotificationSwitchDisabledWhileBusy()
     {
+        QFETCH(bool, renewSession);
         WindowChannelFixture fixture;
         const QString other = QStringLiteral("97000000-0000-4000-8000-970000000003");
         int notifPosts = 0; QJsonObject notifBody;
         bool deferNext = false;
+        bool renewToken = false;
         std::vector<std::function<void()>> releases;
         const auto fallback = fixture.server.handler;
         auto gate = qScopeGuard([&]{ fixture.server.handler = fallback;
             for (auto &release : releases) if (release) release(); });
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (renewToken && path.endsWith("/actions/get_token/invoke"))
+                return {QJsonObject{{"access_token", "synthetic-renewed-menu"}, {"refresh_token", "synthetic-refresh"},
+                    {"expires_in", 3600}}};
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
                 ++notifPosts; notifBody = request.body;
                 auto row = windowChannel(streamId, "Product team");
@@ -34450,6 +34545,7 @@ private slots:
                 row["updated_at"] = "2026-01-02T11:00:00Z";
                 Response response{row};
                 if (deferNext) {
+                    if (renewSession) response.status = 503;
                     deferNext = false;
                     response.defer = [&releases](std::function<void()> send)
                     { releases.push_back(std::move(send)); };
@@ -34518,16 +34614,28 @@ private slots:
         // Back on A: disabled again while its write is still held.
         openMenu("stream-" + streamId);
         QVERIFY(!levelEnabled("streamMenuNotifMuted"));
-        // Releasing the held response releases the slot live: the still-open
-        // menu's switch re-enables without reopening.
+        // A changed token retires the held reply; the catalog fixture still
+        // reports the original all-messages mode. A normally settled POST
+        // instead confirms muted.
+        if (renewSession) {
+            QSignalSpy renewed(&session, &Session::authenticated);
+            renewToken = true;
+            session.requestRefresh();
+            QTRY_COMPARE(renewed.size(), 1);
+            QTRY_VERIFY(!controller.busy());
+            QVERIFY(controller.streamNotificationBusy(streamId));
+        }
         releases[0](); releases[0] = {};
         QTRY_VERIFY(!controller.streamNotificationBusy(streamId));
+        if (!menu->property("opened").toBool()) openMenu("stream-" + streamId);
         QTRY_VERIFY(levelEnabled("streamMenuNotifMuted"));
-        // Interactive again: the next level change goes through normally.
-        click(window, visibleItem("streamMenuNotifSubscribed"));
+        const auto current = renewSession ? "streamMenuNotifSubscribed" : "streamMenuNotifMuted";
+        QTRY_VERIFY(visibleItem(current)->property("isCurrent").toBool());
+        // An interaction on this same stream sends a second write.
+        click(window, visibleItem("streamMenuNotifDefault"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 2);
-        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("all_messages"));
+        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("mentions_only"));
     }
 
     // Issue #438 review (finding 4633233517): a selection edge skipped while
