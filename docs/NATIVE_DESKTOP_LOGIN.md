@@ -224,3 +224,18 @@ All values in this document are measured from the reference sha above. Window
 tests assert structural facts (mounted/hidden, exact copy, token-resolved
 colors via the palette maps) and avoid host font-metric pixel oracles per the
 rule in issue #16.
+
+## Organization and credentials form checks
+
+The Linux wizard uses the reference's 448 px content width, centered 20 px
+heading and 24 px section spacing. The organization address has a visible
+label and a URL placeholder. Typing filters remembered origins regardless
+of case. Up and Down select a matching entry, Enter fills the address and
+Escape dismisses the suggestions. The public organization shortcut stays
+available while the address is edited. Its hint and logo identify the
+configured service independently of the history list.
+
+The Qt Quick window case `loginWizardReferenceSurfaces` exercises the English
+and Russian organization form, filtered keyboard selection, the public shortcut
+and the credentials form. The latter has separate login and password labels
+and a Next action.
