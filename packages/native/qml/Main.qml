@@ -2779,6 +2779,21 @@ component NativeMentionChip: Item {
                 iconColor: selected ? root.colors["icon-active"] : root.colors["text-muted"]
                 onClicked: root.controller.showSection("mail")
             }
+            NativeIconButton {
+                objectName: "sectionCallsButton"
+                colors: root.colors
+                visible: nativeCallsNavigationEnabled
+                asset: "phone.svg"
+                help: qsTr("Calls")
+                width: 48
+                height: 48
+                glyphSize: 32
+                cornerRadius: 12
+                selected: root.controller.section === "calls"
+                activeBorder: true
+                iconColor: selected ? root.colors["icon-active"] : root.colors["text-muted"]
+                onClicked: root.controller.showSection("calls")
+            }
         }
         Row {
             anchors.right: parent.right

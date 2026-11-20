@@ -28869,12 +28869,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const auto catalog = fixture.catalogGets, users = fixture.usersGets,
                    history = fixture.historyGets, canonical = fixture.canonicalGets;
         const auto selectionBefore = controller.selectedStream();
-        // The native build settings do not introduce the TOP_BAR_CALLS_NAV
-        // gate, so there is deliberately no Calls chip in the top bar; the
-        // section state (reached in production through the whitelisted
-        // /calls deep link) is the entry surface under test.
-        QVERIFY(!view("sectionCallsButton"));
-        controller.showSection(QStringLiteral("calls"));
+        const auto configured = engine.rootContext()->contextProperty("nativeCallsNavigationEnabled");
+        QVERIFY(configured.isValid());
+        auto *calls = view("sectionCallsButton");
+        QCOMPARE(bool(calls), configured.toBool());
+        if (calls) {
+            QCOMPARE(calls->property("help").toString(),
+                locale == "ru" ? QStringLiteral("Звонки") : QStringLiteral("Calls"));
+            click(window, calls);
+            QTRY_COMPARE(controller.section(), QStringLiteral("calls"));
+            QVERIFY(calls->property("selected").toBool());
+            controller.showSection("chat");
+        }
+        controller.showSection("calls");
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
         auto *page = view("nativeCallsPage"); QVERIFY(page);
         // Full-width page: it fills the content slot the conversation used,
