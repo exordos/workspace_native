@@ -45,7 +45,8 @@ shell_test = build / "application" / ("Release/native-platform-shell-test.exe" i
 shell_log = build / "platform-shell.txt"
 result = subprocess.run([str(shell_test), "-o", f"{shell_log},txt"])
 if shell_log.is_file():
-    print(shell_log.read_text(encoding="utf-8", errors="replace"), flush=True)
+    sys.stdout.buffer.write(shell_log.read_bytes())
+    sys.stdout.buffer.flush()
 result.check_returncode()
 artifacts.mkdir(parents=True, exist_ok=True)
 name = "workspace-native-windows-x64" if windows else "workspace-native-macos-arm64"
