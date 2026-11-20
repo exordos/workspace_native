@@ -33182,7 +33182,11 @@ private slots:
         QCOMPARE(savedWindowBounds(path), normal);
         QTest::keyClick(&window, Qt::Key_F11);
         QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        // Qt reports fullscreen as soon as it sends the request. Wait for
+        // the compositor to place the window before testing the return trip.
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), window.screen()->geometry(), 5000);
         QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowNoState, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
         // The user moves the window the moment it is back, while the gate
         // is still open: every geometry event the move emits re-arms the
