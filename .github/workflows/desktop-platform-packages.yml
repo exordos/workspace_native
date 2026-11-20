@@ -2,6 +2,10 @@ name: Check published preview archives on clean native desktops
 on:
   workflow_dispatch:
     inputs:
+      archive_run:
+        description: Verified preview build run containing the two desktop archives
+        type: string
+        default: '44821397480'
       platform:
         description: Desktop to exercise
         type: choice
@@ -34,7 +38,7 @@ jobs:
           name: desktop-${{ matrix.platform }}
           path: archive
           github-token: ${{ github.token }}
-          run-id: 44821397480
+          run-id: ${{ inputs.archive_run }}
       - name: Verify and run the relocated Windows package
         if: runner.os == 'Windows'
         shell: pwsh
