@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -102,9 +103,9 @@ class Desktop:
         self.pane = None
         self.lost_watchdog = False
 
-    def record(self, kind, **fields):
+    def record(self, event, **fields):
         with self.lock:
-            self.events.append(dict(event=kind, ms=clock(), **fields))
+            self.events.append(dict(event=event, ms=clock(), **fields))
 
     def latest(self, kind):
         with self.lock:
@@ -181,23 +182,33 @@ class Desktop:
         self.pointer_ack(b"ready")
         # The throwaway home and private session bus isolate both vault and cache across runs.
         if self.config:
+            # Provision and own one foreground daemon, as in secure-store-platform-test.
             self.keyring = subprocess.Popen(
                 [
                     "gnome-keyring-daemon",
                     "--foreground",
+                    "--unlock",
                     "--components=secrets",
                     "--control-directory",
                     self.env["GNOME_KEYRING_CONTROL"],
                 ],
                 env=self.env,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            command(
-                ["gnome-keyring-daemon", "--unlock", "--components=secrets"],
-                env=self.env,
-                data=os.urandom(30).hex().encode(),
-            )
+            self.keyring.stdin.write(os.urandom(30).hex().encode() + b"\n")
+            self.keyring.stdin.close()
+            control = Path(self.env["GNOME_KEYRING_CONTROL"]) / "control"
+            stop_at = time.monotonic() + 5
+            while (
+                not control.is_socket()
+                and self.keyring.poll() is None
+                and time.monotonic() < stop_at
+            ):
+                time.sleep(0.04)
+            if not control.is_socket():
+                raise Blocked("keyring-control-unavailable")
 
     def pointer_ack(self, expected):
         if (
@@ -363,7 +374,7 @@ class Desktop:
             thread.join(timeout=4)
         self.pane = None
 
-    def lookup(self, suffix, timeout=12):
+    def lookup(self, suffix, timeout=12, *, offscreen=False):
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             with contextlib.suppress(self.accessibility_error):
@@ -381,9 +392,11 @@ class Desktop:
                     element = nodes.pop()
                     if (element.get_accessible_id() or "").split(".")[-1] == suffix:
                         state = element.get_state_set()
-                        if state.contains(
-                            self.atspi.StateType.VISIBLE
-                        ) and state.contains(self.atspi.StateType.SHOWING):
+                        if (
+                            offscreen
+                            or state.contains(self.atspi.StateType.VISIBLE)
+                            and state.contains(self.atspi.StateType.SHOWING)
+                        ):
                             return element
                     for i in range(element.get_child_count()):
                         child = element.get_child_at_index(i)
@@ -397,9 +410,9 @@ class Desktop:
         # All lookup prefixes are fixed control names. Never publish fixture identifiers.
         raise Blocked("visible-control-unavailable-" + suffix.split("-", 1)[0])
 
-    def geometry(self, suffix):
+    def geometry(self, suffix, *, offscreen=False):
         rect = (
-            self.lookup(suffix)
+            self.lookup(suffix, offscreen=offscreen)
             .get_component_iface()
             .get_extents(self.atspi.CoordType.WINDOW)
         )
@@ -450,6 +463,11 @@ class Desktop:
     def login(self):
         self.fill("serverInput", self.config["origin"])
         self.click("organizationNextButton")
+        try:
+            self.lookup("userInput", 2)
+        except Blocked:
+            # The asynchronously inserted realm preview can move Next between lookup and press.
+            self.click("organizationNextButton")
         self.fill("userInput", self.config["username"])
         self.fill("passwordInput", self.config["password"])
         self.click("signInButton")
@@ -482,13 +500,25 @@ class Desktop:
             raise Blocked("message-pane-outside-output")
         self.pane = rect
 
-    def reveal_topics(self):
-        stream = self.config["stream"]
-        self.position(self.geometry("stream-" + stream))
-        self.click("expandTopics-" + stream)
-
     def topic(self, index):
-        self.click("topic-" + self.config["topic_" + index])
+        identifier = "topic-" + self.config["topic_" + index]
+        try:
+            self.lookup(identifier, 1.2, offscreen=True)
+        except Blocked:
+            self.click("showMoreTopics-" + self.config["stream"])
+        for _ in range(24):
+            rect = self.geometry(identifier, offscreen=True)
+            x, y, w, h = rect
+            target_y = y + h / 2
+            if 105 <= target_y <= 845:
+                self.position(rect)
+                self.point("click")
+                break
+            self.point(f"move {max(5, min(1435, round(x + w / 2)))} 480")
+            self.point("wheel 18" if target_y > 845 else "wheel -18")
+            time.sleep(0.12)
+        else:
+            raise Blocked("topic-scroll-into-view")
         self.observe_pane()
         self.until(
             lambda: (
@@ -512,15 +542,53 @@ class Desktop:
                 time.sleep(0.025)
             time.sleep(0.35)
 
+    def wait_for_saved_session(self):
+        def saved():
+            metadata_root = Path(self.env["XDG_DATA_HOME"])
+            for metadata in metadata_root.glob("**/session-vault/accounts.ini"):
+                if any(
+                    line.startswith(b"currentAccountId=")
+                    and line.strip() != b"currentAccountId="
+                    for line in metadata.read_bytes().splitlines()
+                ):
+                    return True
+            return False
+
+        self.until(saved, "session-keyring-save", 12)
+
+    def open_fixture_stream(self):
+        # Selecting the stream already expands its topic rows.
+        self.click("stream-" + self.config["stream"])
+        self.topic("a")
+
     def controls(self, limits):
-        if not limits:
-            raise Blocked("controls-need-reviewed-limits")
         self.launch()
         self.login()
-        self.click("stream-" + self.config["stream"])
-        self.reveal_topics()
-        self.topic("a")
+        self.open_fixture_stream()
         self.scroll("loaded-scroll", 1, 6)
+        if not limits:
+            # Calibrate detection of our deliberately large disturbances on this idle pane.
+            # These control sensitivities are never used to accept a release.
+            start = clock()
+            time.sleep(1)
+            healthy = [e for e in self.events if e["ms"] >= start]
+            beats = [e["ms"] for e in healthy if e["event"] == "sample"]
+            occupancy = [e["occupancy"] for e in healthy if e["event"] == "picture"]
+            anchors = [e["anchorY"] for e in healthy if "anchorY" in e]
+            if (
+                len(beats) < 4
+                or len(occupancy) < 4
+                or not anchors
+                or min(occupancy) <= 0
+            ):
+                raise Blocked("control-reference-unobserved")
+            limits = {
+                "gui_stall_ms": 2 * max(b - a for a, b in itertools.pairwise(beats)),
+                "min_occupancy": min(occupancy) / 2,
+                "settled_anchor_px": max(anchors) - min(anchors) + 1,
+                "visible_response_ms": float("inf"),
+                "active_frame_ms": float("inf"),
+            }
         results = {}
         for name, expected in (
             ("stall", "gui-stall"),
@@ -568,15 +636,14 @@ class Desktop:
         with self.action("cold-start", False):
             self.launch()
             self.login()
-            self.click("stream-" + self.config["stream"])
-            self.reveal_topics()
-            self.topic("a")
+            self.open_fixture_stream()
             self.until(
                 lambda: bool(self.latest("picture")), "captured-history-unavailable"
             )
             time.sleep(0.1)
         self.topic("b")
         self.topic("a")
+        self.wait_for_saved_session()
         self.close_app(graceful=True)
         with self.action("warm-start", False):
             self.launch()
@@ -592,9 +659,9 @@ class Desktop:
                 "captured-history-unavailable",
             )
         try:
-            self.lookup("topic-" + self.config["topic_b"], 0.7)
+            self.lookup("topic-" + self.config["topic_b"], 0.7, offscreen=True)
         except Blocked:
-            self.reveal_topics()
+            self.click("stream-" + self.config["stream"])
         for i in range(4 if extended else 2):
             target = "b" if i % 2 == 0 else "a"
             with self.action("warm-switch", target=target):
@@ -629,7 +696,7 @@ class Desktop:
                 arrival = worker.submit(create)
 
             self.scroll(
-                "paged-scroll", 1, 160 if extended else 65, on_input=submit_arrival
+                "paged-scroll", 1, 480 if extended else 210, on_input=submit_arrival
             )
             arrival.result()
             time.sleep(0.35)
@@ -701,37 +768,41 @@ class Peer:
         if not self.identity or not self.identity.get("token"):
             raise Blocked("peer-role-unavailable")
         collection = "/api/workspace/v1/messenger/messages/"
-        item = collection + identifier
-        verified = threading.Event()
+        item = None
+        expected = {
+            "stream_uuid": self.config["stream"],
+            "topic_uuid": self.config["topic_" + topic],
+            "payload": {"kind": "markdown", "content": "Acceptance arrival"},
+        }
+
+        def matches(row):
+            return (
+                isinstance(row, dict)
+                and row.get("user_uuid") == self.identity["uuid"]
+                and all(row.get(k) == v for k, v in expected.items())
+            )
 
         def create():
-            self.request(
-                "POST",
-                collection,
-                {
-                    "uuid": identifier,
-                    "stream_uuid": self.config["stream"],
-                    "topic_uuid": self.config["topic_" + topic],
-                    "payload": {"kind": "markdown", "content": "Acceptance arrival"},
-                },
-            )
-            row = self.request("GET", item)
-            if (
-                row.get("stream_uuid") != self.config["stream"]
-                or row.get("topic_uuid") != self.config["topic_" + topic]
-            ):
+            nonlocal item
+            created = self.request("POST", collection, {"uuid": identifier, **expected})
+            if not matches(created):
+                raise Blocked("peer-created-message-route")
+            public_id = str(UUID(created["uuid"]))
+            item = collection + public_id
+            if topic == "a":
+                self.public_message = public_id
+            if not matches(self.request("GET", item)):
                 raise Blocked("peer-message-route")
-            verified.set()
 
         try:
             yield create
         finally:
-            if verified.is_set():
+            if item:
                 self.request("DELETE", item)
 
     def exercise(self, desktop):
         api = "/api/workspace/v1/messenger"
-        item = api + "/messages/" + self.message
+        item = api + "/messages/" + self.public_message
         self.request(
             "PUT",
             item,
@@ -740,7 +811,7 @@ class Peer:
         self.request(
             "POST",
             api + "/message_reactions/",
-            {"message_uuid": self.message, "emoji_name": "thumbs_up"},
+            {"message_uuid": self.public_message, "emoji_name": "thumbs_up"},
         )
         read_target = str(UUID(self.config["read_boundary"]))
         boundary = self.request("GET", api + "/messages/" + read_target)
@@ -937,8 +1008,8 @@ def main():
                 if args.mode == "login":
                     desktop.launch()
                     desktop.login()
-                    # Let the asynchronous Qt keyring save finish, then verify the real restore.
-                    time.sleep(1)
+
+                    desktop.wait_for_saved_session()
                     desktop.close_app(graceful=True)
                     desktop.launch()
                     desktop.until(
@@ -952,7 +1023,7 @@ def main():
                 elif args.mode == "controls":
                     checks = desktop.controls(limits)
                     result = {
-                        "status": "PASS" if all(checks.values()) else "FAIL",
+                        "status": "CONTROLS" if all(checks.values()) else "FAIL",
                         "controls": checks,
                     }
                 else:
@@ -987,6 +1058,7 @@ def main():
     except (
         ImportError,
         KeyError,
+        TypeError,
         ValueError,
         OSError,
         RuntimeError,
@@ -1019,9 +1091,14 @@ def main():
                     out.write(json.dumps(e, separators=(",", ":")) + "\n")
         (args.output / "report.json").write_text(json.dumps(result, indent=2) + "\n")
     print(result["status"])
-    return {"PASS": 0, "PROBE": 0, "PREFLIGHT": 0, "FAIL": 3, "BLOCKED": 2}[
-        result["status"]
-    ]
+    return {
+        "PASS": 0,
+        "PROBE": 0,
+        "PREFLIGHT": 0,
+        "CONTROLS": 0,
+        "FAIL": 3,
+        "BLOCKED": 2,
+    }[result["status"]]
 
 
 if __name__ == "__main__":

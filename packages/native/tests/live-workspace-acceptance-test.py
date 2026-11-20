@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Temporal fault controls run independently of credentials or public services."""
 
+import runpy
 import socket
 import socketserver
 import sys
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from live_acceptance_metrics import evaluate, sanitize_native_event
@@ -75,6 +77,93 @@ class Controls(unittest.TestCase):
         rows = trace()
         rows.insert(-1, {"event": "sample", "ms": 200, "intent": 3, "count": 22})
         self.assertIn("gui-stall", evaluate(rows, LIMITS)["failures"])
+
+    def test_peer_uses_the_public_uuid_returned_by_the_deployed_backend(self):
+        runner = runpy.run_path(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "live-workspace-acceptance.py"
+            )
+        )
+        cfg = {
+            "stream": "stream",
+            "topic_a": "topic",
+            "peers": {"writer": {"uuid": "peer", "token": "synthetic"}},
+        }
+        peer = runner["Peer"](cfg, "writer")
+        canonical = "11111111-1111-4111-8111-111111111111"
+        row = {
+            "uuid": canonical,
+            "topic_uuid": "topic",
+            "stream_uuid": "stream",
+            "user_uuid": "peer",
+            "payload": {"kind": "markdown", "content": "Acceptance arrival"},
+        }
+        peer.request = Mock(side_effect=[row, row, {}])
+        with peer.temporary_message("a", peer.message) as create:
+            create()
+        self.assertEqual(
+            peer.request.call_args_list[1:],
+            [
+                call("GET", "/api/workspace/v1/messenger/messages/" + canonical),
+                call("DELETE", "/api/workspace/v1/messenger/messages/" + canonical),
+            ],
+        )
+
+    def test_fixture_stream_selection_keeps_the_auto_expanded_topics_open(self):
+        runner = runpy.run_path(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "live-workspace-acceptance.py"
+            )
+        )
+        desktop = Mock()
+        desktop.config = {"stream": "fixture"}
+        runner["Desktop"].open_fixture_stream(desktop)
+        self.assertEqual(
+            desktop.method_calls, [call.click("stream-fixture"), call.topic("a")]
+        )
+
+    def test_organization_preview_moving_next_allows_one_retry(self):
+        runner = runpy.run_path(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "live-workspace-acceptance.py"
+            )
+        )
+        desktop = Mock()
+        desktop.config = {
+            "origin": "https://example.invalid",
+            "username": "user",
+            "password": "temporary",
+            "project": "fixture",
+        }
+        desktop.lookup.side_effect = runner["Blocked"]("preview-arrived")
+        runner["Desktop"].login(desktop)
+        self.assertEqual(
+            desktop.click.call_args_list[:2],
+            [call("organizationNextButton"), call("organizationNextButton")],
+        )
+
+    def test_normal_workload_records_an_action_and_its_end(self):
+        runner = runpy.run_path(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "live-workspace-acceptance.py"
+            )
+        )
+        desktop = object.__new__(runner["Desktop"])
+        desktop.lock = threading.Lock()
+        desktop.events = []
+        desktop.sequence = 0
+        with desktop.action("cold-start", False):
+            pass
+        self.assertEqual([r["event"] for r in desktop.events], ["action", "end"])
+        self.assertEqual(desktop.events[0]["kind"], "cold-start")
 
     def test_lost_recorder_is_an_infrastructure_failure(self):
         report = evaluate([e for e in trace() if e["event"] != "picture"], LIMITS)

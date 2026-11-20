@@ -45,7 +45,7 @@ Prepare two accessible topics in one ordinary stream. Seed topic A with enough h
 
 Exit 0 marks a successful run, exit 2 marks a missing precondition and exit 3 marks a measured regression. Initial reference runs can omit `--limits` to collect measurements. They remain BLOCKED until the desktop maintainer reviews repeated runs on the same reference environment and records the tolerances. A reference file includes `reference`, `gui_stall_ms`, `active_frame_ms`, `visible_response_ms`, `settled_anchor_px` and `min_occupancy`. Record the compositor/scale, package and backend versions, hardware, repeated measurements, and rationale when approving a baseline. A failed gate never rewrites the baseline.
 
-`--mode controls` deliberately pauses the isolated process, moves a stopped viewport, briefly switches to a blank compositor workspace, and omits a requested wheel delivery. Each control checks its own expected result. The credential-free detector tests also replay a single missing frame or input event in ordinary CI.
+`--mode controls` deliberately pauses the isolated process, moves a stopped viewport, briefly switches to a blank compositor workspace, and omits a requested wheel delivery. Each control checks its own expected result. Without a limits file, this mode measures the idle pane immediately before injection, uses that sensitivity for the four controls, and returns CONTROLS. Those values never qualify a smoke or extended run. The credential-free detector tests also replay a single missing frame or input event in ordinary CI.
 
 ## Cadence
 
