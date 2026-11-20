@@ -137,7 +137,7 @@ jobs:
           mkdir -p "$destination"
           test "$(uname -m)" = "${{ matrix.cpu }}"
           ditto -x -k "archive/workspace-native-${{ matrix.platform }}.zip" "$destination"
-          lipo -verify_arch "${{ matrix.cpu }}" "$destination/workspace-native.app/Contents/MacOS/workspace-native"
+          lipo "$destination/workspace-native.app/Contents/MacOS/workspace-native" -verify_arch "${{ matrix.cpu }}"
           drivers="$destination/workspace-native.app/Contents/PlugIns/sqldrivers"
           test -f "$drivers/libqsqlite.dylib"
           test "$(find "$drivers" -name '*.dylib' | wc -l | tr -d ' ')" = 1
