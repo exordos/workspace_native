@@ -34441,6 +34441,7 @@ private slots:
     // exports the snapshot JSON through the save dialog.
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
+        QAccessible::setActive(true);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         ApiClient api(nullptr, true);
@@ -34456,7 +34457,11 @@ private slots:
         QVERIFY(window);
         const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
         QVERIFY(QTest::qWaitForWindowExposed(window));
-        controller.showSection("diagnostics");
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("diagnosticsAction"));
+        click(window, visibleItem("diagnosticsAction"));
         QTRY_VERIFY(visibleItem("diagnosticsViewLogsButton"));
         auto *view = visibleItem("diagnosticsViewLogsButton");
         auto *accessible = QAccessible::queryAccessibleInterface(view);
@@ -34469,12 +34474,24 @@ private slots:
         auto *previous = view->nextItemInFocusChain(false);
         QVERIFY(previous && previous != view);
         previous->forceActiveFocus(Qt::BacktabFocusReason);
-        for (const auto *id : {"diagnosticsViewLogsButton", "diagnosticsRefreshButton",
+        QSet<QQuickItem *> visited;
+        QStringList focusOrder;
+        while (window->activeFocusItem() != view && window->activeFocusItem()
+                && !visited.contains(window->activeFocusItem())) {
+            visited.insert(window->activeFocusItem());
+            focusOrder.append(window->activeFocusItem()->objectName());
+            QTest::keyClick(window, Qt::Key_Tab);
+        }
+        QVERIFY2(view->hasActiveFocus(), qPrintable(QString("Tab did not reach View logs through %1")
+            .arg(focusOrder.join(QStringLiteral(" → ")))));
+        for (const auto *id : {"diagnosticsRefreshButton",
                               "diagnosticsCopyReportButton", "diagnosticsCopySnapshotButton"}) {
             QTest::keyClick(window, Qt::Key_Tab);
             auto *item = visibleItem(id);
             QVERIFY(item);
-            QTRY_VERIFY(item->hasActiveFocus());
+            QTRY_VERIFY2(item->hasActiveFocus(), qPrintable(QString("Expected %1; focused %2; window active=%3")
+                .arg(QString::fromLatin1(id), window->activeFocusItem() ? window->activeFocusItem()->objectName() : QString())
+                .arg(window->isActive())));
             QVERIFY(item->property("visualFocus").toBool());
         }
         view->forceActiveFocus(Qt::TabFocusReason);
