@@ -1,6 +1,7 @@
 """Sign in to a loopback TLS fixture with the normal Windows/macOS preview executable."""
 from email import policy
 from email.parser import BytesParser
+import base64
 import argparse
 import contextlib
 import ctypes
@@ -85,6 +86,34 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         fixture = self.server
         path = self.path.partition("?")[0]
+        if path == "/api/workspace/v1/events/ws" and os.environ.get("CASSI_HOSTED_CHOOSER"):
+            protocols = [v.strip() for v in self.headers.get("Sec-WebSocket-Protocol", "").split(",")]
+            key = self.headers.get("Sec-WebSocket-Key", "")
+            if "workspace.events.v1" not in protocols or "bearer." + fixture.access not in protocols or not key:
+                self.reply(403, {})
+                return
+            digest = hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+            self.protocol_version = "HTTP/1.1"
+            self.send_response(101)
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Sec-WebSocket-Accept", base64.b64encode(digest).decode())
+            self.send_header("Sec-WebSocket-Protocol", "workspace.events.v1")
+            self.end_headers()
+            self.close_connection = True
+            ready = json.dumps({"type": "ready", "epoch_version": 1,
+                                "epoch_generation": fixture.capture.generation}, separators=(",", ":")).encode()
+            assert len(ready) < 126
+            self.wfile.write(bytes((0x81, len(ready))) + ready)
+            self.wfile.flush()
+            print("The packaged realtime client completed its authenticated WebSocket handshake.", flush=True)
+            self.connection.settimeout(65)
+            try:
+                while self.connection.recv(1024):
+                    pass
+            except (TimeoutError, OSError):
+                pass
+            return
         if fixture.capture and fixture.capture.handle(self):
             return
         if path.endswith("/messenger/server_settings"):
