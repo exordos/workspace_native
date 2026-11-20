@@ -16942,6 +16942,88 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void loginLinkedOrganizationDiscoversOnlyAKnownOrigin_data()
+    {
+        QTest::addColumn<bool>("known");
+        QTest::newRow("matching-default") << true;
+        QTest::newRow("unknown-organization") << false;
+    }
+
+    void loginLinkedOrganizationDiscoversOnlyAKnownOrigin()
+    {
+        QFETCH(bool, known);
+        MockServer server;
+        server.handler = [](const Request &) {
+            return Response{QJsonObject{{"realm_name", "Known organization"}}};
+        };
+        const auto oldUrl = qgetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", server.origin().toEncoded());
+        const auto restore = qScopeGuard([&] {
+            if (oldUrl.isNull()) qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+            else qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", oldUrl);
+        });
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window && QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        const auto organization = known ? workspace::orgRouteIdFromOrigin(server.origin())
+                                        : QStringLiteral("unknown.example");
+        controller.openMessageLink(QStringLiteral("ew://open/org/%1/project/%2/message/%3")
+                                   .arg(organization, projectId, messageId));
+        if (known) {
+            QTRY_VERIFY(visibleItem(content, "userInput"));
+            QCOMPARE(controller.organizationRealm(), server.origin().toString());
+            QCOMPARE(server.requests.size(), 1);
+            QCOMPARE(server.requests.front().target.path(), QString("/api/workspace/v1/messenger/server_settings"));
+        } else {
+            QTest::qWait(100);
+            QVERIFY(visibleItem(content, "serverInput"));
+            QVERIFY(controller.organizationRealm().isEmpty());
+            QVERIFY(server.requests.isEmpty());
+        }
+        window->close();
+    }
+
+    void loginRealmPreviewUsesOnlyAdvertisedBranding_data()
+    {
+        QTest::addColumn<bool>("hasName");
+        QTest::newRow("missing-branding") << false;
+        QTest::newRow("advertised-name") << true;
+    }
+
+    void loginRealmPreviewUsesOnlyAdvertisedBranding()
+    {
+        QFETCH(bool, hasName);
+        MockServer server;
+        server.handler = [hasName](const Request &) {
+            QJsonObject settings;
+            if (hasName) settings.insert("realm_name", "Example organization");
+            return Response{settings};
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window && QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(visibleItem(content, "userInput"));
+        QCOMPARE(visibleItem(content, "realmPreviewCard") != nullptr, hasName);
+        if (hasName) QVERIFY(hasVisibleText(content, "Example organization"));
+        window->close();
+    }
+
     void loginCardMountsOrganizationStepOnly()
     {
         QTemporaryDir preferencesDirectory;
