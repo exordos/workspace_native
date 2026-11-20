@@ -36863,21 +36863,34 @@ private slots:
         controller.selectFolder(customUuids.last());
         QTRY_COMPARE(controller.selectedFolder(), customUuids.last());
         const auto personalUuid=QStringLiteral("00000000-0000-0000-0000-000000000001");
-        const auto chipPoint=[&](const QString &name){
-            auto *chip=visibleItem(name);
-            return chip->mapToScene(QPointF(chip->width()/2,chip->height()/2)).toPoint();};
-        const auto start=chipPoint(QStringLiteral("folder-personal"));
-        QVERIFY(start.x() < strip->width());
+        // Selecting a folder rebuilds the repeater. Its Row positions the new
+        // chips during polish, before the next frame is presented.
+        const auto locateChip = [window, strip](const QString &name, QPoint &point) {
+            QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+            window->update();
+            if (!QTest::qWaitFor([&] { return !painted.isEmpty(); }, 2000))
+                return false;
+            auto *chip = visibleItem(strip, name);
+            if (!chip) return false;
+            point = chip->mapToScene(QPointF(chip->width() / 2, chip->height() / 2)).toPoint();
+            return strip->contains(strip->mapFromScene(point));
+        };
+        QPoint start;
+        QVERIFY(locateChip(QStringLiteral("folder-personal"), start));
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);
+        QCOMPARE(strip->property("pressedKey").toString(), QStringLiteral("personal"));
         QTest::mouseMove(window,start+QPoint(2,0));
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,start+QPoint(2,0));
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), personalUuid, 2000);
         QCOMPARE(contentX(), 0.0);
         // Back to All, then drag past the threshold: the strip scrolls and
         // the trailing click must not change the selection.
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,chipPoint(QStringLiteral("folder-all")));
+        QPoint allPoint;
+        QVERIFY(locateChip(QStringLiteral("folder-all"), allPoint));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,allPoint);
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), allUuid, 2000);
-        const auto dragFrom=chipPoint(QStringLiteral("folder-personal"));
+        QPoint dragFrom;
+        QVERIFY(locateChip(QStringLiteral("folder-personal"), dragFrom));
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,dragFrom);
         QTest::mouseMove(window,dragFrom+QPoint(-120,0));
         QTest::qWait(50);
@@ -36888,7 +36901,9 @@ private slots:
         QCOMPARE(controller.selectedFolder(), allUuid);
         // The suppression lasts exactly one click: the next plain click on a
         // (now shifted) chip selects normally.
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,chipPoint(firstChip));
+        QPoint firstPoint;
+        QVERIFY(locateChip(firstChip, firstPoint));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,firstPoint);
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), customUuids.first(), 2000);
     }
 
