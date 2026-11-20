@@ -740,7 +740,9 @@ env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- 
 ```
 
 The quick configuration distributes long QtTest suites across processes using
-the executable's current function/data inventory. The full configuration runs
+the executable's current function/data inventory. Its extra headless group runs
+the two 100 ms encrypted-read responsiveness checks with exclusive CTest access.
+The full configuration runs
 the original suites and retains the shared-display locks. Before creating a
 release tag, dispatch **Linux release artifacts** on the intended release commit
 and wait for the full Xvnc/Openbox gate. Tag builds repeat that gate before

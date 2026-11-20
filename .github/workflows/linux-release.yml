@@ -154,7 +154,7 @@ jobs:
           set -euo pipefail
           apt-get install --no-install-recommends -y tigervnc-standalone-server openbox xauth x11-utils pulseaudio fonts-noto-core libgl1-mesa-dri
           cmake --build build/linux-release --parallel "$(nproc)"
-          dbus-run-session -- bash packages/native/tests/full-linux-gate.sh build/linux-release
+          bash packages/native/tests/full-linux-gate.sh build/linux-release
 
       - name: Package installed runtime
         shell: bash
@@ -231,7 +231,8 @@ jobs:
       - *dependencies
       - *checkout
       - name: Restore compiler cache for the headless build
-        uses: actions/cache@v4
+        id: headless-cache
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: linux-headless-ccache-v1-${{ github.sha }}
@@ -243,6 +244,12 @@ jobs:
           cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON \
             -DWORKSPACE_NATIVE_QUICK_GATE=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --target native-headless-tests --parallel "$(nproc)"
+      - name: Save compiled test objects
+        if: steps.headless-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: linux-headless-ccache-v1-${{ github.sha }}
       - name: Run all headless groups
         env:
           QT_QPA_PLATFORM: offscreen

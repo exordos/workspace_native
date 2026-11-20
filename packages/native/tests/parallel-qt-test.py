@@ -10,12 +10,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("executable")
     parser.add_argument("--jobs", type=int, required=True)
+    parser.add_argument("--separate", nargs="+", default=[], help="functions covered by a separate CTest group")
     args = parser.parse_args()
     if args.jobs < 1:
         parser.error("--jobs must be positive")
 
     tags = subprocess.check_output([args.executable, "-datatags"], text=True).splitlines()
     functions = Counter(row.split(maxsplit=2)[1] for row in tags)
+    for name in args.separate:
+        if name not in functions:
+            raise SystemExit(f"Separately registered QtTest function does not exist: {name}")
+        del functions[name]
     if not functions:
         raise SystemExit("QtTest did not report any runnable functions")
 
@@ -30,7 +35,7 @@ def main():
         return subprocess.run([args.executable, *group], stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True)
 
-    print(f"Running {len(tags)} rows in {len(groups)} processes", flush=True)
+    print(f"Running {sum(functions.values())} rows in {len(groups)} processes", flush=True)
     failed = False
     with ThreadPoolExecutor(max_workers=len(groups)) as pool:
         for result in pool.map(run, groups):

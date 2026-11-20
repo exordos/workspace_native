@@ -22,3 +22,8 @@ properties = {p['name']: p['value'] for p in tests[name].get('properties', [])}
 assert 'gui' in properties.get('LABELS', []), f'{name} is missing the gui label'
 assert 'xdisplay' in properties.get('RESOURCE_LOCK', []), f'{name} does not lock xdisplay'
 assert name not in {test['name'] for test in listing('-LE', 'gui')}, f'{name} runs in the headless gate'
+
+pulse = tests.get('native-native-e2ee-pulse')
+if pulse:
+    assert any(p['name'] == 'RUN_SERIAL' and p['value'] for p in pulse['properties']), (
+        'encrypted-read responsiveness must run without competing CTest processes')

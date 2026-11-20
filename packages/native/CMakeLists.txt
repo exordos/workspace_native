@@ -364,6 +364,7 @@ if(BUILD_TESTING)
         if(WORKSPACE_NATIVE_QUICK_GATE AND test STREQUAL "native-controller")
             add_test(NAME native-${test} COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:${test}-test>" --jobs 8)
+            set_property(TEST native-${test} PROPERTY COST 1000)
         else()
             add_test(NAME native-${test} COMMAND ${test}-test)
         endif()
@@ -485,8 +486,18 @@ if(BUILD_TESTING)
         WORKSPACE_NATIVE_E2EE_PEER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tests/e2ee-peer/peer.mjs")
     set_target_properties(native-e2ee-read-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
     if(WORKSPACE_NATIVE_QUICK_GATE)
+        # The 100ms responsiveness assertions measure scheduling delay; run them
+        # with the original oracle and without competing CTest processes.
+        set(e2ee_pulse_cases fiveHundredAnnouncementsStayBoundedAndYield
+            preparedFiveHundredRowsYieldAndOversizedWindowDropsAll)
+        add_test(NAME native-native-e2ee-pulse COMMAND native-e2ee-read-test ${e2ee_pulse_cases})
+        set_tests_properties(native-native-e2ee-pulse PROPERTIES RUN_SERIAL TRUE TIMEOUT 45)
         add_test(NAME native-native-e2ee-read COMMAND "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:native-e2ee-read-test>" --jobs 6)
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:native-e2ee-read-test>"
+            --jobs 6 --separate ${e2ee_pulse_cases})
+        # A fresh CI directory has no CTestCostData.txt. Start the longest
+        # headless suite early so its TLS peer waits overlap other tests.
+        set_property(TEST native-native-e2ee-read PROPERTY COST 1000)
     else()
         add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
     endif()
