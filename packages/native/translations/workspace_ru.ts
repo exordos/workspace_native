@@ -61,7 +61,23 @@
         </message>
     </context>
     <context>
+        <name>ComposerMode</name>
+        <message>
+            <source>Preview</source>
+            <translation>Предпросмотр</translation>
+        </message>
+        <message>
+            <source>Write</source>
+            <translation>Написание</translation>
+        </message>
+    </context>
+    <context>
         <name>Main</name>
+        <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
+        <message>
+            <source>Nothing to preview yet</source>
+            <translation>Пока нечего предпросматривать</translation>
+        </message>
         <message>
             <source>AI assistant</source>
             <translation>AI assistant</translation>
@@ -1841,6 +1857,26 @@
         <translation>Не удалось отправить ключ на это устройство.</translation>
     </message>
 
+        <message>
+            <source>Show spoiler</source>
+            <translation>Показать спойлер</translation>
+        </message>
+        <message>
+            <source>Hide spoiler</source>
+            <translation>Скрыть спойлер</translation>
+        </message>
+        <message>
+            <source>Request key</source>
+            <translation>Запросить ключ</translation>
+        </message>
+        <message>
+            <source>Waiting for a response</source>
+            <translation>Ожидание ответа</translation>
+        </message>
+        <message>
+            <source>Could not decrypt message</source>
+            <translation>Не удалось расшифровать</translation>
+        </message>
         <message>
             <source>Some local data could not be cleared.</source>
             <translation>Не удалось очистить часть локальных данных.</translation>
@@ -5017,4 +5053,22 @@
         <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
     </message>
 </context>
+    <context>
+        <name>NativeCachedMessageSearch</name>
+        <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
+        <message><source>Searches history saved on this device for the selected account and project.</source><translation>Поиск по истории выбранного аккаунта и проекта, сохранённой на этом устройстве.</translation></message>
+        <message><source>Search message text</source><translation>Поиск по тексту сообщения</translation></message>
+        <message><source>Enter text to search.</source><translation>Введите текст для поиска.</translation></message>
+        <message><source>The local message cache is unavailable.</source><translation>Локальный кэш сообщений недоступен.</translation></message>
+        <message><source>Searching…</source><translation>Поиск…</translation></message>
+        <message><source>No matches in cached messages.</source><translation>В сохранённых сообщениях совпадений нет.</translation></message>
+        <message><source>Showing 50 matches. Refine your search for more specific results.</source><translation>Показано 50 совпадений. Уточните запрос.</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+    </context>
+    <context>
+        <name>ComposerHeight</name>
+        <message><source>Resize message editor</source><translation>Изменить высоту поля сообщения</translation></message>
+        <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
+        <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
+    </context>
 </TS>

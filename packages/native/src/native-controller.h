@@ -152,6 +152,9 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList archivedChats READ archivedChats NOTIFY archivedChatsChanged)
     Q_PROPERTY(bool archiveLoading READ archiveLoading NOTIFY stateChanged)
     Q_PROPERTY(QString archiveError READ archiveError NOTIFY stateChanged)
+    Q_PROPERTY(bool cachedSearchAvailable READ cachedSearchAvailable NOTIFY cachedSearchAvailabilityChanged)
+    Q_PROPERTY(QVariantList cachedSearchResults READ cachedSearchResults NOTIFY cachedSearchChanged)
+    Q_PROPERTY(QString cachedSearchState READ cachedSearchState NOTIFY cachedSearchChanged)
     Q_PROPERTY(QVariantList streams READ streams NOTIFY streamsChanged)
     // Issue #83: folder rail (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md). The rail
     // rows, the effective folder selection and the folder-scoped sidebar
@@ -182,6 +185,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString selectedStream READ selectedStream NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTopic READ selectedTopic NOTIFY stateChanged)
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
+    Q_PROPERTY(QString composerPreviewBody READ composerPreviewBody NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap outgoingSend READ outgoingSend NOTIFY stateChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
@@ -287,6 +291,12 @@ public:
     Q_INVOKABLE void cancelOwnStatusUpdate();
     void useChatKeys(NativeChatKeyVault *vault);
     QVariantMap encryption() const;
+    Q_INVOKABLE QVariantMap renderSecretMessage(const QString &messageId, const QStringList &ordinaryOpened,
+        const QStringList &revealed);
+    Q_INVOKABLE void requestSecretMessageKey(const QString &messageId, const QString &handle,
+        const QStringList &ordinaryOpened);
+    Q_PROPERTY(quint64 secretKeyRevision READ secretKeyRevision NOTIFY secretKeysChanged)
+    quint64 secretKeyRevision() const { return m_secretKeyRevision; }
     Q_INVOKABLE void requestChatKey(const QString &keyUuid = {});
     Q_INVOKABLE void checkChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyRequest(const QString &keyUuid);
@@ -425,6 +435,12 @@ public:
     Q_INVOKABLE void setStreamNotificationMode(const QString &id, const QString &mode);
     Q_INVOKABLE bool streamNotificationBusy(const QString &id) const;
     Q_INVOKABLE QVariantMap chatActionState(const QString &id) const;
+    bool cachedSearchAvailable() const { return m_cache && m_cache->available() && !m_cacheLease.owner.isEmpty(); }
+    QVariantList cachedSearchResults() const { return m_searchOwner == ownerKey() ? m_searchResults : QVariantList{}; }
+    QString cachedSearchState() const { return m_searchOwner == ownerKey() ? m_searchState : QString{}; }
+    Q_INVOKABLE void searchCachedMessages(const QString &query);
+    Q_INVOKABLE void clearCachedSearch();
+    Q_INVOKABLE bool openCachedSearchResult(const QString &id);
     QVariantList streams() const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
@@ -456,6 +472,7 @@ public:
     QVariantMap conversationOpening() const;
     QString draft() const;
     void setDraft(const QString &text);
+    QString composerPreviewBody() const;
     bool canCompose() const;
     bool canSend() const;
     bool canLoadOlder() const { return !m_before.isEmpty() && !m_loading && !m_snapshotActive
@@ -927,6 +944,8 @@ public:
     Q_INVOKABLE void recordMentionPick(const QString &userUuid);
 
 signals:
+    void cachedSearchAvailabilityChanged();
+    void cachedSearchChanged();
     void otpCodeRejected();
     void sidebarExpansionChanged();
     void activityOpenChanged();
@@ -953,6 +972,7 @@ signals:
     // subscribeLogHistory).
     void sessionLogChanged();
     void stateChanged();
+    void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
     void ownProfileSettledChanged();
@@ -1033,7 +1053,7 @@ private:
     void applyMessageRoute(const QString &org, const QString &project, const QString &message);
     void setAnchorMessage(const QString &id);
     void clearAnchor(const QString &notice = {});
-    void beginAnchorLinkJump(const QString &target);
+    void beginAnchorLinkJump(const QString &target, const QString &cachedStream = {}, const QString &cachedTopic = {});
     bool topicOpeningOwnsPendingAnchor() const;
     void reanchorFromWindow();
     static QString deepLinkUnavailableNotice();
@@ -1045,7 +1065,12 @@ private:
         bool ready = false;
         QSet<QString> topics;
         bool allowKeySharingByHolders = false;
+        bool encrypted = false;
     };
+    QVariantMap presentMessageSecrets(const QString &messageId, const QStringList &ordinaryOpened,
+        const QStringList &revealed, const QString &requestHandle, QString *requestedStream, QString *requestedKey, bool validating = false);
+    quint64 m_secretKeyRevision = 0;
+    QString m_secretRequestStream;
     enum class ChatKeyAvailability { Unknown, Missing, Present, Error };
     struct PreparedChatMessage {
         QByteArray hash;
@@ -1065,12 +1090,14 @@ private:
     bool currentChatOperation(quint64 operation, const QString &key) const;
     using ChatAuthorityCallback = std::function<void(bool, const QString &)>;
     void ensureChatAuthority(ChatAuthorityCallback done);
+    void fetchChatAuthority(const QString &stream, quint64 epoch, quint64 selection,
+        std::function<void(const ChatAuthority &, const QString &)> done);
     void finishChatAuthority(quint64 epoch, quint64 selection, const QString &error = {});
     void chatCollection(const QString &path, QUrlQuery query, quint64 epoch, quint64 selection,
         std::function<void(const QJsonArray &, const QString &)> done, QJsonArray rows = {}, QSet<QByteArray> markers = {},
         int pages = 0, qint64 bytes = 0);
     void finishChatOperation(quint64 operation, const QString &key, const QString &phase, const QString &error = {});
-    void startChatRequest(const QString &key, bool checking, bool retrying);
+    void startChatRequest(const QString &key, bool checking, bool retrying, const QString &secretStream = {}, std::function<bool()> stillNeeded = {});
     // Issue #244 review 4576750798: GET-only recheck pass over durable
     // in-flight rotation announcements (see native-chat-key-vault.h).
     void maybeResolveRotationStages();
@@ -1081,11 +1108,11 @@ private:
     // their callbacks ever running; this releases the transient busy and
     // single-flight markers of those retired operations (durable pins stay).
     void interruptChatRotationOperations();
-    void postChatRequest(const QString &key, const NativeChatKeyVault::PendingRequest &pending, quint64 epoch, quint64 selection, quint64 operation);
+    void postChatRequest(const NativeChatKeyVault::Address &address, const NativeChatKeyVault::PendingRequest &pending, quint64 epoch, quint64 selection, quint64 operation);
     bool matchesChatRequest(const Message &message, const QString &key,
-                            const NativeChatKeyVault::PendingRequest &pending, bool observed) const;
+                            const NativeChatKeyVault::PendingRequest &pending, bool observed, const QString &source = {}) const;
     bool bindChatRequest(const Message &message, const QString &key,
-                         const NativeChatKeyVault::PendingRequest &pending, bool observed = false);
+                         const NativeChatKeyVault::PendingRequest &pending, bool observed = false, const QString &source = {});
     void observeChatRequest(const Message &message);
     bool currentChatRequest(const Message &response, const NativeChatKeyVault::PendingRequest &pending) const;
     bool receiveChatControl(const Message &message);
@@ -1204,7 +1231,7 @@ private:
         bool fromDrawer = false;
     };
     bool chatIssuerAllowed() const;
-    bool chatGrantIssuerAllowed(const QString &issuer, const QString &requester) const;
+    bool chatGrantIssuerAllowed(const ChatAuthority &authority, const QString &issuer, const QString &requester) const;
     bool chatResponseAllowed(const ChatRequestFact &fact, bool grant) const;
     bool chatRequestMatches(const ChatRequestFact &fact, const ChatKeyResponse &intent) const;
     QVariantList chatKeyRequestsMetadata() const;
@@ -1548,6 +1575,8 @@ private:
     QString clipboardUploadName(const QString &extension, bool image) const;
     void validateQueuedUpload(quint64 intent, quint64 epoch);
     QStringList readyUploadLinks(quint64 session) const;
+    std::optional<QString> composeSendBody() const;
+    std::optional<QString> composeEditBody() const;
     void reserveImageAlias(UploadEntry &entry, const QString &name);
     QString imageAlias(const UploadEntry &entry) const;
     QString replaceImageAliases(const QString &text, bool serialize) const;
@@ -1722,6 +1751,10 @@ private:
     // generation even when the owner key matches again.
     quint64 m_sessionGeneration = 0;
     QString m_sessionGenerationOwner;
+    QString m_searchOwner, m_searchState, m_searchQuery;
+    void refreshOpenCachedSearch(bool changeAccepted);
+    QVariantList m_searchResults;
+    quint64 m_searchTicket = 0;
     QPointer<NativeCacheService> m_cache;
     QMetaObject::Connection m_cacheDestroyed;
     QMetaObject::Connection m_cacheStatusChanged;
@@ -2285,6 +2318,7 @@ private:
     // message-link anchors (applyMessageRoute / retry) set the flag, so the
     // service conversation-open automatic anchor keeps its old silent flow.
     bool m_anchorLinkPending = false;
+    bool m_anchorFromCachedSearch = false;
     QString m_anchorNavigationError;
     QString m_failedAnchorLinkTarget;
     QString m_failedAnchorConversation;
@@ -2379,6 +2413,10 @@ private:
     // re-armed by a note at or above the reserve, a fresh window commit, a
     // failed history request, and reset().
     bool m_olderPrefetchArmed = true;
+    quint64 m_historyTimingSelection = 0;
+    qint64 m_historyPageWaitMs = 0;
+    QElapsedTimer m_scrollSampleClock;
+    qreal m_previousTopDistance = 0;
     bool m_busy = false;
     bool m_loading = false;
     bool m_sending = false;

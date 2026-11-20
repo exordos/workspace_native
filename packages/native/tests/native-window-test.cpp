@@ -11,6 +11,7 @@
 #include "file-client.h"
 #include "avatar-images.h"
 #include "message-images.h"
+#include "workspace-reference.h"
 
 #include <functional>
 #include <algorithm>
@@ -9331,7 +9332,10 @@ mv -Tf "$root/.current-new" "$root/current"
         if (!fixture.directBodies.isEmpty())
             QCOMPARE(fixture.directBodies.first(), QJsonObject({{"name", "Direct"}, {"description", "Private workspace"},
                 {"source_name", "native"}, {"direct_user_uuid", channelPeer}}));
-        click(window, item(window->contentItem(), "topic-" + channelDefault));
+        // The sidebar publishes its expansion on the next event loop turn.
+        const auto topicRow = [&] { return visibleItem(window->contentItem(), "topic-" + channelDefault); };
+        QTRY_VERIFY(topicRow() && topicRow()->width() > 0 && topicRow()->height() > 0);
+        clickReadyItem(window, topicRow());
         QTRY_COMPARE(controller.selectedTopic(), channelDefault);
         QTRY_VERIFY(!controller.busy());
         QCOMPARE(visibleItem("directConversationName")->property("text").toString(), QString("Alice"));
@@ -11236,6 +11240,195 @@ mv -Tf "$root/.current-new" "$root/current"
     // sidebar-chat-row-meta.ui.tsx) render inside the existing 60 px stream and 56 px topic
     // rows. Colors are the blue-cold light palette of qml/NativeTheme.qml: sidebar-sender
     // #7087ff, text-secondary #787878, text-muted #989898.
+    void openLocalSearchReflectsRealtimeEditsAndDeletions_data()
+    {
+        QTest::addColumn<bool>("deleted");
+        QTest::newRow("edit") << false;
+        QTest::newRow("delete") << true;
+    }
+    void openLocalSearchReflectsRealtimeEditsAndDeletions()
+    {
+        QFETCH(bool, deleted);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        const auto cachePath = directory.filePath("cache");
+        const QString id = "a9100000-0000-4000-8000-000000000001";
+        auto original = message("needle before update", id, secondTopicId);
+        {
+            NativeCache seed(cachePath, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            QVERIFY(seed.putMessageBody(seed.lease(), original));
+        }
+        NativePreferences preferences(directory.filePath("ui.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeCacheService cache(cachePath, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(cache.available());
+        click(window, visibleItem(window->contentItem(), "cachedMessageSearchButton"));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        auto *query = visibleItem(window->contentItem(), "cachedMessageSearchQuery");
+        query->setProperty("text", "needle");
+        const auto text = [&] {
+            return controller.cachedSearchResults().value(0).toMap().value("text").toString();
+        };
+        const auto visibleExcerpt = [&] {
+            auto *row = visibleItem(window->contentItem(), "cachedSearchResult-" + id);
+            auto *accessible = row ? QAccessible::queryAccessibleInterface(row) : nullptr;
+            return accessible ? accessible->text(QAccessible::Name) : QString{};
+        };
+        QTRY_COMPARE(text(), QString("needle before update"));
+        QTRY_VERIFY(visibleExcerpt().endsWith("needle before update"));
+        auto update = message("needle after update", id, secondTopicId);
+        update["kind"] = deleted ? "message.deleted" : "message.updated";
+        QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"project_id", projectId}, {"user_uuid", userId},
+            {"uuid", returnedId}, {"payload", update}}));
+        QTRY_COMPARE(text(), deleted ? QString{} : QString("needle after update"));
+        QCOMPARE(query->property("text").toString(), QString("needle"));
+        if (deleted) QTRY_VERIFY(visibleExcerpt().isEmpty());
+        else QTRY_VERIFY(visibleExcerpt().endsWith("needle after update"));
+        QTRY_COMPARE(controller.cachedSearchState(), QString("ready"));
+        if (deleted) {
+            auto *status = visibleItem(window->contentItem(), "cachedMessageSearchStatus");
+            QVERIFY(status);
+            QCOMPARE(status->property("text").toString(), QString("No matches in cached messages."));
+        } else QVERIFY(visibleItem(window->contentItem(), "cachedMessageSearchResults"));
+    }
+
+    void localCachedMessageSearchNavigatesByKeyboard()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto cachePath = directory.filePath("cache");
+        const QString first = "9a000000-0000-4000-8000-000000000001";
+        const QString second = "9a000000-0000-4000-8000-000000000002";
+        const QString ignored = "9a000000-0000-4000-8000-000000000003";
+        const auto firstRow = message(QStringLiteral("Original **Иголка** result."), first, secondTopicId);
+        const auto secondRow = message(QStringLiteral("Another иголка result."), second, secondTopicId);
+        const QString foreignUser = "9a000000-0000-4000-8000-000000000004";
+        const QString foreignProject = "9a000000-0000-4000-8000-000000000005";
+        {
+            qint64 savedAt = QDateTime::currentMSecsSinceEpoch();
+            NativeCache seed(cachePath, {}, true, [&] { return savedAt; });
+            for (const auto &identity : {qMakePair(foreignProject, userId), qMakePair(projectId, foreignUser)}) {
+                QVERIFY(seed.open(fixture.server.origin(), identity.first, identity.second));
+                auto foreign = message(QStringLiteral("Foreign иголка must stay private"), ignored, secondTopicId);
+                foreign["project_id"] = identity.first;
+                foreign["user_uuid"] = identity.second;
+                QVERIFY(seed.putMessageBody(seed.lease(), foreign));
+                seed.close();
+            }
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            const QString edited = "9a000000-0000-4000-8000-000000000006";
+            QVERIFY(seed.putMessageBody(seed.lease(), message("Obsolete searchable text", edited, secondTopicId)));
+            // Real replies and edits can be persisted within the same millisecond.
+            auto opaque = message({}, ignored, secondTopicId);
+            opaque["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", foreignProject},
+                {"content", QStringLiteral("Transport иголка must stay hidden")}};
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, streamId, secondTopicId, "older"},
+                QJsonArray{firstRow, secondRow, opaque, message("Edited content", edited, secondTopicId)}));
+            QVERIFY(seed.putMessageBody(seed.lease(), secondRow));
+            auto poll = pollCreateDto("9a000000-0000-4000-8000-000000000007");
+            poll["user_uuid"] = userId;
+            QVERIFY(seed.putMessageBody(seed.lease(), poll));
+        }
+        const auto normal = fixture.server.handler;
+        int messageLookups = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const QUrlQuery params(request.target);
+                const auto id = params.queryItemValue("uuid");
+                if (id == first || id == second) {
+                    ++messageLookups;
+                    return {QJsonArray{id == first ? firstRow : secondRow}};
+                }
+                if (params.queryItemValue("topic_uuid") == secondTopicId) return {QJsonArray{firstRow, secondRow}};
+            }
+            return normal(request);
+        };
+        NativePreferences preferences(directory.filePath("ui.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeCacheService cache(cachePath, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(cache.available());
+        controller.showSection("calendar");
+        QCOMPARE(controller.section(), QString("calendar"));
+        auto *launcher = visibleItem(window->contentItem(), "cachedMessageSearchButton");
+        QVERIFY2(launcher, "The signed-in account needs a local history search entry point");
+        click(window, launcher);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        auto *query = visibleItem(window->contentItem(), "cachedMessageSearchQuery");
+        QTRY_VERIFY(query->hasActiveFocus());
+        auto *content = visibleItem(window->contentItem(), "cachedMessageSearchContent");
+        QVERIFY(content);
+        auto *accessible = QAccessible::queryAccessibleInterface(content);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::Dialog);
+        QCOMPARE(accessible->text(QAccessible::Name), QString("Search cached messages"));
+        query->setProperty("text", "Obsolete searchable text");
+        QTRY_COMPARE(controller.property("cachedSearchState").toString(), QString("ready"));
+        QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+        auto *status = visibleItem(window->contentItem(), "cachedMessageSearchStatus");
+        QVERIFY(status);
+        QCOMPARE(status->property("text").toString(), QString("No matches in cached messages."));
+        const auto pollQuestion = pollCreateDto(ignored).value("payload").toObject().value("questions").toArray().first().toObject();
+        const auto optionText = pollQuestion.value("options").toArray().first().toObject().value("text").toString();
+        query->setProperty("text", optionText);
+        QTRY_COMPARE(controller.property("cachedSearchResults").toList().size(), 1);
+        QCOMPARE(controller.property("cachedSearchResults").toList().first().toMap().value("id").toString(),
+            QString("9a000000-0000-4000-8000-000000000007"));
+        query->setProperty("text", QStringLiteral("ИГОЛКА"));
+        QTRY_COMPARE(controller.property("cachedSearchResults").toList().size(), 2);
+        const auto rows = controller.property("cachedSearchResults").toList();
+        QSet<QString> ids;
+        for (const auto &entry : rows) {
+            const auto row = entry.toMap();
+            ids.insert(row.value("id").toString());
+            QVERIFY(row.value("text").toString().contains(QStringLiteral("иголка"), Qt::CaseInsensitive));
+            QVERIFY(!row.value("text").toString().contains("**"));
+            QVERIFY(row.value("location").toString().contains("Planning"));
+        }
+        QCOMPARE(ids, (QSet<QString>{first, second}));
+        QCOMPARE(messageLookups, 0);
+        auto *list = visibleItem(window->contentItem(), "cachedMessageSearchResults");
+        QVERIFY(list);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(list->property("currentIndex").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(list->property("currentIndex").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_Down);
+        const auto target = rows[1].toMap().value("id").toString();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(controller.section(), QString("chat"));
+        QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+        QTRY_COMPARE(controller.anchorMessageId(), target);
+        QCOMPARE(messageLookups, 0); // Both matching identifiers and their routes are already in this cache.
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        click(window, launcher);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery")
+            && visibleItem(window->contentItem(), "cachedMessageSearchQuery")->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(launcher->hasActiveFocus());
+        QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+    }
+
     void sidebarRowsRenderPreviewAndTime()
     {
         WindowChannelFixture fixture;
@@ -14694,11 +14887,11 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             QVERIFY(distanceFromBottom() >= 500);
             if (prepend) {
-                QTRY_VERIFY(list->property("atYBeginning").toBool());
-                // The climb crossed the 100 px auto-page zone
-                // (docs/NATIVE_DESKTOP_AUTO_PAGING.md): the older page arrives
-                // on its own, without the button click.
+                // The user's wheel crossed the prefetch reserve. A fast page can
+                // already have restored the old anchor below 50 newly inserted
+                // rows by the next frame. Observe the page and its marker.
                 QTRY_COMPARE(controller.messages().size(), 100);
+                QTRY_VERIFY(!list->property("positioning").toBool());
                 QCOMPARE(olderPageMarkers, QStringList{initialOldest});
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
@@ -21048,6 +21241,273 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void composerHeightFollowsContentDragKeyboardAndFullHeight()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{message("Editable source", messageId)}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("composer-height.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *shell = view("messageComposerShell");
+        auto *editor = view("messageComposer");
+        auto *list = view("messageList");
+        QVERIFY(shell && editor && list);
+        const auto draftLines = [&](int lines) {
+            QStringList words;
+            for (int i = 0; i < lines; ++i) words.append("line");
+            controller.setDraft(words.join('\n'));
+        };
+        const auto drag = [&](QQuickItem *handle, int vertical) {
+            const auto start = handle->mapToScene({handle->width() / 2, 4}).toPoint();
+            const auto end = start + QPoint(0, vertical);
+            QTest::mousePress(window, Qt::LeftButton, {}, start);
+            QTest::mouseMove(window, end);
+            QTest::mouseRelease(window, Qt::LeftButton, {}, end);
+        };
+        draftLines(1);
+        QTRY_COMPARE(shell->height(), 57.0);
+        QVERIFY(!view("composerResizeHandle") && !view("composerHeightButton"));
+        draftLines(2);
+        QTRY_COMPARE_WITH_TIMEOUT(shell->height(), 81.0, 1500);
+        auto *handle = view("composerResizeHandle"); QVERIFY(handle);
+        QCOMPARE(handle->height(), 20.0);
+        QVERIFY(!view("composerHeightButton"));
+        draftLines(3); QTRY_COMPARE(shell->height(), 105.0);
+        draftLines(4); QTRY_COMPARE(shell->height(), 129.0);
+        auto *heightButton = view("composerHeightButton"); QVERIFY(heightButton);
+        QCOMPARE(heightButton->size(), QSizeF(28, 28));
+        const auto *iface = QAccessible::queryAccessibleInterface(heightButton); QVERIFY(iface);
+        const auto expandName = locale == "ru" ? QString("Развернуть поле сообщения") : QString("Expand message editor");
+        QCOMPARE(iface->text(QAccessible::Name), expandName);
+        auto *attach = view("attachButton"), *emoji = view("composerEmojiButton"); QVERIFY(attach && emoji);
+        QTRY_COMPARE(attach->mapToScene(QPointF{}).x(), emoji->mapToScene(QPointF{}).x());
+        QVERIFY(attach->mapToScene(QPointF{}).y() < emoji->mapToScene(QPointF{}).y());
+        draftLines(3); QTRY_COMPARE(shell->height(), 105.0);
+        QVERIFY(heightButton->isVisible());
+        draftLines(2); QTRY_COMPARE(shell->height(), 81.0);
+        QTRY_VERIFY(!heightButton->isVisible());
+        QTRY_COMPARE(attach->mapToScene(QPointF{}).y(), emoji->mapToScene(QPointF{}).y());
+        click(window, editor);
+        QSet<QQuickItem *> visited;
+        while (window->activeFocusItem() != handle && !visited.contains(window->activeFocusItem())) {
+            visited.insert(window->activeFocusItem());
+            QTest::keyClick(window, Qt::Key_Tab);
+        }
+        QTRY_VERIFY(handle->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Up); QTRY_COMPARE(shell->height(), 105.0);
+        QTest::keyClick(window, Qt::Key_Down); QTRY_COMPARE(shell->height(), 81.0);
+        draftLines(1); QTRY_COMPARE(shell->height(), 57.0);
+        draftLines(8); QTRY_COMPARE(shell->height(), 145.0);
+        drag(handle, 160);
+        QTRY_COMPARE(shell->height(), 113.0);
+        drag(handle, -55); QTRY_COMPARE(shell->height(), 168.0);
+        controller.setDraft({}); QTRY_COMPARE(shell->height(), 168.0);
+        click(window, heightButton);
+        QTRY_COMPARE(list->height(), 4.0);
+        const auto full = shell->height(); QVERIFY(full > 168);
+        draftLines(1); QTRY_COMPARE(shell->height(), full);
+        window->resize(window->width(), window->height() - 75);
+        QTRY_COMPARE(shell->height(), full - 75);
+        QTRY_COMPARE(list->height(), 4.0);
+        window->resize(window->minimumSize());
+        QTRY_COMPARE(window->size(), window->minimumSize());
+        QTRY_COMPARE(list->height(), 4.0);
+        click(window, heightButton); QTRY_COMPARE(shell->height(), 57.0);
+        QVERIFY(!handle->isVisible() && !heightButton->isVisible());
+
+        QVERIFY(controller.beginEditMessage(messageId));
+        draftLines(5);
+        QVERIFY(!view("pollButton"));
+        QTRY_VERIFY(heightButton->isVisible());
+        auto *field = view("composerFieldViewport"); QVERIFY(field);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        const auto fieldRight = field->mapToScene(QPointF(field->width(), 0)).x();
+        const auto buttonLeft = heightButton->mapToScene(QPointF()).x();
+        QVERIFY2(fieldRight <= buttonLeft,
+            qPrintable(QString("Editor ends at %1, height button begins at %2").arg(fieldRight).arg(buttonLeft)));
+    }
+
+    void composerPreviewShowsTheBodyItSends_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("inlineFile");
+        QTest::addColumn<bool>("reply");
+        QTest::newRow("en-light-missing") << QString("en") << QString("light") << false << false;
+        QTest::newRow("en-dark-inline") << QString("en") << QString("dark") << true << false;
+        QTest::newRow("ru-light-inline") << QString("ru") << QString("light") << true << false;
+        QTest::newRow("ru-dark-missing") << QString("ru") << QString("dark") << false << false;
+        QTest::newRow("en-quoted-missing") << QString("en") << QString("light") << false << true;
+        QTest::newRow("ru-quoted-inline") << QString("ru") << QString("dark") << true << true;
+    }
+
+    void composerPreviewShowsTheBodyItSends()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        QFETCH(bool, inlineFile);
+        QFETCH(bool, reply);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QFile file(directory.filePath("fixture.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("fixture"), 7);
+        file.close();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QJsonObject canonical;
+        auto editable = message("Reply source", messageId);
+        QString posted, saved;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{editable}};
+            if (path.endsWith("/messages/" + messageId)) {
+                if (request.method == "PUT") {
+                    editable["payload"] = request.body.value("payload");
+                    saved = editable.value("payload").toObject().value("content").toString();
+                }
+                if (request.method == "GET" || request.method == "PUT")
+                    return {editable};
+            }
+            if (request.method == "POST" && path.endsWith("/files/")) {
+                return {QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "fixture.txt"},
+                    {"size_bytes", 7}, {"content_type", "text/plain"},
+                    {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}, 201};
+            }
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                canonical = message(posted, request.body.value("uuid").toString());
+                return {canonical, 201};
+            }
+            if (request.method == "GET" && !canonical.isEmpty() && path.endsWith("/messages/" + canonical.value("uuid").toString()))
+                return {canonical};
+            return fallback(request);
+        };
+        NativePreferences preferences(directory.filePath("preview.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api);
+        FileClient files(&api); NativeController controller(&api, &session); controller.useFiles(&files);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guarded = QPointer<QQuickWindow>(window)] {
+            if (guarded) closeIncubatedTestWindow(engine, guarded.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *expand = view("composerToolbarExpand"); QVERIFY(expand);
+        QVERIFY(!view("composerPreviewToggle"));
+        click(window, expand);
+        auto *toggle = view("composerPreviewToggle");
+        QVERIFY2(toggle, "The expanded composer toolbar must expose Preview");
+        auto *collapse = view("composerToolbarCollapse"); QVERIFY(collapse);
+        auto *accessible = QAccessible::queryAccessibleInterface(toggle);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru" ? QString("Предпросмотр") : QString("Preview"));
+        QVERIFY(accessible->state().checkable && !accessible->state().checked);
+        click(window, toggle);
+        QTRY_VERIFY(view("composerPreviewEmpty"));
+        QCOMPARE(view("composerPreviewEmpty")->property("text").toString(),
+            locale == "ru" ? QString("Пока нечего предпросматривать") : QString("Nothing to preview yet"));
+        auto *preview = view("composerPreviewRegion");
+        QVERIFY(preview);
+        QTRY_COMPARE(preview->height(), 40.0);
+        const auto longBody = QStringLiteral("## Heading\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+            "```cpp\nconst int a = 1;\n```\n\n||inside||\n\n") + QString("line\n\n").repeated(45);
+        controller.setDraft(longBody);
+        auto *markdown = view("composerPreviewMarkdown");
+        QTRY_VERIFY(markdown = view("composerPreviewMarkdown"));
+        QTRY_COMPARE(preview->height(), 128.0);
+        QVERIFY(markdown->height() > preview->height());
+        const auto viewport = qobject_cast<QQuickItem *>(preview->property("contentItem").value<QObject *>());
+        QVERIFY(viewport);
+        const auto center = preview->mapToScene({preview->width() / 2, preview->height() / 2});
+        QTest::wheelEvent(window, center, QPoint(0, -720));
+        QTRY_VERIFY(viewport->property("contentY").toReal() > 0);
+        controller.setDraft(QString(40001, 'x'));
+        NativeMarkdown renderer;
+        QTRY_COMPARE(markdown->property("text").toString(), renderer.render(controller.draft()).value("html").toString());
+        controller.setDraft({});
+        QTRY_VERIFY(view("composerPreviewEmpty"));
+        QVERIFY(!collapse->isEnabled() && !view("messageComposer") && !view("composerAiButton"));
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru" ? QString("Написание") : QString("Write"));
+        QVERIFY(accessible->state().checked);
+        click(window, toggle);
+        QTRY_VERIFY(view("messageComposer") && collapse->isEnabled() && view("composerAiButton"));
+        QString quote;
+        if (reply) {
+            QVERIFY(controller.beginReply(messageId));
+            quote = workspace::buildWorkspaceQuoteReference(controller.replyAuthor(), messageId);
+            QVERIFY(quote.contains("urn:quote:" + messageId));
+        }
+        controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!controller.uploadEntries().isEmpty()
+                    && controller.uploadEntries().first().toMap().value("status").toString() == "ready");
+        const auto link = controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        const QString body = inlineFile ? "**before** " + link + " after" : QString("**before** and after");
+        controller.setDraft(body);
+        click(window, toggle);
+        auto *rendered = view("composerPreviewMarkdown");
+        QTRY_VERIFY(rendered = view("composerPreviewMarkdown"));
+        const auto plain = inlineFile ? body : link + '\n' + body;
+        const auto outgoing = reply ? quote + "\n\n" + (inlineFile ? body : link + "\n\n" + body) : plain;
+        QCOMPARE(rendered->property("sourceMarkdown").toString(), outgoing);
+        QCOMPARE(rendered->property("sourceMarkdown").toString().count(link), 1);
+        QCOMPARE(rendered->property("text").toString(), renderer.render(outgoing).value("html").toString());
+        QCOMPARE(controller.draft(), body);
+        QVERIFY(posted.isEmpty());
+        auto *send = view("sendButton"); QVERIFY(send && send->isEnabled());
+        click(window, send);
+        QTRY_COMPARE(posted, outgoing);
+        QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
+        QTRY_VERIFY(controller.draft().isEmpty());
+
+        QVERIFY(controller.beginEditMessage(messageId));
+        const QString revision = "Edited **reply source**";
+        controller.setDraft(revision);
+        click(window, toggle);
+        QTRY_VERIFY(rendered = view("composerPreviewMarkdown"));
+        QCOMPARE(rendered->property("sourceMarkdown").toString(), revision);
+        auto *save = view("saveEditButton"); QVERIFY(save && save->isEnabled());
+        click(window, save);
+        QTRY_COMPARE(saved, revision);
+        QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
+        QTRY_VERIFY(controller.editingMessageId().isEmpty());
+    }
+
     void composerAiNoticeTracksItsTriggerAndOtherPickers_data()
     {
         QTest::addColumn<QString>("locale");
@@ -21883,6 +22343,28 @@ mv -Tf "$root/.current-new" "$root/current"
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
     // and packages/web/src/shared/lib/avatar-color.lib.ts for the color.
+    void accountMenuKeepsSignOutReachableWhileScrolling()
+    {
+        ChannelInfoWindowScene scene;
+        scene.window->resize(900, 600);
+        click(scene.window, visibleItem("accountMenuButton"));
+        auto *scroll = visibleItem("accountMenuScroll");
+        auto *signOut = visibleItem("signOutButton");
+        QVERIFY(scroll && signOut);
+        QTRY_VERIFY(scroll->property("contentHeight").toReal() > scroll->height());
+        const QRectF bounds(QPointF{}, scene.window->size());
+        QTRY_VERIFY(bounds.contains(signOut->mapRectToScene({QPointF{}, signOut->size()})));
+        const auto position = signOut->mapToScene(QPointF{});
+        auto *command = visibleItem("refreshButton");
+        QVERIFY(command);
+        const auto before = command->mapToScene(QPointF{}).y();
+        scroll->setProperty("contentY", scroll->property("contentHeight").toReal() - scroll->height());
+        QTRY_VERIFY(command->mapToScene(QPointF{}).y() < before);
+        QCOMPARE(signOut->mapToScene(QPointF{}), position);
+        click(scene.window, signOut);
+        QTRY_VERIFY(!scene.controller.authenticated());
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;
@@ -26952,8 +27434,16 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(capsule->property("expanded").toBool());
         const auto outside = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
         QTest::mouseMove(window, outside.toPoint());
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
         QTest::wheelEvent(window, outside, QPoint(0, 120));
         QTRY_VERIFY(list->property("contentY").toReal() < outerBefore);
+        // contentY changes as soon as the outer list accepts the wheel. Its
+        // newly visible delegates can still be incubating until presentation.
+        const auto *incubation = scene.engine.incubationController();
+        QVERIFY(incubation);
+        QTRY_VERIFY_WITH_TIMEOUT(!painted.isEmpty() && incubation->incubatingObjectCount() == 0, 2000);
+        QVERIFY(closeIncubatedTestWindow(scene.engine, window));
+        scene.window = nullptr; // Already closed and checked above.
     }
 
     // Issue #142: the wheel distance must match the measured reference notch.
@@ -32474,8 +32964,9 @@ private slots:
         QVERIFY(controller.anchorNavigationError().isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), target, 4000);
         QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 2000);
-        auto *highlight = item(content, "messageHighlight-" + target); QVERIFY(highlight);
-        QVERIFY(highlight->isVisible());
+        // The lookup and overlay can settle before the new list delegate
+        // presents its highlight on the next window frame.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(content, "messageHighlight-" + target), 2000);
         // A next failing jump (unknown target) re-arms the retryable alert, and
         // the inline scroll-to-bottom escapes to the conversation tail from there.
         const QString missingTarget = "99999999-9999-4999-8999-999999999999";

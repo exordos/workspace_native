@@ -1652,15 +1652,26 @@ component NativeMentionChip: Item {
 
     component MessageSpoilerControl: NativeMentionChip {
         required property var row
-        objectName: "message-spoiler-" + row.modelData.id + "-" + modelData.id
-        Accessible.name: modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
-        Accessible.checkable: true
-        Accessible.checked: row.openedSpoilers.includes(modelData.id)
+        objectName: (modelData.secret ? "message-secret-" : "message-spoiler-") + row.modelData.id + "-" + modelData.id
+        enabled: !modelData.secret || modelData.action !== "pending"
+        Accessible.name: modelData.secret ? modelData.label.trim() : modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
+        Accessible.checkable: !modelData.secret || ["show", "hide"].includes(modelData.action)
+        Accessible.checked: modelData.secret ? modelData.action === "hide" : row.openedSpoilers.includes(modelData.id)
         activate: () => row.activateBodyLink(modelData.urn, true)
+        Image {
+            visible: Boolean(parent.modelData.secret)
+            source: visible ? "qrc:/workspace/icons/chat_lock.svg" : ""
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: 13
+            height: 13
+            sourceSize: Qt.size(13, 13)
+            Accessible.ignored: true
+        }
         Rectangle {
             anchors.fill: parent
             anchors.margins: -1
-            visible: parent.modelData.header
+            visible: Boolean(parent.modelData.header)
             color: "transparent"
             border.width: 1
             border.color: root.colors["border-subtle"]
@@ -1799,8 +1810,10 @@ component NativeMentionChip: Item {
             if (composerEmojiPicker.visible && root.composerEmojiAllowed && root.composerEmojiStream === stream
                     && (root.composerEmojiKind === "stream" || root.composerEmojiTopic === topic))
                 composerEmojiPicker.close();
-            if (root.controller.selectedStream === stream && root.controller.selectedTopic === topic)
+            if (root.controller.selectedStream === stream && root.controller.selectedTopic === topic) {
+                messageComposerShell.preview = false;
                 messageList.followSentMessage(id);
+            }
         }
     }
 
@@ -2733,6 +2746,15 @@ component NativeMentionChip: Item {
         }
     }
 
+    NativeCachedMessageSearch {
+        id: cachedMessageSearch
+        controller: root.controller
+        colors: root.colors
+        onClosed: {
+            if (openedResult && messageList.visible) messageList.forceActiveFocus()
+            else if (cachedSearchButton.visible) cachedSearchButton.forceActiveFocus()
+        }
+    }
     Rectangle {
         id: topBar
         Keys.onEscapePressed: event => root.handleChatEscape(event)
@@ -2836,6 +2858,16 @@ component NativeMentionChip: Item {
                 colors: root.colors
                 width: implicitWidth; height: implicitHeight
                 anchors.verticalCenter: parent.verticalCenter
+            }
+            NativeIconButton {
+                id: cachedSearchButton
+                objectName: "cachedMessageSearchButton"
+                colors: root.colors
+                width: 36; height: 36; glyphSize: 18
+                anchors.verticalCenter: parent.verticalCenter
+                asset: "search.svg"
+                help: qsTr("Search cached messages")
+                onClicked: cachedMessageSearch.open()
             }
             NativeIconButton {
                 id: updateIndicator
@@ -3421,7 +3453,7 @@ component NativeMentionChip: Item {
         x: root.width - width - 16
         y: topBar.height - 4
         width: 315
-        height: Math.min(accountActions.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
+        height: Math.min(accountActions.implicitHeight + 8 + signOutFooter.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
         padding: 12
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
@@ -3429,14 +3461,34 @@ component NativeMentionChip: Item {
             border.color: root.colors["border-subtle"]
             radius: 10
         }
-        contentItem: Flickable {
-            id: accountScroll
-            objectName: "accountMenuScroll"
-            clip: true
-            contentWidth: width
-            contentHeight: accountActions.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {}
+        contentItem: Item {
+            Flickable {
+                id: accountScroll
+                objectName: "accountMenuScroll"
+                anchors.top: parent.top
+                anchors.bottom: signOutFooter.top
+                anchors.bottomMargin: 8
+                width: parent.width
+                clip: true
+                contentWidth: width
+                contentHeight: accountActions.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {}
+            }
+            NativeButton {
+                id: signOutFooter
+                colors: root.colors
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                text: qsTr("Sign out")
+                objectName: "signOutButton"
+                onClicked: {
+                    accountPopup.close();
+                    root.controller.closeDrafts();
+                    root.controller.logout();
+                }
+            }
         }
         ColumnLayout {
             id: accountActions
@@ -3757,17 +3809,7 @@ component NativeMentionChip: Item {
                     accountPopup.close();
                 }
             }
-            NativeButton {
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Sign out")
-                objectName: "signOutButton"
-                onClicked: {
-                    accountPopup.close();
-                    root.controller.closeDrafts();
-                    root.controller.logout();
-                }
-            }
+
         }
     }
 
@@ -8212,9 +8254,37 @@ component NativeMentionChip: Item {
                     property var spoilerState: ({})
                     readonly property var openedSpoilers: spoilerState.message === modelData.id
                         && spoilerState.body === bodyMarkdown ? spoilerState.opened : []
-                    readonly property var rendered: root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers)
-                    onBodyMarkdownChanged: spoilerState = ({})
+                    property var revealedFragments: []
+                    property int secretRenderRevision: 0
+                    readonly property var rendered: {
+                        const ordinary = root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers);
+                        if (!ordinary.hasSecrets) return ordinary;
+                        // Vault changes can leave the surrounding message Markdown identical.
+                        const revision = root.controller.secretKeyRevision + secretRenderRevision;
+                        const active = root.chatEncryption;
+                        const current = modelData;
+                        const display = root.controller.renderSecretMessage(String(current.id), openedSpoilers, revealedFragments);
+                        return display.html !== undefined ? display : ordinary;
+                    }
+                    onBodyMarkdownChanged: {
+                        spoilerState = ({});
+                        revealedFragments = [];
+                    }
                     function activateBodyLink(link, restoreFocus) {
+                        const secret = (rendered.secretControls || []).find(span => span.href === String(link));
+                        if (secret) {
+                            if (secret.action === "request") {
+                                root.controller.requestSecretMessageKey(String(modelData.id), secret.token, openedSpoilers);
+                            } else if (secret.action === "retry") {
+                                ++secretRenderRevision;
+                            } else if (secret.action === "show" || secret.action === "hide") {
+                                revealedFragments = secret.action === "hide"
+                                    ? revealedFragments.filter(token => token !== secret.token)
+                                    : revealedFragments.concat([secret.token]);
+                            }
+                            if (restoreFocus) focusDisclosure(secret.id, true);
+                            return;
+                        }
                         const target = (rendered.spoilers || []).find(span => span.href === String(link));
                         if (!target) {
                             root.openReference(link);
@@ -8223,11 +8293,14 @@ component NativeMentionChip: Item {
                         spoilerState = { message: modelData.id, body: bodyMarkdown,
                             opened: openedSpoilers.includes(target.id)
                                 ? openedSpoilers.filter(id => id !== target.id) : openedSpoilers.concat([target.id]) };
-                        if (restoreFocus) Qt.callLater(() => {
+                        if (restoreFocus) focusDisclosure(target.id, false);
+                    }
+                    function focusDisclosure(id, secret) {
+                        Qt.callLater(() => {
                             const chips = hasInlineImages ? mediaSpoilerChips : bodySpoilerChips;
                             for (let i = 0; chips && i < chips.count; ++i) {
                                 const chip = chips.itemAt(i);
-                                if (chip && chip.modelData.id === target.id) {
+                                if (chip && chip.enabled && chip.modelData.id === id && !!chip.modelData.secret === secret) {
                                     chip.forceActiveFocus();
                                     break;
                                 }
@@ -8282,10 +8355,10 @@ component NativeMentionChip: Item {
                     property var mentionTargets: locateMentionTargets()
                     property var spoilerTargets: locateSpoilers()
                     function locateSpoilers() {
-                        const spans = rendered.spoilers || [];
+                        const spans = (rendered.spoilers || []).concat(rendered.secretControls || []);
                         if (!spans.length) return [];
                         const pairs = spans.map(span => ({ urn: span.href, label: span.label,
-                            id: span.id, header: span.header, anchorStart: span.start, anchorLength: span.length }));
+                            id: span.id, header: span.header, secret: !!span.action, action: span.action, anchorStart: span.start, anchorLength: span.length }));
                         if (!hasInlineImages) return mentionRectsIn(messageBody, pairs, bodyMentionOverlay);
                         const targets = [];
                         for (let i = 0; i < imageRuns.count; ++i) {
@@ -8342,7 +8415,7 @@ component NativeMentionChip: Item {
                                 const right = Math.abs(after.y - top.y) < 0.5
                                     ? after.x : lastChar.x + lastChar.width;
                                 const origin = item.mapToItem(overlay, top.x, top.y);
-                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header,
+                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header, secret: pair.secret, action: pair.action,
                                     x: origin.x, y: origin.y,
                                     w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
                                 i = j + 1;
@@ -9372,13 +9445,17 @@ component NativeMentionChip: Item {
                                 // -interactions.hook.ts:97-116); centered control
                                 // labels stay non-selectable.
                                 readOnly: true
-                                selectByMouse: !messageRow.keyControl
+                                selectByMouse: !messageRow.keyControl && !messageRow.rendered.hasSecrets
+                                selectByKeyboard: !messageRow.keyControl && !messageRow.rendered.hasSecrets
                                 cursorVisible: false
                                 persistentSelection: true
                                 // Issue #218 review r2: a selection becoming
                                 // active here clears the other bubbles'
                                 // persistent selections (noteBodySelection).
-                                onSelectedTextChanged: root.noteBodySelection(messageRow.modelData.id, messageBody)
+                                onSelectedTextChanged: {
+                                    if (messageRow.rendered.hasSecrets && selectedText.length) deselect();
+                                    else root.noteBodySelection(messageRow.modelData.id, messageBody);
+                                }
                                 Component.onDestruction: root.forgetBodySelection(messageRow.modelData.id)
                                 bottomPadding: messageRow.inlineMeta ? 2 : 0
                                 height: contentHeight + topPadding + bottomPadding
@@ -9470,6 +9547,9 @@ component NativeMentionChip: Item {
                                             text: messageRow.imagePartHtml(imageRun.part, imageRun.index)
                                             textFormat: TextEdit.RichText
                                             readOnly: true
+                                            selectByKeyboard: !messageRow.rendered.hasSecrets
+                                            selectByMouse: !messageRow.rendered.hasSecrets
+                                            onSelectedTextChanged: if (messageRow.rendered.hasSecrets && selectedText.length) deselect()
                                             cursorVisible: false
                                             wrapMode: TextEdit.Wrap
                                             font.pixelSize: 14
@@ -9909,6 +9989,7 @@ component NativeMentionChip: Item {
                 }
             }
             NativeButton {
+                id: loadNewerButton
                 colors: root.colors
                 visible: root.controller.canLoadNewer
                 Layout.alignment: Qt.AlignHCenter
@@ -10330,11 +10411,16 @@ component NativeMentionChip: Item {
             Rectangle {
                 id: messageComposerShell
                 objectName: "messageComposerShell"
+                property bool preview: false
+                readonly property string previewContext: root.controller.ownStatusContextKey + "/"
+                    + root.controller.selectedStream + "/" + root.controller.selectedTopic + "/" + root.controller.editingMessageId
+                onPreviewContextChanged: preview = false
+                onVisibleChanged: if (!visible) preview = false
                 visible: root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed && !root.aggregateConversation
                 Layout.fillWidth: true
-                // Source measured geometry: the composer box plus the 33 px edit notice
-                // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
-                Layout.preferredHeight: Math.min(185, Math.max(57, composerText.contentHeight + 33))
+                readonly property real naturalEditorHeight: Math.max(40, Math.min(128, 16 + 24 * composerText.lineCount))
+                readonly property real minimumEditorHeight: Math.min(96, naturalEditorHeight)
+                readonly property real chromeHeight: 17
                     + (composerToolbarRow.visible ? composerToolbarRow.Layout.preferredHeight + composerInputColumn.spacing : 0)
                     + (messageSelectionBar.visible ? messageSelectionBar.height : 0)
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
@@ -10342,6 +10428,39 @@ component NativeMentionChip: Item {
                     + (replyNotice.visible ? replyNotice.height : 0)
                     + editAttachmentStrip.height
                     + uploadCardStrip.height
+                readonly property real maximumEditorHeight: Math.max(40,
+                    parent.height - messageList.y - 4 - chromeHeight - parent.spacing
+                    - (loadNewerButton.visible ? loadNewerButton.height + parent.spacing : 0)
+                    - (outgoingStatus.visible ? outgoingStatus.height + parent.spacing : 0)
+                    - (encryptionStatus.visible ? encryptionStatus.height + parent.spacing : 0))
+                property real manualEditorHeight: -1
+                property bool fullHeight: false
+                property bool tallControls: false
+                readonly property real fieldHeight: fullHeight ? maximumEditorHeight
+                    : manualEditorHeight >= 0 ? Math.min(maximumEditorHeight, Math.max(minimumEditorHeight, manualEditorHeight))
+                    : preview ? Math.max(40, Math.min(128, composerPreviewContents.implicitHeight)) : naturalEditorHeight
+                readonly property bool compactRail: tallControls && !preview && !root.preferences.composerToolbarExpanded
+                Layout.preferredHeight: chromeHeight + fieldHeight
+                onFieldHeightChanged: updateTallControls()
+                function updateTallControls() {
+                    const holdTallLayout = manualEditorHeight < 0 && tallControls;
+                    tallControls = fullHeight || (holdTallLayout ? fieldHeight > 64 : fieldHeight >= 96);
+                }
+                function releaseHeight() {
+                    fullHeight = false;
+                    manualEditorHeight = -1;
+                    tallControls = naturalEditorHeight >= 96;
+                }
+                function resizeEditor(value) {
+                    const next = Math.min(maximumEditorHeight, Math.max(minimumEditorHeight, value));
+                    if (next < maximumEditorHeight - 1 && naturalEditorHeight <= 96 && next <= minimumEditorHeight + 1) {
+                        releaseHeight();
+                        return;
+                    }
+                    manualEditorHeight = next;
+                    fullHeight = next >= maximumEditorHeight - 1;
+                    updateTallControls();
+                }
                 color: root.colors["composer-outer"]
                 radius: 10
                 Rectangle {
@@ -11045,6 +11164,45 @@ component NativeMentionChip: Item {
                     color: "transparent"; border.width: 2; border.color: root.colors.accent
                     visible: composerDropArea.containsDrag && composerDropArea.externalFiles
                 }
+                Item {
+                    id: composerResizeHandle
+                    objectName: "composerResizeHandle"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 20
+                    z: 4
+                    visible: messageComposerShell.naturalEditorHeight >= 64 || messageComposerShell.manualEditorHeight >= 0
+                    activeFocusOnTab: true
+                    KeyNavigation.backtab: composerText
+                    KeyNavigation.tab: composerHeightButton.visible ? composerHeightButton
+                        : root.preferences.composerToolbarExpanded ? composerFormatLinkButton : composerToolbarExpand
+                    Accessible.role: Accessible.Grip
+                    Accessible.name: qsTranslate("ComposerHeight", "Resize message editor")
+                    Keys.onUpPressed: messageComposerShell.resizeEditor(messageComposerShell.fieldHeight + 24)
+                    Keys.onDownPressed: messageComposerShell.resizeEditor(messageComposerShell.fieldHeight - 24)
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        y: 2
+                        width: 56; height: 4; radius: 2
+                        color: parent.activeFocus ? root.colors.accent : root.colors["composer-icon"]
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.SizeVerCursor
+                        preventStealing: true
+                        property real startY
+                        property real startHeight
+                        onPressed: mouse => {
+                            composerResizeHandle.forceActiveFocus(Qt.MouseFocusReason);
+                            startY = mapToItem(null, mouse.x, mouse.y).y;
+                            startHeight = messageComposerShell.fieldHeight;
+                        }
+                        onPositionChanged: mouse => {
+                            if (pressed) messageComposerShell.resizeEditor(startHeight + startY - mapToItem(null, mouse.x, mouse.y).y);
+                        }
+                    }
+                }
                 ColumnLayout {
                     id: composerInputColumn
                     // Padded composer column: message-composer.ui.tsx:2040
@@ -11069,29 +11227,105 @@ component NativeMentionChip: Item {
                             Layout.fillHeight: true
                             radius: 10
                             color: root.colors.bg
+                            NativeIconButton {
+                                id: composerHeightButton
+                                objectName: "composerHeightButton"
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.margins: 16
+                                z: 3
+                                visible: messageComposerShell.tallControls
+                                colors: root.colors
+                                help: messageComposerShell.fullHeight ? qsTranslate("ComposerHeight", "Collapse message editor")
+                                    : qsTranslate("ComposerHeight", "Expand message editor")
+                                asset: messageComposerShell.fullHeight ? "composer-collapse-content.svg" : "composer-expand-content.svg"
+                                iconColor: root.colors["composer-icon"]
+                                implicitWidth: 28; implicitHeight: 28
+                                glyphSize: 20
+                                onClicked: {
+                                    if (messageComposerShell.fullHeight) messageComposerShell.releaseHeight();
+                                    else messageComposerShell.resizeEditor(messageComposerShell.maximumEditorHeight);
+                                }
+                            }
                             RowLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 8
                                 anchors.rightMargin: 8
                                 spacing: 8
-                                NativeIconButton {
-                                    objectName: "composerToolbarExpand"
-                                    colors: root.colors
-                                    // Compact mode keeps a single expand toggle in the
-                                    // input row (message-composer.ui.tsx:1925-1939), on
-                                    // the same pl-2 axis as the toolbar collapse toggle.
-                                    asset: "composer-bottom-panel-open.svg"
-                                    help: qsTr("Show formatting tools")
-                                    enabled: composerText.enabled
-                                    visible: !root.preferences.composerToolbarExpanded
-                                    implicitWidth: 32
-                                    implicitHeight: 32
-                                    glyphSize: 21
+                                GridLayout {
+                                    id: composerLeadingControls
+                                    columns: 1
+                                    rowSpacing: 4
+                                    columnSpacing: 0
+                                    visible: !messageComposerShell.preview && !root.preferences.composerToolbarExpanded
                                     Layout.alignment: Qt.AlignBottom
-                                    onClicked: root.preferences.composerToolbarExpanded = true
+                                    NativeIconButton {
+                                        id: composerToolbarExpand
+                                        objectName: "composerToolbarExpand"
+                                        Layout.row: messageComposerShell.compactRail ? 2 : 0
+                                        Layout.column: 0
+                                        colors: root.colors
+                                        // Compact mode keeps a single expand toggle in the
+                                        // input row (message-composer.ui.tsx:1925-1939), on
+                                        // the same pl-2 axis as the toolbar collapse toggle.
+                                        asset: "composer-bottom-panel-open.svg"
+                                        help: qsTr("Show formatting tools")
+                                        enabled: composerText.enabled
+                                        visible: !root.preferences.composerToolbarExpanded
+                                        implicitWidth: 32
+                                        implicitHeight: 32
+                                        glyphSize: 21
+                                        Layout.alignment: Qt.AlignBottom
+                                        onClicked: root.preferences.composerToolbarExpanded = true
+                                    }
+                                }
+                                ScrollView {
+                                    id: composerPreviewScroll
+                                    objectName: "composerPreviewRegion"
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    visible: messageComposerShell.preview
+                                    clip: true
+                                    leftPadding: 4
+                                    rightPadding: 4
+                                    contentWidth: availableWidth
+                                    contentHeight: composerPreviewContents.implicitHeight
+                                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                                    Accessible.role: Accessible.Pane
+                                    Accessible.name: qsTranslate("ComposerMode", "Preview")
+                                    Column {
+                                        id: composerPreviewContents
+                                        width: composerPreviewScroll.availableWidth
+                                        topPadding: 8
+                                        bottomPadding: 8
+                                        Label {
+                                            objectName: "composerPreviewEmpty"
+                                            visible: !composerPreviewMarkdown.sourceMarkdown.trim().length
+                                            text: qsTr("Nothing to preview yet")
+                                            textFormat: Text.PlainText
+                                            color: root.colors["text-muted"]
+                                            font.pixelSize: 14
+                                        }
+                                        Label {
+                                            id: composerPreviewMarkdown
+                                            objectName: "composerPreviewMarkdown"
+                                            width: parent.width
+                                            readonly property string sourceMarkdown: messageComposerShell.preview
+                                                ? root.controller.composerPreviewBody : ""
+                                            visible: sourceMarkdown.trim().length > 0
+                                            text: visible ? root.markdown.render(sourceMarkdown).html : ""
+                                            textFormat: Text.RichText
+                                            wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                                            color: root.colors["text-primary"]
+                                            linkColor: root.colors.accent
+                                            font.pixelSize: 14
+                                        }
+                                    }
                                 }
                                 ScrollView {
                                 id: composerScroll
+                                objectName: "composerFieldViewport"
+                                visible: !messageComposerShell.preview
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
                                 contentWidth: availableWidth
@@ -11117,8 +11351,8 @@ component NativeMentionChip: Item {
                                     selectByMouse: true
                                     persistentSelection: true
                                     KeyNavigation.priority: KeyNavigation.BeforeItem
-                                    KeyNavigation.tab: root.preferences.composerToolbarExpanded
-                                        ? composerFormatLinkButton : null
+                                    KeyNavigation.tab: root.preferences.composerToolbarExpanded ? composerFormatLinkButton
+                                        : composerResizeHandle.visible ? composerResizeHandle : null
                                     topPadding: 8
                                     bottomPadding: 8
                                     leftPadding: 0
@@ -11388,10 +11622,20 @@ component NativeMentionChip: Item {
                                     }
                                 }
                             }
-                            RowLayout {
-                                spacing: 0
+                            GridLayout {
+                                id: composerCompactActions
+                                // Leave the tall editor's top-right button clear when the poll
+                                // action is hidden and the other actions move to the left rail.
+                                Layout.minimumWidth: composerHeightButton.visible ? composerHeightButton.width + 8 : 0
+                                visible: !messageComposerShell.preview
+                                columns: 3
+                                rowSpacing: 0
+                                columnSpacing: 0
                                 Layout.alignment: Qt.AlignBottom
                                 NativeIconButton {
+                                    parent: messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
+                                    Layout.row: 0
+                                    Layout.column: 0
                                     objectName: "attachButton"
                                     colors: root.colors
                                     asset: "composer-attach-compact.svg"
@@ -11411,6 +11655,9 @@ component NativeMentionChip: Item {
                                 }
                                 NativeIconButton {
                                     id: composerEmojiButton
+                                    parent: messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
+                                    Layout.row: messageComposerShell.compactRail ? 1 : 0
+                                    Layout.column: messageComposerShell.compactRail ? 0 : 1
                                     objectName: "composerEmojiButton"
                                     colors: root.colors
                                     asset: "composer-emoji.svg"
@@ -11426,6 +11673,8 @@ component NativeMentionChip: Item {
                                 // open and on channels without poll support.
                                 NativeIconButton {
                                     id: composerPollButton
+                                    Layout.row: 0
+                                    Layout.column: 2
                                     objectName: "pollButton"
                                     colors: root.colors
                                     asset: "poll.svg"
@@ -11516,18 +11765,47 @@ component NativeMentionChip: Item {
                                 colors: root.colors
                                 asset: "composer-bottom-panel-close.svg"
                                 help: qsTr("Hide formatting tools")
-                                enabled: composerText.enabled
+                                enabled: composerText.enabled && !messageComposerShell.preview
                                 implicitWidth: 32
                                 implicitHeight: 32
                                 glyphSize: 21
                                 onClicked: root.preferences.composerToolbarExpanded = false
                             }
                             NativeIconButton {
+                                id: composerPreviewToggle
+                                objectName: "composerPreviewToggle"
+                                colors: root.colors
+                                asset: "composer-visibility.svg"
+                                help: messageComposerShell.preview ? qsTranslate("ComposerMode", "Write") : qsTranslate("ComposerMode", "Preview")
+                                Accessible.checkable: true
+                                Accessible.checked: messageComposerShell.preview
+                                iconColor: messageComposerShell.preview ? root.colors["icon-active"] : root.colors["composer-icon"]
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphWidth: 26
+                                glyphHeight: 17
+                                focusPolicy: Qt.StrongFocus
+                                background: Rectangle {
+                                    radius: 6
+                                    color: messageComposerShell.preview ? root.colors.accent
+                                        : composerPreviewToggle.hovered ? root.colors["sidebar-item-hover"] : "transparent"
+                                    border.width: composerPreviewToggle.visualFocus ? 1 : 0
+                                    border.color: root.colors.accent
+                                }
+                                onClicked: {
+                                    messageComposerShell.preview = !messageComposerShell.preview;
+                                    if (!messageComposerShell.preview)
+                                        composerText.forceActiveFocus();
+                                    composerEmojiPicker.close();
+                                    composerMentionPopup.close();
+                                }
+                            }
+                            NativeIconButton {
                                 id: composerAiButton
                                 objectName: "composerAiButton"
                                 colors: root.colors
                                 help: qsTr("AI assistant")
-                                visible: !root.controller.editingMessageId.length
+                                visible: !messageComposerShell.preview && !root.controller.editingMessageId.length
                                 implicitWidth: 32
                                 implicitHeight: 32
                                 enabled: root.composerAvailable && composerText.enabled
@@ -11556,6 +11834,7 @@ component NativeMentionChip: Item {
                             }
                             // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
                             Rectangle {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerToolbarSeparator"
                                 Layout.preferredWidth: 1
                                 Layout.preferredHeight: 28
@@ -11564,6 +11843,7 @@ component NativeMentionChip: Item {
                             }
                             // TOOLBAR_TEXT_STYLE_GROUP: link/B/I/S sit flush (gap-0).
                             RowLayout {
+                                visible: !messageComposerShell.preview
                                 spacing: 0
                                 NativeIconButton {
                                     id: composerFormatLinkButton
@@ -11620,6 +11900,7 @@ component NativeMentionChip: Item {
                                 }
                             }
                             Rectangle {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerToolbarSeparator"
                                 Layout.preferredWidth: 1
                                 Layout.preferredHeight: 28
@@ -11627,6 +11908,7 @@ component NativeMentionChip: Item {
                                 color: root.colors["border-subtle"]
                             }
                             NativeIconButton {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerFormatNumbered"
                                 colors: root.colors
                                 asset: "composer-list-numbered.svg"
@@ -11640,6 +11922,7 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertNumberedList(); }
                             }
                             NativeIconButton {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerFormatBulleted"
                                 colors: root.colors
                                 asset: "composer-list-bulleted.svg"
@@ -11653,6 +11936,7 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertBulletedList(); }
                             }
                             Rectangle {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerToolbarSeparator"
                                 Layout.preferredWidth: 1
                                 Layout.preferredHeight: 28
@@ -11660,6 +11944,7 @@ component NativeMentionChip: Item {
                                 color: root.colors["border-subtle"]
                             }
                             NativeIconButton {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerFormatQuote"
                                 colors: root.colors
                                 asset: "composer-chat-dashed.svg"
@@ -11673,6 +11958,7 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertQuote(); }
                             }
                             NativeIconButton {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerFormatCodeBlock"
                                 colors: root.colors
                                 asset: "composer-frame-source.svg"
@@ -11686,6 +11972,7 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertCodeBlock(); }
                             }
                             NativeIconButton {
+                                visible: !messageComposerShell.preview
                                 objectName: "composerFormatCode"
                                 colors: root.colors
                                 asset: "composer-inline-code.svg"
@@ -11699,6 +11986,7 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("`"); }
                             }
                             NativeIconButton {
+                                visible: !messageComposerShell.preview
                                 id: composerFormatSpoilerButton
                                 objectName: "composerFormatSpoiler"
                                 colors: root.colors

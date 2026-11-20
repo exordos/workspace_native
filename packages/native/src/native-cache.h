@@ -78,6 +78,8 @@ public:
     // Worker-owned operations poll between bounded SQL/row/vacuum steps. The
     // callback must be thread-safe and must not touch GUI objects.
     void setCancellationCheck(std::function<bool()> check) { m_cancel = std::move(check); }
+    static constexpr int MaximumSearchResults = 50;
+    std::optional<QJsonArray> searchMessages(const Lease &lease, const QString &query);
     std::optional<Entry> get(const Lease &lease, const Key &key);
     bool put(const Lease &lease, const Key &key, const QJsonArray &rows,
              const QByteArray &nextMarker = {});
