@@ -24,7 +24,7 @@ jobs:
           cmake --build build-control --config Release --parallel 4
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $code = 0
-          foreach ($case in @('progressReachesTheExplorerTaskbarAndClears','taskbarButtonCreationReplaysCurrentHints:published-before-window','taskbarButtonCreationReplaysCurrentHints:recreated-button')) {
+          foreach ($case in @('progressReachesTheExplorerTaskbarAndClears','minimizedWindowKeepsReceivingTaskbarHints')) {
             & ./build-control/Release/shell-control.exe $case -o shell-control.txt,txt
             if ($LASTEXITCODE) { $code = $LASTEXITCODE }
             Get-Content shell-control.txt -Encoding utf8

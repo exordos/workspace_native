@@ -192,6 +192,37 @@ private slots:
         }(), 10000);
     }
 
+    void minimizedWindowKeepsReceivingTaskbarHints()
+    {
+        QWindow window;
+        window.resize(640, 400);
+        window.setIcon(acceptanceIcon());
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        workspace::NativeDesktop desktop(&window);
+        QTRY_VERIFY_WITH_TIMEOUT(!taskbarPixels().isNull(), 10000);
+        window.showMinimized();
+        QTRY_VERIFY(IsIconic(reinterpret_cast<HWND>(window.winId())));
+        QImage normal;
+        QTRY_VERIFY_WITH_TIMEOUT(!(normal = taskbarPixels()).isNull(), 10000);
+        desktop.setUnreadCount(3);
+        workspace::setPlatformTaskbarProgress(&window, .6);
+        QImage marked;
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            marked = taskbarPixels();
+            return !changedPixels(normal, marked, orange).isEmpty()
+                && changedPixels(normal, marked, green).size() > 4;
+        }(), 7000);
+        desktop.setUnreadCount(0);
+        workspace::setPlatformTaskbarProgress(&window, -1);
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            const auto cleared = taskbarPixels();
+            return !changedPixels(cleared, marked, orange).isEmpty()
+                && changedPixels(cleared, marked, green).size() > 4;
+        }(), 7000);
+        QVERIFY(IsIconic(reinterpret_cast<HWND>(window.winId())));
+    }
+
     void progressReachesTheExplorerTaskbarAndClears()
     {
         QWindow window;
