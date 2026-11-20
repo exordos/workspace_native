@@ -98,7 +98,8 @@ CMake cannot locate it. Use a compiler matching that kit. The repository
 packages Windows x64 and macOS arm64 portable previews and launches the
 relocated archives on fresh native runners. The clean-runner checks cover
 the first visible window, second-launch activation and plain-text clipboard
-input. [Windows and macOS packaging](NATIVE_DESKTOP_PLATFORM_PACKAGING.md)
+input. The Intel macOS package also launched on a clean Intel runner after
+verification of its Mach-O architecture and ad hoc signature. [Windows and macOS packaging](NATIVE_DESKTOP_PLATFORM_PACKAGING.md)
 
 The [platform matrix](NATIVE_DESKTOP_PARITY.md#acceptance-plan) records the
 desktop, installation and live-service checks separately.
