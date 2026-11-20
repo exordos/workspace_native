@@ -15661,7 +15661,8 @@ void NativeController::selectTopic(const QString &id)
     emit stateChanged();
     if (!guard || selection != m_selection) return;
     emit draftChanged();
-    if (guard && selection == m_selection && m_topicSeedUnverified) loadTopics();
+    // Selecting a cached topic invalidates the prior selection's catalog response.
+    if (guard && selection == m_selection && !m_stream.isEmpty() && !m_topicsVerified) loadTopics();
     if (guard && selection == m_selection && hasConversation()) loadMessages();
     // Issue #164: topic selection changes the viewed conversation identity.
     if (guard && selection == m_selection) {
