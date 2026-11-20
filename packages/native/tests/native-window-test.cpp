@@ -16748,8 +16748,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!item(content, "passwordInput"));
         QVERIFY(!item(content, "signInButton"));
         QVERIFY(!item(content, "realmPreviewCard"));
-        QVERIFY(!item(content, "defaultOrganizationBlock"));
         QVERIFY(!item(content, "organizationNextButton")->isEnabled());
+        const auto expectedUrl = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL",
+                                                       QStringLiteral(EXPECTED_LOGIN_ORG_URL)).trimmed();
+        QCOMPARE(controller.defaultOrganizationUrl(), expectedUrl);
+        auto *shortcut = item(content, "defaultOrganizationBlock");
+        if (expectedUrl.isEmpty()) {
+            QVERIFY(!shortcut);
+        } else {
+            QVERIFY(shortcut && shortcut->isVisible());
+            const auto name = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME",
+                                                   QStringLiteral(EXPECTED_LOGIN_ORG_NAME)).trimmed();
+            QCOMPARE(shortcut->property("text").toString(),
+                     name.isEmpty() ? QStringLiteral("Exordos Core Public") : name);
+            click(window, shortcut);
+            QTRY_COMPARE(item(content, "serverInput")->property("text").toString(), expectedUrl);
+        }
         item(content, "serverInput")->setProperty("text", server.origin().toString());
         QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
         click(window, item(content, "organizationNextButton"));
