@@ -124,6 +124,8 @@ jobs:
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) { throw "Archive checksum mismatch" }
           $destination = Join-Path $env:RUNNER_TEMP "Workspace relocated"
           Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $drivers = @(Get-ChildItem "$destination/plugins/sqldrivers/*.dll")
+          if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
           ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
       - name: Verify and run the relocated macOS application
         if: runner.os == 'macOS'

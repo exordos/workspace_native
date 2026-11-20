@@ -15,7 +15,7 @@ Clean runners verified both archive digests and observed a visible window owned 
 
 The first row is automated by the package workflow. The OS integration rows need an observed shell state and a controlled unread or updater event. A successful package launch alone cannot certify those rows. The existing Linux workflow and its Release acceptance results remain independent. The workflow produces an unsigned Windows preview and an ad hoc signed macOS preview. Windows signing, Apple notarization and store distribution require their own release process.
 
-The macOS package carries the Qt SQLite driver used by the cache, diagnostics and key vault. The packaging step removes other SQL drivers before signing because optional SDK plugins may depend on host-only database libraries.
+Both archives carry the Qt SQLite driver used by the cache, diagnostics and key vault. The packaging step removes other SQL drivers because optional SDK plugins depend on host-only database libraries. The Windows portable ZIP includes the release-only MSVC runtime alongside its executable. The native launch check examines its loaded modules and confirms that the process uses the copies inside the relocated archive. CMake selects these files from the build toolchain’s redistributable directory. [CMake runtime installation](https://cmake.org/cmake/help/latest/module/InstallRequiredSystemLibraries.html)
 
 CMake installs the application using Qt's QML deployment script. The package jobs build the pinned Markdown and keychain libraries against the same Qt kit. OpenSSL supplies the existing native TLS and HPKE APIs. The Windows and macOS smoke checks run independently so a failure on either platform remains visible.
 
