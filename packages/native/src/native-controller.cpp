@@ -1685,6 +1685,8 @@ void NativeController::observeChatRequest(const Message &message)
         return;
     }
     m_chatRequestFactUnits += fact.units - oldUnits;
+    m_chatGrantErrors.remove(message.uuid);
+    m_failedBulkGrants.remove(message.uuid);
     m_chatRequestFacts.insert(message.uuid, std::move(fact)); m_chatIssueChanged = true;
     if (!previousKey.isEmpty() && std::none_of(m_chatRequestFacts.cbegin(), m_chatRequestFacts.cend(),
         [&](const ChatRequestFact &row) { return row.key == previousKey; })) m_chatIssueKeys.remove(previousKey);

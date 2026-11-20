@@ -3181,14 +3181,15 @@ private slots:
 
     void drawerBulkGrantRetainsPerRequestOutcomes_data()
     {
-        QTest::addColumn<bool>("deleted");
-        QTest::newRow("retry") << false;
-        QTest::newRow("request-deleted") << true;
+        QTest::addColumn<QString>("resolution");
+        QTest::newRow("retry") << QString("retry");
+        QTest::newRow("request-deleted") << QString("deleted");
+        QTest::newRow("request-replaced") << QString("replaced");
     }
 
     void drawerBulkGrantRetainsPerRequestOutcomes()
     {
-        QFETCH(bool, deleted);
+        QFETCH(QString, resolution);
         Fixture f;
         f.stream = fullEncryptedStream();
         f.stream["owner"] = userId;
@@ -3239,7 +3240,7 @@ private slots:
         QCOMPARE(failed.value("id").toString(), denied);
         QVERIFY(!failed.value("error").toString().isEmpty());
         QVERIFY(failed.value("canGrant").toBool());
-        if (deleted) {
+        if (resolution == "deleted") {
             auto event = cryptoEvent(QJsonObject{{"uuid", denied}, {"stream_uuid", streamId}, {"topic_uuid", topicId}});
             auto payload = event.value("payload").toObject();
             payload["kind"] = "message.deleted";
@@ -3247,12 +3248,18 @@ private slots:
             QVERIFY(f.controller.applyRealtimeEvent(event));
             QTRY_VERIFY(rows("incomingKeyRequests").isEmpty());
             QCOMPARE(rows("grantedKeyRequests").size(), 1);
+        } else if (resolution == "replaced") {
+            auto replacement = f.savedRequests.value(denied);
+            replacement["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Ordinary message"}};
+            QVERIFY(f.controller.applyRealtimeEvent(updatedControl(replacement)));
+            QTRY_VERIFY(rows("incomingKeyRequests").isEmpty());
+            QCOMPARE(rows("grantedKeyRequests").size(), 1);
         } else {
             f.controller.grantChatKey(denied);
             QTRY_COMPARE(rows("grantedKeyRequests").size(), 2);
         }
         QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 0);
-        QCOMPARE(*deniedPosts, deleted ? 1 : 2);
+        QCOMPARE(*deniedPosts, resolution == "retry" ? 2 : 1);
         QCOMPARE(*acceptedPosts, 1);
     }
 
