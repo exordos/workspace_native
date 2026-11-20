@@ -9219,6 +9219,99 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void globalUserSearchMatchesDirectoryAndOpensDirect_data()
+    {
+        QTest::addColumn<bool>("existing");
+        QTest::addColumn<bool>("rejectFirst");
+        QTest::newRow("new-en-light") << false << false;
+        QTest::newRow("reject-then-create") << false << true;
+        QTest::newRow("existing-ru-dark") << true << false;
+    }
+
+    void globalUserSearchMatchesDirectoryAndOpensDirect()
+    {
+        QFETCH(bool, existing);
+        QFETCH(bool, rejectFirst);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("appearance.ini"));
+        preferences.setLocale(existing ? "ru" : "en");
+        preferences.setMode(existing ? "dark" : "light");
+        WindowDirectFixture fixture;
+        if (existing) fixture.seed();
+        if (rejectFirst) fixture.lookupStatus = 403;
+        fixture.users[1] = QJsonObject{{"uuid", channelPeer}, {"first_name", "Alice"},
+            {"username", "treeline"}, {"email", "mailbox@example.invalid"},
+            {"status", "active"}, {"status_emoji", "🏠"}};
+        for (int index = 23; index >= 0; --index)
+            fixture.users.append(QJsonObject{{"uuid", QString("86000000-0000-4000-8000-%1").arg(index, 12, 10, QLatin1Char('0'))},
+                {"username", QString("roster%1").arg(index)}, {"status_text", "On vacation"}});
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto teardown = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(controller.canStartDirectChatWith(channelPeer));
+        if (rejectFirst) controller.showSection("mail");
+        auto *button = visibleItem("globalUserSearchButton"); QVERIFY(button);
+        click(window, button);
+        QTRY_VERIFY(visibleItem("globalUserSearchInput"));
+        auto *input = visibleItem("globalUserSearchInput");
+        QTRY_VERIFY(input->hasActiveFocus());
+        auto *list = visibleItem("globalUserSearchResults"); QVERIFY(list);
+        QCOMPARE(list->property("count").toInt(), 0);
+        QVERIFY(!visibleItem("globalUserSearchEmpty"));
+        for (const auto &query : {"ALIce", "  LINE  ", "MAILBOX", "🏠"}) {
+            input->setProperty("text", QString::fromUtf8(query));
+            QTRY_COMPARE(list->property("count").toInt(), 1);
+            QTRY_VERIFY(visibleItem("globalUserSearchRow-" + channelPeer));
+            QTRY_COMPARE(visibleItem("globalUserSearchSecondary-" + channelPeer)->property("text").toString(), QString("🏠"));
+        }
+        auto *named = visibleItem("globalUserSearchName-" + channelPeer);
+        auto *secondary = visibleItem("globalUserSearchSecondary-" + channelPeer);
+        QVERIFY(named && secondary);
+        QVERIFY(named->mapToScene(QPointF{}).y() < secondary->mapToScene(QPointF{}).y());
+        auto *accessible = QAccessible::queryAccessibleInterface(visibleItem("globalUserSearchRow-" + channelPeer));
+        QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), QString("Alice (mailbox@example.invalid)"));
+        input->setProperty("text", "VACATION");
+        QTRY_COMPARE(list->property("count").toInt(), 20);
+        QTRY_VERIFY(visibleItem("globalUserSearchRow-86000000-0000-4000-8000-000000000023"));
+        input->setProperty("text", "unmatched-value");
+        QTRY_COMPARE(list->property("count").toInt(), 0);
+        QTRY_VERIFY(visibleItem("globalUserSearchEmpty"));
+        QCOMPARE(visibleItem("globalUserSearchEmpty")->property("text").toString(), existing
+            ? QString("Ничего не найдено") : QString("No results found"));
+        QVERIFY(!visibleItem("globalMessageSearchResults"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("globalUserSearchInput"));
+        click(window, button);
+        QTRY_VERIFY(visibleItem("globalUserSearchInput"));
+        input = visibleItem("globalUserSearchInput");
+        QCOMPARE(input->property("text").toString(), QString());
+        input->setProperty("text", "alice");
+        QTRY_VERIFY(visibleItem("globalUserSearchRow-" + channelPeer));
+        click(window, visibleItem("globalUserSearchRow-" + channelPeer));
+        if (rejectFirst) {
+            QTRY_COMPARE(controller.directChatPhase(), QString("failed"));
+            QVERIFY(visibleItem("globalUserSearchInput"));
+            QCOMPARE(input->property("text").toString(), QString("alice"));
+            QVERIFY(visibleItem("globalUserSearchError"));
+            QCOMPARE(fixture.posts, 0);
+            QCOMPARE(controller.section(), QString("mail"));
+            fixture.lookupStatus = 0;
+            click(window, visibleItem("globalUserSearchRow-" + channelPeer));
+        }
+        QTRY_COMPARE(controller.directPeer().value("id").toString(), channelPeer);
+        QTRY_COMPARE(controller.selectedTopic(), channelDefault);
+        QTRY_VERIFY(!visibleItem("globalUserSearchInput"));
+        QCOMPARE(fixture.posts, existing ? 0 : 1);
+        QCOMPARE(controller.section(), QString("chat"));
+    }
+
     void globalNewChatStartsWithTheSourceDirectChatTab()
     {
         QTemporaryDir directory;

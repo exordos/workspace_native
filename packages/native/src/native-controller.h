@@ -376,6 +376,7 @@ public:
     bool canCreateChannel() const;
     QVariantList channelMemberChoices() const;
     QVariantList chatPickerChoices() const;
+    Q_INVOKABLE QVariantList searchWorkspaceUsers(const QString &query) const;
     bool channelMembersVerified() const;
     QString channelCreationContextKey() const;
     QString channelCreationPhase() const;
@@ -2002,6 +2003,7 @@ private:
     void rememberConversation();
     void interruptOwnStatusUpdate();
     QMap<QString, QVariantMap> m_channelChoices;
+    QStringList m_directoryUserOrder;
     QVariantMap m_mentionSelfChoice;
     QString m_channelDirectoryOwner;
     bool m_channelDirectoryValid = false;

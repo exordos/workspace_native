@@ -2880,6 +2880,15 @@ component NativeMentionChip: Item {
             anchors.verticalCenter: sectionButtons.verticalCenter
             anchors.alignWhenCentered: false
             spacing: 12
+            NativeIconButton {
+                objectName: "globalUserSearchButton"
+                colors: root.colors
+                width: 40; height: 40; glyphSize: 20
+                anchors.verticalCenter: parent.verticalCenter
+                asset: "search.svg"
+                help: qsTr("Search")
+                onClicked: userSearch.open()
+            }
             NativeDownloadCenter {
                 controller: root.controller
                 colors: root.colors
@@ -13159,6 +13168,12 @@ component NativeMentionChip: Item {
     // only the selection it was submitted with (review round 1, cid
     // 4586012848): a Check that lands after the modal went away must leave a
     // newer selection alone.
+    NativeUserSearch {
+        id: userSearch
+        colors: root.colors
+        controller: root.controller
+    }
+
     NativeForwardDialog {
         id: forwardDialog
         colors: root.colors
