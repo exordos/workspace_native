@@ -38,13 +38,17 @@ keep their existing calculations.
 `expandedComposerToolbarStaysInsideTheWindow` renders empty and short drafts in
 both locales and themes, requires every complete button to fit inside the shell
 and window before pointer input, and checks typing/deleting a multiline draft,
-collapse/expansion and window resizing. Its real Bold click also checks draft
+collapse/expansion and window resizing. At the 700×600 minimum window size the expanded row scrolls horizontally.
+Moving keyboard focus reveals the whole focused action. Its real Bold click also checks draft
 mutation, restored editor focus/caret and absence of message sends. These are
 local Linux Qt Quick fixture checks, not live-service or other-platform acceptance.
 
 ## Actions and exact insert text (message-composer-toolbar.ui.tsx:40-320)
 
-Order in the expanded toolbar: toggle, separator, [link, bold, italic,
+The AI control is visible while composing a new message or reply. Editing an
+existing message hides the control.
+
+Order in the expanded toolbar: toggle, AI, separator, [link, bold, italic,
 strikethrough] (flush group), separator, [numbered list, bulleted list],
 separator, [quote, code block, inline code, spoiler]. File/emoji/time/schedule
 triggers are out of native scope today; the native groups follow the same
@@ -140,3 +144,25 @@ The keyboard case covers both short and three-line drafts and requires each
 action to be inside the window, including the layout repair from #314. It also
 checks traversal beyond the last action and skips formatting actions when the
 toolbar is collapsed.
+
+The expansion persistence test measures the three 1 × 28 separators and the action positions after the expanded toolbar presents a frame. The visibility notification arrives before the layout has assigned the rectangles their size.
+
+## AI availability notice
+
+The pinned web toolbar places a 32×32 AI assistant button immediately before
+the separator that precedes Link. Collapsing the toolbar hides the button.
+The button displays “AI” at 20 px and exposes its pressed state to assistive
+technology. Activating it opens the organization's localized availability
+notice. A second activation, Escape, or a click outside dismisses the notice. The transparent backdrop consumes that
+click, including when Send is underneath it.
+The notice and the existing composer pickers are mutually exclusive.
+
+The web composer reserves an 88 px positioning box above the anchor, with
+an 8 px gap, and centers the panel horizontally within the viewport. The panel
+itself fits its 12 px text and 12 px padding. In the deployed desktop web
+composer the English notice measured 320×58 px. The reference uses the
+accessible name “AI assistant” in both languages and translates the notice
+through `composer.aiTemporarilyUnavailable`. The four window test rows check
+the actual button, Escape and pointer dismissal, the return to keyboard focus,
+and the file and emoji pickers with an unchanged draft. Native scheduling
+and saved-snippet controls have no entry point in this composer yet.

@@ -46,6 +46,7 @@ struct NotificationCandidate {
     QString topicUuid;
     QString authorUuid;
     QString content;
+    bool markdown = true;
     bool isOwn = false;
     bool read = false;
     // Server DTO tri-state collapsed: unknown counts as "no mention" exactly

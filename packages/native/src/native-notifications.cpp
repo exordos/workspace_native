@@ -1,4 +1,5 @@
 #include "native-notifications.h"
+#include "native-markdown.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -151,8 +152,11 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
     if (existing != m_messageToTag.cend() && existing.value() != tag)
         return {}; // A message may not move between buckets.
     auto &entry = m_byTag[tag];
+    const auto body = candidate.markdown && NativeMarkdown::mayContainSpoilers(candidate.content)
+        ? NativeMarkdown().renderPreview(candidate.content).value("plain").toString().trimmed()
+        : candidate.content.trimmed();
     entry.messages.insert(candidate.messageUuid, Entry::Row{
-        candidate.content.trimmed(), candidate.streamUuid, candidate.topicUuid, title,
+        body, candidate.streamUuid, candidate.topicUuid, title,
         candidate.createdMicros});
     ++entry.total;
     m_messageToTag.insert(scope, tag);

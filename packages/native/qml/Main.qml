@@ -695,7 +695,10 @@ ApplicationWindow {
         && (root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed)
     readonly property string messageSelectionConversation:
         root.controller.selectedStream + "/" + root.controller.selectedTopic
-    onMessageSelectionConversationChanged: root.clearMessageSelection()
+    onMessageSelectionConversationChanged: {
+        root.clearMessageSelection();
+        if (composerAiNotice) composerAiNotice.close();
+    }
     function isMessageSelected(id) {
         return root.messageSelectionIds.indexOf(String(id)) >= 0
     }
@@ -1584,7 +1587,13 @@ ApplicationWindow {
     // follows the light/dark theme automatically.
     function mentionChipHtml(html) {
         const accent = String(root.colors["accent"] || "#7087ff");
-        return String(html).replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
+        const themed = String(html).replace(/(<a href="workspace-spoiler:[^"]+"><span style=")([^"]*)(")/g,
+            function (whole, head, style, tail) {
+                const fg = String(root.colors["text-primary"]);
+                const mask = String(root.colors["border-subtle"]);
+                return head + style.replace(/#84909c/gi, mask).replace(/#0000ff/gi, fg) + tail;
+            });
+        return themed.replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
             function (whole, head, tail) {
                 return head + " color:" + accent + "; font-weight:500; text-decoration:none;" + tail;
             });
@@ -1599,6 +1608,8 @@ ApplicationWindow {
 // activation; no pointer is needed to reach or use it.
 component NativeMentionChip: Item {
     required property var modelData
+    property var activate: () => root.openReference(modelData.urn)
+    Accessible.onPressAction: activate()
     objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
     x: modelData.x
     y: modelData.y
@@ -1612,13 +1623,13 @@ component NativeMentionChip: Item {
     Keys.onPressed: (event) => {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             event.accepted = true;
-            root.openReference(modelData.urn);
+            activate();
         }
     }
     Keys.onReleased: (event) => {
         if (event.key === Qt.Key_Space) {
             event.accepted = true;
-            root.openReference(modelData.urn);
+            activate();
         }
     }
     Rectangle {
@@ -1635,9 +1646,28 @@ component NativeMentionChip: Item {
         acceptedButtons: Qt.LeftButton
         cursorShape: Qt.PointingHandCursor
         onPressed: parent.forceActiveFocus()
-        onClicked: root.openReference(modelData.urn)
+        onClicked: parent.activate()
     }
 }
+
+    component MessageSpoilerControl: NativeMentionChip {
+        required property var row
+        objectName: "message-spoiler-" + row.modelData.id + "-" + modelData.id
+        Accessible.name: modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
+        Accessible.checkable: true
+        Accessible.checked: row.openedSpoilers.includes(modelData.id)
+        activate: () => row.activateBodyLink(modelData.urn, true)
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            visible: parent.modelData.header
+            color: "transparent"
+            border.width: 1
+            border.color: root.colors["border-subtle"]
+            radius: 8
+            z: -1
+        }
+    }
 
     // The reference keeps the "Copy link" item only for http/https hrefs
     // (isValidUrl, shared/lib/validation.ts:8,20-27); a mailto anchor right-click
@@ -8177,8 +8207,33 @@ component NativeMentionChip: Item {
                     readonly property var avatar: messageList.avatarPlacement(messageRow, index)
                     // displayContent === "" is a valid empty answer (quote-only message);
                     // only a missing key falls back to the raw content (review #119).
-                    readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel
-                        : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content))
+                    readonly property string bodyMarkdown: encryptedLocked ? "" : keyControl ? controlLabel
+                        : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content)
+                    property var spoilerState: ({})
+                    readonly property var openedSpoilers: spoilerState.message === modelData.id
+                        && spoilerState.body === bodyMarkdown ? spoilerState.opened : []
+                    readonly property var rendered: root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers)
+                    onBodyMarkdownChanged: spoilerState = ({})
+                    function activateBodyLink(link, restoreFocus) {
+                        const target = (rendered.spoilers || []).find(span => span.href === String(link));
+                        if (!target) {
+                            root.openReference(link);
+                            return;
+                        }
+                        spoilerState = { message: modelData.id, body: bodyMarkdown,
+                            opened: openedSpoilers.includes(target.id)
+                                ? openedSpoilers.filter(id => id !== target.id) : openedSpoilers.concat([target.id]) };
+                        if (restoreFocus) Qt.callLater(() => {
+                            const chips = hasInlineImages ? mediaSpoilerChips : bodySpoilerChips;
+                            for (let i = 0; chips && i < chips.count; ++i) {
+                                const chip = chips.itemAt(i);
+                                if (chip && chip.modelData.id === target.id) {
+                                    chip.forceActiveFocus();
+                                    break;
+                                }
+                            }
+                        });
+                    }
                     readonly property var imageParts: rendered.parts || []
                     // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
                     // ordered urn:user references the renderer recognised in
@@ -8225,6 +8280,25 @@ component NativeMentionChip: Item {
                             anchorLength: messageRow.mentionSpansAligned
                                 ? Number(messageRow.mentionSpans[index].length) : 0 }))
                     property var mentionTargets: locateMentionTargets()
+                    property var spoilerTargets: locateSpoilers()
+                    function locateSpoilers() {
+                        const spans = rendered.spoilers || [];
+                        if (!spans.length) return [];
+                        const pairs = spans.map(span => ({ urn: span.href, label: span.label,
+                            id: span.id, header: span.header, anchorStart: span.start, anchorLength: span.length }));
+                        if (!hasInlineImages) return mentionRectsIn(messageBody, pairs, bodyMentionOverlay);
+                        const targets = [];
+                        for (let i = 0; i < imageRuns.count; ++i) {
+                            const run = imageRuns.itemAt(i);
+                            if (!run || run.part.kind !== "text") continue;
+                            const part = run.part;
+                            const localPairs = pairs.filter(pair => pair.anchorStart >= part.start
+                                && pair.anchorStart < part.start + String(part.plain).length)
+                                .map(pair => Object.assign({}, pair, { anchorStart: pair.anchorStart - part.start }));
+                            targets.push(...mentionRectsIn(run.textPart, localPairs, mediaMentionOverlay));
+                        }
+                        return targets;
+                    }
                     function mentionRectsIn(item, pairs, overlay) {
                         const out = [];
                         if (!item || !item.visible || item.width <= 0 || pairs.length === 0)
@@ -8268,7 +8342,7 @@ component NativeMentionChip: Item {
                                 const right = Math.abs(after.y - top.y) < 0.5
                                     ? after.x : lastChar.x + lastChar.width;
                                 const origin = item.mapToItem(overlay, top.x, top.y);
-                                out.push({ urn: pair.urn, label: label,
+                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header,
                                     x: origin.x, y: origin.y,
                                     w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
                                 i = j + 1;
@@ -8358,6 +8432,7 @@ component NativeMentionChip: Item {
                         // Issue #109 review F4/F6: the locator reads the laid-out
                         // text, so rebind it after the forced layout passes settle.
                         messageRow.mentionTargets = Qt.binding(() => locateMentionTargets());
+                        messageRow.spoilerTargets = Qt.binding(() => locateSpoilers());
                     }
                     Component.onCompleted: {
                         settleGeometry();
@@ -9312,7 +9387,7 @@ component NativeMentionChip: Item {
                                 font.pixelSize: 14
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
                                 palette.link: root.colors.accent
-                                onLinkActivated: link => root.openReference(link)
+                                onLinkActivated: link => messageRow.activateBodyLink(link)
                                 // Test seam (issue #109 review F6): counts the
                                 // linkAt samples the mention locator performs
                                 // for this body, so window cases can assert
@@ -9327,13 +9402,18 @@ component NativeMentionChip: Item {
                                     id: bodyMentionOverlay
                                     objectName: messageRow.hasInlineImages
                                         ? "" : "message-mentions-" + String(messageRow.modelData.id)
-                                    visible: !messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    visible: !messageRow.hasInlineImages && (messageRow.mentionTargets.length > 0 || messageRow.spoilerTargets.length > 0)
                                     width: 0
                                     height: 0
                                     z: 2
                                     Repeater {
                                         model: messageRow.mentionTargets
                                         delegate: NativeMentionChip {}
+                                    }
+                                    Repeater {
+                                        id: bodySpoilerChips
+                                        model: messageRow.spoilerTargets
+                                        delegate: MessageSpoilerControl { row: messageRow }
                                     }
                                 }
                             }
@@ -9395,7 +9475,7 @@ component NativeMentionChip: Item {
                                             font.pixelSize: 14
                                             bottomPadding: messageRow.inlineMeta && imageRun.index === messageRow.imageParts.length - 1 ? 2 : 0
                                             palette.link: root.colors.accent
-                                            onLinkActivated: link => root.openReference(link)
+                                            onLinkActivated: link => messageRow.activateBodyLink(link)
                                             Accessible.ignored: true
                                         }
                                         TextEdit {
@@ -9441,13 +9521,18 @@ component NativeMentionChip: Item {
                                         ? "message-mentions-" + String(messageRow.modelData.id) : ""
                                     anchors.left: parent.left
                                     anchors.top: parent.top
-                                    visible: messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    visible: messageRow.hasInlineImages && (messageRow.mentionTargets.length > 0 || messageRow.spoilerTargets.length > 0)
                                     width: 0
                                     height: 0
                                     z: 2
                                     Repeater {
                                         model: messageRow.mentionTargets
                                         delegate: NativeMentionChip {}
+                                    }
+                                    Repeater {
+                                        id: mediaSpoilerChips
+                                        model: messageRow.spoilerTargets
+                                        delegate: MessageSpoilerControl { row: messageRow }
                                     }
                                 }
                             }
@@ -11389,18 +11474,42 @@ component NativeMentionChip: Item {
                     // Issue #122: the expandable bottom toolbar (message-composer-toolbar.ui.tsx).
                     // COMPOSER_TOOLBAR_SEND_CLEARANCE mr-[52px] from the composer's right edge
                     // (40px send control + 12px row gap) and the pl-2 leading inset.
-                    Item {
+                    Flickable {
                         id: composerToolbarRow
                         objectName: "composerToolbarRow"
                         Layout.fillWidth: true
                         Layout.preferredHeight: 32
                         Layout.rightMargin: 52
                         visible: root.preferences.composerToolbarExpanded
+                        clip: true
+                        contentWidth: Math.max(width, composerToolbarActions.implicitWidth + 8)
+                        contentHeight: height
+                        flickableDirection: Flickable.HorizontalFlick
+                        boundsBehavior: Flickable.StopAtBounds
+                        onVisibleChanged: if (!visible) contentX = 0
+                        Connections {
+                            target: root
+                            function onActiveFocusItemChanged() {
+                                const focused = root.activeFocusItem;
+                                if (!focused || composerToolbarRow.contentWidth <= composerToolbarRow.width)
+                                    return;
+                                for (let owner = focused; owner; owner = owner.parent) {
+                                    if (owner === composerToolbarActions) {
+                                        const x = focused.mapToItem(composerToolbarRow.contentItem, 0, 0).x;
+                                        if (x < composerToolbarRow.contentX)
+                                            composerToolbarRow.contentX = x;
+                                        else if (x + focused.width > composerToolbarRow.contentX + composerToolbarRow.width)
+                                            composerToolbarRow.contentX = x + focused.width - composerToolbarRow.width;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         RowLayout {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: 8
+                            id: composerToolbarActions
+                            x: 8
+                            width: composerToolbarRow.contentWidth - x
+                            height: composerToolbarRow.height
                             spacing: 8
                             NativeIconButton {
                                 objectName: "composerToolbarCollapse"
@@ -11412,6 +11521,38 @@ component NativeMentionChip: Item {
                                 implicitHeight: 32
                                 glyphSize: 21
                                 onClicked: root.preferences.composerToolbarExpanded = false
+                            }
+                            NativeIconButton {
+                                id: composerAiButton
+                                objectName: "composerAiButton"
+                                colors: root.colors
+                                help: qsTr("AI assistant")
+                                visible: !root.controller.editingMessageId.length
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                enabled: root.composerAvailable && composerText.enabled
+                                focusPolicy: Qt.StrongFocus
+                                Accessible.checkable: true
+                                Accessible.checked: composerAiNotice.visible
+                                contentItem: Text {
+                                    text: "AI"
+                                    font.pixelSize: 20
+                                    font.letterSpacing: -0.4
+                                    color: composerAiNotice.visible ? root.colors["icon-active"] : root.colors["icon-base"]
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    Accessible.ignored: true
+                                }
+                                onClicked: {
+                                    if (composerAiNotice.visible) {
+                                        composerAiNotice.close();
+                                    } else {
+                                        composerEmojiPicker.close();
+                                        composerMentionPopup.close();
+                                        composerAiNotice.open();
+                                    }
+                                }
+                                onVisibleChanged: if (!visible && composerAiNotice) composerAiNotice.close()
                             }
                             // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
                             Rectangle {
@@ -11785,6 +11926,58 @@ component NativeMentionChip: Item {
         contentItem: Rectangle {
             implicitHeight: 1
             color: root.colors["border-subtle"]
+        }
+    }
+
+    Popup {
+        id: composerAiNotice
+        objectName: "composerAiUnavailablePopover"
+        property string openingRoute: ""
+        onAboutToShow: openingRoute = root.messageSelectionConversation
+        onClosed: {
+            if (root.active && openingRoute === root.messageSelectionConversation
+                    && composerAiButton.visible && composerAiButton.enabled)
+                composerAiButton.forceActiveFocus(Qt.PopupFocusReason);
+        }
+        parent: composerAiButton
+        width: Math.min(320, root.width - 16)
+        x: (parent.width - width) / 2
+        // The web composer reserves an 88 px box plus an 8 px gap above its anchor.
+        y: -96
+        margins: 8
+        padding: 13 // 12 px padding inside the 1 px border
+        contentHeight: composerAiNoticeText.lineCount * 16
+        modal: true
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            radius: 12
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+            layer.enabled: composerAiNotice.visible && GraphicsInfo.api !== GraphicsInfo.Software
+                && GraphicsInfo.api !== GraphicsInfo.OpenVG && GraphicsInfo.api !== GraphicsInfo.Unknown
+                && GraphicsInfo.api !== GraphicsInfo.Null
+            layer.effect: MultiEffect {
+                shadowEnabled: true
+                shadowColor: "black"
+                shadowBlur: 0.5
+                shadowOpacity: 0.15
+                shadowVerticalOffset: 8
+            }
+        }
+        contentItem: Label {
+            id: composerAiNoticeText
+            objectName: "composerAiNoticeText"
+            text: qsTr("AI features are temporarily unavailable in your organization.")
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.colors["text-primary"]
+            font.pixelSize: 12
+            lineHeight: 16
+            lineHeightMode: Text.FixedHeight
+            Accessible.role: Accessible.Dialog
+            Accessible.name: text
         }
     }
 

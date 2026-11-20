@@ -63,6 +63,14 @@
     <context>
         <name>Main</name>
         <message>
+            <source>AI assistant</source>
+            <translation>AI assistant</translation>
+        </message>
+        <message>
+            <source>AI features are temporarily unavailable in your organization.</source>
+            <translation>AI-функции в вашей организации не подключены.</translation>
+        </message>
+        <message>
             <source>Current server</source>
             <translation>Текущий сервер</translation>
         </message>
@@ -2870,6 +2878,10 @@
     </context>
     <context>
         <name>workspace::NativeMarkdown</name>
+        <message>
+            <source>Spoiler</source>
+            <translation>Спойлер</translation>
+        </message>
         <message>
             <source>Could not display this message.</source>
             <translation>Не удалось отобразить сообщение.</translation>

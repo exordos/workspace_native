@@ -14484,6 +14484,7 @@ void NativeController::offerNotificationCandidate(const Message &message)
     candidate.topicUuid = message.topic;
     candidate.authorUuid = message.author;
     candidate.content = message.content;
+    candidate.markdown = message.kind == QStringLiteral("markdown");
     candidate.isOwn = message.own;
     candidate.read = message.read;
     candidate.mentioned = message.mentioned.value_or(false);
@@ -17410,7 +17411,7 @@ std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const
         body = prepared->content;
     }
     NativeMarkdown renderer;
-    preview.text = summarizeRowPreview(renderer.render(body).value("plain").toString());
+    preview.text = summarizeRowPreview(renderer.renderPreview(body).value("plain").toString());
     return preview;
 }
 
@@ -17883,7 +17884,7 @@ std::optional<QString> NativeController::replyPlainFor(const QString &id) const
              record != m_quotes.cend() && !record->missing) content = &record->content;
     if (!content) return std::nullopt;
     static NativeMarkdown previewCache;
-    return previewCache.render(*content).value("plain").toString().simplified();
+    return previewCache.renderPreview(*content).value("plain").toString().simplified();
 }
 
 QString NativeController::replyTabPlain(const ReplyTab &tab) const
@@ -17993,7 +17994,7 @@ QString NativeController::replyMediaSummary() const
     // token (message-composer-reply-quote-preview.ui.tsx:74-83 at workspace_ui
     // 230e02b8), then applies the same 80-character QUOTE_PREVIEW_MAX summary.
     static NativeMarkdown summaryRenderer;
-    auto text = summaryRenderer.render(content, true).value(QLatin1String("plain")).toString().simplified();
+    auto text = summaryRenderer.renderPreview(content, true).value(QLatin1String("plain")).toString().simplified();
     static constexpr int maximumCharacters = 80;
     static constexpr int markerLength = 3;
     if (text.size() > maximumCharacters)
