@@ -1,5 +1,6 @@
 #include "call/screen-share-source-picker.h"
 
+#include <QCoreApplication>
 #include <QDBusArgument>
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
@@ -9,6 +10,7 @@
 #include <QDBusPendingCallWatcher>
 #include <QDBusVariant>
 #include <QGuiApplication>
+#include <QPointer>
 #include <QScreen>
 #include <QTimer>
 #include <QUuid>
@@ -161,23 +163,27 @@ void ScreenShareSourcePicker::callPortalStep(
         QLatin1String(kPortalPath), QLatin1String(kScreenCastInterface), QLatin1String(method));
     call.setArguments(arguments);
     auto *watcher = new QDBusPendingCallWatcher(
-        QDBusConnection::sessionBus().asyncCall(call, m_portalTimeoutMs), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this,
-        [this, serial, expectedPath](QDBusPendingCallWatcher *reply) {
+        QDBusConnection::sessionBus().asyncCall(call, m_portalTimeoutMs), QCoreApplication::instance());
+    connect(watcher, &QDBusPendingCallWatcher::finished, watcher,
+        [picker = QPointer(this), serial, expectedPath](QDBusPendingCallWatcher *reply) {
         reply->deleteLater();
-        if (!isCurrentExchange(serial) || m_requestPath != expectedPath)
-            return;
         const auto path = reply->reply().arguments().value(0).value<QDBusObjectPath>().path();
-        if (reply->isError() || path.isEmpty()) {
-            failCurrentExchange(tr("The system screen picker could not be opened."));
+        if (!picker || !picker->isCurrentExchange(serial) || picker->m_requestPath != expectedPath) {
+            // Release may run before the portal discloses an alternate Request.
+            if (path != expectedPath)
+                closePortalObject(path, kRequestInterface);
             return;
         }
-        m_requestPath = path;
-        m_waitingForRequestPath = false;
-        const auto early = std::exchange(m_earlyResponses, {});
+        if (reply->isError() || path.isEmpty()) {
+            picker->failCurrentExchange(tr("The system screen picker could not be opened."));
+            return;
+        }
+        picker->m_requestPath = path;
+        picker->m_waitingForRequestPath = false;
+        const auto early = std::exchange(picker->m_earlyResponses, {});
         const auto response = early.constFind(path);
         if (response != early.cend())
-            handlePortalResult(response->first, response->second);
+            picker->handlePortalResult(response->first, response->second);
     });
 }
 

@@ -26609,6 +26609,7 @@ private slots:
         QTest::newRow("immediate-alternate-request-path") << QString("immediate");
         QTest::newRow("timeout-during-create") << QString("timeout");
         QTest::newRow("release-during-start") << QString("release");
+        QTest::newRow("release-before-alternate-request-reply") << QString("releaseBeforePath");
     }
 
     void shareSourcePickerHandlesPortalResponseTiming()
@@ -26647,11 +26648,13 @@ private slots:
             QCOMPARE(failed.size(), 0);
             picker.releaseSource();
         } else {
-            if (scenario == "release") {
-                QTRY_COMPARE_WITH_TIMEOUT(cast.startCalls, 1, 800);
+            if (scenario.startsWith("release")) {
+                if (scenario == "release")
+                    QTRY_COMPARE_WITH_TIMEOUT(cast.startCalls, 1, 800);
                 picker.releaseSource();
             }
             QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 1800);
+            QTRY_VERIFY(cast.requestCursor > 0);
             QTRY_COMPARE(cast.requestPool.at(cast.requestCursor - 1)->closeCalls, 1);
             QTest::qWait(150);
             QCOMPARE(selected.size(), 0);
