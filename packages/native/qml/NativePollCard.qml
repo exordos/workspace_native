@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Controls
 
 // Poll card rendered inside a message bubble (issue #216,
 // docs/NATIVE_DESKTOP_POLLS_BUBBLE.md). Geometry and click semantics are
@@ -19,6 +20,7 @@ Item {
     required property string messageUuid
     property var colors: ({})
     property var controller: null
+    required property var previewStore
     property bool readOnly: false
     // Right inset reserved on the card's final line for the bubble time
     // (workspace-message-poll.css:152-156 reserves 48 px).
@@ -81,10 +83,24 @@ Item {
     }
     // Reference parity, repo idiom for plurals without an English catalog:
     // one qsTr per source form (same as the channel-info member counts).
+    function participantCount(count) {
+        return count === 1 ? qsTr("%n participant", "", count) : qsTr("%n participants", "", count)
+    }
+    readonly property bool votersEligible: Boolean(poll) && !readOnly && !poll.isAnonymous
+    function retireHiddenVoters() {
+        if (!votersEligible && poll && previewStore && messageUuid)
+            previewStore.retire(messageUuid)
+    }
+    onVotersEligibleChanged: retireHiddenVoters()
+    readonly property var voters: voterLoader.item
+    Loader {
+        id: voterLoader
+        active: card.visible && card.votersEligible
+        sourceComponent: Component { NativePollVoters { hostCard: card } }
+    }
     readonly property string summaryText: summaryVisible
-        ? ((pollVoterCount === 1 ? qsTr("%n participant", "", pollVoterCount)
-            : qsTr("%n participants", "", pollVoterCount))
-        + (quiz ? " \u00b7 " + qsTr("You voted") : ""))
+        ? (participantCount(pollVoterCount) + (quiz ? " \u00b7 " + qsTr("You voted")
+            : !closed && voters && voters.choices.length ? " \u00b7 " + qsTr("View votes") : ""))
         : qsTr("Results after voting")
 
     function selectedFor(question) {
@@ -228,6 +244,7 @@ Item {
         card.armDeadline()
     }
     Component.onCompleted: {
+        retireHiddenVoters()
         card.seenRevision = Number(poll && poll.state ? poll.state.revision : 0)
         card.armDeadline()
     }
@@ -319,144 +336,185 @@ Item {
                     Repeater {
                         model: question.options || []
                         delegate: Item {
-                            id: optionRow
+                            id: optionEntry
                             required property var modelData
                             required property int index
-                            readonly property var option: modelData
-                            property bool selected: questionBlock.selected.includes(option.uuid)
-                            property bool correct: questionBlock.answered
-                                && questionBlock.correctUuids.includes(option.uuid)
-                            property bool wrong: selected && questionBlock.correctUuids.length > 0 && !correct
-                            readonly property int votes: Number(questionBlock.counts.optionCounts
-                                ? questionBlock.counts.optionCounts[option.uuid] || 0 : 0)
-                            readonly property int percent: Number(questionBlock.counts.voterCount) > 0
-                                ? Math.round(votes / Number(questionBlock.counts.voterCount) * 100) : 0
-                            readonly property bool selectable: card.canSelect(questionBlock.question, option.uuid)
-                            // During an options-model churn the delegate incubates
-                            // before it is parented; guard the size bindings.
                             width: parent ? parent.width : 0
-                            height: optionRowInner.height + 8
-                            // Reference parity: disabled when !canAct || busy || !canSelect
-                            // (workspace-message-poll-question.ui.tsx:190-195).
-                            enabled: !readOnly && !card.closed && !questionBlock.busy && selectable && card.canAct()
-                            Accessible.role: Accessible.Button
-                            Accessible.name: String(option.text)
-                            Accessible.checkable: true
-                            Accessible.checked: selected
-                            // Keyboard parity with the reference button element
-                            // (exo-review 4571525935): reachable via Tab,
-                            // activated by Return/Space just like a click.
-                            focusPolicy: Qt.TabFocus | Qt.ClickFocus
-                            activeFocusOnTab: true
-                            function activate() {
-                                card.voteRequested(questionBlock.question.uuid,
-                                    optionRow.option.uuid, !optionRow.selected)
-                            }
-                            Keys.onPressed: event => {
-                                if (event.key === Qt.Key_Space || event.key === Qt.Key_Return
-                                    || event.key === Qt.Key_Enter) {
-                                    event.accepted = true
-                                    optionRow.activate()
-                                }
-                            }
-
+                            height: optionRow.height
+                            readonly property var preview: card.voters
+                                ? card.voters.preview(questionBlock.question, modelData) : []
                             Item {
-                                id: optionRowInner
-                                width: parent.width
-                                // Round 4 (exo-review 4571525936): the aggregate
-                                // keeps the option line only while the option
-                                // text still holds its 24 px floor beside it;
-                                // under that width the aggregate drops to its own
-                                // line below the label, so its right edge can
-                                // never extend past the card column on a very
-                                // narrow bubble.
-                                readonly property real textLeft: optionMarker.width + 8
-                                readonly property bool aggregateInline: !optionAggregate.visible
-                                    || width - textLeft - 8 - optionAggregate.implicitWidth >= 24
-                                height: Math.max(28, optionText.height
-                                    + (optionAggregate.visible && !aggregateInline
-                                        ? 2 + optionAggregate.height : 0))
-
-                                Rectangle {
-                                    id: optionMarker
-                                    x: 0
-                                    width: 16
-                                    height: 16
-                                    anchors.verticalCenter: optionText.verticalCenter
-                                    radius: 8
-                                    color: optionRow.selected || optionRow.correct
-                                        ? (optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"])
-                                        : "transparent"
-                                    border.width: optionRow.selected || optionRow.correct ? 0 : 1
-                                    border.color: optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"]
-                                    opacity: optionRow.enabled || questionBlock.busy ? 1 : 0.4
-                                    Text {
-                                        anchors.centerIn: parent
-                                        visible: optionRow.selected || optionRow.correct
-                                        text: "\u2713"
-                                        textFormat: Text.PlainText
-                                        font.pixelSize: 11
-                                        color: "white"
+                                id: optionRow
+                                readonly property int index: optionEntry.index
+                                readonly property var option: optionEntry.modelData
+                                property bool selected: questionBlock.selected.includes(optionRow.option.uuid)
+                                property bool correct: questionBlock.answered
+                                    && questionBlock.correctUuids.includes(optionRow.option.uuid)
+                                property bool wrong: selected && questionBlock.correctUuids.length > 0 && !correct
+                                readonly property int votes: Number(questionBlock.counts.optionCounts
+                                    ? questionBlock.counts.optionCounts[optionRow.option.uuid] || 0 : 0)
+                                readonly property int percent: Number(questionBlock.counts.voterCount) > 0
+                                    ? Math.round(votes / Number(questionBlock.counts.voterCount) * 100) : 0
+                                readonly property bool selectable: card.canSelect(questionBlock.question, optionRow.option.uuid)
+                                // During an options-model churn the delegate incubates
+                                // before it is parented; guard the size bindings.
+                                width: Math.max(0, optionEntry.width - (optionEntry.preview.length ? voterButton.width + 4 : 0))
+                                height: optionRowInner.height + 8
+                                // Reference parity: disabled when !canAct || busy || !canSelect
+                                // (workspace-message-poll-question.ui.tsx:190-195).
+                                enabled: !readOnly && !card.closed && !questionBlock.busy && selectable && card.canAct()
+                                Accessible.role: Accessible.Button
+                                Accessible.name: String(optionRow.option.text)
+                                Accessible.checkable: true
+                                Accessible.checked: selected
+                                // Keyboard parity with the reference button element
+                                // (exo-review 4571525935): reachable via Tab,
+                                // activated by Return/Space just like a click.
+                                focusPolicy: Qt.TabFocus | Qt.ClickFocus
+                                activeFocusOnTab: true
+                                function activate() {
+                                    card.voteRequested(questionBlock.question.uuid,
+                                        optionRow.option.uuid, !optionRow.selected)
+                                }
+                                Keys.onPressed: event => {
+                                    if (event.key === Qt.Key_Space || event.key === Qt.Key_Return
+                                        || event.key === Qt.Key_Enter) {
+                                        event.accepted = true
+                                        optionRow.activate()
                                     }
                                 }
-                                Text {
-                                    id: optionText
-                                    objectName: "poll-option-text-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-                                    x: optionRowInner.textLeft
-                                    width: Math.max(24, optionRowInner.width - optionRowInner.textLeft
-                                        - (optionAggregate.visible && optionRowInner.aggregateInline
-                                            ? optionAggregate.implicitWidth + 8 : 0))
-                                    text: String(option.text)
-                                    textFormat: Text.PlainText
-                                    wrapMode: Text.Wrap
-                                    font.pixelSize: 14
-                                    lineHeightMode: Text.FixedHeight
-                                    lineHeight: 17
-                                    color: optionRow.correct ? card.colors["indicator-green"]
-                                        : (optionRow.wrong ? card.colors["danger"]
-                                            : (optionRow.selected ? card.colors["accent"]
-                                                : card.colors["text-primary"]))
-                                }
-                                Text {
-                                    id: optionAggregate
-                                    objectName: "poll-aggregate-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-                                    visible: questionBlock.results
-                                    x: optionRowInner.aggregateInline
-                                        ? optionText.x + optionText.width + 8 : optionText.x
-                                    y: optionRowInner.aggregateInline ? 0 : optionText.height + 2
-                                    width: optionRowInner.aggregateInline
-                                        ? implicitWidth
-                                        : Math.min(implicitWidth, optionRowInner.width - optionText.x)
-                                    text: String(optionRow.percent) + "% \u00b7 " + String(optionRow.votes)
-                                    textFormat: Text.PlainText
-                                    font.pixelSize: 14
-                                    color: card.colors["text-secondary"]
-                                }
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: optionRow.activate()
+                                Item {
+                                    id: optionRowInner
+                                    width: parent.width
+                                    // Round 4 (exo-review 4571525936): the aggregate
+                                    // keeps the option line only while the option
+                                    // text still holds its 24 px floor beside it;
+                                    // under that width the aggregate drops to its own
+                                    // line below the label, so its right edge can
+                                    // never extend past the card column on a very
+                                    // narrow bubble.
+                                    readonly property real textLeft: optionMarker.width + 8
+                                    readonly property bool aggregateInline: !optionAggregate.visible
+                                        || width - textLeft - 8 - optionAggregate.implicitWidth >= 24
+                                    height: Math.max(28, optionText.height
+                                        + (optionAggregate.visible && !aggregateInline
+                                            ? 2 + optionAggregate.height : 0))
+
+                                    Rectangle {
+                                        id: optionMarker
+                                        x: 0
+                                        width: 16
+                                        height: 16
+                                        anchors.verticalCenter: optionText.verticalCenter
+                                        radius: 8
+                                        color: optionRow.selected || optionRow.correct
+                                            ? (optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"])
+                                            : "transparent"
+                                        border.width: optionRow.selected || optionRow.correct ? 0 : 1
+                                        border.color: optionRow.correct ? card.colors["indicator-green"] : card.colors["accent"]
+                                        opacity: optionRow.enabled || questionBlock.busy ? 1 : 0.4
+                                        Text {
+                                            anchors.centerIn: parent
+                                            visible: optionRow.selected || optionRow.correct
+                                            text: "\u2713"
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 11
+                                            color: "white"
+                                        }
+                                    }
+                                    Text {
+                                        id: optionText
+                                        objectName: "poll-option-text-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
+                                        x: optionRowInner.textLeft
+                                        width: Math.max(24, optionRowInner.width - optionRowInner.textLeft
+                                            - (optionAggregate.visible && optionRowInner.aggregateInline
+                                                ? optionAggregate.implicitWidth + 8 : 0))
+                                        text: String(optionRow.option.text)
+                                        textFormat: Text.PlainText
+                                        wrapMode: Text.Wrap
+                                        font.pixelSize: 14
+                                        lineHeightMode: Text.FixedHeight
+                                        lineHeight: 17
+                                        color: optionRow.correct ? card.colors["indicator-green"]
+                                            : (optionRow.wrong ? card.colors["danger"]
+                                                : (optionRow.selected ? card.colors["accent"]
+                                                    : card.colors["text-primary"]))
+                                    }
+                                    Text {
+                                        id: optionAggregate
+                                        objectName: "poll-aggregate-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
+                                        visible: questionBlock.results
+                                        x: optionRowInner.aggregateInline
+                                            ? optionText.x + optionText.width + 8 : optionText.x
+                                        y: optionRowInner.aggregateInline ? 0 : optionText.height + 2
+                                        width: optionRowInner.aggregateInline
+                                            ? implicitWidth
+                                            : Math.min(implicitWidth, optionRowInner.width - optionText.x)
+                                        text: String(optionRow.percent) + "% \u00b7 " + String(optionRow.votes)
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 14
+                                        color: card.colors["text-secondary"]
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: optionRow.activate()
+                                    }
+                                }
+                                objectName: "poll-option-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
+
+                                // Result bar: always present (2 px after 6 px), the
+                                // fill carries the percent width (css:106-110).
+                                Item {
+                                    anchors.top: optionRowInner.bottom
+                                    width: optionEntry.width
+                                    height: 8
+                                    Rectangle {
+                                        id: optionBar
+                                        objectName: "poll-bar-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
+                                        property int percent: optionRow.percent
+                                        y: 6
+                                        width: questionBlock && questionBlock.results
+                                            ? parent.width * Math.min(100, Math.max(0, optionRow.percent)) / 100 : 0
+                                        height: 2
+                                        radius: 1
+                                        color: optionRow.correct || (optionRow.selected && !optionRow.wrong)
+                                            ? card.colors["accent"] : card.colors["text-secondary"]
+                                    }
                                 }
                             }
-                            objectName: "poll-option-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-
-                            // Result bar: always present (2 px after 6 px), the
-                            // fill carries the percent width (css:106-110).
-                            Item {
-                                anchors.top: optionRowInner.bottom
-                                width: parent.width
-                                height: 8
-                                Rectangle {
-                                    id: optionBar
-                                    objectName: "poll-bar-" + questionBlock.index + "-" + optionRow.index + "-" + card.messageUuid
-                                    property int percent: optionRow.percent
-                                    y: 6
-                                    width: questionBlock && questionBlock.results
-                                        ? parent.width * Math.min(100, Math.max(0, optionRow.percent)) / 100 : 0
-                                    height: 2
-                                    radius: 1
-                                    color: optionRow.correct || (optionRow.selected && !optionRow.wrong)
-                                        ? card.colors["accent"] : card.colors["text-secondary"]
+                            Button {
+                                id: voterButton
+                                objectName: "poll-voters-option-" + optionEntry.modelData.uuid + "-" + card.messageUuid
+                                visible: questionBlock.results && Boolean(card.voters)
+                                x: optionEntry.preview.length ? optionEntry.width - width : optionAggregate.x
+                                y: optionEntry.preview.length ? 0 : optionAggregate.y
+                                width: optionEntry.preview.length
+                                    ? Math.min(optionEntry.width / 2, 28 + 20 * (optionEntry.preview.length - 1))
+                                    : optionAggregate.width
+                                height: optionEntry.preview.length ? 28 : optionAggregate.height
+                                padding: 0
+                                Accessible.name: qsTr("Who chose “%1”").arg(optionEntry.modelData.text)
+                                onClicked: card.voters.showFor(questionBlock.question, optionEntry.modelData, false)
+                                background: Rectangle {
+                                    color: "transparent"
+                                    border.width: voterButton.visualFocus ? 1 : 0
+                                    border.color: card.colors.accent
+                                    radius: 4
+                                }
+                                contentItem: Item {
+                                    clip: true
+                                    Repeater {
+                                        model: optionEntry.preview
+                                        NativePollVoterAvatar {
+                                            required property string modelData
+                                            required property int index
+                                            userUuid: modelData; controller: card.controller; colors: card.colors
+                                            objectName: "poll-voter-preview-" + optionEntry.modelData.uuid + "-" + modelData
+                                            x: 20 * index; width: 28; height: 28
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -621,6 +679,20 @@ Item {
             height: Math.max(15, summaryTextItem.height)
             Accessible.role: Accessible.Grouping
             Accessible.name: qsTr("Vote counts")
+            MouseArea {
+                id: overviewAction
+                objectName: "poll-voters-summary-" + card.messageUuid
+                anchors.fill: parent
+                visible: card.summaryVisible && !card.quiz && !card.closed && Boolean(card.voters) && card.voters.choices.length > 0
+                activeFocusOnTab: visible
+                cursorShape: Qt.PointingHandCursor
+                Accessible.role: Accessible.Button
+                Accessible.name: card.summaryText
+                Accessible.onPressAction: card.voters.showOverview()
+                onClicked: card.voters.showOverview()
+                Keys.onSpacePressed: event => { event.accepted = true; card.voters.showOverview() }
+                Keys.onReturnPressed: event => { event.accepted = true; card.voters.showOverview() }
+            }
             Text {
                 id: summaryTextItem
                 objectName: "poll-summary-" + card.messageUuid

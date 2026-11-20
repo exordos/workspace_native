@@ -4563,8 +4563,21 @@
             <translation>Видео</translation>
         </message>
     </context>
+<context>
+    <name>NativePollVoters</name>
+    <message><source>Voters</source><translation>Проголосовавшие</translation></message>
+    <message><source>Close</source><translation>Закрыть</translation></message>
+    <message><source>Answer</source><translation>Ответ</translation></message>
+    <message><source>Loading…</source><translation>Загрузка…</translation></message>
+    <message><source>Could not load voters. Please try again.</source><translation>Не удалось загрузить участников. Попробуйте ещё раз.</translation></message>
+    <message><source>No votes yet</source><translation>Пока никто не проголосовал</translation></message>
+    <message><source>Retry</source><translation>Повторить</translation></message>
+    <message><source>Load more</source><translation>Загрузить ещё</translation></message>
+</context>
     <context>
         <name>NativePollCard</name>
+    <message><source>View votes</source><translation>Посмотреть голоса</translation></message>
+    <message><source>Who chose “%1”</source><translation>Кто выбрал «%1»</translation></message>
         <message>
             <source>Poll closed</source>
             <translation>Опрос завершён</translation>

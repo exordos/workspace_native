@@ -32,9 +32,18 @@ Each platform test minimizes the existing window and launches the unpacked execu
 | Capability | Windows x64 | macOS arm64 |
 | --- | --- | --- |
 | Start in a relocated archive, restore the original window, clipboard text in both directions | PASS on Windows Server 2022 | PASS on macOS 15 |
+| Sign in, quit, restore the rotated account in a second process and sign out | PASS, including Windows Credential Manager entry creation and removal | PASS, including macOS Keychain entry creation and removal |
+| Check for updates in App version | The Windows preview reports that updates are unavailable | The macOS preview reports that updates are unavailable |
 | OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
+| Embedded meeting loads and asks for microphone and camera | Hosted Windows reported zero capture endpoints and the meeting returned `NotFoundError` for both devices | AVFoundation identified two audio endpoints and no video endpoint. The meeting supplied a live audio track and returned `NotFoundError` for video |
 | Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
 | Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
+
+The account check uses a disposable loopback HTTPS organization. The normal installed executable performs password login, rotates its project-scoped refresh credential, and signs in again after restart. The test checks whether its randomly identified entry exists. It never inspects, decodes or logs the credential value. On Windows it frees the structure returned by Credential Manager immediately. Signing out must return to the login screen and remove that account. The runner removes the temporary certificate and account data before disposal.
+
+On each desktop, the App version panel displayed the unavailable update status after Check for updates. The Windows screenshot and macOS WindowServer capture showed the message on screen. The previews have no Windows or macOS update installation path.
+
+For the call check, the package joins a meeting served by the same loopback HTTPS fixture. The meeting calls `getUserMedia`, reads each track's state and stops the track without retaining media. Windows Runtime and AVFoundation count the devices visible to that runner independently. The package must return a live track for an available device or report that a device is absent. A fresh permission prompt and a physical camera require a desktop with the corresponding OS privacy state and hardware. The current Qt WebEngine permission interface omits the requesting frame identity, so the call controller declines display capture before the platform picker. [Display-capture policy](NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md)
 
 The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).
 
@@ -53,3 +62,9 @@ notification or download event. [Microsoft’s taskbar interface](https://learn.
 The shell adapter accepts download progress from the existing updater bridge. The macOS check reads the native progress indicator on the Dock tile. The Windows check captures Explorer's taskbar while the progress bar appears and clears. The current release updater supports Linux x86_64 and reports that updates are unavailable on other platforms. The Windows and macOS checks therefore supply controlled progress values to the shell adapter. A signed Windows or macOS update channel requires its own distribution and installation acceptance.
 
 [Desktop shell ownership decision](decisions/0011-native-desktop-shell.md)
+
+## Windows per-user installer
+
+Each Windows package includes a portable ZIP and a per-user MSI built by CPack and WiX from the same staged application. Check the chosen file against `SHA256SUMS`. The installer places the application under `%LOCALAPPDATA%\Workspace Native Preview` and creates a shortcut in the current user's Start menu. The shortcut and running application use `com.exordos.workspace.native.preview` as their Windows application ID. Users can remove the preview from Windows Settings under Installed apps.
+
+A two-version installation test removes an obsolete file during the MSI upgrade and retains an unrelated file. The clean Windows runner checks the installer digest, installs into a fresh profile, reads the current user's uninstall registration and Start menu shortcut, and launches the installed executable. After uninstall it checks that the application's files and registration are gone and a file it created alongside them was preserved.

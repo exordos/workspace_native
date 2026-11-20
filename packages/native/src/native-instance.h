@@ -24,6 +24,9 @@ public:
 signals:
     void activationRequested(QString deepLink);
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void acceptConnections();
     QString m_directory;

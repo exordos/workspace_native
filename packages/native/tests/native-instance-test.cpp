@@ -1,4 +1,5 @@
 #include "native-instance.h"
+#include <QFileOpenEvent>
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -42,6 +43,24 @@ static int worker(QCoreApplication &app, const QStringList &arguments)
 class NativeInstanceTest final : public QObject {
     Q_OBJECT
 private slots:
+    void operatingSystemUrlEventsUseTheNormalActivationPath()
+    {
+        NativeInstance instance;
+        QObject receiver;
+        receiver.installEventFilter(&instance);
+        QSignalSpy activations(&instance, &NativeInstance::activationRequested);
+        QFileOpenEvent localFile(QStringLiteral("/tmp/workspace-preview-file"));
+        QCoreApplication::sendEvent(&receiver, &localFile);
+        QCOMPARE(activations.size(), 0);
+        QVERIFY(!instance.activationPending());
+        const auto target = QStringLiteral("ew://open/org/example/project/11111111-1111-4111-8111-111111111111/inbox");
+        QFileOpenEvent link{QUrl(target)};
+        QCoreApplication::sendEvent(&receiver, &link);
+        QCOMPARE(activations.size(), 1);
+        QCOMPARE(activations.takeFirst().first().toString(), target);
+        QVERIFY(instance.activationPending());
+    }
+
     void releaseHandsThePrimaryLockToTheRestartedVersion()
     {
         QTemporaryDir directory;
