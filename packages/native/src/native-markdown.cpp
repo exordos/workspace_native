@@ -426,7 +426,13 @@ QVariantMap NativeMarkdown::renderMessage(const QString &markdown, bool hideMedi
     return renderBody(markdown, hideMedia, opened, false);
 }
 
-QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, const QStringList &opened, bool expandAll)
+QVariantMap NativeMarkdown::renderProtected(const QString &body, const QStringList &opened, const SecretResolver &resolver)
+{
+    return renderBody(body, false, opened, false, resolver);
+}
+
+QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, const QStringList &opened,
+    bool expandAll, const SecretResolver &resolver)
 {
     // The message contract counts Unicode code points, while QString::size()
     // counts UTF-16 units. Bound the scan before accepting surrogate pairs.
@@ -437,7 +443,7 @@ QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, 
     const bool hasSpoilers = mayContainSpoilers(markdown);
     const auto cacheKey = digest + (hasSpoilers ? QStringLiteral("|") + tr("Spoiler") + (expandAll ? QStringLiteral("*") : opened.join(',')) : QString())
         + (hideMedia ? QStringLiteral("|media-hidden") : QString());
-    if (m_cache.contains(cacheKey))
+    if (!resolver && m_cache.contains(cacheKey))
         return m_cache.value(cacheKey);
     MessageDocument document;
     document.setResourceProvider([](const QUrl &) { return QVariant{}; });
@@ -654,6 +660,8 @@ QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, 
             }
         }
     }
+    QHash<QString, QVariantMap> secretActions;
+    bool hasSecrets = false;
     for (auto it = fragments.crbegin(); it != fragments.crend(); ++it) {
         auto format = it->format;
         auto text = it->text;
@@ -670,8 +678,45 @@ QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, 
             text = QString();
             format = QTextCharFormat{};
         } else if (secretFragment(format)) {
-            text = tr("Encrypted fragment");
+            hasSecrets = true;
+            auto target = resourceTarget(format);
+            if (!isWorkspaceSecretReference(target)) target = QUrl::fromPercentEncoding(target.toUtf8());
             format = QTextCharFormat{};
+            text = tr("Encrypted fragment");
+            if (resolver) {
+                const auto id = QString::number(it->position);
+                auto state = resolver(target, id);
+                const auto content = state.take("html").toString();
+                const auto retry = state.take("retry").toString();
+                if (!state.isEmpty()) {
+                    const auto href = QStringLiteral("workspace-fragment:") + digest + QLatin1Char('/') + id;
+                    const auto label = QString(QChar(0x2003)) + state.value("label").toString();
+                    state.insert("href", href);
+                    state.insert("id", id);
+                    secretActions.insert(href, state);
+                    format.setAnchor(true);
+                    format.setAnchorHref(href);
+                    QTextCursor cursor(&document);
+                    cursor.setPosition(it->position);
+                    cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
+                    const auto error = state.value("error").toString();
+                    if (!error.isEmpty()) cursor.insertText(error + QLatin1Char(' '), QTextCharFormat{});
+                    cursor.insertText(label, format);
+                    if (!retry.isEmpty()) {
+                        const auto retryHref = href + QStringLiteral("/retry");
+                        secretActions.insert(retryHref, {{"id", id + QStringLiteral("-retry")}, {"href", retryHref},
+                            {"action", "retry"}, {"token", state.value("token")}});
+                        cursor.insertText(" ", QTextCharFormat{});
+                        format.setAnchorHref(retryHref);
+                        cursor.insertText(retry, format);
+                    }
+                    if (!content.isEmpty()) {
+                        cursor.insertText(" ", QTextCharFormat{});
+                        cursor.insertHtml(content);
+                    }
+                    continue;
+                }
+            }
         } else if (format.isImageFormat()) {
             const auto image = format.toImageFormat();
             const auto label = image.stringProperty(QTextFormat::ImageAltText);
@@ -786,7 +831,7 @@ QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, 
     // in document order. When the ranges cannot be aligned 1:1 with the
     // ordered urn list (unusual crafted documents), the list stays empty
     // and the view keeps its text search as the fallback.
-    QVariantList mentionSpans, spoilerSpans;
+    QVariantList mentionSpans, spoilerSpans, secretSpans;
     {
         struct AnchorSpan { int start; int length; QString href; };
         QVector<AnchorSpan> spans;
@@ -799,6 +844,13 @@ QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, 
                 if (!format.isAnchor())
                     continue;
                 const auto href = format.anchorHref();
+                if (secretActions.contains(href)) {
+                    auto span = secretActions.value(href);
+                    span.insert("start", fragment.position());
+                    span.insert("length", fragment.length());
+                    span.insert("label", fragment.text());
+                    secretSpans.append(span);
+                }
                 if (spoilers.ids.contains(href))
                     spoilerSpans.append(QVariantMap{{"id", spoilers.ids.value(href)}, {"href", href},
                         {"header", spoilers.headers.contains(href)}, {"label", fragment.text()},
@@ -827,12 +879,13 @@ QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, 
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
                              {"parts", orderedImageParts(document, codeBlocks, codeBlockTails)},
                              {"codeBlocks", codeBlocks}, {"mentions", mentionUrns},
-                             {"mentionSpans", mentionSpans}, {"spoilers", spoilerSpans},
+                             {"mentionSpans", mentionSpans}, {"spoilers", spoilerSpans}, {"secretControls", secretSpans}, {"hasSecrets", hasSecrets},
                              // Issue #109 reviews F4/F6: the visible plain text of every
                              // mention occurrence (with the same "@" prefix rules the
                              // anchor got), in document order, so the view can locate the
                              // occurrence inside its laid-out text without re-parsing.
                              {"mentionLabels", mentionLabels}};
+    if (resolver) return result;
     while (m_order.size() >= 128)
         m_cache.remove(m_order.dequeue());
     m_order.enqueue(cacheKey);

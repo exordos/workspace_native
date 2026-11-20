@@ -1359,7 +1359,9 @@
             <source>not in channel</source>
             <translation>не в канале</translation>
         </message>
-            <message>
+            <message><source>Partner info</source><translation>Информация о собеседнике</translation></message>
+        <message><source>Channel info</source><translation>Информация о канале</translation></message>
+        <message>
             <source>Information</source>
             <translation>Информация</translation>
         </message>
@@ -1483,6 +1485,8 @@
         <source>Are you sure you want to delete &quot;%1&quot;?</source>
         <translation>Вы уверены, что хотите удалить «%1»?</translation>
     </message>
+    <message><source>Settings</source><translation>Настройки</translation></message>
+    <message><source>Appearance</source><translation>Оформление</translation></message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -1842,6 +1846,26 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message>
+            <source>Show spoiler</source>
+            <translation>Показать спойлер</translation>
+        </message>
+        <message>
+            <source>Hide spoiler</source>
+            <translation>Скрыть спойлер</translation>
+        </message>
+        <message>
+            <source>Request key</source>
+            <translation>Запросить ключ</translation>
+        </message>
+        <message>
+            <source>Waiting for a response</source>
+            <translation>Ожидание ответа</translation>
+        </message>
+        <message>
+            <source>Could not decrypt message</source>
+            <translation>Не удалось расшифровать</translation>
+        </message>
         <message>
             <source>Some local data could not be cleared.</source>
             <translation>Не удалось очистить часть локальных данных.</translation>
@@ -3732,6 +3756,40 @@
             <translation>Медиа %1</translation>
         </message>
     </context>
+<context>
+    <name>NativeExternalAccountBlock</name>
+    <message><source>External accounts</source><translation>Внешние аккаунты</translation></message>
+    <message><source>Could not load external accounts. Check access and try again.</source><translation>Не удалось загрузить внешние аккаунты. Проверь доступ и повтори попытку.</translation></message>
+    <message><source>Checking…</source><translation>Проверяем…</translation></message>
+    <message><source>No external accounts connected yet.</source><translation>Внешние аккаунты ещё не подключены.</translation></message>
+    <message><source>Connected</source><translation>Подключены</translation></message>
+    <message><source>External account actions</source><translation>Действия внешнего аккаунта</translation></message>
+    <message><source>Edit</source><translation>Изменить</translation></message>
+    <message><source>Reconnect</source><translation>Переподключить</translation></message>
+    <message><source>Delete</source><translation>Удалить</translation></message>
+    <message><source>Linked services let you sign in to the same profile from different messengers without setting it up again</source><translation>Привязанные сервисы позволяют входить в один и тот же профиль с разных мессенджеров без повторной настройки</translation></message>
+    <message><source>Connect service</source><translation>Подключить сервис</translation></message>
+    <message><source>Checking connection…</source><translation>Проверяем подключение…</translation></message>
+    <message><source>Loading history…</source><translation>Загружаем историю…</translation></message>
+    <message><source>Connection is active</source><translation>Подключение активно</translation></message>
+    <message><source>Connection needs attention</source><translation>Подключение требует внимания</translation></message>
+    <message><source>Zulip credentials need to be updated</source><translation>Нужно обновить данные доступа к Zulip</translation></message>
+    <message><source>Synchronization is stopped</source><translation>Синхронизация остановлена</translation></message>
+    <message><source>The integration was suspended by an administrator</source><translation>Интеграция приостановлена администратором</translation></message>
+    <message><source>Edit external account</source><translation>Редактировать внешний аккаунт</translation></message>
+    <message><source>Connect external account</source><translation>Подключить внешний аккаунт</translation></message>
+    <message><source>Provider</source><translation>Провайдер</translation></message>
+    <message><source>Zulip is already connected.</source><translation>Zulip уже подключён.</translation></message>
+    <message><source>Server URL</source><translation>URL сервера</translation></message>
+    <message><source>Email</source><translation>Email</translation></message>
+    <message><source>API key</source><translation>API-ключ</translation></message>
+    <message><source>Could not update the external account. Check the details and try again.</source><translation>Не удалось обновить внешний аккаунт. Проверьте данные и попробуйте ещё раз.</translation></message>
+    <message><source>Cancel</source><translation>Отмена</translation></message>
+    <message><source>Save</source><translation>Сохранить</translation></message>
+    <message><source>Connect</source><translation>Подключить</translation></message>
+    <message><source>Delete external account?</source><translation>Удалить внешний аккаунт?</translation></message>
+    <message><source>Could not delete the external account.</source><translation>Не удалось удалить внешний аккаунт.</translation></message>
+</context>
     <context>
         <name>NativeRightDrawer</name>
         <message>
@@ -3746,6 +3804,41 @@
             <source>Close</source>
             <translation>Закрыть</translation>
         </message>
+    </context>
+    <context>
+        <name>NativeChannelTopics</name>
+        <message><source>General chat</source><translation>Общий чат</translation></message>
+        <message><source>Muted</source><translation>Без звука</translation></message>
+        <message><source>Followed</source><translation>Отслеживается</translation></message>
+        <message><source>Unmuted</source><translation>Со звуком</translation></message>
+        <message><source>Default</source><translation>По умолчанию</translation></message>
+        <message><source>Topics</source><translation>Темы</translation></message>
+        <message><source>Collapse topics</source><translation>Свернуть темы</translation></message>
+        <message><source>Expand topics</source><translation>Развернуть темы</translation></message>
+        <message><source>No topics</source><translation>Нет тем</translation></message>
+        <message><source>Topic notifications: %1</source><translation>Уведомления топика: %1</translation></message>
+        <message><source>Could not update the topic. Please try again.</source><translation>Не удалось обновить топик. Попробуйте ещё раз.</translation></message>
+        <message><source>Mark as read</source><translation>Отметить как прочитанное</translation></message>
+        <message><source>Rename topic</source><translation>Переименовать тему</translation></message>
+        <message><source>Mark topic as done</source><translation>Отметить топик завершённым</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+    </context>
+    <context>
+        <name>NativeTopicSummary</name>
+        <message><source>Topic context</source><translation>Контекст топика</translation></message>
+        <message><source>Open AI summary settings</source><translation>Открыть настройки AI-выжимки</translation></message>
+        <message><source>Collapse topic context</source><translation>Свернуть контекст топика</translation></message>
+        <message><source>Expand topic context</source><translation>Развернуть контекст топика</translation></message>
+        <message><source>The summary will appear after the messages are processed.</source><translation>Выжимка появится после обработки сообщений.</translation></message>
+        <message><source>There is no summary for this topic.</source><translation>Для этой темы пока нет выжимки.</translation></message>
+        <message><source>There are new messages that are not yet included in the summary.</source><translation>Есть новые сообщения, которые пока не вошли в выжимку.</translation></message>
+        <message><source>Automatic summary updates are disabled for this topic.</source><translation>Автоматическое обновление выжимки для этой темы отключено.</translation></message>
+        <message><source>AI summary settings</source><translation>Настройки AI-выжимки</translation></message>
+        <message><source>Automatic summary updates</source><translation>Автоматическое обновление выжимки</translation></message>
+        <message><source>Could not update the topic. Please try again.</source><translation>Не удалось обновить топик. Попробуйте ещё раз.</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
     </context>
     <context>
         <name>NativeChannelInfo</name>
@@ -3878,6 +3971,13 @@
             <translation>Добавить</translation>
         </message>
     </context>
+<context>
+    <name>NativeUserSearch</name>
+    <message><source>Retry</source><translation>Повторить</translation></message>
+    <message><source>Search</source><translation>Поиск</translation></message>
+    <message><source>Start chat</source><translation>Начать чат</translation></message>
+    <message><source>No results found</source><translation>Ничего не найдено</translation></message>
+</context>
     <context>
         <name>NativeUserProfile</name>
         <message>
@@ -4998,4 +5098,46 @@
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
     </context>
+<context>
+    <name>NativeAccountPreferences</name>
+    <message><source>Theme settings</source><translation>Настройки темы</translation></message>
+    <message><source>Stream and topic order</source><translation>Порядок стримов и топиков</translation></message>
+    <message><source>Last message</source><translation>По последнему сообщению</translation></message>
+    <message><source>Unread first</source><translation>Непрочитанные</translation></message>
+    <message><source>By name</source><translation>По имени</translation></message>
+    <message><source>Folder layout</source><translation>Отображение папок</translation></message>
+    <message><source>Vertical rail</source><translation>Вертикальная панель</translation></message>
+    <message><source>Horizontal tabs</source><translation>Горизонтальные вкладки</translation></message>
+    <message><source>Chat list density</source><translation>Плотность списка чатов</translation></message>
+    <message><source>Standard</source><translation>Стандартная</translation></message>
+    <message><source>Compact</source><translation>Компактная</translation></message>
+    <message><source>Chat click</source><translation>Клик по чату</translation></message>
+    <message><source>What to open when clicking a chat</source><translation>Что открывать при клике на чат</translation></message>
+    <message><source>General chat and topics</source><translation>Общий чат и топики</translation></message>
+    <message><source>Latest topic</source><translation>Последний топик</translation></message>
+    <message><source>Click the avatar to open the general chat</source><translation>Клик по аватару откроет общий чат</translation></message>
+    <message><source>Notification sound</source><translation>Звуки уведомлений</translation></message>
+    <message><source>Default</source><translation>По умолчанию</translation></message>
+    <message><source>Subtle</source><translation>Тихий</translation></message>
+    <message><source>Digital</source><translation>Цифровой</translation></message>
+    <message><source>Glass</source><translation>Стекло</translation></message>
+    <message><source>Pulse</source><translation>Пульс</translation></message>
+    <message><source>Off</source><translation>Без звука</translation></message>
+    <message><source>Language</source><translation>Язык</translation></message>
+    <message><source>Auto sign-out</source><translation>Автовыход</translation></message>
+    <message><source>After inactivity</source><translation>После неактивности</translation></message>
+    <message><source>6 hours</source><translation>6 часов</translation></message>
+    <message><source>12 hours</source><translation>12 часов</translation></message>
+    <message><source>24 hours</source><translation>24 часа</translation></message>
+    <message><source>3 days</source><translation>3 дня</translation></message>
+    <message><source>7 days</source><translation>7 дней</translation></message>
+    <message><source>Never</source><translation>Никогда</translation></message>
+    <message><source>Light</source><translation>Светлая</translation></message>
+    <message><source>Dark</source><translation>Тёмная</translation></message>
+    <message><source>System</source><translation>Системная</translation></message>
+    <message><source>Warm orange</source><translation>Тёплый оранжевый</translation></message>
+    <message><source>Cold blue</source><translation>Холодный синий</translation></message>
+    <message><source>Blue mist</source><translation>Синий туман</translation></message>
+    <message><source>Emerald chat</source><translation>Изумрудный чат</translation></message>
+</context>
 </TS>

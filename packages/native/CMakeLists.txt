@@ -27,6 +27,7 @@ add_library(workspace-native-core STATIC
     src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
+    src/native-external-accounts.cpp src/native-external-accounts.h
     src/native-preferences.cpp src/native-preferences.h
     src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
@@ -118,6 +119,17 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
 # precedent). tests/licenses-dataset-test.py guards shape and determinism as a
 # direct python check; it is not a CTest group so the group count stays stable.
 find_program(WORKSPACE_NATIVE_PYTHON3 NAMES python3 REQUIRED)
+set(native_sound_dir "${CMAKE_CURRENT_BINARY_DIR}/notification-sounds")
+set(native_sounds)
+foreach(preset default subtle digital glass pulse)
+    list(APPEND native_sounds "${native_sound_dir}/${preset}.wav")
+endforeach()
+add_custom_command(OUTPUT ${native_sounds}
+    COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-notification-sounds.py" "${native_sound_dir}"
+    DEPENDS scripts/generate-notification-sounds.py VERBATIM)
+set_source_files_properties(${native_sounds} PROPERTIES GENERATED TRUE)
+qt_add_resources(workspace-native-ui native_sounds PREFIX /workspace/sounds
+    BASE "${native_sound_dir}" FILES ${native_sounds})
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(native_md4c QUIET md4c)
@@ -144,36 +156,40 @@ qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
 qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
+qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-qml/NativeSelect.qml
+qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeDownloadCenter.qml
+qml/NativeUserSearch.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
+qml/NativePollManagementDialog.qml
 qml/SessionSwitcher.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml
-qml/NativePollManagementDialog.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicSummary.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 
 foreach(qml_file IN LISTS native_qml_files)
     get_filename_component(qml_name "${qml_file}" NAME)
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
 endforeach()
-set(native_icons settings chat_bubble calendar mail files folders folder folder_open profile channels add attach smile
+set(native_icons chat_bubble calendar mail files folders folder folder_open profile channels add attach smile
     composer-send composer-expand-content composer-collapse-content composer-bottom-panel-open composer-bottom-panel-close
     composer-add-link composer-format-bold composer-format-italic composer-strikethrough
     composer-list-numbered composer-list-bulleted composer-chat-dashed composer-frame-source
     composer-inline-code composer-visibility
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
+    zulip-external-account links_compact more build
     reply forward copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
     mail_activity home_filled marker drafts chevron-up
-    at bell bell_off person_add
+    at bell bell_off person_add settings
     stylus images files border_color links business_center handshake account_circle group
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
     grid dashboard_customize
+    wb_sunny bedtime desktop_windows
     # Sidebar pinned-chat meta glyph (issue #96, docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md).
     pin
     # Sidebar topic notification-mode indicator glyph (issue #97,
@@ -519,6 +535,9 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
+        uiSecretFragmentTracksRequestAndVaultRemoval
+        uiSecretRequestVerifiesTheReferencedStream
+        uiSecretArchivedFragmentUsesItsAccessibleKey
         uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
         uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
         uiEncryptedOsRetryDoesNotSendAKeyRequest
