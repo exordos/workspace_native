@@ -279,6 +279,9 @@ def scenario(executable, check_updater, check_capture):
                                 if os.environ.get("CASSI_HOSTED_CHOOSER"):
                                     fixture.selected_file = folder / "selected package fixture.txt"
                                     fixture.selected_file.write_text("Selected in an actual OS dialog " + uuid.uuid4().hex)
+                                    route = (f"ew://open/org/127.0.0.1-{fixture.server_port}/project/{PROJECT}"
+                                             f"/stream/{fixture.capture.stream}/topic/{fixture.capture.topic}")
+                                    run(executable, route, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                                     drive(app.pid, "choose-file", str(fixture.selected_file))
                                     wait_for(lambda: fixture.uploaded, "The selected file did not reach the organization")
                                     print("The installed application's system chooser returned the exact file and bytes.", flush=True)

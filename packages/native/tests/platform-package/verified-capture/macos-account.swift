@@ -93,7 +93,6 @@ case "login":
     try press("Next")
     try press("Login")
 case "choose-file":
-    try press("General Chat: Cassi hosted channel")
     try press("Attach files")
     _ = try control("Open", kAXButtonRole as String)
     let board = NSPasteboard.general

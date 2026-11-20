@@ -84,7 +84,6 @@ switch ($Mode) {
         Press 'Login'
     }
     'choose-file' {
-        Press 'General Chat: Cassi hosted channel'
         Press 'Attach files'
         $type = [System.Windows.Automation.AutomationElement]
         $dialogFilter = [System.Windows.Automation.AndCondition]::new(
