@@ -254,6 +254,9 @@ foreach(target workspace-native-core workspace-native-ui workspace-native-deskto
 endforeach()
 
 install(TARGETS workspace-native BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(MSVC)
+    include(InstallRequiredSystemLibraries)
+endif()
 install(FILES ../../LICENSE resources/unicode_emoji.LICENSE resources/emoji_picker.LICENSE resources/md4c.LICENSE resources/openssl.LICENSE
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/workspace-native-preview)
 if(UNIX AND NOT APPLE)

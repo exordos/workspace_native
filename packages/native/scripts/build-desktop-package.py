@@ -42,6 +42,15 @@ install("application", root / "packages/native", stage, "-DBUILD_TESTING=OFF",
 artifacts.mkdir(parents=True, exist_ok=True)
 name = "workspace-native-windows-x64" if windows else "workspace-native-macos-arm64"
 archive = artifacts / f"{name}.zip"
+# Workspace uses SQLite. Optional Qt SQL plugins such as Mimer and
+# PostgreSQL import external SDK libraries that are absent on clean hosts.
+sql_drivers = stage / ("plugins/sqldrivers" if windows else "workspace-native.app/Contents/PlugIns/sqldrivers")
+sqlite_name = "qsqlite.dll" if windows else "libqsqlite.dylib"
+if not (sql_drivers / sqlite_name).is_file():
+    sys.exit("The package is missing the Qt SQLite driver.")
+for driver in sql_drivers.glob("qsql*.dll" if windows else "libqsql*.dylib"):
+    if driver.name != sqlite_name:
+        driver.unlink()
 if windows:
     if not (stage / "bin/workspace-native.exe").is_file():
         sys.exit("The Windows package is missing its executable.")
@@ -51,14 +60,6 @@ else:
     app = stage / "workspace-native.app"
     if not (app / "Contents/MacOS/workspace-native").is_file():
         sys.exit("The macOS package is missing its application bundle.")
-    # The client opens only SQLite databases. macdeployqt can also copy a
-    # Mimer plugin that links to an external SDK missing on clean Macs.
-    sql_drivers = app / "Contents/PlugIns/sqldrivers"
-    if not (sql_drivers / "libqsqlite.dylib").is_file():
-        sys.exit("The macOS package is missing the Qt SQLite driver.")
-    for driver in sql_drivers.glob("libqsql*.dylib"):
-        if driver.name != "libqsqlite.dylib":
-            driver.unlink()
     run("codesign", "--force", "--deep", "--sign", "-", app)
     run("codesign", "--verify", "--deep", "--strict", app)
     run("ditto", "-c", "-k", "--sequesterRsrc", stage, archive)
