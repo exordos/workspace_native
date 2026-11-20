@@ -91,6 +91,6 @@ quote, with a blank line before the attachment and before the answer. On
 reopening, that attachment belongs to the quoted tab. The editor presents the
 answer without the separator and restores the separator when saving.
 
-Image and video uploads include their intrinsic pixel width and height in the Markdown URL when the local decoder reports both within 300 ms. Binary files and unreadable media keep the existing URL. The probe uses the uploaded bytes and completes without opening the file again.
+Image and video uploads include their intrinsic pixel width and height in the Markdown URL when the local decoder reports both within 300 ms of receiving the selected media. Cold playback backend initialization precedes this metadata deadline. Binary files and unreadable media keep the existing URL. The probe uses the uploaded bytes and completes without opening the file again.
 
 A link shown as a Markdown code example or escaped text keeps its literal form. The ready upload still inserts an actionable link.
