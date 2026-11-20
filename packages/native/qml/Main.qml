@@ -8691,12 +8691,25 @@ ApplicationWindow {
                                         required property var modelData
                                         required property int index
                                         readonly property var part: modelData
+                                        // Issue #110 review r3 (#460/F3): the text
+                                        // run's laid-out document. The reference
+                                        // resolves right-clicked anchors and code
+                                        // block offsets against the rendered part
+                                        // itself; this hidden TextEdit mirrors the
+                                        // visible Text layout (same width, wrap and
+                                        // fixed 20 px leading on every styled block)
+                                        // so linkAt/positionToRectangle apply to it.
+                                        readonly property var layoutProbe: part.kind === "text" ? mediaLayoutProbe : null
+                                        readonly property string layoutHtml: part.kind === "text"
+                                            ? messageRow.imagePartHtml(part, index).replace(/ style="/g,
+                                                ' style="line-height:20px;-qt-line-height-type:fixed;') : ""
                                         readonly property real imageNaturalWidth: part.kind === "image" ? picture.implicitWidth + 2 : 0
                                         readonly property real imageWrapperHeight: Math.min(180, picture.height + 10)
                                         width: mediaMessageBody.width
                                         height: part.kind === "image" ? imageWrapperHeight + 8 : textRun.contentHeight + textRun.bottomPadding
                                         Text {
                                             id: textRun
+                                            objectName: "mediaTextRun-" + messageRow.modelData.id + "-" + index
                                             visible: imageRun.part.kind === "text"
                                             width: parent.width
                                             height: contentHeight + bottomPadding
@@ -8710,6 +8723,21 @@ ApplicationWindow {
                                             color: root.colors["text-primary"]
                                             linkColor: root.colors.accent
                                             onLinkActivated: link => root.openReference(link)
+                                            Accessible.ignored: true
+                                        }
+                                        TextEdit {
+                                            id: mediaLayoutProbe
+                                            objectName: "mediaLayoutProbe-" + messageRow.modelData.id + "-" + imageRun.index
+                                            visible: false
+                                            readOnly: true
+                                            x: 0
+                                            y: 0
+                                            width: textRun.width
+                                            text: imageRun.layoutHtml
+                                            textFormat: TextEdit.RichText
+                                            wrapMode: TextEdit.Wrap
+                                            font.pixelSize: 14
+                                            color: root.colors["text-primary"]
                                             Accessible.ignored: true
                                         }
                                         NativeMessageImage {
@@ -8926,8 +8954,25 @@ ApplicationWindow {
                                 // target.closest("a[href]") resolver,
                                 // workspace-message-body-interactions.hook.ts:266-280).
                                 const bodyPoint = messageBody.mapFromItem(bubble, mouse.x, mouse.y);
-                                const bodyLink = messageBody.visible && messageBody.enabled
+                                let bodyLink = messageBody.visible && messageBody.enabled
                                     ? messageBody.linkAt(bodyPoint.x, bodyPoint.y) : "";
+                                // Issue #110 review r3 (#460): a media-split body
+                                // renders its text in the mediaMessageBody runs, so
+                                // the hit-test travels each text run's laid-out
+                                // probe document when the ordinary body is hidden.
+                                if (!bodyLink.length && mediaMessageBody.visible) {
+                                    for (let i = 0; i < imageRuns.count && !bodyLink.length; ++i) {
+                                        const run = imageRuns.itemAt(i);
+                                        const probe = run ? run.layoutProbe : null;
+                                        if (!probe || !String(probe.text).length)
+                                            continue;
+                                        const probePoint = probe.mapFromItem(bubble, mouse.x, mouse.y);
+                                        if (probePoint.x < 0 || probePoint.y < 0
+                                            || probePoint.x > probe.width || probePoint.y > probe.height)
+                                            continue;
+                                        bodyLink = probe.linkAt(probePoint.x, probePoint.y);
+                                    }
+                                }
                                 root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText, bodyLink);
                             }
                         }
@@ -8936,39 +8981,85 @@ ApplicationWindow {
                         // (workspace-message-body-interactions.hook.ts:137-214).
                         // The label swaps to Copied / Failed to copy and resets
                         // after CODE_COPY_RESET_MS = 1200 ms (hook.ts:25).
-                        Repeater {
-                            model: messageBody.visible && !messageRow.hasInlineImages
-                                && !messageRow.encryptedLocked && !messageRow.keyControl
-                                ? (messageRow.rendered.codeBlocks || []) : []
-                            delegate: Rectangle {
+                        // Review r3 (F4): the mounted control is a real accessible
+                        // button: Accessible.Button role with a name, tab focus and
+                        // Enter/Space activation through the same exported
+                        // performCopy() path as the pointer. Only messages with
+                        // fenced code gain one, so the pinned bubble focus order
+                        // (reaction fixtures contain no fences) stays untouched.
+                        // Review r3 (F3): media-split bodies carry their per-text-part
+                        // code blocks too; a part's button lays out against that
+                        // part's hidden text probe instead of the ordinary body.
+                        readonly property var codeCopyTargets: {
+                            const targets = [];
+                            if (messageBody.visible) {
+                                (messageRow.rendered.codeBlocks || []).forEach((block, nth) =>
+                                    targets.push({start: block.start, text: block.text, partIndex: -1, nth: nth}));
+                            } else if (messageRow.hasInlineImages) {
+                                messageRow.imageParts.forEach((part, partIndex) => {
+                                    if (part.kind !== "text") return;
+                                    (part.codeBlocks || []).forEach((block, nth) =>
+                                        targets.push({start: block.start, text: block.text, partIndex: partIndex, nth: nth}));
+                                });
+                            }
+                            return targets;
+                        }
+                        Component {
+                            id: codeCopyButtonTemplate
+                            Rectangle {
                                 id: codeCopyButton
                                 required property var modelData
-                                required property int index
                                 readonly property string codeText: String(modelData.text || "")
-                                objectName: "codeCopyButton-" + messageRow.modelData.id + "-" + index
+                                readonly property int mountPart: Number(modelData.partIndex)
+                                readonly property var layoutTarget: mountPart < 0 ? messageBody
+                                    : (imageRuns.count > mountPart ? imageRuns.itemAt(mountPart).layoutProbe : null)
                                 property string copyState: "idle"
+                                objectName: "codeCopyButton-" + messageRow.modelData.id
+                                    + (mountPart < 0 ? "-" : "-p" + mountPart + "-") + Number(modelData.nth)
                                 width: codeCopyLabel.implicitWidth + 16
                                 height: 20
                                 radius: 5
                                 visible: codeText.trim().length > 0
-                                x: bubbleContent.x + messageBody.width - width - 2
-                                y: messageBody.length > Number(modelData.start)
-                                    ? messageBody.mapToItem(bubble, 0,
-                                        messageBody.positionToRectangle(Number(modelData.start)).y).y + 2 : 0
-                                color: codeCopyMouse.containsMouse ? root.colors["bg-elevated"] : "transparent"
-                                border.width: codeCopyMouse.containsMouse ? 1 : 0
+                                activeFocusOnTab: true
+                                Accessible.role: Accessible.Button
+                                Accessible.name: codeCopyLabel.text
+                                Accessible.onPressAction: codeCopyButton.performCopy()
+                                x: bubbleContent.x + (mountPart < 0 ? messageBody.width : mediaMessageBody.width) - width - 2
+                                // runShift is only a re-layout dependency: the
+                                // image loads after delegate creation and shifts
+                                // the media runs, so the y expression must be
+                                // re-evaluated once the run settles (mapToItem
+                                // already carries the full path to bubble).
+                                readonly property real runShift: mountPart < 0 ? 0
+                                    : (imageRuns.count > mountPart ? imageRuns.itemAt(mountPart).y : 0)
+                                y: layoutTarget && layoutTarget.length > Number(modelData.start)
+                                    ? layoutTarget.mapToItem(bubble, 0,
+                                        layoutTarget.positionToRectangle(Number(modelData.start)).y).y + 2
+                                        + runShift - runShift : 0
+                                color: codeCopyMouse.containsMouse || codeCopyButton.activeFocus
+                                    ? root.colors["bg-elevated"] : "transparent"
+                                border.width: codeCopyMouse.containsMouse || codeCopyButton.activeFocus ? 1 : 0
                                 border.color: root.colors["border-subtle"]
+                                Keys.onPressed: event => {
+                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                        codeCopyButton.performCopy();
+                                        event.accepted = true;
+                                    }
+                                }
                                 Text {
                                     id: codeCopyLabel
-                                    objectName: "codeCopyButtonText-" + messageRow.modelData.id + "-" + index
+                                    objectName: "codeCopyButtonText-" + messageRow.modelData.id
+                                        + (codeCopyButton.mountPart < 0 ? "-" : "-p" + codeCopyButton.mountPart + "-")
+                                        + Number(codeCopyButton.modelData.nth)
                                     anchors.centerIn: parent
                                     font.pixelSize: 11
                                     color: root.colors["text-muted"]
                                     text: codeCopyButton.copyState === "copied" ? qsTr("Copied")
                                         : codeCopyButton.copyState === "failed" ? qsTr("Failed to copy") : qsTr("Copy")
                                 }
-                                // Exported so pointer and AT activation share one
-                                // code path (the reference mounts a real button).
+                                // Exported so pointer, keyboard and accessibility
+                                // activation share one code path (the reference
+                                // mounts a real button).
                                 function performCopy() {
                                     if (!codeText.trim().length)
                                         return;
@@ -8988,6 +9079,10 @@ ApplicationWindow {
                                     onTriggered: codeCopyButton.copyState = "idle"
                                 }
                             }
+                        }
+                        Repeater {
+                            model: bubble.codeCopyTargets
+                            delegate: codeCopyButtonTemplate
                         }
                         Keys.onPressed: event => {
                             if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers & Qt.ShiftModifier)) {
