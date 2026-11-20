@@ -270,6 +270,7 @@ private slots:
         });
         QTRY_COMPARE_WITH_TIMEOUT(fixture.requests.size(), 1, 2000);
         QVERIFY(client.cancelRequest(first));
+        QCOMPARE(cancelledCount, 0);
         QTRY_COMPARE_WITH_TIMEOUT(replacementCount, 1, 2000);
         QCOMPARE(cancelledCount, 1);
         QVERIFY(replacement.isValid() && replacement != first);

@@ -46,6 +46,7 @@ struct NotificationCandidate {
     QString topicUuid;
     QString authorUuid;
     QString content;
+    bool markdown = true;
     bool isOwn = false;
     bool read = false;
     // Server DTO tri-state collapsed: unknown counts as "no mention" exactly
@@ -211,6 +212,7 @@ signals:
     // back before its conversation is shown (reference focusMainWindow on
     // notification click). Never emitted for dead or expired tags.
     void activationRequested();
+    void soundRequested();
     // A notification click was routed: open the conversation (topic wins;
     // a dm falls back to the stream conversation).
     void routeRequested(const QString &streamUuid, const QString &topicUuid);

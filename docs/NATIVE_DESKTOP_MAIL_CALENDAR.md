@@ -175,3 +175,9 @@ max 512 px, conversation hidden; Chat-button restore, Mentions exclusivity
 and sidebar-navigation return to chat), and
 `native-native-controller` gains
 `sectionStateSwitchesChatAndCalendarExclusively`.
+
+
+The operating-system tray opens Mail and Calendar in the existing main window.
+Both actions restore the window using the desktop activation path and select the
+same project section as the corresponding top-bar button. When the signed-out
+window is restored the login screen remains visible.

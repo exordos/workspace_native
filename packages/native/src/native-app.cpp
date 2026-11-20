@@ -22,6 +22,7 @@
 static void initializeNativeResources()
 {
     Q_INIT_RESOURCE(native_icons);
+    Q_INIT_RESOURCE(native_sounds);
     Q_INIT_RESOURCE(native_brand);
 }
 
@@ -181,6 +182,7 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
                                    const QString &, const QString &) {
         preferences->recordQuickReactionUse(emoji, owner);
     });
+    engine.rootContext()->setContextProperty("nativeCallsNavigationEnabled", bool(WORKSPACE_NATIVE_CALLS_NAV));
     engine.rootContext()->setContextProperty("nativeController", controller);
     engine.rootContext()->setContextProperty("nativeMarkdown", new NativeMarkdown(&engine));
     engine.rootContext()->setContextProperty("nativePreferences", preferences);
@@ -190,6 +192,8 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     if (messageImages) engine.addImageProvider("messageimages", messageImages->createImageProvider());
     engine.rootContext()->setContextProperty("nativeMessageImages", messageImages);
     engine.load(QUrl("qrc:/workspace/qml/Main.qml"));
+    if (!engine.rootObjects().isEmpty())
+        preferences->hotkeys()->attach(qobject_cast<QWindow *>(engine.rootObjects().first()));
 }
 
 }

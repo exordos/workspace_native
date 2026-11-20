@@ -92,14 +92,14 @@ FocusScope {
                     && left.chatScreen.keyUuid === right.chatScreen.keyUuid))
             && sameProfileOverride(left.profileOverride, right.profileOverride);
     }
-    function openUniqueLayer(requestedLayer) {
+    function openUniqueLayer(requestedLayer, resetScreens = false) {
         const layers = drawer.layers;
         const existingIndex = layers.findIndex(function (layer) { return layer.kind === requestedLayer.kind; });
         if (existingIndex < 0)
             return layers.concat([requestedLayer]);
         if (existingIndex === layers.length - 1)
             return layers.slice(0, -1).concat([requestedLayer]);
-        const existingLayer = layers[existingIndex];
+        const existingLayer = resetScreens ? requestedLayer : layers[existingIndex];
         return layers.slice(0, existingIndex)
             .concat(layers.slice(existingIndex + 1), [existingLayer]);
     }
@@ -208,7 +208,8 @@ FocusScope {
         project(false, []);
     }
     function openInfo() {
-        drawer.openLayer("chat-info");
+        const rootLayer = { kind: "chat-info", screens: screensFor("chat-info") };
+        project(true, openUniqueLayer(rootLayer, true));
     }
     function openSettings() {
         drawer.openAccountScreen("settings");

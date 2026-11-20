@@ -264,3 +264,7 @@ actions are 36 px high. Credential inputs are 46 px high on the elevated
 surface and leave 22 px before the next field or action. The native login
 window tests exercise these measurements, centering when registration is
 unavailable, the visible empty OTP hint and the unfilled project Back action.
+
+The project dropdown paints the shared chevron asset at its 16 × 8 px design
+size. Both its indicator and the Organization link use the muted text color.
+The dropdown retains its accent border while it has keyboard focus.

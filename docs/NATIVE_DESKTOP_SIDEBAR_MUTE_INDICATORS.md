@@ -231,3 +231,5 @@ accessible interface and the Press action after every async phase (each handle i
 taken immediately before use). The pinned #396 assertions themselves - TabFocus
 policy, Press action presence, accessible and keyboard activation semantics - are
 unchanged.
+
+Clearing local data retires pending mode writes before the refreshed catalog opens. A reply from a token renewed before the reset can neither reoccupy the stream slot nor enter the fresh session’s diagnostics.

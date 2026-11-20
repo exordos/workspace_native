@@ -2,6 +2,8 @@
 
 The Linux acceptance runner launches the packaged desktop application twice against a disposable, deployed Workspace. The first launch starts with an empty profile. The second restores its real keyring session and populated cache. A private Sway compositor, session bus, keyring, user data directory and cache keep the run isolated from the operator's desktop. Every run needs a dedicated dataset and approved test identities. The runner deletes the synthetic messages it creates.
 
+For fixture-backed runs the report records whether the runner can fetch the public organization settings over verified HTTPS. The probe reports a short outcome (DNS, TLS, timeout, connection, HTTP status, invalid settings or ready). It runs independently of the application's traffic. Before proceeding to the credential screen the harness also checks that the visible server field contains the fixture origin.
+
 ## Run locally
 
 Use a Linux host with the release build dependencies, Python 3 with PyGObject/Atspi, Pillow and requests, D-Bus, gnome-keyring, Sway, wtype, wf-recorder, a C compiler, wayland-scanner, pkg-config and libwayland-client development files. The pointer driver uses the published wlroots virtual-pointer protocol, distributed with its upstream MIT notice in the protocol XML. The compositor runs a 1440 × 900 Wayland output at scale 1. A headless compositor uses the real Wayland input and screen-capture protocols. Physical touchpad acceleration, GPU drivers and presentation on a physical monitor need a separate run.
@@ -62,7 +64,7 @@ Both smoke and extended runs failed the offline navigation check. After opening 
 
 ## Cadence
 
-The **Live Wayland acceptance** workflow packages the selected master revision on GitHub Actions. It runs smoke Monday–Saturday and extended on Sunday at 03:19 UTC. Maintainers can dispatch smoke, extended or controls on master. The Wayland job unpacks the same run’s checksummed Linux archive, then starts an unprivileged, isolated desktop in an Ubuntu 26.04 container. It retains the sanitized timeline, report and frames for 14 days. The hosted reference is `github-ubuntu-24.04-container-26.04-sway-1440`. Collect and review its own initial measurements before supplying thresholds.
+The **Live Wayland acceptance** workflow packages the selected master revision on GitHub Actions. It runs smoke Monday–Saturday and extended on Sunday at 03:19 UTC. Maintainers can dispatch smoke, extended or controls on master. The Wayland job unpacks the same run’s checksummed Linux archive, then starts an unprivileged, isolated desktop in an Ubuntu 26.04 container. It retains the sanitized timeline, report and frames for 14 days. The hosted reference is `github-ubuntu-24.04-container-26.04-sway-1440`. The job loads the reviewed thresholds in `packages/native/scripts/hosted-wayland-reference.json`.
 
 The fixture operator manages the `workspace-native-live-acceptance` GitHub environment. Restrict deployments to the master branch and configure the operator as its sole required reviewer. The operator provisions a disposable Workspace with the test dataset and ordinary synthetic member accounts. Its private provider writes the fixture described above to a pipe. The following commands target this repository and require the operator’s authenticated GitHub CLI.
 
@@ -70,10 +72,34 @@ The fixture operator manages the `workspace-native-live-acceptance` GitHub envir
 lease=packages/native/scripts/live-acceptance-lease.py
 python3 "$lease" pending
 fixture-provider | python3 "$lease" grant "$run_id" "$attempt"
-# If approved tolerances exist, add --limits hosted-reference.json to grant.
+# An explicit --limits file must match this reference.
 python3 "$lease" release "$run_id" "$attempt"
 ```
 
 Grant waits for packaging to finish and verifies the requesting workflow, attempt, master revision and environment rules. It assigns the fixture to that attempt and approves its waiting Wayland job. The operator calls release after the run terminates, verifies that GitHub removed the run-specific secret, and disposes of the fixture. An interrupted grant can be retried for the same waiting attempt. If provisioning fails before credentials have been assigned, `python3 "$lease" unavailable "$run_id" "$attempt"` lets the job record BLOCKED. An unavailable operator leaves the job visibly waiting for its fixture.
 
 Before releases affecting startup, cache, history, scrolling or layout, the release maintainer runs the relevant mode against the candidate package and reviews its timeline. The desktop and release maintainers triage failures and keep an affected issue open until the failed transition passes again.
+
+## Hosted reference measurements
+
+The reviewers can reproduce the measurements from the sanitized timelines in
+the [initial smoke run](https://github.com/exordos/workspace_native/actions/runs/44791829920),
+[reconnect smoke run](https://github.com/exordos/workspace_native/actions/runs/44796958940)
+and [extended run](https://github.com/exordos/workspace_native/actions/runs/44798507116).
+All three used packaged Native 0.41.0, Workspace 3.1.6, four logical CPUs, Qt
+6.10.2 and Sway 1.11 with pixman at 1440 × 900 and scale 1. Each had a 16 ms
+median frame interval. These limits are specific to that hosted reference.
+
+| Measurement | Observed in the three runs | Limit used by the gate |
+| --- | --- | --- |
+| Input to captured motion in already loaded content | Matched p95 of 75–83 ms for wheel scroll and 77–85 ms for touchpad scroll | 102 ms, the highest loaded p95 plus one 17 ms frame |
+| Longest frame interval while scrolling already loaded content | 47, 136 and 87 ms | 153 ms, the longest observed interval plus one frame |
+| Longest GUI heartbeat interval across all phases | 373, 369 and 384 ms | 400 ms, the longest plus one median frame |
+| Anchor displacement after stopping | Same anchor, zero pixels over 91 samples | 1 logical pixel |
+| Minimum occupancy of a frame expected to show content | 0.015625 in all three runs | 0.0078125, halfway to an empty pane |
+
+Across a history-page boundary the matched wheel p95 reached 528, 590 and
+718 ms, with frame intervals up to 871 ms. The hosted gate applies its loaded
+scroll tolerances to that workload as well, so the measured stutter fails the
+gate. Unattributed wheel deliveries remain explicit in the report. Their
+latencies are excluded from the matched percentile.

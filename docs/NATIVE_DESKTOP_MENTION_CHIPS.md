@@ -79,6 +79,11 @@ the reference rules above.
   the reaction focus-order cases pin no mention chips, so the tab stop is
   the correct deviation point.
 
+In an editable topic the bubble's first Tab stop is Reply. Subsequent stops
+include the mention links in message order. While a mention has focus, Reply
+stays available to Shift+Tab. Channel-wide messages expose their mentions
+directly. Enter and Space open the focused user's profile.
+
 ## Tests (native-native-window, `tests/native-window-test.cpp`)
 
 - A body containing a mention urn renders a visible

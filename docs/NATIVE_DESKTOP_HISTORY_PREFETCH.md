@@ -158,6 +158,11 @@ leaves the viewport where it was.
 | Slow/failed page keeps chat usable, position retained | controller failed-page case + window held-page case (messages intact, not busy, anchor kept) |
 | Bound memory/request volume, no eager full-conversation fetch | policy has no timer and no scroll-less request: at most one in-flight page, only after user-attributed scroll, stopped by `canLoadOlder`; existing `historyPage` page/row/byte caps unchanged |
 
+The two window prefetch fixtures serve the sidebar's startup unread-mention
+index separately. Each holds exactly one topic-history response while the
+pointer gesture is in progress. Releasing that response must append the older
+topic rows and preserve the viewport assertions.
+
 ## Recorded deviations
 
 - The #106 view-local trigger constant (`loadMoreThreshold: 100` in
@@ -169,3 +174,20 @@ leaves the viewport where it was.
   coalescing, re-arm and end-of-history assertions intact.
 - Scrollbar drags remain unattributable (recorded under #106); the reserve
   trigger is driven by the same wheel/drag/fling attribution as before.
+
+
+### Sustained input on a slow history request
+
+For each selected conversation the controller measures the last successful
+history page request. Two consecutive upward scroll samples project how far the
+reader will travel while the next page is in flight. Prefetch keeps that
+distance in addition to the normal viewport reserve, capped at four viewports
+in total. A pause, a layout jump, switching routes or restoring an anchor
+discards the velocity estimate. Programmatic restoration only rearms the next
+user scroll. The original request coalescing and end marker still apply.
+
+When an older page preserves the order of the existing rows, the view inserts
+its new prefix in a single model notification. It still refreshes the roles of
+retained rows, including service groups that changed at the page boundary.
+The topic and stream-aggregate window tests check the inserted range and
+the position of the visible message after a 50-row page arrives.
