@@ -235,12 +235,12 @@ FocusScope {
         return processes;
     }
 
-    function refreshMemory() {
+    function refreshMemory(resetCpu = false) {
         // One poll tick (logs-page-memory.ui.tsx:31-45): the provider mirrors
         // the reference collector; a failed read returns capability flags
         // false, which the panel renders as the unavailable state.
         page.memoryLoading = true;
-        page.memory = page.controller.diagnosticsMemorySnapshot();
+        page.memory = page.controller.diagnosticsMemorySnapshot(resetCpu);
         page.memoryLoading = false;
     }
 
@@ -442,6 +442,8 @@ FocusScope {
             pingReset.restart();
         }
         function onSessionLogChanged() {
+            if (page.visible)
+                liveRefresh.restart();
             // Reference subscribeLogHistory: the modal re-reads rows live
             // (logs-page.test.tsx "entries append while the modal is open").
             if (logsModal.visible)
@@ -458,7 +460,7 @@ FocusScope {
     onVisibleChanged: {
         if (visible) {
             page.refresh();
-            page.refreshMemory();
+            page.refreshMemory(true);
             memoryPoll.start();
         } else {
             memoryPoll.stop(); // poll only while the section is visible
@@ -467,7 +469,7 @@ FocusScope {
     Component.onCompleted: {
         if (visible) {
             page.refresh();
-            page.refreshMemory();
+            page.refreshMemory(true);
             memoryPoll.start();
         }
     }

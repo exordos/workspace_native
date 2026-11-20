@@ -60,12 +60,11 @@ Context snapshot (message-composer-mention-context.lib.ts:14-135):
 - DM partners: every stream with a direct peer, ordered by the referenced last
   message's `createdAt` (fallback `updatedAt`) descending, capped at 20.
 
-Native gap record: the native controller loads stream bindings only through the
-encrypted-chat authority and the channel-creation check; an ordinary channel
-selection fetches no membership, so the native context reports membership as
-unknown there (the reference's unloaded-membership state: no `outside channel`
-chip, membership never negative). Membership ranking is exercised through the
-ranking API fixtures and the encrypted-authority source.
+The composer uses the current channel header's complete binding snapshot. Until
+all pages arrive, membership is unknown. The project directory includes the
+composing user for mentions with the usual self penalty. Chat creation still
+offers only peers. Moving the pointer onto a suggestion selects the same active
+row used by the arrow keys and Enter.
 
 ## Suggestion rows (message-composer-mention-dropdown.ui.tsx:27-121)
 

@@ -145,11 +145,9 @@ No dedicated shell behaviour; only the deeplink allowlist admits logs routes
   core in `namespace workspace::diagnostics`: `recentErrorLimit()=8`,
   `recentErrorWindowMs()=900000`, `resolveOverallStatus(phase, online,
   recentErrorCount)` (same three-branch math), `summarizeLatency(samples)`
-  (same percentile math), and `parseSessionLog(text, nowMs)` which reads the
-  `NativeLogging` line format `<ISO-8601> <level>: <message>` (levels
-  `debug|info|warning|critical|fatal`, docs/NATIVE_DESKTOP_DIAGNOSTICS.md)
-  into by-level counts (native `warning` → web `warn`, `critical`/`fatal` →
-  `error`) plus recent-error entries in the 15-minute window capped at 8.
+  (same percentile math), and session log counts from the 500-entry structured
+  history. The recent error list preserves newest-first order and includes up
+  to eight errors from the last 15 minutes.
 
 ### Controller surface (`src/native-controller.cpp`)
 
@@ -185,8 +183,9 @@ No dedicated shell behaviour; only the deeplink allowlist admits logs routes
   - `Session::accessRemainingMs()` — new const getter exposing
     `m_accessExpiresAt - m_clock.elapsed()` (already computed internally at
     `src/session.cpp:413-414`), feeding `sessionRemainingMs`.
-  - `useLogging(NativeLogging *)` — the page reads the rotating log file
-    installed by issue #77 (`installNativeLogHandler`, `src/main.cpp`).
+  - The overview, report and Logs dialog share the controller's session log.
+    An HTTP 5xx adds a recent error even when the server answers the ping.
+    Clearing Logs also clears the overview counts and report entries.
 - Dataset QML surface: `Q_INVOKABLE QVariantMap diagnosticsSnapshot()` (the
   dataset object), `Q_INVOKABLE QString diagnosticsSnapshotJson()` (the same
   object pretty-printed with 2-space indent like `JSON.stringify(x, null, 2)`),
@@ -209,7 +208,7 @@ No dedicated shell behaviour; only the deeplink allowlist admits logs routes
 | Session | workspace auth sessions + session remaining | `Session::loginName()`, API server origin, `accessRemainingMs()` (sub-line omitted when <=0/unknown) |
 | Runtime | detectedRuntime/appVersion/brand | `"Qt " + QT_VERSION_STR` desktop runtime, `QCoreApplication::applicationVersion()`, `QCoreApplication::organizationName() + " Workspace"` brand line |
 | Notifications | Notification.permission | native has no OS permission query today → the reference `unsupported` value (a legal reference state), caption line retained |
-| Log counts | in-memory logger history byLevel | `NativeLogging` rotating file parsed by `parseSessionLog` (the native session log; no file → all-zero real counts) |
+| Log counts | in-memory logger history byLevel | `SessionLogBuffer::summary` over the current session history |
 | Performance | Web Vitals + api latency logs | no Vitals equivalent → reference empty text (native wording); API latency from the new response-timing samples via `summarizeLatency` |
 | Local cache | IndexedDB owner footprint | `NativeCacheService::available()`/`stats()` (entries, bytes, owner present); unavailable → native unavailable text |
 | Stores | messenger store counts | `streams().size()`, direct-chat conversations, user-directory entries, folders |
@@ -232,10 +231,7 @@ keys, Zulip rate-limit gate (`rateLimitBlockedUntil` mirrors the native
    `/logs`; the issue acceptance requires `ew://open/org/acme/settings/logs`
    (the actual web route) to resolve, so the two-segment variants are added
    to the native whitelist.
-3. Log counts read the on-disk rotating log (max 1 MiB + rotated), not an
-   in-memory ring: Qt has no logger ring buffer, and issue #77 established
-   the file as the native log surface. Scopes/runtimes lists stay empty
-   (native log lines carry no scope).
+3. The rotating Qt log remains available on disk for system diagnostics.
 4. The "View logs" affordance (header button + Log-counts card button that
    open the logs modal) is out of this issue's scope: the native logs modal
    is a separate page of #49. The Log counts card renders the real badges
@@ -261,7 +257,7 @@ catalog guard passes.
 - `native-native-controller` (pure math + dataset): `resolveOverallStatus`
   truth table (offline phase / offline network / degraded / blocked /
   rate_limited / connecting / reconnecting / recent errors / healthy),
-  `parseSessionLog` (by-level mapping, 15-min cutoff, cap 8, newest-first),
+  `SessionLogBuffer::summary` (by-level mapping, 15-min cutoff, cap 8, newest-first),
   `summarizeLatency` percentile reproduction, `diagnosticsSnapshot()` key
   set + status, `diagnosticsSnapshotJson()` pretty-print, connection report
   subset, `showSection("diagnostics")` exclusivity + auth guard, `ew://open/
@@ -377,7 +373,7 @@ element-wise.
   and `SessionLogBuffer` (QObject ring buffer, newest-first `entries()`,
   `append`, `clear`, `entriesChanged()` signal, cap 500 like the reference).
 - Controller (`src/native-controller.{h,cpp}`): owns one `SessionLogBuffer`;
-  `useLogging` also labels the buffer with the platform runtime. QML surface:
+  entries carry the platform runtime label. QML surface:
   `diagnosticsSessionLogEntries()`, `diagnosticsSessionLogsFiltered(level,
   source, scope, runtime, search)`, `appendSessionLog(level, scope, message,
   data)`, `clearSessionLog()`, `diagnosticsLogsExportFilename()`,
@@ -451,7 +447,9 @@ catalog guards pass.
   (UTC parts), export JSON round-trips to the same entries with data
   redacted and 2-space pretty-print; controller surface: append ->
   `sessionLogChanged`, filtered invokables, `clearSessionLog`, and
-  `exportSessionLog` writing the file under a QStandardPaths temp dir.
+  `exportSessionLog` replacing the destination with a complete JSON document.
+  A write or commit failure preserves the previous file and displays the
+  export error in the dialog.
 - `native-native-window` (inside `NativeWindowTest`): modal hidden until
   opened from the header View logs button and from the Log counts card
   button; empty state with Clear/Export disabled; appended lines appear live
@@ -534,9 +532,11 @@ New small provider `NativeMemoryDiagnostics` in
   lower it).
 - `/proc/meminfo`: `MemTotal`, `MemFree`, `MemAvailable` (kB).
 - `/proc/self/stat` (`utime`/`stime`, `starttime`) plus `/proc/uptime`:
-  cumulative CPU percent since process start - the same semantics as
-  Chromium `PercentCPUUsage`, which is what the Electron IPC reports. Null
-  when either source is missing or malformed.
+  CPU usage equals the change in process CPU seconds divided by elapsed
+  uptime between memory-panel polls, multiplied by 100. One busy core reports
+  100%. The first poll records a baseline. Missing or reset counters clear
+  the reading. Opening the panel starts a fresh interval. Overview and export
+  reads reuse the panel's last CPU measurement.
 - `setProcRoot(path)` injects the fixture root (tests drive exact values;
   mirrors the existing `NativeLogging::setProcRoot` seam). The controller
   exposes `diagnosticsMemorySnapshot()` (Q_INVOKABLE, used by the QML poll)
@@ -633,8 +633,7 @@ on becoming visible (reference refreshes on mount). Each tick bumps
   mirrors in the reference has no native equivalent. Same percent math and
   visual contract as `getJsHeapUtilizationPercent`
   (diagnostics-memory.lib.ts:84-91).
-- CPU percent semantics: cumulative CPU since process start (Chromium
-  PercentCPUUsage), computed from `/proc/self/stat` + `/proc/uptime`.
+
 
 ### i18n (new `NativeDiagnosticsPage` catalog entries)
 

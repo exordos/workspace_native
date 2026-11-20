@@ -16748,8 +16748,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!item(content, "passwordInput"));
         QVERIFY(!item(content, "signInButton"));
         QVERIFY(!item(content, "realmPreviewCard"));
-        QVERIFY(!item(content, "defaultOrganizationBlock"));
         QVERIFY(!item(content, "organizationNextButton")->isEnabled());
+        const auto expectedUrl = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL",
+                                                       QStringLiteral(EXPECTED_LOGIN_ORG_URL)).trimmed();
+        QCOMPARE(controller.defaultOrganizationUrl(), expectedUrl);
+        auto *shortcut = item(content, "defaultOrganizationBlock");
+        if (expectedUrl.isEmpty()) {
+            QVERIFY(!shortcut);
+        } else {
+            QVERIFY(shortcut && shortcut->isVisible());
+            const auto name = qEnvironmentVariable("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME",
+                                                   QStringLiteral(EXPECTED_LOGIN_ORG_NAME)).trimmed();
+            QCOMPARE(shortcut->property("text").toString(),
+                     name.isEmpty() ? QStringLiteral("Exordos Core Public") : name);
+            click(window, shortcut);
+            QTRY_COMPARE(item(content, "serverInput")->property("text").toString(), expectedUrl);
+        }
         item(content, "serverInput")->setProperty("text", server.origin().toString());
         QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
         click(window, item(content, "organizationNextButton"));
@@ -21612,8 +21626,16 @@ private:
     }
 
     private slots:
+    void composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("english") << QStringLiteral("en");
+        QTest::newRow("russian") << QStringLiteral("ru");
+    }
+
     void composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart()
     {
+        QFETCH(QString, locale);
         const QString mentionBob = QStringLiteral("52000000-0000-4000-8000-00000000000b");
         const QString mentionBix = QStringLiteral("52000000-0000-4000-8000-0000000000c0");
         WindowChannelFixture fixture; fixture.sourceScene = true;
@@ -21622,6 +21644,8 @@ private:
                         {"email", "alice@example.invalid"}},
             QJsonObject{{"uuid", mentionBob}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
             QJsonObject{{"uuid", mentionBix}, {"username", "bix"}, {"first_name", "Bix"}, {"last_name", "Ray"}}};
+        fixture.bindings = {WindowChatHeaderCountersFixture::headerBinding(
+            WindowChatHeaderCountersFixture::headerBindingId(1), channelPeer, streamId)};
         int posts = 0, confirmations = 0;
         QJsonObject posted, saved;
         const auto fallback = fixture.server.handler;
@@ -21642,6 +21666,7 @@ private:
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("composer-mention.ini"));
+        preferences.setLocale(locale);
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
@@ -21652,6 +21677,8 @@ private:
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(controller.chatHeaderMemberCount(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
         QVERIFY(composer && composer->isEnabled());
         // An @ inside a word never opens the popup (reference: "does not open
@@ -21667,7 +21694,12 @@ private:
         // "a": prefix tier (Alice) first, then substring-tier matches on the
         // "Ray" surname (reference mention-suggest tiers).
         QTRY_COMPARE(mentionRowTexts(window),
-            (QStringList{QString("Alice"), QString("Bix Ray"), QString("Bob Ray")}));
+            (QStringList{QString("Alice"), QString("Bix Ray"), QString("Bob Ray"), QString("cassi")}));
+        auto *chip = mentionVisualChild(window->contentItem(), "composerMentionOutsideLabel1");
+        QVERIFY(chip && chip->isVisible());
+        QCOMPARE(chip->property("text").toString(), locale == "ru" ? QStringLiteral("не в канале") : QStringLiteral("not in channel"));
+        auto *memberChip = mentionVisualChild(window->contentItem(), "composerMentionOutsideLabel0");
+        QVERIFY(memberChip && !memberChip->isVisible());
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!mentionPopupVisible(window));
         // Two equal "B" matches, tied on every context score; the reference tie
@@ -21679,7 +21711,15 @@ private:
         QTest::keyClick(window, Qt::Key_B);
         QTRY_VERIFY(mentionPopupVisible(window));
         QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Bix Ray"), QString("Bob Ray")}));
+        auto *popup = window->findChild<QObject *>("composerMentionPopup");
+        auto *second = mentionVisualChild(window->contentItem(), "composerMentionRow1");
+        QVERIFY(popup && second);
         QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(popup->property("activeIndex").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(popup->property("activeIndex").toInt(), 0);
+        QTest::mouseMove(window, second->mapToScene(QPointF(30, 20)).toPoint());
+        QTRY_COMPARE(popup->property("activeIndex").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_COMPARE(composer->property("text").toString(), QString("@Bob Ray "));
         QCOMPARE(composer->property("cursorPosition").toInt(), 9);
@@ -32586,6 +32626,13 @@ private slots:
         QVERIFY(visibleItem("logsEntryDataPre-0")); // the error row carries its data pre
         // Recent errors block appears for the fresh error row (max-h-40 list).
         QVERIFY(visibleItem("logsRecentErrorRow-0"));
+        auto *page = visibleItem("nativeDiagnosticsPage");
+        QVERIFY(page);
+        const auto overviewErrors = [page] {
+            return page->property("snapshot").toMap().value("logs").toMap()
+                .value("byLevel").toMap().value("error").toInt();
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(overviewErrors(), 1, 4000);
         QCOMPARE(visibleItem("logsResultsLabel")->property("text").toString(), QString("2 of 2 entries"));
         // Level filter: newest-first rows are [info/app, error/api], so the
         // Error level keeps a single row.
@@ -32624,6 +32671,7 @@ private slots:
         // Clear empties to the empty state and disables itself; a line after
         // Clear appends live again.
         click(window, visibleItem("logsClearButton"));
+        QTRY_COMPARE_WITH_TIMEOUT(overviewErrors(), 0, 4000);
         QTRY_VERIFY_WITH_TIMEOUT(
             visibleItem("logsResultsLabel")->property("text").toString()==QString("0 of 0 entries"), 4000);
         QVERIFY(visibleItem("logsEmptyState"));

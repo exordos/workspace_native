@@ -198,7 +198,7 @@ set(WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME "" CACHE STRING
     "Display name for the default login organization shortcut")
 foreach(default_login_org IN ITEMS URL NAME)
     if(NOT WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_${default_login_org} STREQUAL "")
-        target_compile_definitions(workspace-native-ui PRIVATE
+        set_property(SOURCE src/native-controller.cpp APPEND PROPERTY COMPILE_DEFINITIONS
             WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_${default_login_org}="${WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_${default_login_org}}")
     endif()
 endforeach()
@@ -350,6 +350,9 @@ if(BUILD_TESTING)
         # the same sources as a QML module so deployment scans its actual imports.
         if(test STREQUAL "native-window")
             target_link_libraries(${test}-test PRIVATE Qt6::Widgets)
+            target_compile_definitions(${test}-test PRIVATE
+                EXPECTED_LOGIN_ORG_URL="${WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL}"
+                EXPECTED_LOGIN_ORG_NAME="${WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_NAME}")
             qt_add_resources(${test}-test native_qml
                 PREFIX /workspace/qml BASE qml FILES ${native_qml_files})
         endif()

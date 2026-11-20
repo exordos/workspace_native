@@ -81,6 +81,10 @@ sudo apt-get install --no-install-recommends cmake ninja-build patchelf qt6-base
 Use a distribution or Qt kit that supplies Qt 6.10 or later; installing older
 distribution packages does not meet the CMake version requirement.
 
+Root-level logs, `err.txt`, and CTest's `Testing/` directory are local build
+artifacts. Run `sh packages/native/tests/repository-artifacts-test.sh` from a
+Git checkout to verify that they stay out of the index.
+
 From the repository root:
 
 ```sh
