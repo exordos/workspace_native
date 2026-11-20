@@ -142,9 +142,6 @@ def trust_loopback_certificate(directory):
     run(openssl, "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", csr, **quiet)
     run(openssl, "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key, "-CAcreateserial",
         "-days", "1", "-sha256", "-extfile", config, "-out", cert, **quiet)
-    for certificate in (ca, cert):
-        run(openssl, "x509", "-in", certificate, "-noout", "-subject", "-issuer", "-ext",
-            "subjectKeyIdentifier,authorityKeyIdentifier,basicConstraints")
     run(openssl, "verify", "-purpose", "sslserver", "-x509_strict", "-verify_ip", "127.0.0.1", "-CAfile", ca, cert)
     der = ssl.PEM_cert_to_DER_cert(ca.read_text())
     thumbprint = hashlib.sha1(der).hexdigest().upper()
