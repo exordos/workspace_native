@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -8457,6 +8458,42 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(visibleItem(window->contentItem(), "streamRenameAction"));
         QVERIFY(visibleItem(window->contentItem(), "streamArchiveAction"));
         QVERIFY(visibleItem(window->contentItem(), "streamNewTopicAction"));
+    }
+
+    void cancelledSidebarButtonSizingCompletesQmlCreation()
+    {
+        // A fresh sidebar model can retire a delegate after layout asks for
+        // its width and before Qt Quick finishes creating the control.
+        QQmlIncubationController creation;
+        QQmlEngine engine;
+        engine.setIncubationController(&creation);
+        std::atomic<bool> keepCreating{true};
+        // This isolated engine uses Qt.quit() as the signal to pause incubation.
+        connect(&engine, &QQmlEngine::quit, &engine, [&] { keepCreating.store(false); });
+        QQmlComponent component(&engine);
+        component.setData(
+            "import QtQuick\n"
+            "NativeButton {\n"
+            "    colors: ({'on-accent':'white','text-primary':'black','accent':'blue',"
+            "'card-bg-active':'gray','card-bg':'white','border-subtle':'gray'})\n"
+            "    text: 'A sufficiently wide sidebar label'\n"
+            "    onImplicitWidthChanged: if (implicitWidth >= 80) Qt.quit()\n"
+            "}\n", QUrl("qrc:/workspace/qml/InterruptedSidebarButton.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQmlIncubator pending;
+        component.create(pending);
+        creation.incubateWhile(&keepCreating, 2000);
+        QVERIFY(!keepCreating.load());
+        QVERIFY(pending.isLoading());
+        pending.clear();
+        QCOMPARE(creation.incubatingObjectCount(), 0);
+
+        // The next delegate still obtains its full natural size once complete.
+        QScopedPointer<QObject> replacement(component.create());
+        QVERIFY2(replacement, qPrintable(component.errorString()));
+        const auto contentWidth = replacement->property("implicitContentWidth").toReal();
+        QVERIFY(contentWidth > 52);
+        QCOMPARE(replacement->property("implicitWidth").toReal(), contentWidth + 28);
     }
 
     void sidebarFullActionCapacityKeepsArchiveIndependent()

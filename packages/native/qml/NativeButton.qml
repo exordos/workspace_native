@@ -6,7 +6,7 @@ Button {
     required property var colors
     property bool primary: false
     implicitHeight: 40
-    implicitWidth: Math.max(80, contentItem.implicitWidth + 28)
+    implicitWidth: Math.max(80, implicitContentWidth + 28)
     horizontalPadding: 14
     verticalPadding: 8
     hoverEnabled: true
