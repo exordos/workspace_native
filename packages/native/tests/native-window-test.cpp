@@ -19513,6 +19513,49 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
         QCOMPARE(visibleItem(content, "mediaViewer-counter")->property("text").toString(), QString("1 / 2"));
 
+        auto *image = visibleItem(content, "mediaViewer-image"); QVERIFY(image);
+        auto *list = item(content, "messageList"); QVERIFY(list);
+        const qreal historyY = list->property("contentY").toReal();
+        const QPoint center(window->width() / 2, window->height() / 2);
+        const auto wheel = [&](QPoint pixels, QPoint angle) {
+            QWheelEvent event(center, window->mapToGlobal(center), pixels, angle,
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        wheel({}, QPoint(0, 120));
+        QCOMPARE(image->scale(), 1.12);
+        wheel(QPoint(0, 20), {});
+        QCOMPARE(image->scale(), 1.14);
+        wheel({}, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 3.0);
+        // The enlarged picture extends above the media area's original top margin.
+        const QPoint overflow(window->width() / 2, 44);
+        QTest::mouseClick(window, Qt::LeftButton, {}, overflow);
+        QVERIFY(viewer->open());
+        QWheelEvent outside(overflow, window->mapToGlobal(overflow), {}, QPoint(0, -120),
+                            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &outside);
+        QCOMPARE(image->scale(), 2.88);
+        wheel({}, QPoint(0, -4800));
+        QCOMPARE(image->scale(), 0.5);
+        QCOMPARE(list->property("contentY").toReal(), historyY);
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
+        wheel({}, QPoint(0, 120));
+        QCOMPARE(image->scale(), 1.12);
+        QTest::keyClick(window, Qt::Key_Left);
+        QCOMPARE(viewer->index(), 0);
+        QCOMPARE(image->scale(), 1.0);
+
+        wheel({}, QPoint(0, 120));
+        QCOMPARE(image->scale(), 1.12);
+        QVERIFY(viewer->openFromMessages(controller.messages(), fileA));
+        QCOMPARE(viewer->index(), 0);
+        QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
+
         // 48x48 nav circles 16 px from the edges, vertically centered
         // (media-viewer-controls.ui.tsx:6-7); 40x40 toolbar buttons top-right
         // 16 px (media-viewer-toolbar.ui.tsx:7-8,52); strip anchored to the
@@ -19832,6 +19875,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(audio->property("playerObjectName").toString(), QStringLiteral("mediaViewer-player"));
         QCOMPARE(audio->property("playerPlaybackState").toInt(), 1);
         video = visibleItem(content, "mediaViewer-video");
+        const QPoint center = video->mapToScene(QPointF(video->width() / 2, video->height() / 2)).toPoint();
+        QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, 240),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &wheel);
+        QCOMPARE(video->scale(), 1.24);
         // Same media box as images: 64 px side padding and the
         // calc(100vh-12rem) height cap (media-viewer-overlay.ui.tsx:126,158).
         QCOMPARE(video->width(), content->width() - 128.0);
@@ -19859,27 +19907,32 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!viewer->open());
     }
 
-    // The load-failure path renders the dedicated videoLoadFailed text in
-    // both locales (media-viewer-overlay.ui.tsx:134-142; en.json:1416,
-    // ru.json:1427 at the measured sha).
-    void mediaViewerVideoLoadFailureShowsVideoLabelInBothLocales_data()
+    // Screen readers receive the same loading and failure text as the visible label.
+    void mediaViewerAnnouncesLoadingAndFailureInBothLocales_data()
     {
         QTest::addColumn<QString>("locale");
-        QTest::newRow("en") << QStringLiteral("en");
-        QTest::newRow("ru") << QStringLiteral("ru");
+        QTest::addColumn<bool>("video");
+        QTest::newRow("en-video") << QStringLiteral("en") << true;
+        QTest::newRow("ru-video") << QStringLiteral("ru") << true;
+        QTest::newRow("en-image") << QStringLiteral("en") << false;
+        QTest::newRow("ru-image") << QStringLiteral("ru") << false;
     }
 
-    void mediaViewerVideoLoadFailureShowsVideoLabelInBothLocales()
+    void mediaViewerAnnouncesLoadingAndFailureInBothLocales()
     {
         QFETCH(QString, locale);
+        QFETCH(bool, video);
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
         const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString fileC = QStringLiteral("9f000000-0000-4000-8000-00000000000c");
+        const QString third = QStringLiteral("9e000000-0000-4000-8000-000000000003");
         const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
         const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
         const QByteArray png = avatarProbePng(false);
         const QByteArray mp4 = mediaViewerVideoBytes();
         WindowChannelFixture fixture;
+        QList<std::function<void()>> pendingDownloads;
         const auto fallback = fixture.server.handler;
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
@@ -19892,18 +19945,28 @@ mv -Tf "$root/.current-new" "$root/current"
                 metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
                 return Response{metadata};
             }
-            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
-                if (path.endsWith("/actions/download"))
-                    return Response{QJsonObject{}, 500};
-                auto metadata = avatarProbeMetadata(fileB, mp4);
-                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
-                metadata["content_type"] = "video/mp4";
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)
+                || path.startsWith("/api/workspace/v1/messenger/files/" + fileC)) {
+                if (path.endsWith("/actions/download")) {
+                    Response failure{QJsonObject{}, 500};
+                    failure.defer = [&](std::function<void()> send) { pendingDownloads.append(std::move(send)); };
+                    return failure;
+                }
+                const QString file = path.contains(fileC) ? fileC : fileB;
+                auto metadata = avatarProbeMetadata(file, video ? mp4 : png);
+                metadata["stream_uuid"] = streamId;
+                metadata["name"] = video ? "clip.mp4" : "shot.png";
+                metadata["content_type"] = video ? "video/mp4" : "image/png";
                 return Response{metadata};
             }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 ++fixture.historyGets;
-                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
-                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+                QJsonArray rows{mediaViewerRow(first, fileA, png.size()),
+                                video ? mediaViewerVideoRow(second, fileB, mp4.size())
+                                      : mediaViewerRow(second, fileB, png.size())};
+                if (!video)
+                    rows.append(mediaViewerRow(third, fileC, png.size()));
+                return Response{rows};
             }
             return fallback(request);
         };
@@ -19928,15 +19991,53 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(content, "topic-" + topicId));
         QTRY_COMPARE(controller.selectedTopic(), topicId);
-        QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_COMPARE(controller.messages().size(), video ? 2 : 3);
         auto *viewer = controller.mediaViewer();
         click(window, visibleItem(content, "inline-image-" + first));
         QTRY_VERIFY(viewer->open());
+        QAccessible::setActive(true);
+        using Politeness = QAccessible::AnnouncementPoliteness;
+        static QList<QPair<QString, Politeness>> announcements;
+        announcements.clear();
+        const auto previousHandler = QAccessible::installUpdateHandler([](QAccessibleEvent *event) {
+            if (event->type() == QAccessible::Announcement && event->object()
+                && event->object()->objectName() == "mediaViewer-status") {
+                const auto *spoken = static_cast<QAccessibleAnnouncementEvent *>(event);
+                announcements.append({spoken->message(), spoken->politeness()});
+            }
+        });
+        const auto restoreHandler = qScopeGuard([previousHandler] {
+            QAccessible::installUpdateHandler(previousHandler);
+        });
         click(window, visibleItem(content, "mediaViewer-next"));
-        const QString expected = locale == "ru"
-            ? QString::fromUtf8("Не удалось загрузить видео") : QStringLiteral("Failed to load video");
+        const bool ru = locale == "ru";
+        const QString loading = video
+            ? (ru ? QStringLiteral("Видео загружается…") : QStringLiteral("Video is loading…"))
+            : (ru ? QStringLiteral("Медиа загружается…") : QStringLiteral("Loading media…"));
+        auto *status = visibleItem(content, "mediaViewer-status"); QVERIFY(status);
+        auto *accessible = QAccessible::queryAccessibleInterface(status); QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::StatusBar);
+        QCOMPARE(accessible->text(QAccessible::Name), loading);
+        QTRY_VERIFY(announcements.contains(qMakePair(loading, Politeness::Polite)));
+        QTRY_VERIFY(!pendingDownloads.isEmpty());
+        for (const auto &send : std::exchange(pendingDownloads, {}))
+            send();
+        const QString expected = video
+            ? (ru ? QStringLiteral("Не удалось загрузить видео") : QStringLiteral("Failed to load video"))
+            : (ru ? QStringLiteral("Не удалось показать медиа. Файл можно скачать.")
+                  : QStringLiteral("This media cannot be displayed. You can download the file instead."));
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-status");
             return t && t->property("text").toString() == expected; })(), 6000);
+        QCOMPARE(accessible->role(), QAccessible::AlertMessage);
+        QCOMPARE(accessible->text(QAccessible::Name), expected);
+        QTRY_VERIFY(announcements.contains(qMakePair(expected, Politeness::Assertive)));
+        if (!video) {
+            QTRY_COMPARE(viewer->items().last().toMap()["state"].toString(), QStringLiteral("load-error"));
+            const auto before = announcements.count(qMakePair(expected, Politeness::Assertive));
+            click(window, visibleItem(content, "mediaViewer-next"));
+            QCOMPARE(viewer->index(), 2);
+            QTRY_COMPARE(announcements.count(qMakePair(expected, Politeness::Assertive)), before + 1);
+        }
         // Toolbar actions stay unusable for a broken slot
         // (media-viewer-actions.lib.ts:71-79).
         QVERIFY(!visibleItem(content, "mediaViewer-download")->property("enabled").toBool());

@@ -7,7 +7,7 @@ import QtMultimedia
 // video slots added by issue #203, docs/NATIVE_DESKTOP_MEDIA_VIEWER_VIDEO.md).
 // Every geometry and colour value below was measured from the React reference
 // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af; file citations name
-// the source line. Wheel zoom remains a follow-up recorded in the design docs.
+// the source line.
 Popup {
     id: viewerRoot
     objectName: "mediaViewer-popup"
@@ -19,6 +19,19 @@ Popup {
     readonly property var currentSlot: viewer.open && viewer.index < viewer.items.length
         ? viewer.items[viewer.index] || ({}) : ({})
     readonly property bool gallery: viewer.count > 1
+    property real zoom: 1
+    readonly property int selectedSlot: viewer.open ? viewer.index : -1
+    onSelectedSlotChanged: {
+        zoom = 1;
+        Qt.callLater(statusLabel.announceStatus);
+    }
+
+    function zoomByWheel(wheel) {
+        const delta = wheel.pixelDelta.y || wheel.angleDelta.y;
+        zoom = Math.max(0.5, Math.min(3, zoom + 0.001 * delta));
+        wheel.accepted = true;
+    }
+
     // Positional model for the strip: a live viewer.items model would rebuild
     // delegates on every slot download and destroy items under a click.
     readonly property var stripModel: gallery
@@ -50,6 +63,7 @@ Popup {
     MouseArea {
         objectName: "mediaViewer-backdrop"
         anchors.fill: parent
+        onWheel: (wheel) => { wheel.accepted = true; }
         onClicked: viewerRoot.viewer.close()
     }
     Rectangle {
@@ -70,6 +84,7 @@ Popup {
         Image {
             id: mediaImage
             objectName: "mediaViewer-image"
+            scale: viewerRoot.zoom
             anchors.centerIn: parent
             width: parent.width
             height: Math.min(parent.height, hostWindow ? Math.max(0, hostWindow.height - 192) : parent.height)
@@ -89,7 +104,9 @@ Popup {
         // (object-contain), so clicks landing in the PreserveAspectFit
         // letterbox bands behave like backdrop clicks and close the viewer.
         MouseArea {
-            anchors.fill: mediaImage
+            parent: mediaImage
+            anchors.fill: parent
+            onWheel: (wheel) => viewerRoot.zoomByWheel(wheel)
             enabled: mediaImage.visible
             onClicked: (mouse) => {
                 const insidePainted = mediaImage.status === Image.Ready
@@ -139,6 +156,7 @@ Popup {
         VideoOutput {
             id: mediaVideo
             objectName: "mediaViewer-video"
+            scale: viewerRoot.zoom
             property int playbackState: videoPlayer.playbackState
             anchors.centerIn: parent
             width: parent.width
@@ -153,7 +171,9 @@ Popup {
         // toggle play/pause on a picture click, which this reproduces.
         MouseArea {
             objectName: "mediaViewer-video-toggle"
-            anchors.fill: mediaVideo
+            parent: mediaVideo
+            anchors.fill: parent
+            onWheel: (wheel) => viewerRoot.zoomByWheel(wheel)
             enabled: mediaVideo.visible
             onClicked: (mouse) => {
                 const painted = mediaVideo.contentRect;
@@ -180,6 +200,16 @@ Popup {
             color: "#B3FFFFFF"
             font.pixelSize: 14
             readonly property bool isVideo: String(viewerRoot.currentSlot.kind || "") === "video"
+            readonly property bool failed: viewerRoot.currentSlot.state === "load-error"
+                || viewerRoot.currentSlot.state === "display-error"
+            Accessible.role: failed ? Accessible.AlertMessage : Accessible.StatusBar
+            Accessible.name: text
+            readonly property string announcement: visible ? text : ""
+            onAnnouncementChanged: Qt.callLater(announceStatus)
+            function announceStatus() {
+                if (announcement)
+                    Accessible.announce(announcement, failed ? Accessible.Assertive : Accessible.Polite);
+            }
             // Per-state labels exactly as measured
             // (media-viewer-overlay.ui.tsx:127-151).
             text: isVideo
