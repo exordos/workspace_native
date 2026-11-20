@@ -14,6 +14,35 @@ using namespace workspace::test;
 class NativeMarkdownTest final : public QObject {
     Q_OBJECT
 private slots:
+    void notificationSummariesOnlyReplaceProtectedMarkdown_data()
+    {
+        QTest::addColumn<QString>("source");
+        QTest::addColumn<QString>("expected");
+        const auto target = QStringLiteral("urn:secret:v1:%1:%2:YWJj").arg(streamId, messageId);
+        const QString ordinary = QStringLiteral("**See** [docs](https://example.test)");
+        QTest::newRow("ordinary-markdown") << ordinary << ordinary;
+        QTest::newRow("escaped-target") << QString("[label](%1)").arg(QString(target).replace(":", "%3A")) << QString("Encrypted fragment");
+        QTest::newRow("image-target") << QString("before ![label](%1) after").arg(target) << QString("before Encrypted fragment after");
+        const QString code = QStringLiteral("`[docs](https://example.test)`");
+        QTest::newRow("literal-code") << code << code;
+        const auto oversized = QString(40001, QLatin1Char('x')) + QStringLiteral(" [label](%1)").arg(target);
+        QTest::newRow("oversized") << oversized << QString("Message is too large to display.");
+    }
+
+    void notificationSummariesOnlyReplaceProtectedMarkdown()
+    {
+        QFETCH(QString, source);
+        QFETCH(QString, expected);
+        NotificationCandidate candidate;
+        candidate.owner = "owner"; candidate.messageUuid = messageId;
+        candidate.streamUuid = streamId; candidate.streamPrivate = true;
+        candidate.content = source;
+        NotificationAggregateRegistry registry;
+        const auto notification = registry.upsert(candidate, {});
+        QVERIFY(notification);
+        QCOMPARE(notification->body, expected);
+    }
+
     void messageSpoilersKeepIndependentStateAndOpenInSummaries()
     {
         const QString source = "Before ||one|| and ||two||.\n\n```spoiler Details\n**bold** ||inner||\n```";
