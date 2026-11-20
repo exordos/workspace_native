@@ -12,7 +12,7 @@ if(UNIX AND NOT APPLE)
     find_program(WORKSPACE_NATIVE_PATCHELF_EXECUTABLE patchelf REQUIRED)
     set(QT_DEPLOY_USE_PATCHELF ON)
 endif()
-find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus Multimedia)
+find_package(Qt6 6.10 REQUIRED COMPONENTS Core Concurrent Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus Multimedia)
 find_package(Qt6Keychain REQUIRED)
 find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
@@ -67,7 +67,7 @@ set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
 target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
-target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+target_link_libraries(workspace-native-core PRIVATE Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
 endif()
@@ -115,10 +115,22 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
 # precedent). tests/licenses-dataset-test.py guards shape and determinism as a
 # direct python check; it is not a CTest group so the group count stays stable.
 find_program(WORKSPACE_NATIVE_PYTHON3 NAMES python3 REQUIRED)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(native_md4c QUIET md4c)
+endif()
+set(native_md4c_license)
+if(native_md4c_VERSION)
+    set(native_md4c_license --component "md4c=${native_md4c_VERSION}")
+endif()
 set(native_licenses_json "${CMAKE_CURRENT_BINARY_DIR}/licenses/licenses.json")
 add_custom_command(OUTPUT "${native_licenses_json}"
     COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/collect-native-licenses.py"
-        --out "${native_licenses_json}"
+        --out "${native_licenses_json}" --qt-sqlite
+        --component "qt6-base=${Qt6Core_VERSION}" --component "qt6-declarative=${Qt6Qml_VERSION}"
+        --component "qt6-multimedia=${Qt6Multimedia_VERSION}" --component "qt6-svg=${Qt6Svg_VERSION}"
+        --component "qt6-websockets=${Qt6WebSockets_VERSION}" --component "qtkeychain=${Qt6Keychain_VERSION}"
+        --component "openssl=${OPENSSL_VERSION}" ${native_md4c_license}
     DEPENDS scripts/collect-native-licenses.py VERBATIM)
 set_source_files_properties("${native_licenses_json}" PROPERTIES GENERATED TRUE)
 qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
@@ -150,7 +162,7 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     composer-inline-code composer-visibility
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
-    reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
+    reply forward copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
     mail_activity home_filled marker drafts chevron-up
     at bell bell_off person_add
@@ -313,7 +325,7 @@ if(BUILD_TESTING)
     endif()
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
         if(test STREQUAL "file-client" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -338,18 +350,6 @@ if(BUILD_TESTING)
             target_compile_definitions(${test}-test PRIVATE
                 WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
         endif()
-        if(test STREQUAL "native-controller")
-            # Issue #86: the call-awareness controller cases drive the real
-            # tray (NativeDesktop) over a private bus, so this group also
-            # links the widgets tray library (QTEST_MAIN picks QApplication
-            # once Qt6::Widgets is linked).
-            target_link_libraries(${test}-test PRIVATE Qt6::Widgets workspace-native-desktop)
-            # R9 (review finding 4576938732): source-contract guard — the
-            # unresolved create-stage inventory and its check/discard entry
-            # points must stay wired into the shipped Main.qml UI.
-            target_compile_definitions(${test}-test PRIVATE
-                WORKSPACE_NATIVE_MAIN_QML_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml")
-        endif()
         # Only the window harness loads the scene; the production executable embeds
         # the same sources as a QML module so deployment scans its actual imports.
         if(test STREQUAL "native-window")
@@ -361,37 +361,9 @@ if(BUILD_TESTING)
                 PREFIX /workspace/qml BASE qml FILES ${native_qml_files})
         endif()
         set_target_properties(${test}-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
-        if(WORKSPACE_NATIVE_QUICK_GATE AND test STREQUAL "native-controller")
-            add_test(NAME native-${test} COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:${test}-test>" --jobs 8)
-            set_property(TEST native-${test} PROPERTY COST 1000)
-        else()
-            add_test(NAME native-${test} COMMAND ${test}-test)
-        endif()
+        add_test(NAME native-${test} COMMAND ${test}-test)
         set_tests_properties(native-${test} PROPERTIES TIMEOUT 45)
-        if(test STREQUAL "native-controller")
-            # The diagnostics source-contract guard (fix-round-1 finding 2)
-            # reads the shipped provider source from the source tree.
-            target_compile_definitions(${test}-test PRIVATE
-                WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/native-logging.cpp")
-            # Include Archive/placement and creation HTTP/lifecycle cases in the complete suite.
-            # This is the whole-suite budget, not a request timeout. The poll-creation retry
-            # cases (#215) took the solo runtime to 697s against the old 700s ceiling; 780s
-            # then held until the encrypted-create and power-state cases (#234, #78) pushed
-            # the solo runtime past it: tip e7ced18 printed 1136 PASS lines and was killed at
-            # 780.01s with zero failures, reproducible solo and under -j8 (issue #296).
-            # The token-renewal deferred-response cases (#293, #294) plus the platform-store
-            # function set pushed the solo runtime past 900s as well: head 507f067 was killed
-            # at 900.01s with zero failures, and the same run passed 100% in 923.39s once the
-            # ceiling was lifted (issue #339).
-            # 1050s = worst measured runtime plus the usual headroom (#16/#103).
-            # The 0.36.0 cycle groups pushed the solo runtime to 1047.45s
-            # (complete group, zero failures, 2.5s under the ceiling) and the
-            # -j6 suite run timed out at 1200s with no case failed, so the old
-            # margin was gone. 1300s = worst measured runtime plus the usual
-            # headroom (#16/#103).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1300)
-        elseif(test STREQUAL "native-cache")
+        if(test STREQUAL "native-cache")
             # Whole-group runtime on the GPU-less reference stand measures 82.9-94.2s
             # across solo runs, and the suite-context run was killed at the old 90s
             # ceiling after printing PASS for the whole list. 150s = worst measured
@@ -421,9 +393,10 @@ if(BUILD_TESTING)
             # with no case failed at the kill point, under -j6 and on an empty
             # machine alike. The longest inter-case gap stayed at 12s, so this
             # is accumulated group size, not one slow case.
-            # 1500s = worst measured runtime plus the usual headroom
-            # (#16/#103, issue #413).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1500)
+            # With nearly 1,000 rows the hosted desktop took 1455s. A concurrent
+            # local run reached only 655 rows in 1500s. Give the entire group
+            # time to finish while QtTest keeps enforcing each case's deadlines.
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 3000)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
@@ -437,26 +410,52 @@ if(BUILD_TESTING)
     # Test-only real TLS/source-JS grant workflow; no runtime/download dependency.
     find_program(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE node REQUIRED)
     find_program(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE openssl REQUIRED)
-    # The key-management fixture mounts the durable vault through a loopback TLS
-    # gateway (issue #244), which needs the same synthetic-CA openssl grant.
-    target_compile_definitions(native-controller-test PRIVATE
+    # All controller suites share one mock-server fixture and certificate lifecycle.
+    add_library(native-controller-test-support STATIC
+        tests/support/native-test-harness.h tests/support/controller-notifications-fixtures.h)
+    target_link_libraries(native-controller-test-support PUBLIC workspace-native-ui workspace-native-desktop
+        Qt6::Test Qt6::DBus Qt6::Widgets)
+    target_compile_definitions(native-controller-test-support PUBLIC
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}")
+    set(native_controller_suites
+        activity calls channels diagnostics direct-chat encrypted-channels feed forward history inbox keys media mentions
+        navigation notifications outbox polls profiles reactions replies sessions sidebar topics transfers)
+    foreach(area IN LISTS native_controller_suites)
+        set(target "native-controller-${area}-test")
+        add_executable(${target} "tests/${target}.cpp")
+        target_link_libraries(${target} PRIVATE native-controller-test-support)
+        set_target_properties(${target} PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+        add_test(NAME "native-controller-${area}" COMMAND ${target})
+        set_tests_properties("native-controller-${area}" PROPERTIES LABELS controller TIMEOUT 300)
+    endforeach()
+    if(WORKSPACE_NATIVE_QUICK_GATE)
+        # Start the measured longest headless suites early on fresh CI runners.
+        set_tests_properties(native-controller-history native-controller-channels PROPERTIES COST 150)
+        set_tests_properties(native-controller-profiles native-controller-replies native-controller-direct-chat PROPERTIES COST 90)
+    endif()
+    # These suites share the real desktop clipboard or window focus on the full gate.
+    set_tests_properties(native-controller-media native-controller-navigation
+        native-controller-notifications native-controller-transfers PROPERTIES RESOURCE_LOCK xdisplay)
+    target_compile_definitions(native-controller-encrypted-channels-test PRIVATE
+        WORKSPACE_NATIVE_MAIN_QML_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml")
+    target_compile_definitions(native-controller-diagnostics-test PRIVATE
+        WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/native-logging.cpp")
     # Actual local TLS/h2 transport regressions. Existing QtTest failOnWarning policy is untouched.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_library(native-clipboard-slow-read SHARED tests/clipboard-slow-read.cpp)
         target_link_libraries(native-clipboard-slow-read PRIVATE ${CMAKE_DL_LIBS})
-        add_test(NAME native-clipboard-lifecycle COMMAND native-controller-test destroyingControllerCancelsClipboardSnapshotPreparation)
+        add_test(NAME native-clipboard-lifecycle COMMAND native-controller-transfers-test destroyingControllerCancelsClipboardSnapshotPreparation)
         set_tests_properties(native-clipboard-lifecycle PROPERTIES TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
         add_test(NAME native-clipboard-slow-ui COMMAND native-window-test confirmedSlowClipboardCopyRemainsVisibleAndCancellable)
         set_tests_properties(native-clipboard-slow-ui PROPERTIES TIMEOUT 30 LABELS "gui" RESOURCE_LOCK "xdisplay"
             ENVIRONMENT "CASSI_SLOW_CLIPBOARD_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
-        add_test(NAME native-clipboard-consent COMMAND native-controller-test clipboardDoesNotReadBeforeConfirmation)
+        add_test(NAME native-clipboard-consent COMMAND native-controller-transfers-test clipboardDoesNotReadBeforeConfirmation)
         set_tests_properties(native-clipboard-consent PROPERTIES TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_PRECONFIRM_TEST=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-slow-read>")
         add_library(native-clipboard-path-race SHARED tests/clipboard-path-race.cpp)
         target_link_libraries(native-clipboard-path-race PRIVATE ${CMAKE_DL_LIBS})
-        add_test(NAME native-clipboard-path-race COMMAND native-controller-test clipboardPathResolutionRaceCannotUploadAnotherFile)
+        add_test(NAME native-clipboard-path-race COMMAND native-controller-transfers-test clipboardPathResolutionRaceCannotUploadAnotherFile)
         set_tests_properties(native-clipboard-path-race PROPERTIES TIMEOUT 20
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;CASSI_CLIPBOARD_PATH_RACE=1;LD_PRELOAD=$<TARGET_FILE:native-clipboard-path-race>")
         find_package(Python3 REQUIRED COMPONENTS Interpreter)

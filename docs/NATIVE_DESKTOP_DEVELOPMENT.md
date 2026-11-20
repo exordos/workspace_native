@@ -728,6 +728,41 @@ ctest --test-dir packages/native/build --output-on-failure
 git diff --check
 ```
 
+### Controller suite selectors
+
+The old `native-native-controller` CTest entry is now 24 functional suites labeled
+`controller`. The default Linux inventory grew from 58 to 81 groups. Run
+`ctest --test-dir packages/native/build -N -L controller` to list them or
+`ctest --test-dir packages/native/build -L controller -j4 --output-on-failure` to
+run them. The full gate still uses unfiltered CTest. A toolkit that previously
+selected `^native-native-controller$` can use `-L controller` for the same scenarios.
+The portable toolkit discovers these names through CTest. Its
+`native-toolkit.py tests --build BUILD_DIR --regex "^native-controller-"`
+selection lists all 24 groups. The additional clipboard preload cases retain their
+existing CTest names.
+
+Each area below is both its source-file and executable suffix. For example,
+`native-controller-inbox-test -functions` lists the inbox cases. Pass an old
+QtTest function or `function:row` selector unchanged to its area's executable.
+Find a case from an older feature document with
+`git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
+substituting the function name. At migration the Linux `-datatags` inventories
+contained the same 1,631 function/data-row entries across all 24 executables.
+
+| Test areas | Coverage |
+| --- | --- |
+| `navigation`, `history`, `inbox`, `sidebar` | Startup, deep links, realtime history, cache, read markers, folders and archive |
+| `channels`, `encrypted-channels`, `direct-chat`, `topics` | Chat and topic creation, membership and recovery |
+| `profiles`, `sessions`, `keys` | Identity, authentication, switching accounts and key management |
+| `replies`, `mentions`, `outbox`, `reactions`, `polls`, `forward` | Composition, durable sending and message interactions |
+| `transfers`, `media` | Attachments, clipboard, downloads and the media viewer |
+| `activity`, `feed`, `notifications`, `calls`, `diagnostics` | Cross-chat views, desktop notifications, call integration and diagnostics |
+
+The shared HTTP fixture and certificate lifecycle live in
+`packages/native/tests/support/native-test-harness.h`. Feature-specific fixtures
+are beside that file or in their owning suite. CTest serializes suites using the
+desktop clipboard or window focus with its existing `xdisplay` lock.
+
 Tests use synthetic fixtures. Physical HTTP tests permit only loopback addresses
 through an explicit C++ test constructor option; the application uses HTTPS-only
 defaults. Saved-session tests inject a narrow HTTPS request executor and fake
@@ -780,8 +815,9 @@ env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- 
   ctest --test-dir build/headless -LE gui --parallel 8 --output-on-failure
 ```
 
-The quick configuration distributes long QtTest suites across processes using
-the executable's current function/data inventory. Its extra headless group runs
+The quick configuration schedules all 24 controller suites independently. It
+distributes the encrypted-read suite across processes using its current QtTest
+function/data inventory. Its extra headless group runs
 the two 100 ms encrypted-read responsiveness checks with exclusive CTest access.
 The full configuration runs the original suites and retains the shared-display
 locks. Before tagging, run the full gate on the intended release commit. A

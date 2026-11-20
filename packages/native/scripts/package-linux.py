@@ -42,6 +42,10 @@ def main():
     subprocess.run(['python3', str(source/'scripts/collect-linux-licenses.py'),
                     '--prefix', str(stage), '--output-dir', str(stage/'share/doc/workspace-native-preview/third-party'),
                     '--application-elf', 'bin/workspace-native'], check=True)
+    notices = stage/'share/doc/workspace-native-preview/third-party'
+    subprocess.run(['python3', str(source/'scripts/collect-native-licenses.py'),
+                    '--inventory', str(notices/'bundled-libraries.json'), '--out', str(notices/'licenses.json')],
+                   check=True)
     shutil.copy2(source/'scripts/install-linux.sh', stage/'install.sh')
     (stage/'install.sh').chmod(0o755)
     (stage/'VERSION').write_text(args.version + '\n')

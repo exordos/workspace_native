@@ -1,14 +1,4 @@
-"""The native licenses dataset must be deterministic, well-shaped and honest.
-
-`scripts/collect-native-licenses.py` emits the third-party dependency dataset
-the native client embeds as `qrc:/workspace/licenses/licenses.json` (issue #46,
-docs/NATIVE_DESKTOP_LICENSES.md). This check runs the generator directly and
-pins the contract the Licenses page relies on: byte-stable output, the
-five-key entry shape, the presence of the client's real dependencies, the
-sorted order, and a license-type census that exercises the top-8 chip cap.
-It is deliberately not registered in CTest so the CTest group count stays
-stable; run it with `python3 packages/native/tests/licenses-dataset-test.py`.
-"""
+"""Check the Licenses page catalog against build versions and a deployed package inventory."""
 import json
 from pathlib import Path
 import subprocess
@@ -23,7 +13,9 @@ def generate():
     with tempfile.TemporaryDirectory(prefix='cassi-licenses-') as temporary:
         out = Path(temporary) / 'licenses.json'
         result = subprocess.run(
-            [sys.executable, str(SCRIPT), '--out', str(out)],
+            [sys.executable, str(SCRIPT), '--out', str(out), '--component', 'qt6-base=6.11.2',
+             '--component', 'md4c=0.5.3', '--component', 'sqlite3=3.50.1',
+             '--component', 'qtkeychain=0.15.0', '--component', 'openssl=3.5.6'],
             capture_output=True, text=True, timeout=20)
         assert result.returncode == 0, result.stderr
         return out.read_bytes()
@@ -35,11 +27,41 @@ class LicensesDatasetTest(unittest.TestCase):
         cls.raw = generate()
         cls.entries = json.loads(cls.raw)
 
+    def test_packaged_inventory_supplies_versions_and_excludes_absent_components(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = root / 'bundled-libraries.json'
+            output = root / 'licenses.json'
+            versions = {'qt6-base': '6.10.2+dfsg-7', 'qt6-declarative': '6.10.2+dfsg-3',
+                        'openssl': '3.5.5-1ubuntu3.7', 'qtkeychain': '0.15.0-2',
+                        'aom': '3.13.1-2ubuntu0.1'}
+            records = {name: {'sourcePackage': name, 'sourceVersion': version,
+                              'ubuntuSourcePage': 'https://launchpad.net/ubuntu/+source/' + name}
+                       for name, version in versions.items()}
+            records['libqt6gui6'] = records['qt6-base']
+            manifest.write_text(json.dumps({'schema': 'native-linux-bundled-licenses-v1', 'packages': records}))
+            subprocess.run([sys.executable, SCRIPT, '--inventory', manifest, '--out', output], check=True)
+            rows = {row['name']: row['version'] for row in json.loads(output.read_text())}
+            self.assertEqual(rows, {'Qt 6 QtBase': versions['qt6-base'], 'Qt 6 QtDeclarative': versions['qt6-declarative'],
+                                    'OpenSSL': versions['openssl'], 'Qt6Keychain': versions['qtkeychain'],
+                                    'aom': versions['aom']})
+
+    def test_optional_engine_rows_use_independently_recorded_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, output = root / 'inventory.json', root / 'page.json'
+            records = {'engine': {'sourcePackage': 'qt6-webengine', 'sourceVersion': '6.10.2-4'},
+                       'browser': {'sourcePackage': 'chromium', 'sourceVersion': '134.0.1-2'}}
+            manifest.write_text(json.dumps({'schema': 'native-linux-bundled-licenses-v1', 'packages': records}))
+            subprocess.run([sys.executable, SCRIPT, '--inventory', manifest, '--out', output], check=True)
+            self.assertEqual({row['name']: row['version'] for row in json.loads(output.read_text())},
+                             {'Qt 6 QtWebEngine': '6.10.2-4', 'Chromium': '134.0.1-2'})
+
     def test_two_runs_are_byte_identical(self):
         self.assertEqual(self.raw, generate())
 
     def test_entry_shape_is_the_five_key_contract(self):
-        self.assertGreaterEqual(len(self.entries), 16)
+        self.assertEqual(len(self.entries), 5)
         for entry in self.entries:
             self.assertEqual(sorted(entry),
                 ['license', 'name', 'publisher', 'repository', 'version'])
@@ -60,24 +82,10 @@ class LicensesDatasetTest(unittest.TestCase):
     def test_at_least_one_plain_text_package_cell_exists(self):
         self.assertTrue(any(entry['repository'] == '' for entry in self.entries))
 
-    def license_type_census(self):
-        counts = {}
-        order = []
-        for entry in self.entries:
-            if entry['license'] not in counts:
-                counts[entry['license']] = 0
-                order.append(entry['license'])
-            counts[entry['license']] += 1
-        ordered = sorted(order, key=lambda license_name: -counts[license_name])
-        return ordered, counts
-
-    def test_top_eight_chip_census_matches_the_dataset(self):
-        ordered, counts = self.license_type_census()
-        self.assertGreater(len(ordered), 8,
-            'the dataset must exceed eight license types to exercise the cap')
-        self.assertEqual(ordered[:8], ['MIT', 'LGPL-3.0-only', 'BSD-3-Clause',
-            'FTL', 'Apache-2.0', 'LGPL-2.1-or-later', 'blessing', 'Zlib'])
-        self.assertEqual([counts[name] for name in ordered[:8]], [5, 3, 2, 1, 1, 1, 1, 1])
+    def test_build_catalog_contains_only_detected_components(self):
+        self.assertEqual({entry['name']: entry['version'] for entry in self.entries}, {
+            'Qt 6 QtBase': '6.11.2', 'MD4C': '0.5.3', 'SQLite': '3.50.1',
+            'Qt6Keychain': '0.15.0', 'OpenSSL': '3.5.6'})
 
 
 if __name__ == '__main__':

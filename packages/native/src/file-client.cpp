@@ -1,5 +1,6 @@
 #include "file-client.h"
 #include "file-download-staging.h"
+#include "native-image-input.h"
 #include "api-client.h"
 
 #include <QBuffer>
@@ -8,8 +9,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHttpMultiPart>
+#include <QFutureWatcher>
+#include <QImageReader>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMediaMetaData>
+#include <QMediaPlayer>
 #include <QMimeDatabase>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -18,6 +23,7 @@
 #include <QStorageInfo>
 #include <QTimer>
 #include <QUrl>
+#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
@@ -86,6 +92,17 @@ bool parseMetadata(const QByteArray &bytes, FileMetadata &metadata)
     return true;
 }
 
+QSize imageDimensions(const QByteArray &bytes)
+{
+    QBuffer input;
+    input.setData(nativeImageReaderInput(bytes));
+    if (!input.open(QIODevice::ReadOnly)) return {};
+    QImageReader reader(&input);
+    auto size = reader.size();
+    if (reader.transformation().testFlag(QImageIOHandler::TransformationRotate90)) size.transpose();
+    return size;
+}
+
 // A file can grow after selection. Never let multipart read beyond the size
 // whose digest was computed, even when the underlying QFile now has more bytes.
 class UploadFile final : public QFile {
@@ -117,6 +134,7 @@ struct FileClient::Operation {
     DestinationMode destinationMode = DestinationMode::Replace;
     std::unique_ptr<FileDownloadStaging> staging;
     FileMetadata metadata;
+    std::unique_ptr<QHttpMultiPart> uploadBody;
     std::unique_ptr<QSaveFile> output;
     QCryptographicHash hash{QCryptographicHash::Sha256};
     qint64 received = 0;
@@ -140,6 +158,10 @@ QString FileMetadata::urn() const
     // deliberately preserves '+'; encode values explicitly for interoperability.
     if (!name.isEmpty()) append("name", name);
     if (!contentType.isEmpty()) append("content_type", contentType);
+    if (kind() != FileKind::File && !dimensions.isEmpty()) {
+        append("w", QString::number(dimensions.width()));
+        append("h", QString::number(dimensions.height()));
+    }
     append("size", QString::number(sizeBytes));
     const auto type = kind() == FileKind::Image ? "image" : kind() == FileKind::Video ? "video" : "file";
     return QStringLiteral("urn:%1:%2?%3").arg(QLatin1String(type), uuid.toLower(), query.join('&'));
@@ -234,7 +256,7 @@ void FileClient::cancelAll()
     }
 }
 
-QString FileClient::validateUpload(const QString &path, const QString &streamUuid, const QString &name)
+QString FileClient::validateUpload(const QString &path, const QString &streamUuid, const QString &name, QString *imageName)
 {
     const QFileInfo info(path);
     if (!validUuid(streamUuid) || !info.isFile() || info.size() <= 0 || info.size() > 25 * 1024 * 1024)
@@ -246,11 +268,13 @@ QString FileClient::validateUpload(const QString &path, const QString &streamUui
     const QMimeDatabase mime;
     const auto declared = mime.mimeTypeForFile(path, QMimeDatabase::MatchExtension).name();
     const auto uploaded = mime.mimeTypeForFile(uploadName, QMimeDatabase::MatchExtension).name();
+    const auto header = input.peek(4096);
     if (declared.startsWith("image/") || uploaded.startsWith("image/")) {
-        const auto header = input.read(12);
         if (!imageSignatureMatches(declared, header) || !imageSignatureMatches(uploaded, header))
             return FileClient::tr("The image file type does not match its contents.");
     }
+    if (imageName && mime.mimeTypeForData(header).name().startsWith("image/"))
+        *imageName = uploadName;
     return {};
 }
 
@@ -274,7 +298,10 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
     // Validation and multipart transmission must observe the same bytes even if
     // the selected file changes. Retain at most the existing 25 MiB upload limit.
     QBuffer *snapshot = nullptr;
-    if (declaredType.startsWith("image/") || uploadedType.startsWith("image/")) {
+    const auto detected = mimeDatabase.mimeTypeForData(file->peek(4096)).name();
+    if (declaredType.startsWith("image/") || uploadedType.startsWith("image/")
+        || detected.startsWith("image/") || detected.startsWith("video/")
+        || declaredType.startsWith("video/") || uploadedType.startsWith("video/")) {
         snapshot = new QBuffer(body.get());
         snapshot->buffer().reserve(info.size());
     }
@@ -324,8 +351,58 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
     };
     appendText("stream_uuid", streamUuid.toLower().toUtf8());
     appendText("name", uploadName.toUtf8());
+    operation->uploadBody = std::move(body);
+    if (!snapshot || operation->metadata.kind() == FileKind::File) {
+        startUpload(id);
+        return id;
+    }
+
+    // Keep the decoder and upload on separate cursors over the same immutable
+    // bytes. A cancellation during the bounded probe cannot leave a remote file.
+    auto *probe = new QObject(operation->uploadBody.get());
+    const QPointer<FileClient> client(this);
+    const auto finish = [client, id, probe](const QSize &size) {
+        if (!client) return;
+        const auto pending = client->m_operations.value(id);
+        if (!pending || !pending->uploadBody) return;
+        probe->deleteLater();
+        client->startUpload(id, size);
+    };
+    QTimer::singleShot(300, probe, [finish] { finish({}); });
+    if (operation->metadata.kind() == FileKind::Image) {
+        auto *watcher = new QFutureWatcher<QSize>(probe);
+        connect(watcher, &QFutureWatcher<QSize>::finished, probe, [watcher, finish] { finish(watcher->result()); });
+        watcher->setFuture(QtConcurrent::run(imageDimensions, snapshot->data()));
+    } else {
+        auto *player = new QMediaPlayer(probe);
+        auto *buffer = new QBuffer(player);
+        buffer->setData(snapshot->data());
+        buffer->open(QIODevice::ReadOnly);
+        const auto readSize = [player, finish] {
+            for (const auto &track : player->videoTracks()) {
+                auto size = track.value(QMediaMetaData::Resolution).toSize();
+                if (size.isEmpty()) continue;
+                if (track.value(QMediaMetaData::Orientation).toInt() % 180 != 0) size.transpose();
+                finish(size);
+                return;
+            }
+        };
+        connect(player, &QMediaPlayer::tracksChanged, probe, readSize);
+        connect(player, &QMediaPlayer::metaDataChanged, probe, readSize);
+        connect(player, &QMediaPlayer::errorOccurred, probe, [finish] { finish({}); });
+        player->setSourceDevice(buffer);
+    }
+    return id;
+}
+
+void FileClient::startUpload(quint64 id, const QSize &dimensions)
+{
+    if (!current(id)) return;
+    const auto operation = m_operations.value(id);
+    operation->metadata.dimensions = dimensions;
+    auto body = std::move(operation->uploadBody);
     operation->reply = m_api ? m_api->startFileUpload(body.get()) : nullptr;
-    if (!operation->reply) { fail(id, FileClient::tr("Sign in to upload files.")); return id; }
+    if (!operation->reply) { fail(id, FileClient::tr("Sign in to upload files.")); return; }
     body.release(); // ApiClient transferred the multipart lifetime to its reply.
     operation->reply->setReadBufferSize(m_limits.metadataBytes + 1);
     connect(operation->reply, &QNetworkReply::readyRead, this, [this, id] { readMetadata(id); });
@@ -335,7 +412,6 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
         const auto operation = m_operations.value(id);
         if (operation && operation->progress) operation->progress(sent, total);
     });
-    return id;
 }
 
 quint64 FileClient::download(const QString &uuid, const QString &destination, Completion completion,
@@ -405,6 +481,7 @@ void FileClient::finishMetadata(quint64 id)
         }
         FileResult result;
         result.metadata = metadata;
+        result.metadata.dimensions = expected.dimensions;
         result.status = code;
         result.checksumVerified = true;
         complete(id, result);

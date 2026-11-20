@@ -70,6 +70,7 @@ struct NativeDrafts::Private {
     QPointer<NativeDraftService> storage;
     QHash<QString, Owner> owners;
     QString owner, stream, topic, workerOwner;
+    QString openedDraftUuid;
     QTimer saveTimer;
     bool scheduled = false, opening = false, running = false;
     quint64 version = 0, forceThrough = 0, use = 0;
@@ -419,7 +420,7 @@ struct NativeDrafts::Private {
         if (state.loaded.contains(route) && !state.completed.contains(route) && !state.shadow.contains(route)) {
             const auto active = state.records.constFind(state.active.value(route));
             if (active == state.records.cend() || active->record.uuid == record.uuid
-                || (active->record.phase == DraftRecord::Phase::Saved
+                || (active->record.phase == DraftRecord::Phase::Saved && active->record.uuid != openedDraftUuid
                     && (active->record.updatedAt < record.updatedAt
                         || (active->record.updatedAt == record.updatedAt && active->record.uuid < record.uuid))))
                 state.active[route] = record.uuid;
@@ -458,6 +459,7 @@ struct NativeDrafts::Private {
                     d.schedule(); return;
                 }
                 if (!state.records.contains(record->uuid)) state.records.insert(record->uuid, Work{*record, 0, 0});
+                d.openedDraftUuid = record->uuid;
                 state.active[route] = record->uuid; state.completed.remove(route); state.revisit.remove(route); state.loaded.insert(route);
                 state.bootstrap.remove(route); d.touch(state, route);
             } else {
@@ -906,6 +908,7 @@ void NativeDrafts::setOwner(const QString &owner)
     d->cancelRemote();
     d->remote.owner.clear();
     ++d->actionEpoch; d->action.reset(); hidePage();
+    d->openedDraftUuid.clear();
     d->owner = next; d->stream.clear(); d->topic.clear(); d->forceThrough = d->version;
     d->schedule(); emit stateChanged();
 }
@@ -914,6 +917,7 @@ void NativeDrafts::select(const QString &stream, const QString &topic)
     const auto nextStream = isUuid(stream) && isUuid(topic) ? stream : QString{};
     const auto nextTopic = nextStream.isEmpty() ? QString{} : topic;
     if (nextStream == d->stream && nextTopic == d->topic) return;
+    d->openedDraftUuid.clear();
     if (!d->owner.isEmpty()) {
         auto &state = d->owners[d->owner];
         const auto previous = key(d->stream, d->topic);
