@@ -600,7 +600,7 @@ public:
     Q_INVOKABLE void showSection(const QString &name);
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
     // read from the build-time Qt resource as one JSON string.
-    Q_INVOKABLE QString licensesDatasetJson() const;
+    Q_INVOKABLE static QString licensesDatasetJson();
     // Issue #50: the Diagnostics page surface (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md):
     // the live dataset object, the pretty-printed snapshot JSON for the copy
     // action and the advanced block, the connection-report subset, the live

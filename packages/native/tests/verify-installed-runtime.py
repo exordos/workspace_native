@@ -5,6 +5,7 @@ claim runtime or operating-system acceptance; the visible installed app must
 also be exercised on each supported operating system.
 """
 
+import json
 import argparse
 import configparser
 import os
@@ -126,8 +127,18 @@ def probe_runtime(prefix, executable):
         subprocess.run(["patchelf", "--set-rpath", "$ORIGIN/../lib", str(temporary)], check=True,
                        capture_output=True, text=True)
         result = subprocess.run([str(temporary)], capture_output=True, text=True, timeout=15)
-        print(result.stdout.strip())
         assert result.returncode == 0, f"Installed crypto/TLS runtime probe failed ({result.returncode})"
+        report = json.loads(result.stdout)
+        displayed = {row["name"]: row["version"] for row in report.pop("displayedLicenses")}
+        notices = prefix / "share/doc/workspace-native-preview/third-party"
+        packages = json.loads((notices / "bundled-libraries.json").read_text())["packages"]
+        versions = {row["sourcePackage"]: row["sourceVersion"] for row in packages.values()}
+        for source, name in (("qt6-base", "Qt 6 QtBase"), ("qt6-declarative", "Qt 6 QtDeclarative"),
+                             ("openssl", "OpenSSL"), ("qtkeychain", "Qt6Keychain"),
+                             ("qt6-webengine", "Qt 6 QtWebEngine"), ("chromium", "Chromium")):
+            assert displayed.get(name) == versions.get(source), f"License page disagrees with packaged {name}"
+        assert len(displayed) == len(versions), "License page must cover every bundled source package"
+        print(json.dumps(report), f"Verified {len(displayed)} packaged license rows")
     finally:
         temporary.unlink(missing_ok=True)
 

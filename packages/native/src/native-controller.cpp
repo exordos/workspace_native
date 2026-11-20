@@ -6573,12 +6573,13 @@ void NativeController::resetChatSection()
     emit stateChanged();
 }
 
-QString NativeController::licensesDatasetJson() const
+QString NativeController::licensesDatasetJson()
 {
-    // Issue #46: the dataset is generated at build time into the Qt resource
-    // (docs/NATIVE_DESKTOP_LICENSES.md); QML XMLHttpRequest refuses local
-    // file reads, so the page receives the JSON through this invokable.
-    QFile file(QStringLiteral(":/workspace/licenses/licenses.json"));
+    // Official Linux archives ship the catalog generated from the deployed
+    // ELF inventory. An unpackaged executable uses its build-time SDK list.
+    QDir bin(QCoreApplication::applicationDirPath());
+    const auto packaged = bin.filePath(QStringLiteral("../share/doc/workspace-native-preview/third-party/licenses.json"));
+    QFile file(QFileInfo::exists(packaged) ? packaged : QStringLiteral(":/workspace/licenses/licenses.json"));
     return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString{};
 }
 
