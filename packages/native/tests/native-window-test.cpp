@@ -15131,6 +15131,14 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             return anchor;
         };
+        if (prepend) {
+            // A general notification with the same outgoing presentation must
+            // preserve the settled layout before the user's first wheel event.
+            const auto ticket = list->property("layoutTicket");
+            QVERIFY(ticket.isValid());
+            emit controller.stateChanged();
+            QCOMPARE(list->property("layoutTicket"), ticket);
+        }
         if (behavior != "incoming-bottom") {
             const auto before = list->property("contentY").toReal();
             const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
