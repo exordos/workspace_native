@@ -79,11 +79,15 @@ if windows:
     version = re.search(r"^CMAKE_PROJECT_VERSION:STATIC=([0-9]+\.[0-9]+\.[0-9]+)$", cache, re.M)
     if not version:
         sys.exit("Missing configured application version for the Windows installer.")
-    compiler = shutil.which("iscc") or Path(os.environ["ProgramFiles(x86)"]) / "Inno Setup 6/ISCC.exe"
-    installer = artifacts / f"{name}-setup.exe"
-    run(compiler, "/Qp", f"/O{artifacts}", f"/F{installer.stem}", f"/DStageDir={stage}",
-        f"/DTargetArch={name.removeprefix('workspace-native-windows-')}", f"/DAppVersion={version[1]}",
-        root / "packages/native/packaging/windows.iss")
+    arch = name.removeprefix("workspace-native-windows-")
+    installer = artifacts / f"{name}-setup.msi"
+    msi_build = build / "msi"
+    environment = dict(os.environ, WORKSPACE_MSI_VERSION=version[1], WORKSPACE_MSI_STAGE=str(stage),
+                       WORKSPACE_MSI_ARCH=arch)
+    subprocess.run([os.environ.get("WORKSPACE_CPACK", "cpack"), "--config",
+                    root / "packages/native/packaging/windows-msi.cmake", "-B", msi_build],
+                   env=environment, check=True)
+    shutil.copyfile(msi_build / installer.name, installer)
     packages.append(installer)
 checksums = []
 for package in packages:

@@ -7,17 +7,23 @@ if ($entry.Count -ne 1 -or (Get-FileHash $installerFile.FullName).Hash -ne $entr
     throw 'The installer checksum did not match the package manifest.'
 }
 
-$directory = Join-Path $env:LOCALAPPDATA 'Programs\Exordos\Workspace Native Preview'
+$directory = Join-Path $env:LOCALAPPDATA 'Workspace Native Preview'
 $executable = Join-Path $directory 'bin\workspace-native.exe'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Workspace Native Preview.lnk'
-$registration = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\com.exordos.workspace.native.preview_is1'
+$windowsInstaller = New-Object -ComObject WindowsInstaller.Installer
+$database = $windowsInstaller.OpenDatabase($installerFile.FullName, 0)
+$query = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = 'ProductCode'")
+$query.Execute()
+$productCode = $query.Fetch().StringData(1)
+$query.Close()
+$registration = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$productCode"
 if ((Test-Path $directory) -or (Test-Path $registration) -or (Test-Path $shortcut)) {
     throw 'The installer test requires a fresh user profile.'
 }
-$arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-')
+$arguments = @(('"' + $installerFile.FullName + '"'), '/qn', '/norestart')
 $sentinel = Join-Path $directory ('unowned-' + [guid]::NewGuid() + '.txt')
 try {
-    $setup = Start-Process -FilePath $installerFile.FullName -ArgumentList $arguments -PassThru -Wait
+    $setup = Start-Process msiexec.exe -ArgumentList (@('/i') + $arguments) -PassThru -Wait
     if ($setup.ExitCode -ne 0) { throw "Setup returned $($setup.ExitCode)." }
     $product = Get-ItemProperty -LiteralPath $registration
     if ($product.DisplayName -notlike 'Workspace Native Preview*' -or !$product.DisplayVersion) {
@@ -35,9 +41,7 @@ try {
     Write-Output "Verified per-user installation of $($product.DisplayName) $($product.DisplayVersion)."
 } finally {
     if (Test-Path $registration) {
-        $uninstaller = (Get-ItemProperty -LiteralPath $registration).UninstallString.Trim('"')
-        if ((Split-Path $uninstaller) -ne $directory) { throw 'Unexpected preview uninstaller location.' }
-        $removal = Start-Process -FilePath $uninstaller -ArgumentList $arguments -PassThru -Wait
+        $removal = Start-Process msiexec.exe -ArgumentList (@('/x') + $arguments) -PassThru -Wait
         if ($removal.ExitCode -ne 0) { throw "Uninstall returned $($removal.ExitCode)." }
     }
 }
