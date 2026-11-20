@@ -1,4 +1,5 @@
 #include "support/native-test-harness.h"
+#include "support/controller-chat-creation-fixtures.h"
 #include "support/controller-mention-fixtures.h"
 
 class ControllerMentionsTest final : public NativeControllerTestHarness {
