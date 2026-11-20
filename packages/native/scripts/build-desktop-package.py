@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -72,7 +73,22 @@ else:
     run("codesign", "--force", "--deep", "--sign", "-", app)
     run("codesign", "--verify", "--deep", "--strict", app)
     run("ditto", "-c", "-k", "--sequesterRsrc", stage, archive)
-with archive.open("rb") as stream:
-    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-(artifacts / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
-print(f"Created {archive.name} ({archive.stat().st_size} bytes).")
+packages = [archive]
+if windows:
+    cache = (build / "application/CMakeCache.txt").read_text(encoding="utf-8")
+    version = re.search(r"^CMAKE_PROJECT_VERSION:STATIC=([0-9]+\.[0-9]+\.[0-9]+)$", cache, re.M)
+    if not version:
+        sys.exit("Missing configured application version for the Windows installer.")
+    compiler = shutil.which("iscc") or Path(os.environ["ProgramFiles(x86)"]) / "Inno Setup 6/ISCC.exe"
+    installer = artifacts / f"{name}-setup.exe"
+    run(compiler, "/Qp", f"/O{artifacts}", f"/F{installer.stem}", f"/DStageDir={stage}",
+        f"/DTargetArch={name.removeprefix('workspace-native-windows-')}", f"/DAppVersion={version[1]}",
+        root / "packages/native/packaging/windows.iss")
+    packages.append(installer)
+checksums = []
+for package in packages:
+    with package.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    checksums.append(f"{digest}  {package.name}\n")
+    print(f"Created {package.name} ({package.stat().st_size} bytes).")
+(artifacts / "SHA256SUMS").write_text("".join(checksums), encoding="ascii")

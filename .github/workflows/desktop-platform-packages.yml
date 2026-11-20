@@ -7,6 +7,8 @@ on:
     paths:
       - .github/workflows/desktop-platform-packages.yml
       - packages/native/CMakeLists.txt
+      - packages/native/packaging/windows.iss
+      - packages/native/src/main.cpp
       - packages/native/scripts/build-desktop-package.py
       - packages/native/tests/platform-package/**
       - packages/native/tests/platform-shell/**
@@ -132,6 +134,10 @@ jobs:
           $drivers = @(Get-ChildItem "$destination/plugins/sqldrivers/*.dll")
           if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
           ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
+      - name: Install, launch and uninstall the Windows application for the current user
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packages/native/tests/platform-package/windows-installer.ps1 -Installer "archive/workspace-native-${{ matrix.platform }}-setup.exe"
       - name: Verify and run the relocated macOS application
         if: runner.os == 'macOS'
         run: |
