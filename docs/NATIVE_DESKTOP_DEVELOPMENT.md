@@ -724,6 +724,37 @@ ctest --test-dir packages/native/build --output-on-failure
 git diff --check
 ```
 
+### Controller suite selectors
+
+The old `native-native-controller` CTest entry is now 21 functional suites labeled
+`controller`. The default Linux inventory grew from 58 to 78 groups. Run
+`ctest --test-dir packages/native/build -N -L controller` to list them or
+`ctest --test-dir packages/native/build -L controller -j4 --output-on-failure` to
+run them. The full gate still uses unfiltered CTest. A toolkit that previously
+selected `^native-native-controller$` can use `-L controller` for the same scenarios.
+The additional clipboard preload cases retain their existing CTest names.
+
+Each area below is both its source-file and executable suffix. For example,
+`native-controller-inbox-test -functions` lists the inbox cases. Pass an old
+QtTest function or `function:row` selector unchanged to its area's executable.
+Find a case from an older feature document with
+`git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
+substituting the function name. At migration the Linux `-datatags` inventories
+contained the same 1,617 function/data-row entries across all 21 executables.
+
+| Test areas | Coverage |
+| --- | --- |
+| `navigation`, `history`, `inbox`, `sidebar` | Startup, deep links, realtime history, cache, read markers, folders and archive |
+| `creation`, `profiles`, `sessions`, `keys` | Chat creation, identity, authentication, switching accounts and key management |
+| `replies`, `mentions`, `outbox`, `reactions`, `polls`, `forward` | Composition, durable sending and message interactions |
+| `transfers`, `media` | Attachments, clipboard, downloads and the media viewer |
+| `activity`, `feed`, `notifications`, `calls`, `diagnostics` | Cross-chat views, desktop notifications, call integration and diagnostics |
+
+The shared HTTP fixture and certificate lifecycle live in
+`packages/native/tests/support/native-test-harness.h`. Feature-specific fixtures
+are beside that file or in their owning suite. CTest serializes suites using the
+desktop clipboard or window focus with its existing `xdisplay` lock.
+
 Tests use synthetic fixtures. Physical HTTP tests permit only loopback addresses
 through an explicit C++ test constructor option; the application uses HTTPS-only
 defaults. Saved-session tests inject a narrow HTTPS request executor and fake
