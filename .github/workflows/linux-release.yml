@@ -100,6 +100,11 @@ jobs:
           persist-credentials: false
 
       - name: Check repository for generated artifacts
+        # The release container and checkout action run as different users.
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: ${{ github.workspace }}
         run: sh packages/native/tests/repository-artifacts-test.sh
 
       - name: Check installer and package-version regressions
