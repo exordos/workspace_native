@@ -1,0 +1,8 @@
+{
+  "reference": "github-ubuntu-24.04-container-26.04-sway-1440",
+  "gui_stall_ms": 400,
+  "active_frame_ms": 153,
+  "visible_response_ms": 102,
+  "settled_anchor_px": 1,
+  "min_occupancy": 0.0078125
+}
