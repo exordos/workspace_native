@@ -16901,6 +16901,7 @@ void NativeController::beginAnchorLinkJump(const QString &target)
     }
     m_anchorLinkPending = true;
     m_pendingAnchorMessage = target;
+    m_pendingAnchorParsed.reset();
     m_pendingAnchorStream = m_stream;
     m_pendingAnchorTopic = m_topic;
     m_anchorBudget = 8;
@@ -17055,6 +17056,8 @@ void NativeController::reanchorFromWindow()
         m_anchorHighlight.start(2500);
         return;
     }
+    // The lookup determines which conversation owns the around-anchor pages.
+    if (m_anchorLinkPending && !m_pendingAnchorParsed) return;
     if (busy()) return; // A live page owns the next reanchor pass.
     // Reference parity (issue #71): a resolved anchor outside the loaded window opens
     // the around-anchor pages (workspace_ui 61dacef7 resolveOpeningMessageWindow in
