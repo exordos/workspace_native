@@ -1898,10 +1898,11 @@ component NativeMentionChip: Item {
                     text: root.controller.loginStep === "organization" ? qsTr("Back") : qsTr("Organization")
                     contentItem: RowLayout {
                         spacing: 8
-                        Image {
+                        ControlsImpl.ColorImage {
                             source: "qrc:/workspace/icons/chevron-right.svg"
                             Layout.preferredWidth: 16
                             Layout.preferredHeight: 16
+                            color: root.colors["text-muted"]
                             rotation: 180
                             Accessible.ignored: true
                         }

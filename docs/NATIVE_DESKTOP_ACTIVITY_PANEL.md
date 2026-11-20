@@ -125,8 +125,8 @@ with the compact label tone from the reference (compact) or `badge-text`
 
 ## Acceptance coverage
 
-- Window QtTest (`native-window-test`): toggle geometry (32 px rail,
-  46 px rows, 30 px chips), chip colors, active-route fill, badge visibility
+- Window QtTest (`native-window-test`): geometry after the expanded list's first
+  frame (32 px rail, 46 px rows, 30 px chips), chip colors, active-route fill, badge visibility
   at 0/>0/1001, favorites disabled, collapse, and open-state persistence
   across two logins sharing a preferences file.
 - Controller QtTest (`native-controller-test`): `activityBadgeLabel` cap
