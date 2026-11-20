@@ -3730,6 +3730,40 @@
             <translation>Медиа %1</translation>
         </message>
     </context>
+<context>
+    <name>NativeExternalAccountBlock</name>
+    <message><source>External accounts</source><translation>Внешние аккаунты</translation></message>
+    <message><source>Could not load external accounts. Check access and try again.</source><translation>Не удалось загрузить внешние аккаунты. Проверь доступ и повтори попытку.</translation></message>
+    <message><source>Checking…</source><translation>Проверяем…</translation></message>
+    <message><source>No external accounts connected yet.</source><translation>Внешние аккаунты ещё не подключены.</translation></message>
+    <message><source>Connected</source><translation>Подключены</translation></message>
+    <message><source>External account actions</source><translation>Действия внешнего аккаунта</translation></message>
+    <message><source>Edit</source><translation>Изменить</translation></message>
+    <message><source>Reconnect</source><translation>Переподключить</translation></message>
+    <message><source>Delete</source><translation>Удалить</translation></message>
+    <message><source>Linked services let you sign in to the same profile from different messengers without setting it up again</source><translation>Привязанные сервисы позволяют входить в один и тот же профиль с разных мессенджеров без повторной настройки</translation></message>
+    <message><source>Connect service</source><translation>Подключить сервис</translation></message>
+    <message><source>Checking connection…</source><translation>Проверяем подключение…</translation></message>
+    <message><source>Loading history…</source><translation>Загружаем историю…</translation></message>
+    <message><source>Connection is active</source><translation>Подключение активно</translation></message>
+    <message><source>Connection needs attention</source><translation>Подключение требует внимания</translation></message>
+    <message><source>Zulip credentials need to be updated</source><translation>Нужно обновить данные доступа к Zulip</translation></message>
+    <message><source>Synchronization is stopped</source><translation>Синхронизация остановлена</translation></message>
+    <message><source>The integration was suspended by an administrator</source><translation>Интеграция приостановлена администратором</translation></message>
+    <message><source>Edit external account</source><translation>Редактировать внешний аккаунт</translation></message>
+    <message><source>Connect external account</source><translation>Подключить внешний аккаунт</translation></message>
+    <message><source>Provider</source><translation>Провайдер</translation></message>
+    <message><source>Zulip is already connected.</source><translation>Zulip уже подключён.</translation></message>
+    <message><source>Server URL</source><translation>URL сервера</translation></message>
+    <message><source>Email</source><translation>Email</translation></message>
+    <message><source>API key</source><translation>API-ключ</translation></message>
+    <message><source>Could not update the external account. Check the details and try again.</source><translation>Не удалось обновить внешний аккаунт. Проверьте данные и попробуйте ещё раз.</translation></message>
+    <message><source>Cancel</source><translation>Отмена</translation></message>
+    <message><source>Save</source><translation>Сохранить</translation></message>
+    <message><source>Connect</source><translation>Подключить</translation></message>
+    <message><source>Delete external account?</source><translation>Удалить внешний аккаунт?</translation></message>
+    <message><source>Could not delete the external account.</source><translation>Не удалось удалить внешний аккаунт.</translation></message>
+</context>
     <context>
         <name>NativeRightDrawer</name>
         <message>
@@ -4979,38 +5013,4 @@
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
     </context>
-<context>
-    <name>NativeExternalAccountBlock</name>
-    <message><source>External accounts</source><translation>Внешние аккаунты</translation></message>
-    <message><source>Could not load external accounts. Check access and try again.</source><translation>Не удалось загрузить внешние аккаунты. Проверь доступ и повтори попытку.</translation></message>
-    <message><source>Checking…</source><translation>Проверяем…</translation></message>
-    <message><source>No external accounts connected yet.</source><translation>Внешние аккаунты ещё не подключены.</translation></message>
-    <message><source>Connected</source><translation>Подключены</translation></message>
-    <message><source>External account actions</source><translation>Действия внешнего аккаунта</translation></message>
-    <message><source>Edit</source><translation>Изменить</translation></message>
-    <message><source>Reconnect</source><translation>Переподключить</translation></message>
-    <message><source>Delete</source><translation>Удалить</translation></message>
-    <message><source>Linked services let you sign in to the same profile from different messengers without setting it up again</source><translation>Привязанные сервисы позволяют входить в один и тот же профиль с разных мессенджеров без повторной настройки</translation></message>
-    <message><source>Connect service</source><translation>Подключить сервис</translation></message>
-    <message><source>Checking connection…</source><translation>Проверяем подключение…</translation></message>
-    <message><source>Loading history…</source><translation>Загружаем историю…</translation></message>
-    <message><source>Connection is active</source><translation>Подключение активно</translation></message>
-    <message><source>Connection needs attention</source><translation>Подключение требует внимания</translation></message>
-    <message><source>Zulip credentials need to be updated</source><translation>Нужно обновить данные доступа к Zulip</translation></message>
-    <message><source>Synchronization is stopped</source><translation>Синхронизация остановлена</translation></message>
-    <message><source>The integration was suspended by an administrator</source><translation>Интеграция приостановлена администратором</translation></message>
-    <message><source>Edit external account</source><translation>Редактировать внешний аккаунт</translation></message>
-    <message><source>Connect external account</source><translation>Подключить внешний аккаунт</translation></message>
-    <message><source>Provider</source><translation>Провайдер</translation></message>
-    <message><source>Zulip is already connected.</source><translation>Zulip уже подключён.</translation></message>
-    <message><source>Server URL</source><translation>URL сервера</translation></message>
-    <message><source>Email</source><translation>Email</translation></message>
-    <message><source>API key</source><translation>API-ключ</translation></message>
-    <message><source>Could not update the external account. Check the details and try again.</source><translation>Не удалось обновить внешний аккаунт. Проверьте данные и попробуйте ещё раз.</translation></message>
-    <message><source>Cancel</source><translation>Отмена</translation></message>
-    <message><source>Save</source><translation>Сохранить</translation></message>
-    <message><source>Connect</source><translation>Подключить</translation></message>
-    <message><source>Delete external account?</source><translation>Удалить внешний аккаунт?</translation></message>
-    <message><source>Could not delete the external account.</source><translation>Не удалось удалить внешний аккаунт.</translation></message>
-</context>
 </TS>

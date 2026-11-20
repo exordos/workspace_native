@@ -145,8 +145,9 @@ qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
 qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
+qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-qml/NativeSelect.qml qml/NativeExternalAccountBlock.qml
+qml/NativeSelect.qml
 qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
@@ -166,6 +167,7 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     composer-inline-code composer-visibility
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
+    zulip-external-account links_compact more build
     reply forward copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
     mail_activity home_filled marker drafts chevron-up
@@ -174,7 +176,6 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
     grid dashboard_customize
-    zulip-external-account links_compact more build
     # Sidebar pinned-chat meta glyph (issue #96, docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md).
     pin
     # Sidebar topic notification-mode indicator glyph (issue #97,
