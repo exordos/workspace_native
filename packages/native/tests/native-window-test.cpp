@@ -21179,6 +21179,50 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerTimePickerPreservesBothFallBackInstants()
+    {
+        if (!qEnvironmentVariableIsSet("WORKSPACE_COMPOSER_TIME_FOLD")) {
+            QProcess child;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert("TZ", "America/New_York");
+            environment.insert("WORKSPACE_COMPOSER_TIME_FOLD", "1");
+            child.setProcessEnvironment(environment);
+            child.setProcessChannelMode(QProcess::MergedChannels);
+            child.start(QCoreApplication::applicationFilePath(),
+                        {"composerTimePickerPreservesBothFallBackInstants", "-o", "-,txt"});
+            QVERIFY(child.waitForFinished(30000));
+            const QByteArray output = child.readAll();
+            QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, output.constData());
+            return;
+        }
+        // The second 01:30 on the November transition is 06:30 UTC.
+        // Both UTC instants have the same local hour, minute and second.
+        const auto second = QDateTime::fromString("2026-11-01T06:30:00Z", Qt::ISODate);
+        QCOMPARE(second.toLocalTime().time(), QTime(1, 30));
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/workspace/qml/NativeComposerTimePicker.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        window.resize(640, 480);
+        const QVariantMap colors{{"bg-elevated", "white"}, {"border-subtle", "gray"},
+            {"text-primary", "black"}, {"text-muted", "gray"}};
+        std::unique_ptr<QObject> picker(component.createWithInitialProperties({
+            {"parent", QVariant::fromValue(window.contentItem())}, {"colors", colors}, {"localeName", "en"}}));
+        QVERIFY2(picker, qPrintable(component.errorString()));
+        auto *hours = picker->findChild<QObject *>("composerTimeHours");
+        auto *minutes = picker->findChild<QObject *>("composerTimeMinutes");
+        auto *seconds = picker->findChild<QObject *>("composerTimeSeconds");
+        auto *insert = picker->findChild<QObject *>("composerTimeInsert");
+        QVERIFY(hours && minutes && seconds && insert);
+        for (const auto &expected : {second.addSecs(-3600), second}) {
+            picker->setProperty("openedAt", expected.addSecs(-60));
+            picker->setProperty("selectedDay", expected);
+            hours->setProperty("value", 1); minutes->setProperty("value", 30); seconds->setProperty("value", 0);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+            QVERIFY(insert->property("enabled").toBool());
+        }
+    }
+
     void composerToolPopoversUseTheCurrentDraft_data()
     {
         QTest::addColumn<QString>("surface"); QTest::addColumn<QString>("locale");

@@ -11,7 +11,7 @@ Insert date and time opens a local date and time picker with seconds.
 Insertion replaces the saved editor selection with the canonical UTC Markdown
 time reference and puts the caret after it. Escape restores the editor and
 selection. The initial time is one minute after opening, as requested in
-issue #128. The observed deployed web control starts at the current second.
+issue #128. Insert compares the selection with the opening instant. A valid selection can still be inserted after the clock passes it. During a repeated daylight-saving hour, the default preserves the selected UTC offset. The observed deployed web control starts at the current second.
 
 Saved snippets exposes the generic composer's filter, empty list and create
 action. Creation reports that snippets are unavailable. This is a local
