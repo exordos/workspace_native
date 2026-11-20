@@ -17957,7 +17957,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *back = item(content, "projectCredentialsBackButton");
         QVERIFY(back);
         QCOMPARE(back->height(), 36.);
-        QCOMPARE(back->mapToScene(QPointF()).y() - item(content, "projectLoginButton")->mapToScene(QPointF(0, 36)).y(), 16.);
+        QTRY_COMPARE(back->mapToScene(QPointF()).y() - item(content, "projectLoginButton")->mapToScene(QPointF(0, 36)).y(), 16.);
         QTest::mouseMove(window, QPoint(2, 2));
         QTRY_COMPARE(QQmlProperty(back, "background.color").read().value<QColor>().alpha(), 0);
         // The first project is preselected with the organization suffix (U+2014
