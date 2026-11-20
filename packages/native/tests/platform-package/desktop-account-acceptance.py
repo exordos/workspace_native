@@ -249,6 +249,7 @@ def scenario(executable, check_updater, check_media):
                                     wait_for(lambda: "audio" in route.probe_results and "video" in route.probe_results,
                                              "The hosted audio/video requests did not both resolve", timeout=40)
                                     print("Hosted package capture outcomes:", route.probe_results, flush=True)
+                                    drive(app.pid, "close-call", origin)
                                 if check_updater:
                                     drive(app.pid, "update", origin)
                                     print("The installed application reported its unsupported update channel in App version.", flush=True)

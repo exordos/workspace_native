@@ -120,6 +120,8 @@ case "channel":
     try press("General Chat: Cassi hosted channel")
 case "call":
     try press("Join call")
+case "close-call":
+    try press("Close call")
 case "update":
     try press("Profile")
     try press("App version")
