@@ -178,6 +178,34 @@ static void clickActiveInlineImage(QQuickWindow *window, const QString &message)
     clickReadyItem(window, image());
 }
 
+// Account controls remain visible QQuickItems when the scroll viewport clips
+// them. Bring the physical click point inside the viewport and wait for paint.
+static void clickAccountMenuControl(QQuickWindow *window, QQuickItem *target)
+{
+    auto *scroll = visibleItem(window->contentItem(), "accountMenuScroll");
+    QVERIFY(scroll && target);
+    QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+    window->update();
+    QTRY_VERIFY([&] {
+        if (!target->isEnabled() || !target->isVisible())
+            return false;
+        const auto center = target->mapToItem(scroll, QPointF(target->width() / 2, target->height() / 2));
+        if (!scroll->contains(center)) {
+            const qreal top = scroll->property("contentY").toReal();
+            const qreal bottom = std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height());
+            const qreal next = std::clamp(top + center.y() - scroll->height() / 2, 0.0, bottom);
+            if (qAbs(next - top) > 0.5) {
+                scroll->setProperty("contentY", next);
+                painted.clear();
+                window->update();
+            }
+            return false;
+        }
+        return !painted.isEmpty();
+    }());
+    clickReadyItem(window, target);
+}
+
 static void checkSidebarCardBelowExpandedActivity(QQuickWindow *window, const QString &cardName)
 {
     auto *root = window->contentItem();
@@ -3405,23 +3433,9 @@ private slots:
         QCOMPARE(visibleItem(root, "currentServerLabel")->property("text").toString(), fixture.server.origin().host());
         QCOMPARE(visibleItem(root, "currentServerLogin")->property("text").toString(), QString("example-member"));
         auto *action = visibleItem(root, "clearLocalCacheAction"); QVERIFY(action);
-        auto *scroll = visibleItem(root, "accountMenuScroll"); QVERIFY(scroll);
         auto *dialog = window->findChild<QObject *>("clearLocalCacheDialog"); QVERIFY(dialog);
         const auto openConfirmation = [&] {
-            QSignalSpy painted(window, &QQuickWindow::frameSwapped);
-            window->update();
-            QTRY_VERIFY([&] {
-                const auto bottom = std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height());
-                if (qAbs(scroll->property("contentY").toReal() - bottom) > 1) {
-                    scroll->setProperty("contentY", bottom);
-                    painted.clear();
-                    window->update();
-                    return false;
-                }
-                const auto point = action->mapToItem(scroll, action->boundingRect().center());
-                return !painted.isEmpty() && action->isEnabled() && scroll->contains(point);
-            }());
-            clickReadyItem(window, action);
+            clickAccountMenuControl(window, action);
             QTRY_VERIFY(dialog->property("opened").toBool());
         };
         openConfirmation();
@@ -16468,7 +16482,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *limit = item(content, "cacheLimitGb");
         QVERIFY(limit && limit->isEnabled());
         auto *field = limit->property("contentItem").value<QQuickItem *>();
-        click(window, field);
+        clickAccountMenuControl(window, field);
         QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
         QTest::keyClick(window, Qt::Key_1);
         QTest::keyClick(window, Qt::Key_Tab);
@@ -16530,11 +16544,11 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(preferences.mode(), QString("dark"));
             click(window, item(content, "palette-emerald-chat"));
             QCOMPARE(preferences.paletteId(), QString("emerald-chat"));
-            click(window, item(content, "languageSetting"));
-            click(window, item(content, "language-ru"));
+            clickAccountMenuControl(window, item(content, "languageSetting"));
+            clickAccountMenuControl(window, item(content, "language-ru"));
             QCOMPARE(preferences.locale(), QString("ru"));
             QTRY_COMPARE(item(content, "refreshButton")->property("text").toString(), QString::fromUtf8("Обновить"));
-            click(window, item(content, "language-en"));
+            clickAccountMenuControl(window, item(content, "language-en"));
             QCOMPARE(preferences.locale(), QString("en"));
             QTRY_COMPARE(item(content, "refreshButton")->property("text").toString(), QString("Refresh"));
             auto *limit = item(content, "cacheLimitGb");
@@ -16542,7 +16556,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(limit->property("value").toInt(), 10);
             auto *field = limit->property("contentItem").value<QQuickItem *>();
             QVERIFY(field);
-            click(window, field);
+            clickAccountMenuControl(window, field);
             QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
             QTest::keyClick(window, Qt::Key_2);
             QTest::keyClick(window, Qt::Key_4);
