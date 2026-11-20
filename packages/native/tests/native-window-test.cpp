@@ -3328,6 +3328,102 @@ struct WindowChatHeaderCountersScene {
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void clearCacheKeepsAccountAndOrganizations_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QStringLiteral("en"), QStringLiteral("ru")})
+            for (const auto &mode : {QStringLiteral("light"), QStringLiteral("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void clearCacheKeepsAccountAndOrganizations()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const auto cacheDir = directory.filePath("cache");
+        {
+            NativeCache seed(cacheDir, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, channelPeer));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}},
+                QJsonArray{windowChannel(streamId, "Other saved account")}));
+        }
+        bool holdBootstrap = false;
+        QVector<std::function<void()>> held;
+        const auto respond = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto response = respond(request);
+            if (holdBootstrap && request.method == "GET")
+                response.defer = [&](std::function<void()> release) { held.append(std::move(release)); };
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeCacheService cache(cacheDir, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.recordOrganizationOrigin("https://previous.example.invalid");
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "example-member", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(cache.available() && cache.stats().entries > 1);
+        const auto organizations = preferences.organizationHistory();
+        QVERIFY(organizations.contains("https://previous.example.invalid"));
+        preferences.setMode(mode);
+        preferences.setLocale(locale);
+        preferences.setComposerToolbarExpanded(true);
+        preferences.setChatClickAction("latestTopic");
+        auto *root = window->contentItem();
+        click(window, item(root, "accountMenuButton"));
+        QTRY_VERIFY(visibleItem(root, "currentServerLabel"));
+        QCOMPARE(visibleItem(root, "currentServerLabel")->property("text").toString(), fixture.server.origin().host());
+        QCOMPARE(visibleItem(root, "currentServerLogin")->property("text").toString(), QString("example-member"));
+        auto *action = visibleItem(root, "clearLocalCacheAction"); QVERIFY(action);
+        auto *scroll = visibleItem(root, "accountMenuScroll"); QVERIFY(scroll);
+        scroll->setProperty("contentY", std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height()));
+        click(window, action);
+        auto *dialog = window->findChild<QObject *>("clearLocalCacheDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        const QString confirmation = locale == "en"
+            ? QStringLiteral("Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.")
+            : QStringLiteral("Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.");
+        QCOMPARE(visibleItem(root, "clearLocalCacheConfirmation")->property("text").toString(), confirmation);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QVERIFY(preferences.composerToolbarExpanded());
+        QVERIFY(cache.stats().entries > 1);
+        const int catalog = fixture.catalogGets;
+        holdBootstrap = true;
+        click(window, action);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QQmlExpression ok(qmlContext(dialog), dialog, "standardButton(Dialog.Ok)");
+        auto *button = qobject_cast<QQuickItem *>(ok.evaluate().value<QObject *>());
+        QVERIFY2(button, qPrintable(ok.error().toString()));
+        click(window, button);
+        QTRY_VERIFY(fixture.catalogGets > catalog && cache.available());
+        QTRY_COMPARE(cache.stats().entries, 0);
+        QCOMPARE(preferences.chatClickAction(), QString("stream"));
+        QVERIFY(!preferences.composerToolbarExpanded());
+        QCOMPARE(preferences.mode(), QString("system"));
+        QCOMPARE(preferences.organizationHistory(), organizations);
+        QCOMPARE(session.loginName(), QString("example-member"));
+        QVERIFY(controller.authenticated());
+        holdBootstrap = false;
+        for (auto &release : held) release();
+        QTRY_COMPARE(controller.streams().size(), 1);
+    }
+
     void aboutDrawerPreservesTheActualPendingCheck_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");

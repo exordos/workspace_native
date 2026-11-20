@@ -543,6 +543,7 @@ public:
     Q_INVOKABLE void logoutWorkspaceSession(const QString &id);
     Q_INVOKABLE void openAddServer();
     Q_INVOKABLE void publishSessionProjection(const QString &accountId, const QVariantMap &projection);
+    Q_INVOKABLE void clearLocalCache();
     Q_INVOKABLE void logout();
     // Issue #165: the inactivity guard is armed only while a live session
     // exists (docs/NATIVE_DESKTOP_AUTH_IDLE_TIMEOUT.md). The accessor is the
@@ -1678,6 +1679,7 @@ private:
     void refreshQuoteOriginDecryptions();
     const Message *editableMessage(const QString &id) const;
     void reset();
+    void startAuthenticatedWorkspace();
     void forgetSavedAccountWithFollowUp(const QString &id, std::function<void()> done);
     void report(const QString &message);
     void finishSnapshotPart(unsigned part);
@@ -1713,6 +1715,7 @@ private:
     QHash<int, std::function<void()>> m_cacheHydrations;
     bool m_cacheWasAvailable = false;
     bool m_cacheForgettingAccount = false;
+    quint64 m_localResetGeneration = 0;
     NativeCache::Lease m_cacheLease;
     quint64 m_cacheRevision = 0;
     bool m_cacheProtection = false;

@@ -170,3 +170,24 @@ are cited inside the geometry assertions):
 
 i18n: new `NativeRightDrawer` context strings `Close`, `Back`, `Info panel`
 are added to `packages/native/translations/workspace_ru.ts` (locale guard).
+
+## Current server and local reset
+
+The account menu shows the connected organization's hostname above the signed-in
+login. Both values come from the active session. The reference uses the login as
+the label when the organization has no usable hostname. Each text line elides
+independently. The title, icon and spacing follow the current-server row in
+`widgets/right-panel/right-panel-user-menu.ui.tsx`.
+
+Clear cache opens a confirmation with the local effects spelled out. Cancel
+returns to the account menu. Confirm clears the local message cache and
+application preferences and reloads the workspace with the same sign-in. The
+saved organization list and the credential vault survive. Outgoing work and
+encryption keys have their own stores. The reset performs its database work on
+the cache worker; old requests and pending settings writes must not restore the
+discarded state. The web counterpart is `shared/lib/local-reset.ts`.
+
+The window test covers the server and login lines, the localized confirmation,
+cancellation, and confirmation with a populated cache and nondefault preferences.
+It holds the refreshed history response so it can observe an empty cache before
+new server data arrives.
