@@ -107,7 +107,8 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   reads the XDG Settings portal `org.freedesktop.appearance/reduced-motion` key at
   startup (service `org.freedesktop.portal.Desktop`, object path
   `/org/freedesktop/portal/desktop`, interface `org.freedesktop.portal.Settings`,
-  `Read`, 2 s timeout, unknown value = no preference per spec) and
+  `Read`, 2 s timeout). The startup reply wraps the unsigned setting in two variants,
+  with value 1 requesting reduced motion. The preferences object
   keeps it live via the `SettingChanged` signal on that same addressing. The test
   harness pins the same value through that seam. The live-region `Text`
   "Loading message context" renders in place of the old
