@@ -22,6 +22,7 @@ public:
     static constexpr qint64 MaximumDiskLimitBytes = 1000000000000LL;
     static constexpr int MaximumFreshPages = 4096;
     enum class Kind { Streams = 1, Users, Topics, History, MessageBody };
+    enum class Removal { Omission, Deletion };
     enum class Projection { Insert = 1, Payload = 2, Star = 4, Reactions = 8 };
     Q_DECLARE_FLAGS(ProjectionFields, Projection)
     struct Lease {
@@ -88,7 +89,7 @@ public:
     bool putMessageBody(const Lease &lease, const QJsonObject &canonical);
     // Authoritative successful omission/deletion only, not HTTP/transport error.
     // Erases the Body and all indexed History copies for this exact owner+UUID.
-    bool removeMessageBodyAndHistory(const Lease &lease, const QString &uuid);
+    bool removeMessageBodyAndHistory(const Lease &lease, const QString &uuid, Removal reason = Removal::Omission);
     // Delete affected pages, including pagination variants. Empty route fields
     // select all routes of that kind for this owner only.
     // Empty topic is an exact aggregate key for get/put, but an existing
@@ -133,6 +134,7 @@ private:
     bool indexHistory(const QString &owner, const QByteArray &key, const QJsonArray &rows);
     bool refreshTotals(bool force = false) const;
     bool eraseMatching(const QString &where, const QVariantList &bindings);
+    bool removeDeletedHistoryRow(const QByteArray &hash, const QString &id);
     void setError(const QString &message);
     bool shouldCancel() const { return m_cancel && m_cancel(); }
     QString m_directory;

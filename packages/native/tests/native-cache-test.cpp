@@ -651,6 +651,45 @@ private slots:
         QVERIFY(!cache.getMessageBody(cache.lease(), id)); // Projection never resurrects an erased Body.
     }
 
+    void confirmedDeletionKeepsNeighboursAndCursorsAcrossIndexedPages()
+    {
+        QTemporaryDir directory;
+        qint64 now = 10000;
+        NativeCache cache(directory.path(), {}, false, [&] { return now; });
+        QVERIFY(cache.open(Server, Project, User));
+        const auto lease = cache.lease();
+        auto keep = message("Retained");
+        auto deleted = message("Deleted");
+        keep["uuid"] = "88888888-8888-4888-8888-000000000001";
+        deleted["uuid"] = "88888888-8888-4888-8888-000000000002";
+        keep["user_uuid"] = User;
+        deleted["user_uuid"] = User;
+        const auto id = deleted.value("uuid").toString();
+        const NativeCache::Key aggregate{NativeCache::Kind::History, Stream, {}, {}};
+        auto older = History;
+        older.marker = "previous";
+        for (const auto &key : {History, aggregate, older})
+            QVERIFY(cache.put(lease, key, {keep, deleted}, "next"));
+        QVERIFY(cache.putMessageBody(lease, keep));
+        QVERIFY(cache.putMessageBody(lease, deleted));
+        ++now;
+        QVERIFY(cache.removeMessageBodyAndHistory(lease, id, NativeCache::Removal::Deletion));
+        for (const auto &key : {History, aggregate, older}) {
+            const auto page = cache.get(lease, key);
+            QVERIFY(page);
+            QCOMPARE(page->rows, QJsonArray{keep});
+            QCOMPARE(page->nextMarker, QByteArray("next"));
+            QCOMPARE(page->savedAt, now - 1);
+            QVERIFY(!page->fresh);
+        }
+        QVERIFY(!cache.getMessageBody(lease, id));
+        QVERIFY(cache.getMessageBody(lease, keep.value("uuid").toString()));
+        cache.close();
+        QVERIFY(cache.open(Server, Project, User));
+        QVERIFY(!cache.getMessageBody(cache.lease(), id));
+        QCOMPARE(cache.get(cache.lease(), History)->rows, QJsonArray{keep});
+    }
+
     void authoritativeBodyOmissionErasesEveryIndexedCopyOnlyForItsOwner()
     {
         QTemporaryDir directory; NativeCache cache(directory.path()); auto row = message("Removed UUID"); row["user_uuid"] = User;

@@ -11813,7 +11813,15 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             }
             m_chatResponses.remove(id);
         }
-        invalidateConversation(payload.value("stream_uuid").toString(), payload.value("topic_uuid").toString());
+        const auto stream = payload.value("stream_uuid").toString();
+        const auto topic = payload.value("topic_uuid").toString();
+        if (m_cache && m_cache->removeDeletedMessage(m_cacheLease, stream, topic, id)) {
+            staleCache(NativeCache::Kind::History, stream, topic);
+            invalidateCache(NativeCache::Kind::Streams);
+            invalidateCache(NativeCache::Kind::Topics, stream);
+        } else {
+            invalidateConversation(stream, topic);
+        }
         if (m_messageFields.contains(id)) m_messageFields[id].deleted = true;
         if (payload.value("stream_uuid").toString() == m_stream
             && (m_topic.isEmpty() || payload.value("topic_uuid").toString() == m_topic)) {
