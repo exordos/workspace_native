@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the operator and hosted job with in-memory synthetic leases."""
 import importlib.util
+import glob
 import io
 import json
 import os
@@ -120,6 +121,33 @@ class BrokerTest(unittest.TestCase):
 
 
 class WorkflowTest(unittest.TestCase):
+    def test_package_upload_includes_checksum_with_a_container_temp_mount(self):
+        workflow = SCRIPTS.parents[2] / ".github/workflows/live-gui-acceptance.yml"
+        steps = yaml.safe_load(workflow.read_text())["jobs"]["package-linux"]["steps"]
+        package = next(step["run"] for step in steps if step.get("name") == "Package the checked-out Linux client")
+        upload = next(step["with"]["path"] for step in steps if step.get("id") == "upload")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "checkout"
+            workspace.mkdir()
+            # Execute the workflow's output-directory assignment as the container shell does.
+            env = dict(os.environ, GITHUB_WORKSPACE=str(workspace), RUNNER_TEMP=str(root / "container-temp"),
+                       GITHUB_RUN_ID="71", GITHUB_RUN_ATTEMPT="1")
+            assign = next(line for line in package.splitlines() if line.strip().startswith("output="))
+            result = subprocess.check_output(["bash", "-euc", assign + '\nprintf "%s" "$output"'],
+                                             cwd=workspace, env=env, text=True)
+            output = workspace / result
+            output.mkdir(parents=True)
+            expected = {"Exordos-Workspace-Native-1-linux-x86_64.tar.gz", "SHA256SUMS"}
+            for filename in expected:
+                (output / filename).touch()
+            # The runner expression points at the host path, outside the job container mount.
+            matches = set()
+            for line in upload.splitlines():
+                pattern = line.replace("${{ runner.temp }}", str(root / "host-temp"))
+                matches.update(Path(item).name for item in glob.glob(str(workspace / pattern)))
+            self.assertEqual(matches, expected)
+
     def test_failed_packaging_writes_and_publishes_its_own_blocked_result(self):
         workflow = SCRIPTS.parents[2] / ".github/workflows/live-gui-acceptance.yml"
         job = yaml.safe_load(workflow.read_text())["jobs"]["package-linux"]
@@ -129,11 +157,11 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(len(commands), 1)
         self.assertEqual(len(artifacts), 1)
         with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ, RUNNER_TEMP=directory, GITHUB_RUN_ID="71", GITHUB_RUN_ATTEMPT="1")
-            subprocess.run(["bash", "-euc", commands[0]], env=env, check=True)
+            env = dict(os.environ, RUNNER_TEMP=directory, GITHUB_WORKSPACE=directory, GITHUB_RUN_ID="71", GITHUB_RUN_ATTEMPT="1")
+            subprocess.run(["bash", "-euc", commands[0]], cwd=directory, env=env, check=True)
             path = artifacts[0]["path"].replace("${{ runner.temp }}", directory)
             path = path.replace("${{ github.run_id }}", "71").replace("${{ github.run_attempt }}", "1")
-            self.assertEqual(json.loads(Path(path).read_text()), {"status": "BLOCKED", "blocked": ["linux-package"]})
+            self.assertEqual(json.loads((Path(directory) / path).read_text()), {"status": "BLOCKED", "blocked": ["linux-package"]})
 
 
 class HostedTest(unittest.TestCase):
