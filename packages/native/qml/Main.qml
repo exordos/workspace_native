@@ -3444,7 +3444,7 @@ component NativeMentionChip: Item {
         width: 315
         height: Math.min(accountActions.implicitHeight + 8 + signOutFooter.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
         padding: 12
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        closePolicy: externalAccountsBlock.formOpen ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
             color: root.colors["bg-elevated"]
             border.color: root.colors["border-subtle"]
@@ -3523,6 +3523,14 @@ component NativeMentionChip: Item {
                         color: root.colors["text-muted"]
                     }
                 }
+            }
+            NativeExternalAccountBlock {
+                id: externalAccountsBlock
+                Layout.fillWidth: true
+                visible: root.controller.authenticated
+                directory: root.controller.externalAccounts
+                colors: root.colors
+                menuOpen: accountPopup.visible
             }
             NativeButton {
                 objectName: "ownStatusAction"

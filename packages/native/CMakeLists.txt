@@ -27,6 +27,7 @@ add_library(workspace-native-core STATIC
     src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
+    src/native-external-accounts.cpp src/native-external-accounts.h
     src/native-preferences.cpp src/native-preferences.h
     src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
@@ -145,7 +146,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-qml/NativeSelect.qml
+qml/NativeSelect.qml qml/NativeExternalAccountBlock.qml
 qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
@@ -173,6 +174,7 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
     grid dashboard_customize
+    zulip-external-account links_compact more build
     # Sidebar pinned-chat meta glyph (issue #96, docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md).
     pin
     # Sidebar topic notification-mode indicator glyph (issue #97,

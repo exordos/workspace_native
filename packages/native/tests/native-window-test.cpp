@@ -22277,6 +22277,161 @@ mv -Tf "$root/.current-new" "$root/current"
     // "X members, Y online" subline) plus the three blocks in reference
     // order. Oracles: right-panel-workspace-info.ui.tsx at
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af (header px-4 py-3, avatar lg
+    void externalAccountDrawerReadsAndChangesTheOwnedList_data()
+    {
+        QTest::addColumn<bool>("rebound");
+        QTest::newRow("new-zulip") << false;
+        QTest::newRow("rebind-imported-zulip") << true;
+    }
+
+    void externalAccountDrawerReadsAndChangesTheOwnedList()
+    {
+        QFETCH(bool, rebound);
+        ChannelInfoWindowScene scene;
+        QJsonArray accounts;
+        QStringList writes;
+        int lookups = 0, canonicalLookups = 0, status = 200;
+        const auto base = scene.fixture.server.handler;
+        const QString collection = "/api/workspace/v1/messenger/external_accounts/";
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (!request.target.path().startsWith(collection)) return base(request);
+            if (request.method == "GET" && request.target.path() == collection) {
+                ++lookups;
+                return {accounts, status};
+            }
+            if (request.method == "GET") {
+                if (accounts.isEmpty() || request.target.path() != collection + returnedId)
+                    return {QJsonObject{}, 404};
+                ++canonicalLookups;
+                return {accounts.first()};
+            }
+            writes.append(request.method);
+            if (request.method == "DELETE") { accounts = {}; return {QJsonValue{}, 204}; }
+            if (request.method == "POST" && request.target.path() == collection) {
+                const auto settings = request.body.value("settings").toObject();
+                if (request.body.value("provider") != "zulip" || settings.value("api_key") != "fixture-only"
+                    || settings.value("server_url") != "https://chat.example.invalid" || settings.value("email") != "peer@example.invalid")
+                    return {QJsonObject{}, 400};
+                auto stored = settings;
+                stored.remove("api_key");
+                accounts.append(QJsonObject{{"uuid", rebound ? QJsonValue(returnedId) : request.body.value("uuid")}, {"settings", stored},
+                    {"status","active"}, {"live_ready",true},{"revision",1},{"user_uuid",userId},{"project_id",projectId}});
+            }
+            return {accounts.first()};
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QTRY_VERIFY(visibleItem("externalAccountsEmpty"));
+        QCOMPARE(lookups, 1);
+        click(scene.window, visibleItem("externalAccountConnect"));
+        QTRY_VERIFY(visibleItem("externalAccountServer"));
+        click(scene.window, visibleItem("externalAccountCancel"));
+        QCOMPARE(writes.size(), 0);
+        click(scene.window, visibleItem("externalAccountConnect"));
+        QTRY_VERIFY(visibleItem("externalAccountServer"));
+        visibleItem("externalAccountServer")->setProperty("text","https://chat.example.invalid");
+        visibleItem("externalAccountEmail")->setProperty("text","peer@example.invalid");
+        visibleItem("externalAccountCredential")->setProperty("text","fixture-only");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_COMPARE(writes, QStringList{"POST"});
+        QTRY_VERIFY(!accounts.isEmpty());
+        const auto account = accounts.first().toObject()["uuid"].toString();
+        QTRY_VERIFY(visibleItem("externalAccountName-" + account));
+        QCOMPARE(visibleItem("externalAccountName-" + account)->property("text").toString(), QString("peer@example.invalid"));
+        QCOMPARE(canonicalLookups, rebound ? 1 : 0);
+        QCOMPARE(visibleItem("externalAccountStatus-" + account)->property("text").toString(), QString("Zulip · Connected"));
+        click(scene.window, visibleItem("externalAccountActions-" + account));
+        QTRY_VERIFY(visibleItem("externalAccountDelete"));
+        QVERIFY(!visibleItem("externalAccountReconnect"));
+        click(scene.window, visibleItem("externalAccountDelete"));
+        QTRY_VERIFY(visibleItem("externalAccountDeleteConfirm"));
+        click(scene.window, visibleItem("externalAccountDeleteConfirm"));
+        QTRY_COMPARE(writes, (QStringList{"POST","DELETE"}));
+        QTRY_VERIFY(visibleItem("externalAccountsEmpty"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        status = 503;
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QTRY_VERIFY(visibleItem("externalAccountsError"));
+        QVERIFY(!visibleItem("externalAccountsEmpty"));
+    }
+
+    void externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision()
+    {
+        ChannelInfoWindowScene scene;
+        const QString collection = "/api/workspace/v1/messenger/external_accounts/";
+        auto settings = QJsonObject{{"kind","zulip"},{"server_url","https://chat.example.invalid"},
+            {"email","before@example.invalid"},{"selection_mode","explicit"},{"history_depth","30_days"},
+            {"default_project_id",projectId}};
+        QJsonObject row{{"uuid",returnedId},{"settings",settings},{"status","auth_required"},
+            {"live_ready",false},{"revision",7},{"safe_error","Authentication required"},{"project_id",projectId},{"user_uuid",userId}};
+        QStringList writes;
+        int gets = 0;
+        bool hold = true;
+        std::function<void()> finishRead;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (!request.target.path().startsWith(collection)) return base(request);
+            if (request.method == "GET" && request.target.path() == collection) return {QJsonArray{row}};
+            if (request.method == "GET") {
+                ++gets;
+                Response response{row};
+                if (hold) response.defer = [&](auto send) { finishRead = std::move(send); };
+                return response;
+            }
+            const auto body = request.body.value("settings").toObject();
+            writes.append(request.method);
+            if (request.method == "PUT") {
+                if (body.value("history_depth") != "30_days" || body.value("selection_mode") != "explicit"
+                    || body.value("email") != "after@example.invalid" || body.contains("api_key")
+                    || request.headers.value("if-match") != "\"7\"") return {QJsonObject{}, 400};
+                row["settings"] = body; row["revision"] = 8;
+            } else {
+                if (!request.target.path().endsWith("/actions/reconnect/invoke") || body.value("api_key") != "fixture-only"
+                    || request.headers.value("if-match") != "\"8\"") return {QJsonObject{}, 400};
+                row["live_ready"] = true; row["status"] = "live"; row["revision"] = 9;
+            }
+            return {row};
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle")); click(scene.window, visibleItem("externalAccountsToggle"));
+        const auto menu = "externalAccountActions-" + returnedId;
+        QTRY_VERIFY(visibleItem(menu)); click(scene.window, visibleItem(menu));
+        QTRY_VERIFY(visibleItem("externalAccountReconnect"));
+        click(scene.window, visibleItem("externalAccountEdit"));
+        QTRY_VERIFY(visibleItem("externalAccountEmail"));
+        visibleItem("externalAccountEmail")->setProperty("text","after@example.invalid");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_VERIFY(bool(finishRead));
+        click(scene.window, visibleItem("externalAccountCancel"));
+        QTRY_VERIFY(!visibleItem("externalAccountCredential"));
+        finishRead();
+        hold = false;
+        QTRY_VERIFY(visibleItem(menu));
+        click(scene.window, visibleItem(menu));
+        QTRY_VERIFY(visibleItem("externalAccountEdit"));
+        click(scene.window, visibleItem("externalAccountEdit"));
+        QTRY_VERIFY(visibleItem("externalAccountEmail"));
+        QCOMPARE(visibleItem("externalAccountEmail")->property("text").toString(), QString("before@example.invalid"));
+        QCOMPARE(writes.size(), 0);
+        visibleItem("externalAccountEmail")->setProperty("text", "after@example.invalid");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        const auto name = "externalAccountName-" + returnedId;
+        QTRY_VERIFY(visibleItem(name) && visibleItem(name)->property("text").toString() == "after@example.invalid");
+        QCOMPARE(gets, 2); QCOMPARE(writes, QStringList{"PUT"});
+        click(scene.window, visibleItem(menu));
+        QTRY_VERIFY(visibleItem("externalAccountReconnect")); click(scene.window, visibleItem("externalAccountReconnect"));
+        QTRY_VERIFY(visibleItem("externalAccountCredential"));
+        visibleItem("externalAccountCredential")->setProperty("text","fixture-only");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_COMPARE(writes, (QStringList{"PUT","POST"}));
+        QTRY_VERIFY(!visibleItem("externalAccountCredential"));
+        click(scene.window, visibleItem(menu)); QTRY_VERIFY(visibleItem("externalAccountEdit"));
+        QVERIFY(!visibleItem("externalAccountReconnect"));
+    }
+
     // Reference: packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx (measured
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
