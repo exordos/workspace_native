@@ -66,4 +66,5 @@ jobs:
           path: |
             ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
             ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/timeline.jsonl
+            ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/frames.gif
           retention-days: 14

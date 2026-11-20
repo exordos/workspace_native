@@ -20,7 +20,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from live_acceptance_metrics import evaluate, sanitize_native_event
+from live_acceptance_metrics import (
+    evaluate,
+    sanitize_native_event,
+    write_frame_sequence,
+)
 
 
 def clock():
@@ -93,6 +97,8 @@ class Desktop:
         self.env = env.copy()
         self.events = []
         self.lock = threading.Lock()
+        self.journal = None
+        self.last_flush = 0
         self.proc = self.compositor = self.keyring = self.pointer = self.keyboard = None
         self.capture_stop = threading.Event()
         self.threads = []
@@ -103,9 +109,20 @@ class Desktop:
         self.pane = None
         self.lost_watchdog = False
 
-    def record(self, event, **fields):
+    def append(self, event):
         with self.lock:
-            self.events.append(dict(event=event, ms=clock(), **fields))
+            self.events.append(event)
+            if self.journal:
+                self.journal.write(json.dumps(event, separators=(",", ":")) + "\n")
+                if (
+                    event["event"] in ("action", "end", "watchdog")
+                    or clock() - self.last_flush >= 500
+                ):
+                    self.journal.flush()
+                    self.last_flush = clock()
+
+    def record(self, event, **fields):
+        self.append(dict(event=event, ms=clock(), **fields))
 
     def latest(self, kind):
         with self.lock:
@@ -229,6 +246,7 @@ class Desktop:
         self.lost_watchdog = False
         self.pane = None
         self.capture_stop.clear()
+        self.controls_cache = {}
         read_fd, write_fd = os.pipe()
         app_env = dict(
             self.env,
@@ -259,8 +277,7 @@ class Desktop:
                     if event["event"] == "sample":
                         self.last_tick = clock()
                         self.authenticated = event["authenticated"]
-                    with self.lock:
-                        self.events.append(event)
+                    self.append(event)
 
         self.threads = [
             threading.Thread(target=receive, daemon=True),
@@ -380,6 +397,17 @@ class Desktop:
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             with contextlib.suppress(self.accessibility_error):
+                cached = self.controls_cache.get(suffix)
+                if (
+                    cached
+                    and (cached.get_accessible_id() or "").split(".")[-1] == suffix
+                ):
+                    cached.clear_cache()
+                    state = cached.get_state_set()
+                    if not state.contains(self.atspi.StateType.DEFUNCT) and (
+                        offscreen or state.contains(self.atspi.StateType.SHOWING)
+                    ):
+                        return cached
                 while self.context.pending():
                     self.context.iteration(False)
                 desktop = self.atspi.get_desktop(0)
@@ -392,7 +420,10 @@ class Desktop:
                 ]
                 while nodes:
                     element = nodes.pop()
-                    if (element.get_accessible_id() or "").split(".")[-1] == suffix:
+                    name = (element.get_accessible_id() or "").split(".")[-1]
+                    if name.startswith(("stream-", "topic-", "showMoreTopics-")):
+                        self.controls_cache[name] = element
+                    if name == suffix:
                         state = element.get_state_set()
                         if (
                             offscreen
@@ -400,6 +431,10 @@ class Desktop:
                             and state.contains(self.atspi.StateType.SHOWING)
                         ):
                             return element
+                    if name == "messageList" and suffix.startswith(
+                        ("stream-", "topic-", "showMoreTopics-")
+                    ):
+                        continue
                     for i in range(element.get_child_count()):
                         child = element.get_child_at_index(i)
                         if child is not None:
@@ -518,7 +553,7 @@ class Desktop:
             time.sleep(0.12)
         raise Blocked("sidebar-scroll-into-view")
 
-    def topic(self, index):
+    def topic(self, index, *, wait_for_content=True):
         identifier = "topic-" + self.config["topic_" + index]
         stream = self.config["stream"]
         try:
@@ -534,6 +569,8 @@ class Desktop:
                     self.sidebar_click("showMoreTopics-" + stream)
         self.sidebar_click(identifier)
         self.observe_pane()
+        if not wait_for_content:
+            return
         self.until(
             lambda: (
                 self.latest("sample").get("view") == index
@@ -668,7 +705,7 @@ class Desktop:
                 lambda: self.latest("sample").get("count", 0) > 0,
                 "warm-cache-unavailable",
             )
-            warm_start = self.latest("runtime")["ms"]
+            warm_start = self.latest("sample")["ms"] + 25
             self.until(
                 lambda: self.latest("picture").get("ms", 0) >= warm_start,
                 "captured-history-unavailable",
@@ -684,7 +721,15 @@ class Desktop:
                 time.sleep(0.25)
         with self.action("aggregate", target="aggregate"):
             self.sidebar_click("stream-" + self.config["stream"])
-            time.sleep(0.35)
+            self.until(
+                lambda: (
+                    self.latest("sample").get("view") == "aggregate"
+                    and self.latest("sample").get("count", 0) > 0
+                ),
+                "aggregate-history-unavailable",
+                25,
+            )
+            time.sleep(0.12)
         self.topic("a")
         self.scroll("loaded-scroll", 1, 8)
         self.scroll("reverse-scroll", -1, 8)
@@ -723,14 +768,27 @@ class Desktop:
                 time.sleep(0.8)
             with self.action("typing"):
                 self.click("messageComposer")
+                baseline = self.latest("sample").get("draftLength", 0)
                 self.record(
                     "type-start",
+                    draftLength=baseline,
                     before=self.latest("picture").get("editorSignature", ""),
                 )
                 # Keep the virtual keyboard present after typing, as on a real desktop.
                 # Removing the last keyboard withdraws Wayland focus from the entire window.
                 self.keyboard = subprocess.Popen(
-                    ["wtype", "-", "-s", "600000"],
+                    [
+                        "wtype",
+                        "-M",
+                        "ctrl",
+                        "-k",
+                        "End",
+                        "-m",
+                        "ctrl",
+                        "-",
+                        "-s",
+                        "600000",
+                    ],
                     env=self.env,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
@@ -739,37 +797,74 @@ class Desktop:
                 self.keyboard.stdin.write(b"acceptance draft")
                 self.keyboard.stdin.close()
                 self.until(
-                    lambda: self.latest("sample").get("draftLength", 0) > 0,
+                    lambda: (
+                        self.latest("sample").get("draftLength", 0)
+                        == baseline + len("acceptance draft")
+                    ),
                     "typing-not-observed",
                 )
                 peer.exercise(self)
                 time.sleep(0.4)
+            if self.latest("sample").get("draftLength") == baseline + len(
+                "acceptance draft"
+            ):
+                self.click("messageComposer")
+                command(
+                    [
+                        "wtype",
+                        "-M",
+                        "ctrl",
+                        "-k",
+                        "End",
+                        "-m",
+                        "ctrl",
+                        *(["-k", "BackSpace"] * len("acceptance draft")),
+                    ],
+                    env=self.env,
+                )
+                self.until(
+                    lambda: self.latest("sample").get("draftLength") == baseline,
+                    "synthetic-draft-cleanup",
+                )
+        try:
+            self.until(
+                lambda: any(
+                    e["event"] == "realtime"
+                    and e.get("kind") == "message.deleted"
+                    and e.get("peer")
+                    for e in list(self.events)
+                ),
+                "peer-removal-unobserved",
+                8,
+            )
+        except Blocked:
+            self.record("peer-removal-unverified")
         # Invalidate only the warmed target's history through a real peer arrival.
         with peer.temporary_message("b", str(uuid4())) as create:
             create()
             with self.action("warm-delayed"), network.disturb("delay"):
-                self.topic("b")
-                time.sleep(0.8)
+                self.topic("b", wait_for_content=False)
+                time.sleep(1.5)
         with self.action("reconnect"):
-            previous_connections = network.matched
             with network.disturb("disconnect"):
-                self.topic("a")
-                time.sleep(0.6)
+                self.topic("a", wait_for_content=False)
+                self.record("offline-observation")
+                time.sleep(0.8)
             restored = clock()
+            self.record("tunnel-restored", reachable=network.restored_tls())
 
             def online():
-                return (
-                    network.matched > previous_connections
-                    and self.latest("sample").get("ready")
-                    and any(
-                        e["event"] == "response"
-                        and e["ms"] >= restored
-                        and 200 <= e.get("status", 0) < 300
-                        for e in list(self.events)
-                    )
+                return self.latest("sample").get("ready") and any(
+                    e["event"] == "response"
+                    and e["ms"] >= restored
+                    and 200 <= e.get("status", 0) < 300
+                    for e in list(self.events)
                 )
 
-            self.until(online, "revalidation-not-restored", 30)
+            try:
+                self.until(online, "revalidation-not-restored", 20)
+            except Blocked:
+                self.record("reconnect-unverified")
         for i in range(12 if extended else 3):
             target = "b" if i % 2 == 0 else "a"
             with self.action("repeated-navigation", target=target):
@@ -864,17 +959,38 @@ class Peer:
             {},
         )
         peer = str(UUID(self.identity["uuid"]))
-        self.request(
-            "POST",
-            "/api/workspace/v1/users/" + peer + "/actions/presence/invoke",
-            {"status": "active"},
-        )
-        desktop.until(
-            lambda: any(
-                e.get("peer") for e in list(desktop.events) if e["event"] == "realtime"
-            ),
-            "peer-realtime-delivery",
-        )
+        presence = "/api/workspace/v1/users/" + peer + "/actions/presence/invoke"
+        self.request("POST", presence, {"status": "idle"})
+        try:
+
+            def updates_received():
+                kinds = {
+                    e.get("kind")
+                    for e in list(desktop.events)
+                    if e["event"] == "realtime" and e.get("peer")
+                }
+                return "user.updated" in kinds and (
+                    any(
+                        k in kinds
+                        for k in (
+                            "message_reaction.created",
+                            "message_reaction.updated",
+                        )
+                    )
+                    or any(
+                        e["event"] == "realtime" and e.get("peer") and e.get("reaction")
+                        for e in list(desktop.events)
+                    )
+                )
+
+            try:
+                desktop.until(
+                    updates_received, "peer-reaction-or-presence-unobserved", 8
+                )
+            except Blocked:
+                desktop.record("peer-projection-unverified")
+        finally:
+            self.request("POST", presence, {"status": "active"})
         desktop.record("peer-workload")
 
 
@@ -951,9 +1067,23 @@ def main():
                     command_line,
                     env=env,
                     stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
                     start_new_session=True,
                 )
-                return proc.wait(timeout=900)
+                code = proc.wait(timeout=900)
+                report = args.output / "report.json"
+                if report.exists():
+                    status = json.loads(report.read_text()).get("status")
+                    if status in (
+                        "PASS",
+                        "FAIL",
+                        "BLOCKED",
+                        "PROBE",
+                        "PREFLIGHT",
+                        "CONTROLS",
+                    ):
+                        print(status)
+                return code
             except (OSError, subprocess.TimeoutExpired):
                 (args.output / "report.json").write_text(
                     '{"status":"BLOCKED","blocked":["worker-timeout-or-unavailable"]}\n'
@@ -973,6 +1103,7 @@ def main():
     result = {"status": "BLOCKED", "blocked": ["runner-infrastructure"]}
     desktop = None
     limits = None
+    context = {"mode": args.mode}
     try:
         metadata = json.loads((args.package / "release.json").read_text())
         if (
@@ -983,10 +1114,27 @@ def main():
         version = metadata["version"]
         if not re.fullmatch(r"\d+\.\d+\.\d+", version):
             raise Blocked("package-version")
+        context["package_version"] = version
+        with (args.package / "bin/workspace-native").open("rb") as binary:
+            context["binary_sha256"] = hashlib.file_digest(binary, "sha256").hexdigest()
         config = fixture(json.load(sys.stdin)) if args.mode != "probe" else {}
+        if config:
+            context["backend_version"] = config["backend_version"]
+            context["reference_fingerprint"] = hashlib.sha256(
+                str(config.get("reference", "")).encode()
+            ).hexdigest()[:16]
         env = dict(os.environ)
         desktop = Desktop(config, args.package, env)
+        desktop.journal = (args.output / "timeline.jsonl").open("w")
         desktop.compositor_start(Path(env["XDG_RUNTIME_DIR"]))
+        context.update(
+            compositor=command(["sway", "--version"], env=desktop.env).decode().strip(),
+            kernel=os.uname().release,
+            logical_cpus=os.cpu_count(),
+            input="Wayland virtual pointer",
+            output="1440x900",
+            compositor_renderer="pixman",
+        )
         if args.mode == "probe":
             desktop.launch()
             desktop.lookup("serverInput")
@@ -1069,21 +1217,6 @@ def main():
                     if not net.matched or not all(net.effects.values()):
                         raise Blocked("network-fault-not-delivered")
                     result = evaluate(desktop.events, limits)
-            result["runtime"] = desktop.latest("runtime")
-            result["compositor"] = (
-                command(["sway", "--version"], env=desktop.env).decode().strip()
-            )
-            result["kernel"] = os.uname().release
-            result["logical_cpus"] = os.cpu_count()
-            result["input"] = "Wayland virtual pointer"
-            result["capture"] = (
-                "continuous Wayland output via wf-recorder, 16 by 12 occupancy tiles"
-            )
-            result["mode"] = args.mode
-            result["backend_version"] = config["backend_version"]
-        result["package_version"] = version
-        with (args.package / "bin/workspace-native").open("rb") as binary:
-            result["binary_sha256"] = hashlib.file_digest(binary, "sha256").hexdigest()
     except Blocked as exc:
         result = (
             evaluate(desktop.events, limits)
@@ -1116,17 +1249,28 @@ def main():
             "cause": type(error).__name__,
         }
     finally:
+        result.update(context)
         if desktop:
+            result["runtime"] = desktop.latest("runtime")
             desktop.close_app()
             stop(desktop.pointer)
             stop(desktop.keyring)
             stop(desktop.compositor)
+            if desktop.journal:
+                desktop.journal.close()
+                desktop.journal = None
             if any(e["event"] == "watchdog" for e in desktop.events):
                 result["status"] = "FAIL"
                 result.setdefault("failures", []).append("gui-watchdog")
-            with (args.output / "timeline.jsonl").open("w") as out:
+            if any(e["event"] == "picture" for e in desktop.events):
+                result["visual_sequence"] = write_frame_sequence(
+                    desktop.events, args.output / "frames.gif"
+                )
+            final_timeline = args.output / "timeline.sorted"
+            with final_timeline.open("w") as out:
                 for e in sorted(desktop.events, key=lambda e: e["ms"]):
                     out.write(json.dumps(e, separators=(",", ":")) + "\n")
+            final_timeline.replace(args.output / "timeline.jsonl")
         (args.output / "report.json").write_text(json.dumps(result, indent=2) + "\n")
     print(result["status"])
     return {

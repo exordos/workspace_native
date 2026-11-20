@@ -7,6 +7,7 @@
 #include <QEvent>
 #include <QHash>
 #include <QJSValue>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMouseEvent>
@@ -200,8 +201,13 @@ void observeLiveAcceptance(QQuickWindow *window, ApiClient &api, NativeControlle
             trace->peerPlacements.insert(placement);
         peer |= trace->peerPlacements.contains(placement)
             || trace->peerPlacements.contains(payload.value("message_uuid").toString());
+        const auto counts = payload.value("reactions").toObject();
+        const auto users = payload.value("reaction_users").toObject();
+        const bool reaction = trace->peerPlacements.contains(placement)
+            && counts.value("thumbs_up").toInt() > 0
+            && users.value("thumbs_up").toArray().contains(QString::fromUtf8(peerIdentity));
         if (kind == QStringLiteral("message.deleted")) trace->peerPlacements.remove(placement);
-        trace->writeEvent("realtime", {{"peer", peer}, {"kind", kinds.contains(kind) ? kind : QStringLiteral("other")}});
+        trace->writeEvent("realtime", {{"peer", peer}, {"reaction", reaction}, {"kind", kinds.contains(kind) ? kind : QStringLiteral("other")}});
     });
 }
 }

@@ -32,7 +32,7 @@ def sanitize_native_event(raw):
         "frame": (),
         "click": (),
         "wheel": ("angle", "pixel", "phase"),
-        "realtime": ("peer",),
+        "realtime": ("peer", "reaction"),
         "request": ("older", "index"),
         "response": ("older", "elapsed", "status", "index"),
     }
@@ -76,6 +76,50 @@ def sanitize_native_event(raw):
     return event
 
 
+def write_frame_sequence(events, destination):
+    """Encode the published density grids, with the original frame intervals."""
+    from PIL import Image
+
+    pictures = sorted(
+        (e for e in events if e["event"] == "picture"), key=lambda e: e["ms"]
+    )
+    if len(pictures) < 2:
+        return None
+    images = []
+    durations = []
+    last_cells = None
+    palette = [v for i in range(16) for v in (17 * i, 17 * i, 17 * i)]
+    for index, picture in enumerate(pictures):
+        cells = picture["cells"]
+        duration = (
+            max(1, pictures[index + 1]["ms"] - picture["ms"])
+            if index + 1 < len(pictures)
+            else 20
+        )
+        if cells == last_cells:
+            durations[-1] += duration
+            continue
+        grid = Image.frombytes("P", (16, 12), bytes(int(c, 16) for c in cells))
+        grid.putpalette(palette)
+        images.append(grid.resize((96, 72), Image.Resampling.NEAREST))
+        durations.append(duration)
+        last_cells = cells
+    images[0].save(
+        destination,
+        save_all=True,
+        append_images=images[1:],
+        duration=durations,
+        loop=0,
+        optimize=False,
+        disposal=1,
+    )
+    return {
+        "start_ms": pictures[0]["ms"],
+        "end_ms": pictures[-1]["ms"],
+        "samples": len(pictures),
+    }
+
+
 def percentile(values, percentile_value):
     if not values:
         return None
@@ -98,6 +142,15 @@ def evaluate(events, limits):
         blocked.add("incomplete-native-trace")
     if any(e["event"] == "watchdog" for e in events):
         failures.add("gui-watchdog")
+    heartbeat_intervals = []
+    previous = None
+    for e in events:
+        if e["event"] == "launch":
+            previous = None
+        elif e["event"] == "sample":
+            if previous is not None:
+                heartbeat_intervals.append((previous, e["ms"]))
+            previous = e["ms"]
     phases = {}
     for start in actions:
         matches = [e for e in events if e["event"] == "end" and e["id"] == start["id"]]
@@ -113,8 +166,9 @@ def evaluate(events, limits):
             e for e in window if e["event"] == "wheel" and (e["angle"] or e["pixel"])
         ]
         frame_intervals = [b - a for a, b in itertools.pairwise(rendered)]
-        heartbeats = [e["ms"] for e in observed]
-        heartbeat_gaps = [b - a for a, b in itertools.pairwise(heartbeats)]
+        heartbeat_gaps = [
+            b - a for a, b in heartbeat_intervals if a < end and b > start["ms"]
+        ]
         kind = start["kind"]
         key = (start["id"], kind)
         metrics = {
@@ -203,12 +257,6 @@ def evaluate(events, limits):
                 > limits["settled_anchor_px"]
             ):
                 failures.add("viewport-jump-after-stop")
-            if (
-                kind == "typing"
-                and sample.get("draftLength", 0) > 0
-                and not sample.get("editorFocus")
-            ):
-                failures.add("typing-focus-lost")
         if start.get("expectContent") and pictures and limits:
             for picture in pictures:
                 if picture["occupancy"] < limits["min_occupancy"]:
@@ -228,12 +276,18 @@ def evaluate(events, limits):
             "aggregate",
         }:
             target = start.get("target")
+            typing_start = next((e for e in window if e["event"] == "type-start"), None)
             ready = next(
                 (
                     e
                     for e in observed
                     if (
-                        e.get("draftLength", 0) > 0
+                        (
+                            typing_start is not None
+                            and e["ms"] >= typing_start["ms"]
+                            and e.get("draftLength", 0)
+                            > typing_start.get("draftLength", 0)
+                        )
                         if kind == "typing"
                         else e.get("count", 0) > 0
                     )
@@ -270,6 +324,20 @@ def evaluate(events, limits):
                     failures.add("selection-reset")
             if kind == "typing":
                 mark = next((e for e in window if e["event"] == "type-start"), None)
+                ready = next(
+                    (
+                        e
+                        for e in observed
+                        if mark
+                        and e["ms"] >= mark["ms"]
+                        and e.get("draftLength", 0) > mark.get("draftLength", 0)
+                    ),
+                    None,
+                )
+                if ready and any(
+                    not e.get("editorFocus") for e in observed if e["ms"] >= ready["ms"]
+                ):
+                    failures.add("typing-focus-lost")
                 typed = next(
                     (
                         pic
@@ -314,6 +382,23 @@ def evaluate(events, limits):
             for e in window
         ):
             blocked.add("loaded-range-not-isolated")
+        if kind == "reconnect":
+            off = next((e for e in window if e["event"] == "offline-observation"), None)
+            pending = [
+                e
+                for e in observed
+                if off
+                and off["ms"] <= e["ms"] < off["ms"] + 750
+                and e.get("view") == "a"
+            ]
+            if pending and not any(e.get("count", 0) > 0 for e in pending):
+                failures.add("warmed-topic-blank-during-disconnect")
+            if any(
+                e["event"] == "tunnel-restored" and not e["reachable"] for e in window
+            ):
+                blocked.add("backend-unreachable-after-cut")
+            if any(e["event"] == "reconnect-unverified" for e in window):
+                blocked.add("reconnect-unverified")
         if kind == "warm-delayed":
             pending = set()
             visible = False
@@ -368,9 +453,15 @@ def evaluate(events, limits):
             "message.deleted",
             "user.updated",
         }.issubset(realtime)
-        or not any(
-            k in realtime
-            for k in ("message_reaction.created", "message_reaction.updated")
+        or not (
+            any(
+                k in realtime
+                for k in ("message_reaction.created", "message_reaction.updated")
+            )
+            or any(
+                e["event"] == "realtime" and e.get("peer") and e.get("reaction")
+                for e in events
+            )
         )
         or not any(k in realtime for k in ("message.read", "messages.read"))
     ):
@@ -409,6 +500,10 @@ def evaluate(events, limits):
             Counter(e["category"] for e in events if e["event"] == "request")
         ),
         "peer_events": dict(realtime),
+        "peer_reaction_in_snapshot": any(
+            e["event"] == "realtime" and e.get("peer") and e.get("reaction")
+            for e in events
+        ),
         "cache_hits": max((e.get("hits", 0) for e in samples), default=0),
         "frame_interval_median_ms": median(
             [b - a for a, b in itertools.pairwise(frames)]

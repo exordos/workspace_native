@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import http.client
+import ssl
 import threading
 from urllib.parse import urlsplit
 
@@ -14,6 +16,7 @@ class NetworkConditions:
             (f"[{self.host}]" if ":" in self.host else self.host) + ":" + str(self.port)
         )
         self.mode = None
+        self.fault_generation = 0
         self.connections = set()
         self.matched = 0
         self.effects = {"delay": 0, "disconnect": 0}
@@ -43,6 +46,10 @@ class NetworkConditions:
                 await writer.drain()
                 return
             if self.mode == "disconnect":
+                # Keep the proxy operational and reset the upstream TLS stream.
+                # Dropping CONNECT itself teaches Qt that the proxy is unavailable.
+                writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                await writer.drain()
                 self.effects[self.mode] += 1
                 return
             source, upstream = await asyncio.wait_for(
@@ -53,11 +60,18 @@ class NetworkConditions:
             await writer.drain()
 
             async def copy(src, dst, down):
+                last_delay = 0
                 while chunk := await src.read(65536):
                     if self.mode == "disconnect":
                         self.effects[self.mode] += 1
                         return
-                    if down and self.mode == "delay":
+                    if (
+                        down
+                        and self.mode == "delay"
+                        and last_delay != self.fault_generation
+                    ):
+                        # Delay the response stream once per fault window, not once per chunk.
+                        last_delay = self.fault_generation
                         self.effects[self.mode] += 1
                         await asyncio.sleep(0.75)
                     dst.write(chunk)
@@ -94,6 +108,7 @@ class NetworkConditions:
 
         def enable():
             self.mode = mode
+            self.fault_generation += 1
             if mode == "disconnect":
                 for writer in self.connections:
                     writer.close()
@@ -106,7 +121,32 @@ class NetworkConditions:
         try:
             yield
         finally:
-            self.loop.call_soon_threadsafe(setattr, self, "mode", None)
+            applied.clear()
+
+            def restore():
+                self.mode = None
+                applied.set()
+
+            self.loop.call_soon_threadsafe(restore)
+            if not applied.wait(2):
+                raise RuntimeError("fault-restore-timeout")
+
+    def restored_tls(self):
+        # Independent reachability check through exactly the same tunnel and TLS origin.
+        connection = http.client.HTTPSConnection(
+            "127.0.0.1",
+            self.local_port,
+            timeout=5,
+            context=ssl.create_default_context(),
+        )
+        try:
+            connection.set_tunnel(self.host, self.port)
+            connection.connect()
+            return True
+        except (OSError, http.client.HTTPException):
+            return False
+        finally:
+            connection.close()
 
     def __exit__(self, *_):
         async def close():

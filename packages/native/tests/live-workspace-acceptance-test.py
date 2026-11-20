@@ -5,13 +5,19 @@ import runpy
 import socket
 import socketserver
 import sys
+import tempfile
 import threading
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 from unittest.mock import Mock, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from live_acceptance_metrics import evaluate, sanitize_native_event
+from live_acceptance_metrics import (
+    evaluate,
+    sanitize_native_event,
+    write_frame_sequence,
+)
 from live_acceptance_network import NetworkConditions
 
 LIMITS = {
@@ -73,6 +79,17 @@ class Controls(unittest.TestCase):
         self.assertEqual(report["status"], "BLOCKED")
         self.assertIn("no-pane-wheel", report["blocked"])
 
+    def test_stall_spanning_an_entire_action_still_counts(self):
+        rows = [
+            {"event": "sample", "ms": 10},
+            {"event": "action", "id": 1, "kind": "stopped", "ms": 100},
+            {"event": "end", "id": 1, "ms": 200},
+            {"event": "sample", "ms": 500},
+        ]
+        self.assertIn("gui-stall", evaluate(rows, LIMITS)["failures"])
+        rows.insert(3, {"event": "launch", "ms": 300})
+        self.assertNotIn("gui-stall", evaluate(rows, LIMITS)["failures"])
+
     def test_stall_fails_despite_a_final_frame(self):
         rows = trace()
         rows.insert(-1, {"event": "sample", "ms": 200, "intent": 3, "count": 22})
@@ -123,7 +140,8 @@ class Controls(unittest.TestCase):
         desktop.config = {"stream": "fixture"}
         runner["Desktop"].open_fixture_stream(desktop)
         self.assertEqual(
-            desktop.method_calls, [call.sidebar_click("stream-fixture"), call.topic("a")]
+            desktop.method_calls,
+            [call.sidebar_click("stream-fixture"), call.topic("a")],
         )
 
     def test_organization_preview_moving_next_allows_one_retry(self):
@@ -158,6 +176,7 @@ class Controls(unittest.TestCase):
         )
         desktop = object.__new__(runner["Desktop"])
         desktop.lock = threading.Lock()
+        desktop.journal = None
         desktop.events = []
         desktop.sequence = 0
         with desktop.action("cold-start", False):
@@ -244,6 +263,22 @@ class Controls(unittest.TestCase):
             )
         )
 
+    @unittest.skipUnless(find_spec("PIL"), "optional local visual encoder")
+    def test_replay_preserves_a_single_transient_blank(self):
+        from PIL import Image
+
+        rows = [
+            {"event": "picture", "ms": t, "cells": c * 192}
+            for t, c in ((0, "8"), (20, "0"), (40, "8"))
+        ]
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / "frames.gif"
+            self.assertEqual(write_frame_sequence(rows, path)["samples"], 3)
+            with Image.open(path) as replay:
+                self.assertEqual(replay.n_frames, 3)
+                replay.seek(1)
+                self.assertEqual(replay.convert("L").getextrema(), (0, 0))
+
     def test_missing_reference_or_incomplete_trace_cannot_pass(self):
         for rows in ([], trace()):
             self.assertEqual(evaluate(rows, None)["status"], "BLOCKED")
@@ -299,6 +334,12 @@ class NetworkControlTests(unittest.TestCase):
                     self.assertEqual(allowed.recv(256), b"fixture")
                     with network.disturb("disconnect"):
                         self.assertEqual(allowed.recv(256), b"")
+                        with socket.create_connection(addr, 2) as during:
+                            during.sendall(
+                                f"CONNECT 127.0.0.1:{port} HTTP/1.1\r\n\r\n".encode()
+                            )
+                            self.assertIn(b"200", during.recv(256))
+                            self.assertEqual(during.recv(256), b"")
                 self.assertEqual(network.matched, 1)
                 self.assertGreater(network.effects["disconnect"], 0)
             endpoint.shutdown()
