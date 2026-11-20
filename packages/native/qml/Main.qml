@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQml
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQuick.Effects
 import QtQuick.Dialogs as NativeDialogs
@@ -10012,7 +10013,7 @@ component NativeMentionChip: Item {
                     // Reference ChatPageSelectionBar: only visible with a
                     // non-empty selection; a danger notice marker (4 px, 10 px
                     // vertical inset, rounded right edge), "Selected: N" in
-                    // text-sm medium text-primary, then Cancel + Forward.
+                    // text-sm medium text-primary, then Cancel, Reply and Forward.
                     // The 52 px keeps the native 40 px button inside the strip
                     // with the reference's 6 px vertical padding.
                     width: parent.width
@@ -10060,8 +10061,35 @@ component NativeMentionChip: Item {
                             text: qsTr("Cancel")
                             onClicked: root.clearMessageSelection()
                         }
-                        NativeButton {
+                        component SelectionActionButton: NativeButton {
+                            id: action
+                            icon.width: 28
+                            icon.height: 28
+                            icon.color: root.colors["text-primary"]
+                            contentItem: ControlsImpl.IconLabel {
+                                icon: action.icon
+                                text: action.text
+                                font: action.font
+                                color: root.colors["text-primary"]
+                                spacing: 6
+                                opacity: action.enabled ? 1 : 0.5
+                            }
+                        }
+                        SelectionActionButton {
+                            objectName: "selectionReplyButton"
+                            colors: root.colors
+                            text: qsTr("Reply")
+                            icon.source: "qrc:/workspace/icons/reply.svg"
+                            enabled: root.messageSelectionCount > 0 && root.composerAvailable
+                                && !root.encryptedConversation && !root.controller.busy && !root.controller.cacheStale
+                            onClicked: {
+                                if (root.controller.replyToSelection(root.messageSelectionIds))
+                                    root.clearMessageSelection()
+                            }
+                        }
+                        SelectionActionButton {
                             objectName: "selectionForwardButton"
+                            icon.source: "qrc:/workspace/icons/forward.svg"
                             colors: root.colors
                             text: qsTr("Forward")
                             // reference forwardDisabled = selectedCount === 0

@@ -28541,6 +28541,69 @@ private slots:
         QCOMPARE(column->mapToItem(shell, QPointF{}).y(), 9.0);
     }
 
+    void selectionReplyAppendsWholeMessages_data()
+    {
+        QTest::addColumn<bool>("existing");
+        QTest::newRow("new-session") << false;
+        QTest::newRow("existing-session") << true;
+    }
+
+    void selectionReplyAppendsWholeMessages()
+    {
+        QFETCH(bool, existing);
+        ForwardWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.base.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        controller.setDraft("My answer");
+        if (existing) QVERIFY(controller.beginReply(messageId));
+        auto *bubble = item(window->contentItem(), "message-" + messageId);
+        QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        QTRY_VERIFY(visibleItem("selectMessageAction"));
+        click(window, visibleItem("selectMessageAction"));
+        QTRY_VERIFY(visibleItem("selectMessage-" + fixture.secondMessageId));
+        click(window, visibleItem("selectMessage-" + fixture.secondMessageId));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("selectionReplyButton"), 2000);
+        click(window, visibleItem("selectionReplyButton"));
+        QTRY_VERIFY(!visibleItem("messageSelectionBar"));
+        const auto tabs = controller.replyTabs();
+        QCOMPARE(tabs.size(), existing ? 3 : 2);
+        QCOMPARE(tabs.first().toMap().value("answer").toString(), "My answer");
+        const auto firstNew = tabs[existing ? 1 : 0].toMap();
+        QCOMPARE(firstNew.value("message").toString(), messageId);
+        if (existing) QVERIFY(firstNew.value("answer").toString().isEmpty());
+        QCOMPARE(tabs.last().toMap().value("message").toString(), fixture.secondMessageId);
+        QVERIFY(tabs.last().toMap().value("active").toBool());
+        QVERIFY(tabs.last().toMap().value("answer").toString().isEmpty());
+        QVERIFY(controller.draft().isEmpty());
+        controller.setDraft("Second answer");
+        const auto before = controller.replyTabs();
+        QVERIFY(!controller.replyToSelection({messageId, "d9000000-0000-4000-8000-000000000001"}));
+        QCOMPARE(controller.replyTabs(), before);
+        QCOMPARE(controller.draft(), "Second answer");
+        QCOMPARE(fixture.posts, 0);
+    }
+
     void forwardModalSendsSelectedBatchOnceAndClearsSelection()
     {
         QTest::failOnWarning();
