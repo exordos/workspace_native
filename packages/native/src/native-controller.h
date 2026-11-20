@@ -173,6 +173,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(qulonglong historyCommitRevision READ historyCommitRevision NOTIFY messagesChanged)
     Q_PROPERTY(bool messageHistoryReady READ messageHistoryReady NOTIFY stateChanged)
+    Q_PROPERTY(QStringList readRequestBoundaryIds READ readRequestBoundaryIds NOTIFY readRequestBoundariesChanged)
     Q_PROPERTY(QVariantList reactionChoices READ reactionChoices CONSTANT)
     Q_PROPERTY(QString conversationKind READ conversationKind NOTIFY stateChanged)
     Q_PROPERTY(bool hasConversation READ hasConversation NOTIFY stateChanged)
@@ -436,6 +437,7 @@ public:
     QVariantList messages() const;
     qulonglong historyCommitRevision() const { return m_historyCommitRevision; }
     bool messageHistoryReady() const;
+    QStringList readRequestBoundaryIds() const;
     QVariantList reactionChoices() const { return knownReactionEmojis(); }
     bool hasConversation() const { return !m_stream.isEmpty(); }
     QString conversationKind() const { return !hasConversation() ? QStringLiteral("none")
@@ -934,6 +936,7 @@ signals:
     void rotationStageResolved(const QString &streamUuid, const QString &keyUuid,
         const QString &outcome, const QString &message);
     void decryptRetryStateChanged();
+    void readRequestBoundariesChanged();
     void archivedChatsChanged();
     // Issue #50: one finished Diagnostics ping (ok + latency ms); the page
     // mirrors the reference ping reset timer (3 s, logs-page.ui.tsx:238-242).

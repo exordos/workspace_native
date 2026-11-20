@@ -35420,15 +35420,18 @@ private slots:
     {
         QTest::addColumn<QString>("mode");
         QTest::addColumn<bool>("reducedMotion");
-        QTest::newRow("light") << QStringLiteral("light") << false;
-        QTest::newRow("dark") << QStringLiteral("dark") << false;
-        QTest::newRow("light-reduced-motion") << QStringLiteral("light") << true;
+        QTest::addColumn<bool>("partial");
+        QTest::newRow("light") << QStringLiteral("light") << false << false;
+        QTest::newRow("dark") << QStringLiteral("dark") << false << false;
+        QTest::newRow("light-reduced-motion") << QStringLiteral("light") << true << false;
+        QTest::newRow("partial-aggregate-request") << QStringLiteral("light") << false << true;
     }
 
     void readRequestPulseStates()
     {
         QFETCH(QString, mode);
         QFETCH(bool, reducedMotion);
+        QFETCH(bool, partial);
         const QString peer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         const QString readUuid = "8b000000-0000-4000-8000-000000000001";
         const QString unreadOne = "8b000000-0000-4000-8000-000000000002";
@@ -35450,6 +35453,12 @@ private slots:
             peerMessage(unreadOne, false, 2),
             peerMessage(unreadTwo, false, 3),
         };
+        const QString otherMessage = "8b000000-0000-4000-8000-000000000004";
+        if (partial) {
+            auto other = peerMessage(otherMessage, false, 0);
+            other["topic_uuid"] = secondTopicId;
+            history.prepend(other);
+        }
         const auto findHistory = [&history](const QString &uuid) {
             const auto row = std::find_if(history.cbegin(), history.cend(),
                 [&](const QJsonObject &entry) { return entry.value("uuid").toString() == uuid; });
@@ -35464,8 +35473,11 @@ private slots:
             if (path == "/api/workspace/v1/messenger/streams/" + streamId)
                 return {windowChannel(streamId, "Synthetic pulse channel")};
             if (path.endsWith("/users/")) return {QJsonArray{}};
-            if (path == "/api/workspace/v1/messenger/stream_topics/")
-                return {QJsonArray{windowChannelTopic(topicId, streamId, "Synthetic topic")}};
+            if (path == "/api/workspace/v1/messenger/stream_topics/") {
+                QJsonArray topics{windowChannelTopic(topicId, streamId, "Synthetic topic")};
+                if (partial) topics.append(windowChannelTopic(secondTopicId, streamId, "Other topic"));
+                return {topics};
+            }
             if (path == "/api/workspace/v1/messenger/stream_topics/" + topicId)
                 return {windowChannelTopic(topicId, streamId, "Synthetic topic")};
             if (path.endsWith("/actions/read_up_to/invoke")) {
@@ -35497,15 +35509,25 @@ private slots:
         });
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QQuickWindow background;
+        if (partial) {
+            // Keep the list's automatic visible-read timer idle while sending
+            // two precise boundaries through its normal controller entry point.
+            background.resize(160, 120);
+            background.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&background));
+            background.requestActivate();
+            QVERIFY(QTest::qWaitForWindowActive(&background));
+        }
         controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
         QTRY_COMPARE(controller.projects().size(), 1);
         controller.openProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.selectStream(streamId);
-        QTRY_COMPARE(controller.topics().size(), 1);
-        controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.topics().size(), partial ? 2 : 1);
+        if (!partial) controller.selectTopic(topicId);
         QTRY_VERIFY(!controller.busy());
-        QTRY_COMPARE(controller.messages().size(), 3);
+        QTRY_COMPARE(controller.messages().size(), history.size());
 
         auto *content = window->contentItem();
         const auto overlay = [content](const QString &uuid) {
@@ -35515,7 +35537,33 @@ private slots:
             auto *surface = overlay(uuid);
             return surface ? surface->findChild<QObject *>("message-read-pulse-anim-" + uuid) : nullptr;
         };
-        // Unread inbound bubbles render the overlay; the read-marked one does not.
+        if (partial) {
+            QTRY_VERIFY(overlay(unreadTwo) && overlay(otherMessage));
+            QVERIFY(!window->isActive());
+            QVERIFY(readGate->empty());
+            controller.markVisibleMessagesRead({unreadOne});
+            QTRY_COMPARE(readGate->size(), size_t(1));
+            QTRY_VERIFY(overlay(unreadOne)->isVisible());
+            QVERIFY(!overlay(unreadTwo)->isVisible());  // after the same-topic boundary
+            QVERIFY(!overlay(otherMessage)->isVisible()); // older, but in a different topic
+
+            controller.markVisibleMessagesRead({unreadTwo});
+            QTRY_VERIFY(overlay(unreadTwo)->isVisible());
+            QVERIFY(!overlay(otherMessage)->isVisible());
+            for (int i = 0; i < 2; ++i) {
+                QTRY_COMPARE(readGate->size(), size_t(1));
+                const auto send = readGate->back();
+                readGate->clear();
+                send();
+            }
+            QTRY_VERIFY(!overlay(unreadTwo)->isVisible());
+            const bool closed = closeIncubatedTestWindow(engine, window);
+            if (closed) closeBeforeEngine.dismiss();
+            QVERIFY(closed);
+            return;
+        }
+        // Wait until the list has submitted the read before checking its visual state.
+        QTRY_VERIFY(!readGate->empty());
         auto *pendingSurface = visibleItem(content, "message-read-pulse-" + unreadTwo);
         QVERIFY2(pendingSurface, "unread inbound bubble must render the read-request overlay");
         QVERIFY(visibleItem(content, "message-read-pulse-" + unreadOne));
@@ -35651,6 +35699,7 @@ private slots:
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.messages().size(), 3);
 
+        QTRY_VERIFY(!readGate->empty());
         auto *content = window->contentItem();
         auto *bubble = visibleItem(content, "message-" + unreadTwo); QVERIFY(bubble);
         auto *overlay = visibleItem(content, "message-read-pulse-" + unreadTwo); QVERIFY(overlay);

@@ -6625,6 +6625,21 @@ component NativeMentionChip: Item {
                 // View-only preferences follow actual UUIDs through split/merge.
                 // Controller remains the sole canonical history collection.
                 property var messageSnapshot: []
+                readonly property var readRequestCoverage: {
+                    const boundaries = root.controller.readRequestBoundaryIds
+                    const covered = {}
+                    if (!boundaries.length) return covered
+                    const boundaryIds = {}, topics = {}
+                    for (const id of boundaries) boundaryIds[id] = true
+                    // The canonical snapshot is in Core order, including
+                    // microsecond timestamps and UUID tie breaks.
+                    for (let i = messageSnapshot.length - 1; i >= 0; --i) {
+                        const row = messageSnapshot[i]
+                        if (boundaryIds[row.id]) topics[row.topicId] = true
+                        if (topics[row.topicId]) covered[row.id] = true
+                    }
+                    return covered
+                }
                 property var serviceSession: ({ scope: "", ready: false, seen: {}, latest: null, preferences: {}, revision: 0, focusKey: "" })
                 property var serviceGroups: []
                 property var serviceAliases: ({})
@@ -8153,10 +8168,10 @@ component NativeMentionChip: Item {
                     readId: String(modelData.id)
                     readonly property bool own: Boolean(modelData.own)
                     // Issue #113 read-request pulse (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md):
-                    // the reference marks the bubble pending exactly when the server
-                    // message is inbound and not yet read
-                    // (workspace-message-bubble-presentation.ui.tsx:531-532).
+                    // The list passes boundary coverage to each unread peer bubble
+                    // (workspace-message-list.ui.tsx:661).
                     readonly property bool readRequestPending: !own && !Boolean(modelData.read)
+                        && !!messageList.readRequestCoverage[modelData.id]
                     readonly property bool lastInOwnGroup: groupLast
                     width: messageList.width - 24
                     height: bubbleOffset + (externalAuthor ? 24 : 0) + bubble.height + (groupLast && !keyControl ? 4 : 0)
