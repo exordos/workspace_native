@@ -12165,6 +12165,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             cancelChatRequestLookup(id);
             if (!lookupGuard) return true;
             if (m_chatRequestFacts.contains(id)) {
+                m_chatGrantErrors.remove(id);
+                m_failedBulkGrants.remove(id);
                 m_chatRequestFacts[id].deleted = true;
                 m_chatRequestFacts[id].lookupRetry = ChatRequestFact::LookupRetry::LiveDeleted;
                 m_chatRequestFacts[id].revision = ++m_nextChatRequestFact;

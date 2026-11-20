@@ -3179,8 +3179,16 @@ private slots:
         QCOMPARE(f.http.requests.size(), network);
     }
 
+    void drawerBulkGrantRetainsPerRequestOutcomes_data()
+    {
+        QTest::addColumn<bool>("deleted");
+        QTest::newRow("retry") << false;
+        QTest::newRow("request-deleted") << true;
+    }
+
     void drawerBulkGrantRetainsPerRequestOutcomes()
     {
+        QFETCH(bool, deleted);
         Fixture f;
         f.stream = fullEncryptedStream();
         f.stream["owner"] = userId;
@@ -3231,10 +3239,21 @@ private slots:
         QCOMPARE(failed.value("id").toString(), denied);
         QVERIFY(!failed.value("error").toString().isEmpty());
         QVERIFY(failed.value("canGrant").toBool());
-        f.controller.grantChatKey(denied);
-        QTRY_COMPARE(rows("grantedKeyRequests").size(), 2);
+        if (deleted) {
+            auto event = cryptoEvent(QJsonObject{{"uuid", denied}, {"stream_uuid", streamId}, {"topic_uuid", topicId}});
+            auto payload = event.value("payload").toObject();
+            payload["kind"] = "message.deleted";
+            event["payload"] = payload;
+            QVERIFY(f.controller.applyRealtimeEvent(event));
+            QTRY_VERIFY(rows("incomingKeyRequests").isEmpty());
+            QCOMPARE(rows("grantedKeyRequests").size(), 1);
+        } else {
+            f.controller.grantChatKey(denied);
+            QTRY_COMPARE(rows("grantedKeyRequests").size(), 2);
+        }
         QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 0);
-        QCOMPARE(*deniedPosts, 2); QCOMPARE(*acceptedPosts, 1);
+        QCOMPARE(*deniedPosts, deleted ? 1 : 2);
+        QCOMPARE(*acceptedPosts, 1);
     }
 
     void drawerSharingPolicyControlsGrantDispatch_data()
