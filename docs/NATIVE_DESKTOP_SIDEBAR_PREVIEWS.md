@@ -236,3 +236,11 @@ The en/ru pair matches the reference keys `common.you`, `chat.yesterday` and
 - `native-native-window`: a stream row and a topic row render the preview line and the time at
   the measured geometry, and a row without a resolved message keeps the full row height.
 - `native-native-locale`: catalog guard for the new strings.
+
+## Encrypted preview presentation
+
+The stream and topic rows take their last message from the local store. A locked message shows “Key required”. While the selected conversation prepares that exact message, both rows show “Decrypting message…”. A failed presentation shows “Could not decrypt message”. Once plaintext is available, the row shows its normal, single-line summary. The localized key-request, grant, announcement and rejection labels also apply in the sidebar. Polls use their readable poll snapshot.
+
+Previews derived from plaintext follow the currently authorized message presentation. The sidebar cache can remember the sender, timestamp and message kind after navigation. It can resolve the plaintext summary again when its owner opens the message.
+
+[Reference sidebar message presentation](https://github.com/exordos/workspace_ui/blob/230e02b8b0273dee556a406746d122180a68b3e7/packages/web/src/widgets/sidebar/sidebar-workspace-message-preview.ui.tsx#L13-L46)

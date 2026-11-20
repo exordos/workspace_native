@@ -11764,8 +11764,24 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
     }
 
+    void sidebarRowsRenderPreviewAndTime_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("previewText");
+        QTest::newRow("markdown") << QString("markdown") << QString("en")
+            << QStringLiteral("A message with missing topic metadata has no invented label.");
+        QTest::newRow("request-en") << QString("key_request") << QString("en") << QString("Key requested");
+        QTest::newRow("grant-ru") << QString("key_grant") << QString("ru") << QStringLiteral("Получен зашифрованный ключ");
+        QTest::newRow("announce-ru") << QString("key_announced") << QString("ru") << QStringLiteral("Объявлен новый ключ");
+        QTest::newRow("reject-en") << QString("key_reject") << QString("en") << QString("Key request rejected");
+    }
+
     void sidebarRowsRenderPreviewAndTime()
     {
+        QFETCH(QString, kind);
+        QFETCH(QString, locale);
+        QFETCH(QString, previewText);
         WindowChannelFixture fixture;
         fixture.sourceScene = true;
         const auto fallback = fixture.server.handler;
@@ -11777,6 +11793,27 @@ mv -Tf "$root/.current-new" "$root/current"
             const auto path = request.target.path();
             auto response = fallback(request);
             if (request.method != "GET") return response;
+            if (kind != "markdown" && path.endsWith("/messages/") && response.data.isArray()) {
+                auto rows = response.data.toArray();
+                for (qsizetype i = 0; i < rows.size(); ++i) {
+                    auto row = rows.at(i).toObject();
+                    if (row.value("uuid").toString() != lastMessage) continue;
+                    QJsonObject payload{{"kind", kind}, {"key_uuid", topicId}};
+                    if (kind == "key_request") {
+                        payload.insert("public_key", "synthetic");
+                        payload.insert("device_id", "device");
+                        payload.insert("device_name", "Desktop");
+                    } else if (kind == "key_grant" || kind == "key_reject") {
+                        payload.insert("request_message_uuid", secondTopicId);
+                        payload.insert("sender_device_id", "sender");
+                        payload.insert("recipient_device_id", "recipient");
+                        if (kind == "key_grant") payload.insert("content", "synthetic");
+                    }
+                    row["payload"] = payload;
+                    rows[i] = row;
+                }
+                response.data = rows;
+            }
             const bool streamRoute = path.endsWith("/streams/")
                 || path.endsWith("/streams/" + streamId)
                 || path.endsWith("/stream_topics/") || path.endsWith("/stream_topics/" + topicId);
@@ -11800,9 +11837,10 @@ mv -Tf "$root/.current-new" "$root/current"
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("sidebar-previews.ini"));
-        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setLocale(locale); preferences.setMode("light");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
+        controller.setPreferences(&preferences);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
         auto closeBeforeEngine = qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)] {
@@ -11819,7 +11857,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.topics().size() >= 3);
         // The source-scene author is the Alice user of the fixture catalog (first_name only).
-        const QString previewText = QStringLiteral("A message with missing topic metadata has no invented label.");
         // The preview exists only after the selected channel's history has been hydrated.
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             const auto *row = visibleItem("streamPreviewText-" + streamId);
@@ -11836,7 +11873,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto created = QDateTime::fromString("2026-01-02T10:06:00.000Z",Qt::ISODateWithMs);
         auto *streamTime = visibleItem("streamTime-"+streamId); QVERIFY(streamTime);
         QCOMPARE(streamTime->property("text").toString(),NativeController::formatRowTime(
-            created,QLocale("en"),QDate::currentDate(),QStringLiteral("Yesterday")));
+            created,QLocale(locale),QDate::currentDate(),QStringLiteral("Yesterday")));
         QCOMPARE(streamTime->property("color").value<QColor>(),QColor("#989898"));
         QCOMPARE(visibleItem("stream-"+streamId)->height(),60); // the measured row box is unchanged
         // The default topic row carries the same message; Planning has no last message and

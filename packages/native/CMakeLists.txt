@@ -587,6 +587,7 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         encryptedConversationPresentsItsFirstPreparedWindow
+        encryptedSidebarPreviewsFollowTheLocalPresentation
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiSecretFragmentTracksRequestAndVaultRemoval
         uiSecretRequestVerifiesTheReferencedStream
