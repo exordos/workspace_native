@@ -1498,6 +1498,19 @@ ApplicationWindow {
         messageMenu.popup();
     }
 
+    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the reference chip is
+    // inline accent text (messenger-workspace-message-body.ui.tsx:143-153:
+    // font-medium, text-accent, no background/decoration), so the exported
+    // mention anchor span is restyled with the palette accent token here and
+    // follows the light/dark theme automatically.
+    function mentionChipHtml(html) {
+        const accent = String(root.colors["accent"] || "#7087ff");
+        return String(html).replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
+            function (whole, head, tail) {
+                return head + " color:" + accent + "; font-weight:500;" + tail;
+            });
+    }
+
     function openReference(link, imageFailed) {
         const reference = root.markdown.reference(link);
         if (reference.kind === "external") {
@@ -7666,6 +7679,10 @@ ApplicationWindow {
                     readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel
                         : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content))
                     readonly property var imageParts: rendered.parts || []
+                    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
+                    // ordered urn:user references the renderer recognised in
+                    // this body (ordered as they appear in the text).
+                    readonly property var mentionUrns: rendered.mentions || []
                     readonly property bool hasInlineImages: !!root.messageImages && !encryptedLocked && !keyControl
                         && incomingKeyRequest === null && !keyResponse && modelData.kind !== "key_announced"
                         && (modelData.kind === "markdown" || modelData.kind === "e2ee" && Boolean(modelData.decrypted))
@@ -7674,13 +7691,59 @@ ApplicationWindow {
                         ? imageParts.length && imageParts[imageParts.length - 1].kind === "text" ? String(imageParts[imageParts.length - 1].html) : ""
                         : String(rendered.html)
                     readonly property bool inlineMeta: !encryptedLocked && !keyControl && !(modelData.reactions || []).some(reaction => Number(reaction.count) > 0) && root.trailingMessageParagraph(tailHtml) >= 0
+                    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
+                    // chip's visible painting is the rich-text anchor itself;
+                    // these transparent items supply the real hit target,
+                    // pointer cursor and accessibility for each mention urn.
+                    // Geometry comes from scanning the body TextEdit's
+                    // linkAt map (only bodies that actually carry mentions).
+                    // Inline-image bodies keep their per-part link handling.
+                    property var mentionTargets: locateMentionTargets()
+                    function locateMentionTargets() {
+                        if (!messageBody.visible || messageBody.width <= 0 || messageRow.mentionUrns.length === 0)
+                            return [];
+                        const width = messageBody.width, height = messageBody.height;
+                        const runs = [];
+                        for (let y = 1; y < height; y += 3) {
+                            let run = null;
+                            for (let x = 1; x < width; x += 3) {
+                                const href = String(messageBody.linkAt(x, y) || "");
+                                if (href.indexOf("urn:user:") === 0) {
+                                    if (run === null) run = { urn: href, firstX: x, lastX: x, y: y };
+                                    else if (href !== run.urn) { runs.push(run); run = { urn: href, firstX: x, lastX: x, y: y }; }
+                                    else run.lastX = x;
+                                } else if (run !== null) { runs.push(run); run = null; }
+                            }
+                            if (run !== null) runs.push(run);
+                        }
+                        const rects = [];
+                        for (let i = 0; i < runs.length; ++i) {
+                            const run = runs[i];
+                            const previous = rects.length ? rects[rects.length - 1] : null;
+                            if (previous !== null && previous.urn === run.urn && run.y - previous.y <= 10
+                                && run.firstX <= previous.lastX + 6 && previous.firstX <= run.lastX + 6) {
+                                previous.firstX = Math.min(previous.firstX, run.firstX);
+                                previous.lastX = Math.max(previous.lastX, run.lastX);
+                                previous.bottom = Math.max(previous.bottom, run.y);
+                            } else {
+                                rects.push({ urn: run.urn, y: run.y, bottom: run.y, firstX: run.firstX, lastX: run.lastX });
+                            }
+                        }
+                        return rects.map(rect => ({
+                            urn: rect.urn,
+                            x: Math.max(0, rect.firstX - 2),
+                            y: Math.max(0, rect.y - 5),
+                            w: Math.max(4, Math.min(width, rect.lastX + 2) - Math.max(0, rect.firstX - 2)),
+                            h: rect.bottom - rect.y + 12
+                        }));
+                    }
                     function imagePartHtml(part, index) {
-                        const html = String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;');
+                        const html = root.mentionChipHtml(String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;'));
                         return inlineMeta && index === imageParts.length - 1 ? root.reserveMessageTime(html, modelData.time) : html;
                     }
                     // Text.lineHeight does not affect Qt RichText. Apply the
                     // desktop paragraph leading only to renderer-owned p styles.
-                    readonly property string bodyHtml: String(rendered.html).replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
+                    readonly property string bodyHtml: root.mentionChipHtml(String(rendered.html).replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;'))
                     readonly property string displayHtml: inlineMeta ? root.reserveMessageTime(bodyHtml, modelData.time) : bodyHtml
                     readonly property string callUrl: !keyControl && !encryptedLocked
                         && modelData.kind === "markdown" && !hasInlineImages
@@ -8644,6 +8707,37 @@ ApplicationWindow {
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
                                 palette.link: root.colors.accent
                                 onLinkActivated: link => root.openReference(link)
+                                // Issue #109: transparent per-mention hit
+                                // targets aligned with the rich-text anchors
+                                // (see docs/NATIVE_DESKTOP_MENTION_CHIPS.md).
+                                // Children of the body item keep the bubble
+                                // Column layout untouched.
+                                Item {
+                                    objectName: "message-mentions-" + String(messageRow.modelData.id)
+                                    visible: messageRow.mentionTargets.length > 0
+                                    width: 0
+                                    height: 0
+                                    z: 2
+                                    Repeater {
+                                        model: messageRow.mentionTargets
+                                        delegate: Item {
+                                            required property var modelData
+                                            objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
+                                            x: modelData.x
+                                            y: modelData.y
+                                            width: modelData.w
+                                            height: modelData.h
+                                            visible: modelData.w > 0 && modelData.h > 0
+                                            Accessible.role: Accessible.Button
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                acceptedButtons: Qt.LeftButton
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.openReference(modelData.urn)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Column {
                                 id: mediaMessageBody

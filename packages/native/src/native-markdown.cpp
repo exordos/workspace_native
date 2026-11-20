@@ -395,6 +395,36 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     generated.replace("\n</code></pre>", "</code></pre>");
     generated.replace("<del>", "<s>");
     generated.replace("</del>", "</s>");
+    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the reference renders
+    // [label](urn:user:uuid) as a mention chip whose text carries the "@"
+    // prefix, while title="silent" suppresses it (workspace_ui 61dacef
+    // workspace-message-render.lib.ts:342-352). The Qt HTML import discards
+    // the link title, so the token is consumed here on the md4c output and
+    // the ordered urn list is exposed to the view as "mentions".
+    QStringList mentionUrns;
+    {
+        static const QRegularExpression mentionAnchor(QStringLiteral(
+            "<a href=\"urn:user:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""
+            "( title=\"silent\")?>((?:[^<]|&(?:amp|lt|gt|quot|#\\d+);)*)</a>"),
+            QRegularExpression::CaseInsensitiveOption);
+        QString html = QString::fromUtf8(generated);
+        QVector<QRegularExpressionMatch> matches;
+        auto scan = mentionAnchor.globalMatch(html);
+        while (scan.hasNext()) matches.append(scan.next());
+        for (const auto &match : matches)
+            mentionUrns.append(QStringLiteral("urn:user:") + match.captured(1).toLower());
+        // Rewriting from the back keeps the earlier matches' offsets valid.
+        for (auto it = matches.crbegin(); it != matches.crend(); ++it) {
+            const auto &match = *it;
+            auto label = match.captured(3);
+            if (match.captured(2).isEmpty() && !label.startsWith(QLatin1Char('@')))
+                label.prepend(QLatin1Char('@'));
+            html.replace(match.capturedStart(), match.capturedLength(),
+                QStringLiteral("<a href=\"urn:user:%1\">%2</a>")
+                    .arg(match.captured(1).toLower(), label));
+        }
+        generated = html.toUtf8();
+    }
     document.setDefaultStyleSheet("pre { margin-top: 0px; margin-bottom: 0px; } "
         "ul, ol { margin-top: 0px; margin-bottom: 0px; } "
         "li { margin-top: 6px; margin-bottom: 6px; } "
@@ -497,7 +527,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
-                             {"parts", orderedImageParts(document)}};
+                             {"parts", orderedImageParts(document)}, {"mentions", mentionUrns}};
     while (m_order.size() >= 128)
         m_cache.remove(m_order.dequeue());
     m_order.enqueue(cacheKey);
