@@ -152,9 +152,18 @@ Item {
         onLoadingChanged: (loadRequest) => {
             if (!host.controller)
                 return
-            if (loadRequest.status === host.loadStatusSucceeded)
+            const status = loadRequest.status
+            if (status !== host.loadStatusSucceeded && status !== host.loadStatusFailed)
+                return
+            // Chromium can report the preceding page's failure after Retry has
+            // pointed the live view at the meeting. Redirects within the new
+            // navigation settle with the URL currently shown by the view.
+            if (view.retryNavigationPending && loadRequest.url.toString() !== view.url.toString())
+                return
+            view.retryNavigationPending = false
+            if (status === host.loadStatusSucceeded)
                 host.controller.apiLoadSucceeded()
-            else if (loadRequest.status === host.loadStatusFailed)
+            else
                 host.controller.apiLoadFailed()
         }
         // #263: the shell keeps this single embed surface alive across the
@@ -165,6 +174,7 @@ Item {
         // the state on, exactly as a recreated view would. The previous
         // state is captured in the handler (not bound), so the edge survives
         // the same signal that re-evaluates bindings.
+        property bool retryNavigationPending: false
         property int priorEmbedState: 0
         Connections {
             target: host.controller
@@ -174,6 +184,7 @@ Item {
                 const now = host.controller.embedState
                 if (view.priorEmbedState === 3 && now === 1) {
                     const target = host.controller.embedUrl()
+                    view.retryNavigationPending = true
                     // Assign the url property (WebEngineView exposes no
                     // load() method; url is settable and assignment starts
                     // the load): equal urls reload in place, a drifted url

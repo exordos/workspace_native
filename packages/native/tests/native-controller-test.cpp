@@ -16956,6 +16956,89 @@ private slots:
         }
     }
 
+    void reconnectRevalidatesOnlyTheFailedSelectedHistory_data()
+    {
+        QTest::addColumn<bool>("leaveRoute");
+        QTest::addColumn<bool>("forbidden");
+        QTest::addColumn<bool>("lateFailure");
+        QTest::newRow("offline-topic") << false << false << false;
+        QTest::newRow("http-failure-after-reconnect") << false << false << true;
+        QTest::newRow("left-topic") << true << false << false;
+        QTest::newRow("permission-denied") << false << true << false;
+    }
+
+    void reconnectRevalidatesOnlyTheFailedSelectedHistory()
+    {
+        QFETCH(bool, leaveRoute);
+        QFETCH(bool, forbidden);
+        QFETCH(bool, lateFailure);
+        Fixture fixture;
+        fixture.extraTopic = true;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        bool online = false, sawHistoryError = false;
+        bool holdFailure = lateFailure;
+        std::function<void()> release;
+        connect(&fixture.controller, &NativeController::stateChanged, this, [&] {
+            if (fixture.controller.error().contains("Could not load messages")) {
+                sawHistoryError = true;
+                online = true;
+            }
+        });
+        int revalidated = 0;
+        fixture.messages = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") != secondTopicId)
+                return Response{QJsonArray{}};
+            if (!online) {
+                if (forbidden) return Response{QJsonObject{}, 403};
+                Response offline;
+                offline.abortConnection = true;
+                if (holdFailure)
+                    offline.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+                return offline;
+            }
+            ++revalidated;
+            auto row = message("History restored after reconnect");
+            row["topic_uuid"] = secondTopicId;
+            return Response{QJsonArray{row}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), "live");
+        QVERIFY(!gateway.sockets.isEmpty() && gateway.sockets.last());
+        gateway.sockets.last()->close();
+        QTRY_COMPARE(fixture.controller.syncState(), "retrying");
+        fixture.controller.selectTopic(secondTopicId);
+        if (lateFailure) {
+            QTRY_VERIFY(static_cast<bool>(release));
+            QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), "live", 5000);
+            holdFailure = false;
+            release();
+        }
+        QTRY_VERIFY(sawHistoryError);
+        if (leaveRoute) fixture.controller.selectTopic(topicId);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), "live", 5000);
+        if (!leaveRoute && !forbidden) {
+            QTRY_COMPARE_WITH_TIMEOUT(revalidated, 1, 2000);
+            QTRY_COMPARE(fixture.controller.messages().size(), 1);
+            QVERIFY(!fixture.controller.error().contains("Could not load messages"));
+        } else {
+            QCOMPARE(revalidated, 0);
+        }
+        const auto previousSockets = gateway.sockets.size();
+        QVERIFY(gateway.sockets.last());
+        gateway.sockets.last()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(gateway.sockets.size() > previousSockets
+            && fixture.controller.syncState() == "live", 5000);
+        QCOMPARE(revalidated, !leaveRoute && !forbidden ? 1 : 0);
+    }
+
     void sameOwnerRenewalReloadsCancelledRouteRequestsAndPreservesDraft()
     {
         Fixture fixture;
@@ -17037,6 +17120,72 @@ private slots:
         QCOMPARE(published.first(), qulonglong(1)); // Counter visible inside publication.
         QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
         QCOMPARE(c.property("historyCommitRevision").toULongLong(), qulonglong(1));
+    }
+
+    void olderPageSurvivesConcurrentTailArrivals_data()
+    {
+        QTest::addColumn<bool>("editLoadedRow");
+        QTest::addColumn<bool>("duringCacheRead");
+        QTest::newRow("two-tail-arrivals") << false << false;
+        QTest::newRow("tail-arrivals-and-edit") << true << false;
+        QTest::newRow("cache-read-tail-arrivals") << false << true;
+        QTest::newRow("cache-read-and-edit") << true << true;
+    }
+
+    void olderPageSurvivesConcurrentTailArrivals()
+    {
+        QFETCH(bool, editLoadedRow);
+        QFETCH(bool, duringCacheRead);
+        QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
+        Fixture fixture;
+        if (duringCacheRead) fixture.controller.useCache(&cache);
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 200; ++n) rows.insert(n, historyMessage(n));
+        bool holdPage = false;
+        QStringList markers;
+        std::function<void()> release;
+        fixture.messages = [&](const Request &request) {
+            auto response = historyResponse(rows, request);
+            if (!QUrlQuery(request.target).hasQueryItem("topic_uuid")) return response;
+            const auto marker = QUrlQuery(request.target).queryItemValue("page_marker");
+            markers.append(marker);
+            if (holdPage && !marker.isEmpty()) {
+                holdPage = false;
+                response.defer = [&](std::function<void()> send) { release = std::move(send); };
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.loadOlder();
+        QTRY_COMPARE(controller.messages().size(), 100);
+        markers.clear();
+        holdPage = !duringCacheRead;
+        controller.loadOlder();
+        if (!duringCacheRead) QTRY_VERIFY(bool(release));
+        for (int n : {201, 202}) {
+            rows.insert(n, historyMessage(n));
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.created", rows[n], n)));
+        }
+        QCOMPARE(controller.messages().size(), 102);
+        if (editLoadedRow) {
+            rows[170]["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Updated while paging"}};
+            QVERIFY(controller.applyRealtimeEvent(controllerEvent("message.updated", rows[170], 203)));
+        }
+        if (release) release();
+        QTRY_VERIFY(!controller.busy());
+        if (editLoadedRow) {
+            QVERIFY(markers.contains(QString{}));
+            QCOMPARE(modelMessage(controller, rows[170].value("uuid").toString()).value("content").toString(),
+                     QStringLiteral("Updated while paging"));
+            return;
+        }
+        QCOMPARE(markers, QStringList{historyMessage(101).value("uuid").toString()});
+        const auto messages = controller.messages();
+        QCOMPARE(messages.size(), 152);
+        for (int i = 0; i < messages.size(); ++i)
+            QCOMPARE(messages.at(i).toMap().value("id").toString(), rows[i + 51].value("uuid").toString());
     }
 
     void historyCommitDoesNotCountLiveRowsOrOlderAdmission()
@@ -24233,7 +24382,7 @@ private slots:
     void overlayBannerRealtimeReconnectClearsTransportOffline()
     {
         // Handler captures must outlive the Fixture and every deferred send.
-        QVector<std::function<void()>> heldCatchUps;
+        QVector<std::function<void()>> heldCatchUps, heldHistory;
         auto holdNextCatchUp = std::make_shared<bool>(false);
         Fixture fixture; fixture.extraTopic = true;
         RealtimeGateway gateway(fixture.server.serverPort());
@@ -24269,12 +24418,21 @@ private slots:
         // The websocket reconnect completes without observing any JSON
         // response; a healthy realtime link must not leave the offline
         // banner set on top of live sync state.
+        // Recovery retries the interrupted first page. Keep its HTTP outcome
+        // pending while observing what the successful websocket reconnect does.
+        fixture.messages = [&](const Request &) {
+            Response reply{QJsonArray{}};
+            reply.defer = [&](std::function<void()> send) { heldHistory.append(std::move(send)); };
+            return reply;
+        };
         const auto catchUps = heldCatchUps;
         heldCatchUps.clear();
         for (const auto &send : catchUps)
             send();
         QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), QString("live"), 15000);
         QTRY_COMPARE(fixture.controller.connectionPhase(), QString("online"));
+        QTRY_VERIFY(!heldHistory.isEmpty());
+        for (const auto &send : std::exchange(heldHistory, {})) send();
     }
 
     // --- Issue #144: top bar workspace session switcher -------------------
@@ -26027,6 +26185,35 @@ private slots:
         QTRY_COMPARE(c.messages().size(), 150);
     }
 
+    void fastHistoryScrollPrefetchesBeforeItsMeasuredPageWait()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        int olderRequests = 0;
+        fixture.messages = [&](const Request &request) {
+            auto response = historyResponse(rows, request);
+            const QUrlQuery query(request.target);
+            if (query.hasQueryItem("topic_uuid")) {
+                response.delay = 500;
+                if (query.hasQueryItem("page_marker")) ++olderRequests;
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        QCOMPARE(controller.messages().size(), 50);
+        // The hosted trace consumes 100 px per wheel notch, about 25 ms apart.
+        // At the old one-viewport threshold the top was reached before the response.
+        for (int distance = 2100; distance >= 1100; distance -= 100) {
+            controller.noteScrollReserve(distance, 670);
+            QTest::qWait(25);
+        }
+        QCOMPARE(olderRequests, 1);
+        QTRY_COMPARE(controller.messages().size(), 100);
+        QCOMPARE(olderRequests, 1);
+    }
+
     void historyPrefetchFiresAtExactReserveBoundary()
     {
         Fixture fixture;
@@ -27145,6 +27332,37 @@ private slots:
         const auto ref = parseWorkspaceReference(wire.mid(start + 1, wire.size() - start - 2));
         QVERIFY(ref && ref->plainSnapshot);
         QCOMPARE(ref->snapshotMarkdown, summary);
+    }
+
+    void pollManagementUsesVerifiedAuthorAndRejectsPeerActions_data()
+    {
+        QTest::addColumn<bool>("author"); QTest::addColumn<bool>("ownFlag");
+        QTest::newRow("author-without-convenience-flag") << true << false;
+        QTest::newRow("peer-with-inconsistent-flag") << false << true;
+    }
+
+    void pollManagementUsesVerifiedAuthorAndRejectsPeerActions()
+    {
+        QFETCH(bool, author); QFETCH(bool, ownFlag);
+        Fixture fixture;
+        const auto id = pollFixtureUuid(81);
+        auto poll = pollMessageDto(id, 3, false);
+        poll["author_uuid"] = author ? userId : pollFixtureUuid(82);
+        poll["is_own"] = ownFlag;
+        auto payload = poll["payload"].toObject(); payload["closes_at"] = QJsonValue::Null; poll["payload"] = payload;
+        int posts = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { ++posts; return {QJsonObject{}, 403}; }
+            return {QJsonArray{poll}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.canManagePoll(id), author);
+        QSignalSpy failure(&fixture.controller, &NativeController::pollActionFailed);
+        fixture.controller.closePoll(id);
+        QTRY_COMPARE(failure.size(), 1);
+        QCOMPARE(posts, author ? 1 : 0);
+        QCOMPARE(failure.first().at(2).toString(), author ? QString("http-403") : QString("not-available"));
+        QVERIFY(!modelMessage(fixture.controller, id).value("poll").toMap().value("state").toMap().value("isClosed").toBool());
     }
 
     void pollMessageArrivesEndToEndWithEveryConfigField()
@@ -28945,18 +29163,42 @@ private slots:
         QVERIFY(root.isValid());
         NativeLogging logs(root.path());
         workspace::installNativeLogHandler(logs);
-        qWarning("native diagnostics wiring probe");
+        QMessageLogger(nullptr, 0, nullptr, "qt.qml").warning("native diagnostics wiring probe");
         qInfo("native diagnostics info probe");
         workspace::removeNativeLogHandler();
         const QString text = readDiagnosticsLog(logs.filePath());
-        QVERIFY2(text.contains(QStringLiteral("warning: native diagnostics wiring probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("warning: QML diagnostic\n")),
                  qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("info: native diagnostics info probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("info: Qt diagnostic\n")),
                  qPrintable(text));
     }
     // ------------------------------------------------------------------
     // exordy fix-round-1 regression cases (PR #289 review findings).
     // ------------------------------------------------------------------
+
+    void persistentQtDiagnosticsOmitPrivateMessageAndCategoryValues()
+    {
+        QTemporaryDir root;
+        NativeLogging logs(root.path());
+        QVERIFY(root.isValid());
+        workspace::installNativeLogHandler(logs);
+        const auto removeHandler = qScopeGuard([] { workspace::removeNativeLogHandler(); });
+        QMessageLogger(nullptr, 0, nullptr, "qt.network.private-category").warning(
+            "synthetic-body account@example.invalid /home/synthetic-user/file https://example.invalid/?private-value");
+        qInfo("Default topic missing for existing direct stream before call");
+        QVERIFY(QFile::resize(logs.filePath(), NativeLogging::MaxLogFileBytes));
+        QMessageLogger(nullptr, 0, nullptr, "qt.qpa.private-category").warning(
+            "{\"context\":{\"body\":\"private-body\"}}");
+        const auto previous = readDiagnosticsLog(logs.rotatedFilePath());
+        const auto current = readDiagnosticsLog(logs.filePath());
+        QVERIFY(previous.contains(QStringLiteral("warning: Network diagnostic\n")));
+        QVERIFY(previous.contains(QStringLiteral("info: Default topic missing for existing direct stream before call\n")));
+        QVERIFY(current.contains(QStringLiteral("warning: Platform diagnostic\n")));
+        for (const auto *value : {"synthetic", "example.invalid", "/home/", "private-"}) {
+            QVERIFY(!previous.contains(QString::fromLatin1(value)));
+            QVERIFY(!current.contains(QString::fromLatin1(value)));
+        }
+    }
 
     // Finding 1 (thread 4575150367): a stderr write failure must not gate
     // persistence — the line still has to reach the diagnostics file.
@@ -28986,7 +29228,7 @@ private slots:
         fflush(stderr);
         clearerr(stderr);
         const QString text = readDiagnosticsLog(logs.filePath());
-        QVERIFY2(text.contains(QStringLiteral("warning: stderr unavailable probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("warning: Qt diagnostic\n")),
                  qPrintable(text));
     }
 #endif // Q_OS_UNIX
@@ -29208,7 +29450,7 @@ private slots:
             nativeTestClearErr();
 
             std::thread worker([&]() {
-                qWarning().noquote() << QStringLiteral("worker in-flight line ")
+                QMessageLogger(nullptr, 0, nullptr, "qt.network").warning().noquote() << QStringLiteral("worker in-flight line ")
                                         + QString(32000, QLatin1Char('W'));
                 workerReturned.store(true);
             });
@@ -29246,10 +29488,10 @@ private slots:
         QVERIFY(releaserDrained >= 32000);
         const QString text = readDiagnosticsLog(
             root.path() + QStringLiteral("/workspace_logs/workspace.log"));
-        QVERIFY2(text.contains(QStringLiteral("warning: filler ")), qPrintable(text.left(120)));
-        QVERIFY2(text.contains(QStringLiteral("worker in-flight line")),
+        QVERIFY2(text.contains(QStringLiteral("warning: Qt diagnostic\n")), qPrintable(text.left(120)));
+        QVERIFY2(text.contains(QStringLiteral("warning: Network diagnostic\n")),
                  "drained in-flight lines must reach the file");
-        QVERIFY(!text.contains(QStringLiteral("post-removal diagnostics line")));
+        QVERIFY(!text.contains(QStringLiteral("info: Qt diagnostic\n")));
     }
 #endif // Q_OS_UNIX
 
@@ -30065,6 +30307,56 @@ private slots:
 
     // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
 
+    void keyDrawerBulkGrantKeepsOnlyTheFailedRequestIncoming()
+    {
+        const QString denied = "51000000-0000-4000-8000-000000000001";
+        const QString granted = "51000000-0000-4000-8000-000000000002";
+        QJsonObject saved;
+        QStringList posted;
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        const auto previous = f.server.handler;
+        f.server.handler = [&, previous](const Request &request) -> Response {
+            const auto payload = request.body.value("payload").toObject();
+            if (request.method == "POST" && payload.value("kind") == "key_grant") {
+                const auto id = payload.value("request_message_uuid").toString();
+                posted.append(id);
+                if (id == denied) return {QJsonObject{}, 403};
+                const auto topic = request.body.value("topic_uuid").toString();
+                const auto placed = QUuid::createUuidV5(QUuid(topic), request.body.value("uuid").toString().toUtf8());
+                saved = message({}, placed.toString(QUuid::WithoutBraces), topic);
+                saved["payload"] = payload;
+                return {saved, 201};
+            }
+            if (!saved.isEmpty() && request.method == "GET"
+                && request.target.path().endsWith('/' + saved.value("uuid").toString())) return {saved, 200};
+            return previous(request);
+        };
+        int epoch = 100;
+        for (const auto &id : {denied, granted}) {
+            auto row = message({}, id);
+            row["author_uuid"] = KeyManagementFixture::SecondMember;
+            row["is_own"] = false;
+            row["payload"] = QJsonObject{{"kind", "key_request"}, {"key_uuid", KeyManagementFixture::KeyCurrent},
+                {"device_id", "peer-device"}, {"device_name", "Peer device"},
+                {"public_key", QString::fromLatin1(QByteArray(32, 'p').toBase64())}};
+            QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("message.created", row, ++epoch)));
+        }
+        const auto rows = [&](const char *group) { return f.controller.encryption().value(group).toList(); };
+        QTRY_COMPARE(rows("incomingKeyRequests").size(), 2);
+        QTRY_VERIFY(rows("incomingKeyRequests").first().toMap().value("canGrant").toBool());
+        f.controller.grantAllChatKeys();
+        QTRY_COMPARE(rows("grantedKeyRequests").size(), 1);
+        QTRY_VERIFY(!f.controller.encryption().value("grantAllBusy").toBool());
+        QCOMPARE(posted, (QStringList{denied, granted}));
+        QCOMPARE(rows("grantedKeyRequests").first().toMap().value("id").toString(), granted);
+        QCOMPARE(rows("incomingKeyRequests").size(), 1);
+        QCOMPARE(rows("incomingKeyRequests").first().toMap().value("id").toString(), denied);
+        QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 1);
+        QVERIFY(rows("rejectedKeyRequests").isEmpty());
+    }
+
     void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()
     {
         KeyManagementFixture f;
@@ -30092,6 +30384,10 @@ private slots:
         // A vault row without any announcement in loaded history keeps "" and
         // the QML falls back to "Not found in loaded history". Seeded last, it
         // is the newest receivedAt row and sits right behind the current key.
+        const auto previousReceipt = QDateTime::fromString(
+            historical.value("addedAt").toString(), Qt::ISODateWithMs);
+        QVERIFY(previousReceipt.isValid());
+        QTRY_VERIFY(QDateTime::currentDateTimeUtc() > previousReceipt);
         f.seedKey(KeyManagementFixture::KeyOrphan);
         f.controller.refreshChatLocalKeys();
         QCOMPARE(f.inventoryRows().size(), 3);
@@ -32896,12 +33192,21 @@ private slots:
     // stream that is not the selected one: one request per level change, a per-stream
     // busy slot that rejects repeats while in flight, same-level no-ops, and the
     // streams()/topics() row projection of the mute state.
+    void streamNotificationModeWritePathTargetsAnyStream_data()
+    {
+        QTest::addColumn<bool>("missingMode");
+        QTest::newRow("stored-mode") << false;
+        QTest::newRow("missing-mode") << true;
+    }
+
     void streamNotificationModeWritePathTargetsAnyStream()
     {
+        QFETCH(bool, missingMode);
         Fixture f;
         QJsonObject primary = creationChannel(streamId, "Muted board");
         primary["notification_mode"] = "muted";
         QJsonObject target = creationChannel(archiveId, "Silent channel");
+        if (missingMode) target.remove("notification_mode");
         QJsonArray served{primary, target};
         f.streams = [&served](const Request &) { return Response{served}; };
         QJsonObject defaultTopic = creationTopic(topicId, streamId, "Native topic");
@@ -32955,7 +33260,7 @@ private slots:
         // Invalid inputs send nothing: unknown mode, unknown stream, same level.
         c.setStreamNotificationMode(archiveId, "whisper");
         c.setStreamNotificationMode(QStringLiteral("00000000-0000-4000-8000-0000000000ee"), QStringLiteral("muted"));
-        c.setStreamNotificationMode(archiveId, QStringLiteral("all_messages"));
+        c.setStreamNotificationMode(archiveId, missingMode ? QStringLiteral("mentions_only") : QStringLiteral("all_messages"));
         QTest::qWait(200);
         QCOMPARE(posts, 0);
         // The unselected target stream gets exactly one held request; the busy slot
@@ -32976,6 +33281,109 @@ private slots:
         QTRY_COMPARE(streamRow(archiveId).value("notificationMode").toString(), QStringLiteral("muted"));
         QVERIFY(streamRow(archiveId).value("fullyMuted").toBool());
         QCOMPARE(streamRow(streamId).value("notificationMode").toString(), QStringLiteral("muted"));
+    }
+
+    void streamNotificationRetiresInterruptedWrites_data()
+    {
+        QTest::addColumn<bool>("drawer");
+        QTest::addColumn<bool>("committed");
+        QTest::addColumn<bool>("logout");
+        QTest::addColumn<bool>("lostResult");
+        QTest::addColumn<bool>("clearLocal");
+        QTest::newRow("sidebar-committed") << false << true << false << false << false;
+        QTest::newRow("drawer-uncommitted") << true << false << false << false << false;
+        QTest::newRow("committed-with-error-response") << true << true << false << true << false;
+        QTest::newRow("logout") << false << false << true << false << false;
+        QTest::newRow("renewed-write-after-local-reset") << true << false << false << false << true;
+    }
+
+    void streamNotificationRetiresInterruptedWrites()
+    {
+        QFETCH(bool, drawer); QFETCH(bool, committed); QFETCH(bool, logout); QFETCH(bool, lostResult);
+        QFETCH(bool, clearLocal);
+        auto stream = creationChannel(streamId);
+        QList<std::function<void()>> replies;
+        bool rotate = false;
+        Fixture f;
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        f.authentication = [&](const Request &r) {
+            if (rotate && r.target.path().endsWith("/actions/get_token/invoke"))
+                return Response{QJsonObject{{"access_token", "synthetic-renewed-notifications"},
+                    {"refresh_token", "synthetic-refresh"}, {"expires_in", 3600}}};
+            return sessionResponse(r);
+        };
+        const auto base = f.server.handler;
+        f.server.handler = [&, base](const Request &r) -> Response {
+            if (r.method != "POST" || !r.target.path().endsWith("/actions/notifications/invoke")) return base(r);
+            auto result = stream;
+            result["notification_mode"] = r.body.value("notification_mode");
+            const bool apply = committed || !replies.isEmpty();
+            const bool ok = apply && !(lostResult && replies.isEmpty());
+            return {result, ok ? 200 : 503, 0, {}, [&, result, apply](std::function<void()> send) {
+                replies.append([&, result, apply, send = std::move(send)] {
+                    // The server can commit only now, after the client renewed.
+                    if (apply) stream = result;
+                    send();
+                });
+            }};
+        };
+        QVERIFY(f.start());
+        auto &c = f.controller;
+        QTemporaryDir settings;
+        NativePreferences preferences(settings.filePath("settings.ini"));
+        if (clearLocal) c.usePreferences(&preferences);
+        if (drawer) c.setChannelInfoNotificationMode("muted");
+        else c.setStreamNotificationMode(streamId, "muted");
+        QTRY_COMPARE(replies.size(), 1);
+        QVERIFY(c.channelInfoNotificationBusy());
+        QVERIFY(c.streamNotificationBusy(streamId));
+        if (logout) {
+            c.logout();
+            QVERIFY(!c.streamNotificationBusy(streamId));
+            replies[0]();
+            return;
+        }
+        QSignalSpy renewed(&f.session, &Session::authenticated);
+        rotate = true;
+        f.session.requestRefresh();
+        QTRY_COMPARE(renewed.size(), 1);
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.channelInfoNotificationMode(), QString("all_messages"));
+        if (clearLocal) {
+            QPointer<QNetworkReply> held;
+            for (auto *reply : f.api.findChildren<QNetworkReply *>()) {
+                if (reply->url().path().endsWith("/actions/notifications/invoke")) held = reply;
+            }
+            QVERIFY(held);
+            c.clearLocalCache();
+            QTRY_VERIFY(!c.busy() && !c.streams().isEmpty());
+            QVERIFY(!c.streamNotificationBusy(streamId));
+            replies[0]();
+            QTRY_VERIFY(held.isNull());
+            const auto log = QJsonDocument::fromVariant(c.diagnosticsSessionLogEntries()).toJson();
+            QVERIFY2(!log.contains("/actions/notifications/invoke"), "An old HTTP failure entered the fresh session log");
+            return;
+        }
+        // A changed token cannot acknowledge or cancel an already accepted
+        // write on the server. Keep the original stream serialized until it
+        // completes; a premature second POST could commit before the first.
+        QVERIFY(c.channelInfoNotificationBusy());
+        c.setStreamNotificationMode(streamId, "mentions_only");
+        QCOMPARE(replies.size(), 1);
+        replies[0]();
+        QTRY_VERIFY(!c.channelInfoNotificationBusy());
+        QTRY_COMPARE(c.channelInfoNotificationMode(), committed ? QString("muted") : QString("all_messages"));
+        QVERIFY(!c.streamNotificationBusy(streamId));
+        c.setChannelInfoNotificationMode("mentions_only");
+        c.setStreamNotificationMode(streamId, "mentions_only");
+        QTRY_COMPARE(replies.size(), 2);
+        QVERIFY(c.channelInfoNotificationBusy());
+        QCOMPARE(c.channelInfoNotificationMode(), committed ? QString("muted") : QString("all_messages"));
+        replies[1]();
+        QTRY_COMPARE(c.channelInfoNotificationMode(), QString("mentions_only"));
+        QVERIFY(!c.streamNotificationBusy(streamId));
+        QCOMPARE(replies.size(), 2);
+        QCOMPARE(stream.value("notification_mode").toString(), QString("mentions_only"));
     }
 
     // Issue #438: the automatic member-page fetch follows the #434 scoping

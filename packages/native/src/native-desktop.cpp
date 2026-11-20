@@ -1,4 +1,5 @@
 #include "native-desktop.h"
+#include "native-platform-shell.h"
 
 #include <QAction>
 #include <QCloseEvent>
@@ -31,9 +32,12 @@ NativeDesktop::NativeDesktop(QWindow *window, QObject *parent, std::function<boo
     m_calendar->setObjectName("trayCalendar");
     m_mail = m_menu->addAction(QString{});
     m_mail->setObjectName("trayMail");
-    // These application sections still need their native implementation.
-    m_calendar->setEnabled(false);
-    m_mail->setEnabled(false);
+    connect(m_calendar, &QAction::triggered, this, [this] {
+        if (!m_quitting) emit sectionRequested(QStringLiteral("calendar"));
+    });
+    connect(m_mail, &QAction::triggered, this, [this] {
+        if (!m_quitting) emit sectionRequested(QStringLiteral("mail"));
+    });
     m_menu->addSeparator();
     m_updates = m_menu->addAction(QString{});
     m_updates->setObjectName("trayCheckForUpdates");
@@ -107,9 +111,7 @@ void NativeDesktop::refreshLabels()
     m_header->setText(m_unread > 0 ? title + " (" + QString::number(m_unread) + ')' : title);
     m_messenger->setText(tr("Messenger"));
     m_calendar->setText(tr("Calendar"));
-    m_calendar->setToolTip(tr("Calendar is not available in this native preview"));
     m_mail->setText(tr("Mail"));
-    m_mail->setToolTip(tr("Mail is not available in this native preview"));
     m_quit->setText(tr("Quit"));
     m_updates->setText(tr("Check for updates"));
     QString tooltip = title;
@@ -128,6 +130,9 @@ void NativeDesktop::refreshLabels()
     const auto base = QStringLiteral(":/workspace/tray/tray-icon");
 #endif
     m_tray->setIcon(QIcon(base + suffix));
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    setPlatformUnread(m_window, m_unread > 0, !m_callRoom.isEmpty(), tr("Unread messages"));
+#endif
 }
 
 void NativeDesktop::requestQuit()

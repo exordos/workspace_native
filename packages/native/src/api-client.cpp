@@ -107,6 +107,7 @@ struct ApiClient::Pending {
     QByteArray response;
     quint64 generation = 0;
     quint64 serial = 0;
+    TokenRenewal renewal = TokenRenewal::Cancel;
     bool callerCancelled = false;
     bool cancelled = false;
     bool tooLarge = false;
@@ -171,12 +172,13 @@ bool ApiClient::setServer(const QUrl &origin, QString *error)
     return true;
 }
 
-void ApiClient::setAccessToken(const QByteArray &token)
+void ApiClient::setAccessToken(const QByteArray &token, bool sameOwnerRenewal)
 {
     if (m_accessToken == token)
         return;
+    const bool renew = sameOwnerRenewal && !m_accessToken.isEmpty() && !token.isEmpty();
     m_accessToken = token;
-    invalidateRequests();
+    invalidateRequests(renew);
 }
 
 void ApiClient::clearSession()
@@ -185,17 +187,19 @@ void ApiClient::clearSession()
     invalidateRequests();
 }
 
-void ApiClient::invalidateRequests()
+void ApiClient::invalidateRequests(bool sameOwnerRenewal)
 {
     ++m_generation;
-    m_requestReplies.clear();
+    m_requestReplies.removeIf([this, sameOwnerRenewal](auto it) {
+        return !sameOwnerRenewal || m_pending.value(it.value())->renewal != TokenRenewal::AwaitReply;
+    });
     const auto transfers = m_transfers.values();
     for (auto *reply : transfers)
         reply->abort();
     const auto replies = m_pending.keys();
     for (auto *reply : replies) {
         auto *pending = m_pending.value(reply, nullptr);
-        if (pending) {
+        if (pending && !(sameOwnerRenewal && pending->renewal == TokenRenewal::AwaitReply)) {
             pending->cancelled = true;
             reply->abort();
         }
@@ -203,7 +207,7 @@ void ApiClient::invalidateRequests()
     const auto sockets = m_sockets.values();
     for (auto *socket : sockets)
         socket->abort();
-    emit sessionChanged(m_generation);
+    emit sessionChanged(m_generation, sameOwnerRenewal);
 }
 
 QNetworkReply *ApiClient::startFileUpload(QHttpMultiPart *body)
@@ -337,7 +341,7 @@ void ApiClient::reject(Callback callback, const QString &message)
 
 ApiClient::RequestId ApiClient::request(const QByteArray &method, const QString &path, const QJsonValue &body,
                         const QUrlQuery &query, Callback callback, bool isPublic,
-                        const QMap<QByteArray, QByteArray> &headers)
+                        const QMap<QByteArray, QByteArray> &headers, TokenRenewal renewal)
 {
     if (m_server.isEmpty() || !validPath(path)) {
         reject(std::move(callback), ApiClient::tr("Invalid API server or path."));
@@ -405,6 +409,7 @@ ApiClient::RequestId ApiClient::request(const QByteArray &method, const QString 
     auto *pending = new Pending;
     pending->callback = std::move(callback);
     pending->generation = m_generation;
+    pending->renewal = renewal;
     pending->serial = serial;
     pending->expectsJson = method != "HEAD" && method != "DELETE";
     m_pending.insert(reply, pending);
@@ -428,7 +433,9 @@ ApiClient::RequestId ApiClient::request(const QByteArray &method, const QString 
             reply->abort();
         }
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply] { finish(reply); });
+    // A consumer may destroy the client and the network manager in its callback.
+    // Deliver completion after Qt returns from the reply's network signal.
+    connect(reply, &QNetworkReply::finished, this, [this, reply] { finish(reply); }, Qt::QueuedConnection);
     timer->start(RequestTimeoutMs);
     return RequestId(serial);
 }
@@ -439,8 +446,7 @@ bool ApiClient::cancelRequest(RequestId id)
     auto *pending = reply ? m_pending.value(reply, nullptr) : nullptr;
     if (!pending)
         return false;
-    // Retire the handle before abort: finished/callback can be synchronous,
-    // reenter the transport, or destroy it. Do not access members after abort.
+    // Retire the handle before abort so a repeated cancellation is rejected.
     pending->callerCancelled = true;
     reply->abort();
     return true;
@@ -453,12 +459,14 @@ void ApiClient::finish(QNetworkReply *reply)
         return;
     m_requestReplies.remove(pending->serial);
     ApiResult result;
+    result.completedAfterTokenRenewal = !pending->cancelled && !pending->callerCancelled
+        && pending->renewal == TokenRenewal::AwaitReply && pending->generation != m_generation;
     result.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     result.retryAfterSeconds = reply->rawHeader("Retry-After").toInt();
     if (pending->callerCancelled) {
         result.status = 0;
         result.error = ApiClient::tr("Request cancelled.");
-    } else if (pending->cancelled || pending->generation != m_generation) {
+    } else if (pending->cancelled || (pending->generation != m_generation && !result.completedAfterTokenRenewal)) {
         result.status = 0;
         result.error = ApiClient::tr("Request cancelled because the session changed.");
     } else if (pending->tooLarge) {

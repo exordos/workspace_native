@@ -31,10 +31,11 @@ def main():
     cmd = ["runuser", "-u", "live-wayland", "--", sys.executable,
            str(Path(__file__).with_name("live-workspace-acceptance.py")),
            "--mode", mode, "--package", args.package, "--output", str(args.output)]
+    limits = Path(__file__).with_name("hosted-wayland-reference.json")
     if lease.get("limits") is not None:
         limits = args.output / "limits.json"
         limits.write_text(json.dumps(lease["limits"]))
-        cmd += ["--limits", str(limits)]
+    cmd += ["--limits", str(limits)]
     return subprocess.run(cmd, input=json.dumps(fixture).encode(),
                           env={"PATH": os.environ["PATH"], "LANG": "C.UTF-8"}).returncode
 

@@ -1,4 +1,6 @@
 #include "native-notifications.h"
+#include "native-platform-shell.h"
+#include "native-markdown.h"
 
 #include <QCoreApplication>
 #include <QDBusConnection>
@@ -151,8 +153,11 @@ std::optional<NotificationSnapshot> NotificationAggregateRegistry::upsert(
     if (existing != m_messageToTag.cend() && existing.value() != tag)
         return {}; // A message may not move between buckets.
     auto &entry = m_byTag[tag];
+    const auto body = candidate.markdown && NativeMarkdown::mayContainSpoilers(candidate.content)
+        ? NativeMarkdown().renderPreview(candidate.content).value("plain").toString().trimmed()
+        : candidate.content.trimmed();
     entry.messages.insert(candidate.messageUuid, Entry::Row{
-        candidate.content.trimmed(), candidate.streamUuid, candidate.topicUuid, title,
+        body, candidate.streamUuid, candidate.topicUuid, title,
         candidate.createdMicros});
     ++entry.total;
     m_messageToTag.insert(scope, tag);
@@ -431,6 +436,7 @@ void NotificationService::ingestNow(const NotificationCandidate &candidate)
         return;
     }
     m_transport->show(snap->tag, formatTitle(snap->titleContext, snap->count), snap->body);
+    emit soundRequested();
     if (!m_windowFocused)
         m_transport->requestAttention();
     markProcessed(key);
@@ -444,6 +450,7 @@ void NotificationService::showGeneric(const NotificationCandidate &candidate)
     const auto tag = NotificationAggregateRegistry::fallbackTag(candidate.owner, candidate.messageUuid);
     const auto body = m_genericBody ? m_genericBody() : QString();
     m_transport->show(tag, tr("You have a new message"), body);
+    emit soundRequested();
     m_fallbackRoutes.insert(tag, qMakePair(candidate.streamUuid, candidate.topicUuid));
     m_liveFallbackTags[candidate.owner].insert(tag);
     m_fallbackOrder.append(qMakePair(candidate.owner, tag));
@@ -673,6 +680,13 @@ void DBusNotificationTransport::AttentionBackend::flash(bool demand)
         XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT,
         reinterpret_cast<const char *>(&event));
     xcb_flush(connection);
+}
+
+#elif defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+
+void DBusNotificationTransport::AttentionBackend::flash(bool demand)
+{
+    setPlatformAttention(m_windowId ? m_windowId() : 0, demand);
 }
 
 #else

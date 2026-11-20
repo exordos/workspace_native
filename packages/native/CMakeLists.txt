@@ -18,15 +18,38 @@ find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
 qt_standard_project_setup(REQUIRES 6.8)
 
+if(WIN32 OR APPLE)
+    if(APPLE)
+        enable_language(OBJCXX)
+        add_library(workspace-native-platform-shell STATIC src/native-platform-shell-macos.mm)
+        target_compile_options(workspace-native-platform-shell PRIVATE -fobjc-arc)
+        target_link_libraries(workspace-native-platform-shell PRIVATE "-framework AppKit")
+    else()
+        add_library(workspace-native-platform-shell STATIC src/native-platform-shell-windows.cpp)
+        target_link_libraries(workspace-native-platform-shell PRIVATE ole32 uuid user32)
+    endif()
+    target_link_libraries(workspace-native-platform-shell PUBLIC Qt6::Gui)
+endif()
+
+add_library(workspace-native-support STATIC src/support/support-report.cpp src/support/support-report.h)
+target_include_directories(workspace-native-support PUBLIC src)
+target_compile_definitions(workspace-native-support PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
+target_link_libraries(workspace-native-support PUBLIC Qt6::Core PRIVATE Qt6::Concurrent)
+
+add_library(workspace-message-time STATIC
+    src/messages/time/message-time.cpp src/messages/time/message-time.h)
+target_link_libraries(workspace-message-time PUBLIC Qt6::Core)
+
 add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
     src/workspace-reference.cpp src/workspace-reference.h
     src/file-client.cpp src/file-client.h src/file-download-staging.h
-    src/native-markdown.cpp src/native-markdown.h
+    src/native-markdown.cpp src/native-markdown.h src/native-spoilers.cpp src/native-spoilers.h
     src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
+    src/native-external-accounts.cpp src/native-external-accounts.h
     src/native-preferences.cpp src/native-preferences.h
     src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
@@ -56,6 +79,7 @@ add_library(workspace-native-core STATIC
     src/power-watcher.cpp src/power-watcher.h
     src/native-call-awareness.cpp src/native-call-awareness.h
     src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp
+    src/native-hotkeys.cpp src/native-hotkeys.h
     src/composer-references.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
@@ -67,7 +91,7 @@ set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
 target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
-target_link_libraries(workspace-native-core PRIVATE Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+target_link_libraries(workspace-native-core PRIVATE workspace-message-time Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
 endif()
@@ -87,18 +111,26 @@ qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE 
 add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
     src/avatar-images.cpp src/avatar-images.h src/native-image-input.h
     src/message-images.cpp src/message-images.h)
-target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
+target_link_libraries(workspace-native-ui PUBLIC workspace-native-support workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
 option(WORKSPACE_NATIVE_CALLS_NAV "Show Calls in the main window section bar" OFF)
 target_compile_definitions(workspace-native-ui PRIVATE WORKSPACE_NATIVE_CALLS_NAV=$<BOOL:${WORKSPACE_NATIVE_CALLS_NAV}>)
 
 add_library(workspace-native-desktop STATIC src/native-desktop.cpp src/native-desktop.h)
 target_include_directories(workspace-native-desktop PUBLIC src)
 target_link_libraries(workspace-native-desktop PUBLIC Qt6::Widgets)
+if(TARGET workspace-native-platform-shell)
+    target_link_libraries(workspace-native-core PRIVATE workspace-native-platform-shell)
+    target_link_libraries(workspace-native-desktop PRIVATE workspace-native-platform-shell)
+endif()
+if(APPLE)
+    set(native_dock_icons ../electron/resources/dock-icon.png ../electron/resources/dock-icon-unread.png)
+endif()
 qt_add_resources(workspace-native-desktop native_tray PREFIX /workspace/tray
     BASE ../electron/resources FILES
         ../electron/resources/tray-icon-linux.png ../electron/resources/tray-icon-linux-unread.png
         ../electron/resources/tray-icon-mac.png ../electron/resources/tray-icon-mac-unread.png
-        ../electron/resources/tray-icon.png ../electron/resources/tray-icon-unread.png)
+        ../electron/resources/tray-icon.png ../electron/resources/tray-icon-unread.png
+        ${native_dock_icons})
 get_target_property(native_qmake Qt6::qmake IMPORTED_LOCATION)
 get_filename_component(native_qt_tools "${native_qmake}" DIRECTORY)
 find_program(WORKSPACE_NATIVE_LRELEASE NAMES lrelease-qt6 lrelease6 lrelease
@@ -118,6 +150,17 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
 # precedent). tests/licenses-dataset-test.py guards shape and determinism as a
 # direct python check; it is not a CTest group so the group count stays stable.
 find_program(WORKSPACE_NATIVE_PYTHON3 NAMES python3 REQUIRED)
+set(native_sound_dir "${CMAKE_CURRENT_BINARY_DIR}/notification-sounds")
+set(native_sounds)
+foreach(preset default subtle digital glass pulse)
+    list(APPEND native_sounds "${native_sound_dir}/${preset}.wav")
+endforeach()
+add_custom_command(OUTPUT ${native_sounds}
+    COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-notification-sounds.py" "${native_sound_dir}"
+    DEPENDS scripts/generate-notification-sounds.py VERBATIM)
+set_source_files_properties(${native_sounds} PROPERTIES GENERATED TRUE)
+qt_add_resources(workspace-native-ui native_sounds PREFIX /workspace/sounds
+    BASE "${native_sound_dir}" FILES ${native_sounds})
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(native_md4c QUIET md4c)
@@ -144,35 +187,44 @@ qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
 qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
+qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-qml/NativeSelect.qml
+qml/NativeSelect.qml qml/NativeAccountPreferences.qml
+qml/NativeSupportReport.qml
+qml/NativeKeyRequests.qml
 qml/NativeDownloadCenter.qml
+qml/NativeUserSearch.qml
+qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
-qml/NativeForwardDialog.qml
+qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml qml/NativeHotkeysDialog.qml qml/NativeShortcutsHelp.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
+qml/NativePollManagementDialog.qml
 qml/SessionSwitcher.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
+    qml/NativeComposerTimePicker.qml qml/NativeComposerSnippets.qml qml/NativeComposerStickerPicker.qml
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicSummary.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 
 foreach(qml_file IN LISTS native_qml_files)
-    get_filename_component(qml_name "${qml_file}" NAME)
+    string(REGEX REPLACE "^qml/" "" qml_name "${qml_file}")
     set_source_files_properties("${qml_file}" PROPERTIES QT_RESOURCE_ALIAS "${qml_name}")
 endforeach()
 set(native_icons chat_bubble calendar mail files folders folder folder_open profile channels add attach smile
-    composer-send composer-bottom-panel-open composer-bottom-panel-close
+    composer-send composer-expand-content composer-collapse-content composer-bottom-panel-open composer-bottom-panel-close
     composer-add-link composer-format-bold composer-format-italic composer-strikethrough
     composer-list-numbered composer-list-bulleted composer-chat-dashed composer-frame-source
-    composer-inline-code composer-visibility
+    composer-inline-code composer-visibility composer-chat composer-schedule
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
+    zulip-external-account links_compact more build
     reply forward copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
     mail_activity home_filled marker drafts chevron-up
-    at bell bell_off person_add
+    at bell bell_off person_add settings
     stylus images files border_color links business_center handshake account_circle group
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
-    grid
+    grid dashboard_customize
+    wb_sunny bedtime desktop_windows
     # Sidebar pinned-chat meta glyph (issue #96, docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md).
     pin
     # Sidebar topic notification-mode indicator glyph (issue #97,
@@ -254,6 +306,9 @@ foreach(target workspace-native-core workspace-native-ui workspace-native-deskto
 endforeach()
 
 install(TARGETS workspace-native BUNDLE DESTINATION . RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(MSVC)
+    include(InstallRequiredSystemLibraries)
+endif()
 install(FILES ../../LICENSE resources/unicode_emoji.LICENSE resources/emoji_picker.LICENSE resources/md4c.LICENSE resources/openssl.LICENSE
     DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/workspace-native-preview)
 if(UNIX AND NOT APPLE)
@@ -302,6 +357,9 @@ if(BUILD_TESTING)
         src/native-updater-taskbar.cpp src/native-updater-taskbar.h)
     target_include_directories(native-updater-test PRIVATE src)
     target_link_libraries(native-updater-test PRIVATE Qt6::Core Qt6::Gui Qt6::Network Qt6::Test Qt6::DBus)
+    if(TARGET workspace-native-platform-shell)
+        target_link_libraries(native-updater-test PRIVATE workspace-native-platform-shell)
+    endif()
     add_test(NAME native-updater COMMAND native-updater-test)
     set_tests_properties(native-updater PROPERTIES TIMEOUT 180)
     # Focused selection of the LauncherEntry bus case (its own entry so
@@ -311,6 +369,11 @@ if(BUILD_TESTING)
     add_test(NAME native-updater-launcher-entry COMMAND native-updater-test
         downloadProgressReachesTheLauncherEntryChannel)
     set_tests_properties(native-updater-launcher-entry PROPERTIES TIMEOUT 180)
+
+    add_executable(native-support-report-test tests/native-support-report-test.cpp)
+    target_link_libraries(native-support-report-test PRIVATE workspace-native-support Qt6::Test)
+    add_test(NAME native-support-report COMMAND native-support-report-test)
+    set_tests_properties(native-support-report PROPERTIES LABELS unit TIMEOUT 30)
 
     # Real About leaf policy with public QObject adapters; no network/window.
     add_executable(native-about-policy-test tests/native-about-policy-test.cpp)
@@ -327,7 +390,7 @@ if(BUILD_TESTING)
     endif()
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-hotkeys native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
         if(test STREQUAL "file-client" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -340,7 +403,8 @@ if(BUILD_TESTING)
         endif()
         if(test STREQUAL "native-locale")
             target_compile_definitions(${test}-test PRIVATE
-                WORKSPACE_NATIVE_LUPDATE_EXECUTABLE="${WORKSPACE_NATIVE_LUPDATE}")
+                WORKSPACE_NATIVE_LUPDATE_EXECUTABLE="${WORKSPACE_NATIVE_LUPDATE}"
+                WORKSPACE_NATIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         endif()
         if(test STREQUAL "native-chat-crypto")
             target_compile_definitions(${test}-test PRIVATE
@@ -441,6 +505,7 @@ if(BUILD_TESTING)
     endforeach()
     # The markdown renderer has a 20 ms wall-clock guard for quadratic entity decoding.
     set_tests_properties(native-native-markdown PROPERTIES RUN_SERIAL TRUE)
+    add_test(NAME native-hotkeys-ui COMMAND native-window-test shortcutSettingsSearchRecordingAndHelp)
     add_test(NAME native-native-draft-workload COMMAND native-window-test)
     set_tests_properties(native-native-draft-workload PROPERTIES TIMEOUT 180
         ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")
@@ -517,6 +582,9 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
+        uiSecretFragmentTracksRequestAndVaultRemoval
+        uiSecretRequestVerifiesTheReferencedStream
+        uiSecretArchivedFragmentUsesItsAccessibleKey
         uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
         uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
         uiEncryptedOsRetryDoesNotSendAKeyRequest
@@ -575,6 +643,7 @@ if(BUILD_TESTING)
         uiOrdinaryManagerRejectsFromTheActualMainAction
         uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire
         uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction
+        uiKeyRequestHistoryShowsEmptyAndIncomingRows
         uiEncryptedChatInfoDrawerShowsProtectedIdentity
         uiEncryptedChatInfoSettingsScreenNavigation
         uiEncryptedChatInfoMemberListScrollsToEnd
@@ -624,7 +693,7 @@ if(BUILD_TESTING)
     # shared display (focus and keyboard-grab races), so a parallel pre-release
     # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
     # remaining suites concurrently.
-    set_tests_properties(native-native-window native-native-draft-workload native-native-e2ee-ui native-native-preferences
+    set_tests_properties(native-native-window native-hotkeys-ui native-native-draft-workload native-native-e2ee-ui native-native-preferences
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")
@@ -645,3 +714,34 @@ if(WORKSPACE_NATIVE_CALL_SPIKE)
         spike/call/jitsi-loader-attempt.html spike/call/vendor/jitsi-external_api.js)
     qt_finalize_executable(native-call-spike)
 endif()
+
+option(WORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE "Exercise the real native desktop shell" OFF)
+if(WORKSPACE_NATIVE_PLATFORM_SHELL_ACCEPTANCE AND (APPLE OR WIN32))
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    if(APPLE)
+        enable_language(OBJCXX)
+        add_executable(native-platform-shell-test tests/platform-shell/macos-unread.mm)
+        target_link_libraries(native-platform-shell-test PRIVATE "-framework AppKit")
+    else()
+        add_executable(native-platform-shell-test tests/platform-shell/windows-taskbar.cpp)
+        target_link_libraries(native-platform-shell-test PRIVATE user32 shell32)
+        if(MSVC)
+            target_compile_options(native-platform-shell-test PRIVATE /utf-8)
+        endif()
+    endif()
+    target_link_libraries(native-platform-shell-test PRIVATE workspace-native-core workspace-native-desktop Qt6::Test)
+endif()
+
+# Check the final direct dependencies after all platform-specific additions.
+get_target_property(message_time_links workspace-message-time LINK_LIBRARIES)
+if(NOT "${message_time_links}" STREQUAL "Qt6::Core")
+    message(FATAL_ERROR "Message time formatting must depend only on Qt Core: ${message_time_links}")
+endif()
+set(message_time_view "${CMAKE_CURRENT_SOURCE_DIR}/qml/messages/time/MessageTimeView.qml")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${message_time_view}")
+file(STRINGS "${message_time_view}" message_time_imports REGEX "^[ 	]*import[ 	]+")
+foreach(message_time_import IN LISTS message_time_imports)
+    if(NOT message_time_import MATCHES "^import (QtQuick|QtQuick[.]Controls)$")
+        message(FATAL_ERROR "Unexpected dependency in the message time view: ${message_time_import}")
+    endif()
+endforeach()

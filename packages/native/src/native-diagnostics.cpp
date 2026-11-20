@@ -1,4 +1,5 @@
 #include "native-diagnostics.h"
+#include "support/support-report.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -240,6 +241,7 @@ void SessionLogBuffer::append(const QString &level, const QString &scope,
         entry.hasData = true;
     }
     m_entries.prepend(entry); // newest first
+    m_scopeEntries = qMin<qsizetype>(MaxEntries, m_scopeEntries + 1);
     while (m_entries.size() > MaxEntries)
         m_entries.removeLast(); // reference evicts the oldest entry
     emit entriesChanged();
@@ -271,8 +273,23 @@ SessionLogSummary SessionLogBuffer::summary(qint64 nowMs) const
     return result;
 }
 
+QVariantMap SessionLogBuffer::supportEventCounts() const
+{
+    QVariantMap levels{{"debug", 0}, {"info", 0}, {"warn", 0}, {"error", 0}};
+    QVariantMap classes;
+    for (qsizetype index = 0; index < m_scopeEntries; ++index) {
+        const auto &entry = m_entries.at(index);
+        auto level = levels.find(entry.level);
+        if (level != levels.end()) level.value() = level.value().toInt() + 1;
+        const QString scope = supportEventClasses().contains(entry.scope) ? entry.scope : QStringLiteral("other");
+        classes[scope] = classes.value(scope).toInt() + 1;
+    }
+    return {{"levels", levels}, {"classes", classes}};
+}
+
 void SessionLogBuffer::clear()
 {
+    m_scopeEntries = 0;
     if (m_entries.isEmpty()) {
         emit entriesChanged();
         return;

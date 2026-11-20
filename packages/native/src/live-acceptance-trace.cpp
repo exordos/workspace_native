@@ -211,8 +211,12 @@ void observeLiveAcceptance(QQuickWindow *window, ApiClient &api, NativeControlle
             && payload.value("author_uuid").toString() == QString::fromUtf8(peerIdentity)
             && payload.value("payload").toObject().value("content").toString()
                 == QStringLiteral("Acceptance receipt ") + QString::fromUtf8(peerMessage);
+        const bool revalidation = peer && !peerMessage.isEmpty() && kind == QStringLiteral("message.created")
+            && payload.value("topic_uuid").toString() == trace->topicB
+            && payload.value("payload").toObject().value("content").toString()
+                == QStringLiteral("Acceptance revalidation ") + QString::fromUtf8(peerMessage);
         if (kind == QStringLiteral("message.deleted")) trace->peerPlacements.remove(placement);
-        trace->writeEvent("realtime", {{"peer", peer}, {"reaction", reaction}, {"receipt", receipt}, {"kind", kinds.contains(kind) ? kind : QStringLiteral("other")}});
+        trace->writeEvent("realtime", {{"peer", peer}, {"reaction", reaction}, {"receipt", receipt}, {"revalidation", revalidation}, {"kind", kinds.contains(kind) ? kind : QStringLiteral("other")}});
     });
 }
 }

@@ -8,6 +8,15 @@ Start with [build and runtime instructions](NATIVE_DESKTOP_DEVELOPMENT.md), the
 [parity matrix](NATIVE_DESKTOP_PARITY.md), and [crypto acceptance](NATIVE_DESKTOP_CRYPTO.md).
 The application cache is stored on disk with a configurable 10 GB default limit.
 
+## Engineering guides
+
+Use the [module and dependency map](standards/architecture.md) to find the
+owner of a change. The [testing guide](standards/testing.md) lists focused
+verification levels. The [documentation guide](standards/documentation.md)
+covers feature contracts and decisions. For diagnostic data and support
+reports, see the [diagnostics standard](standards/diagnostics.md) and the
+[local support report guide](NATIVE_DESKTOP_SUPPORT_REPORT.md).
+
 ## Repository layout
 
 `packages/native` owns the CMake project, C++ runtime, QML views and native tests.

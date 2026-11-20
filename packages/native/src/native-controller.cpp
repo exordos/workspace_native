@@ -1,4 +1,6 @@
 #include "native-controller.h"
+#include "messages/time/message-time.h"
+#include <QCollator>
 #include "call/incoming-call.h"
 #include "media-viewer.h"
 #include "native-deeplink.h"
@@ -112,7 +114,7 @@ QString chatStreamSecurity(const Stream *stream)
     QJsonArray values{stream->uuid, stream->role, stream->encrypted};
     if (stream->security) {
         const auto &s = *stream->security;
-        values.append(QJsonArray{s.owner, s.viewer, s.source, s.currentKey, s.defaultTopic, s.provider, s.providerIdentity});
+        values.append(QJsonArray{s.owner, s.viewer, s.source, s.currentKey, s.defaultTopic, s.provider, s.providerIdentity, s.allowKeySharingByHolders});
     }
     return QString::fromUtf8(QJsonDocument(values).toJson(QJsonDocument::Compact));
 }
@@ -121,6 +123,7 @@ QString chatStreamSecurity(const Stream *stream)
 void NativeController::resetChatRuntime(bool preserveInitialOrder)
 {
     const QPointer<NativeController> lookupGuard(this);
+    resetChatGrantQueue();
     ++m_chatEpoch; ++m_chatOperation;
     resetChatControls(false, preserveInitialOrder ? ChatOutcomeRetention::OrderOnly : ChatOutcomeRetention::Clear);
     if (!lookupGuard) return;
@@ -137,7 +140,7 @@ void NativeController::resetChatRuntime(bool preserveInitialOrder)
     m_chatLocalRequest.clear();
     m_chatAuthority = {};
     m_chatBusy = false;
-    m_chatPhase.clear(); m_chatError.clear(); m_chatRequestKey.clear();
+    m_chatPhase.clear(); m_chatError.clear(); m_chatRequestKey.clear(); m_secretRequestStream.clear();
     m_chatPrepared.clear(); m_chatPrepareRows.clear(); m_chatPreparedUnits = 0;
     m_chatCurrentKeyState = ChatKeyAvailability::Unknown;
     m_chatSendKey.clear(); m_chatSendDeletion = 0;
@@ -185,6 +188,12 @@ bool NativeController::revokeChatAccess(const QString &stream)
         m_chatPreparingWindow.clear(); m_chatRejectedWindow.clear();
         m_chatPhase = "locked"; m_chatError = tr("Channel access has been revoked.");
         interruptChatKeyResponse();
+    }
+    if (m_chatBusy && m_secretRequestStream == stream && stream != m_stream) {
+        ++m_chatOperation;
+        m_chatBusy = false;
+        m_chatPhase = "locked";
+        m_chatError = tr("Channel access has been revoked.");
     }
     const QPointer<NativeController> guard(this);
     invalidateCache(NativeCache::Kind::History, stream);
@@ -254,6 +263,7 @@ void NativeController::checkChatLifetime()
         && m_catalog == m_chatCatalog && m_cache == m_chatCache && sameChatCache(m_cacheLease, m_chatCacheLease)
         && (!m_chatAccessKnown || m_chatReadableStreams.contains(m_stream));
     if (live) {
+        resetChatGrantQueue();
         resetChatControls(!lifetime, !lifetime ? ChatOutcomeRetention::PublicFacts
             : firstOpen ? ChatOutcomeRetention::OrderOnly : ChatOutcomeRetention::Clear);
         if (!lookupGuard) return;
@@ -309,7 +319,10 @@ void NativeController::useChatKeys(NativeChatKeyVault *vault)
                 wipeChatBytes(stored.value.bytes);
                 interruptChatKeyResponse();
             }
-            if (stream != m_stream) return;
+            ++m_secretKeyRevision;
+            const QPointer<NativeController> keyGuard(this);
+            emit secretKeysChanged();
+            if (!keyGuard || stream != m_stream) return;
             m_chatIssueKeys.remove(key); m_chatControlWindow.clear();
             m_chatPrepared.clear(); m_chatPreparedUnits = 0;
             m_chatCurrentKeyState = ChatKeyAvailability::Unknown;
@@ -392,9 +405,20 @@ QVariantMap NativeController::encryption() const
         }
         if (earliest.isValid()) keyAnnouncedAt = earliest.toString(Qt::ISODateWithMs);
     }
+    const auto requests = chatKeyRequestsMetadata();
+    QVariantList incoming, granted, rejected;
+    for (const auto &entry : requests) {
+        const auto row = entry.toMap();
+        const auto status = row.value("status").toString();
+        if (status == "granted") granted.append(entry);
+        else if (status == "rejected") rejected.append(entry);
+        else if (!row.value("ownCurrentDevice").toBool()) incoming.append(entry);
+    }
     return {{"available", chatVaultMatches()}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
         {"busy", m_chatBusy || issuing || m_chatReissueBusy}, {"error", m_chatError}, {"keyUuid", m_chatRequestKey},
-        {"keyRequests", chatKeyRequestsMetadata()}, {"keyResponse", chatKeyResponseMetadata()},
+        {"keyRequests", requests}, {"keyResponse", chatKeyResponseMetadata()},
+        {"incomingKeyRequests", incoming}, {"grantedKeyRequests", granted}, {"rejectedKeyRequests", rejected},
+        {"grantAllBusy", m_chatGrantEpoch != 0}, {"grantAllFailures", m_failedBulkGrants.size()},
         {"storeOpening", m_chatKeyStoreOpening}, {"pendingSend", pendingSendMetadata()},
         {"currentKeyUuid", verified ? stream->security->currentKey : QString{}},
         {"keyAnnouncedAt", keyAnnouncedAt},
@@ -507,8 +531,17 @@ void NativeController::ensureChatAuthority(ChatAuthorityCallback done)
     m_chatAuthorityWaiters.append(std::move(done));
     if (m_chatAuthorityLoading) return;
     m_chatAuthorityLoading = true;
-    const auto stream = m_stream;
-    request("GET", messenger + "/streams/" + stream, {}, {}, [this, stream, epoch, selection](const ApiResult &result) {
+    fetchChatAuthority(m_stream, epoch, selection, [this, epoch, selection](const ChatAuthority &authority, const QString &error) {
+        if (!chatContext(epoch, selection)) return;
+        if (error.isEmpty()) m_chatAuthority = authority;
+        finishChatAuthority(epoch, selection, error);
+    });
+}
+
+void NativeController::fetchChatAuthority(const QString &stream, quint64 epoch, quint64 selection,
+    std::function<void(const ChatAuthority &, const QString &)> done)
+{
+    request("GET", messenger + "/streams/" + stream, {}, {}, [this, stream, epoch, selection, done](const ApiResult &result) {
         if (!chatContext(epoch, selection)) return;
         if (result.status == 403 || result.status == 404) {
             const QPointer<NativeController> guard(this);
@@ -516,47 +549,53 @@ void NativeController::ensureChatAuthority(ChatAuthorityCallback done)
             if (!guard) return;
             emit messagesChanged();
             if (guard) emit stateChanged();
+            if (guard && chatContext(epoch, selection)) done({}, tr("This channel's encryption authority is unavailable."));
             return;
         }
         const auto parsed = parseStream(result.data.toObject(), m_session->project());
+        const auto catalog = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&](const Stream &row) { return row.uuid == stream; });
+        // Archived selected conversations can be absent from the active catalog.
+        const Stream *known = stream == m_stream ? currentStream() : catalog == m_streams.cend() ? nullptr : &*catalog;
         if (!result.ok() || !parsed || parsed->uuid != stream || !parsed->security
-            || !currentStream() || parsed->encrypted != currentStream()->encrypted
+            || !known || parsed->encrypted != known->encrypted
             || parsed->security->viewer != m_session->user() || parsed->security->source != "native"
             || !parsed->security->provider.isEmpty() || !parsed->security->providerIdentity.isEmpty()
             || (!parsed->security->defaultTopic.isEmpty() && !isUuid(parsed->security->defaultTopic))
             || !QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(parsed->role)) {
-            finishChatAuthority(epoch, selection, tr("This channel's encryption authority is unavailable.")); return;
+            done({}, tr("This channel's encryption authority is unavailable.")); return;
         }
         // currentKey is nullable. An explicit historical generation is independent
         // of a current generation; the live watermark still captures the null.
-        m_chatAuthority = {ownerKey(), stream, parsed->security->defaultTopic, parsed->security->currentKey, parsed->role,
-            parsed->security->owner, {}, epoch, false};
+        auto authority = std::make_shared<ChatAuthority>(ChatAuthority{ownerKey(), stream, parsed->security->defaultTopic,
+            parsed->security->currentKey, parsed->role, parsed->security->owner, {}, epoch, false, {},
+            parsed->security->allowKeySharingByHolders, parsed->encrypted});
         QUrlQuery query; query.addQueryItem("stream_uuid", stream);
         chatCollection(messenger + "/stream_topics/", query, epoch, selection,
-            [this, stream, epoch, selection, query](const QJsonArray &topics, const QString &error) {
+            [this, stream, epoch, selection, query, done, authority](const QJsonArray &topics, const QString &error) {
             if (!chatContext(epoch, selection)) return;
-            if (!error.isEmpty()) { finishChatAuthority(epoch, selection, error); return; }
+            if (!error.isEmpty()) { done({}, error); return; }
             int defaults = 0; QSet<QString> ids;
             for (const auto &raw : topics) {
                 const auto topic = parseTopic(raw.toObject(), m_session->project(), stream);
                 if (!topic || ids.contains(topic->uuid) || !raw.toObject().value("is_default").isBool()) {
-                    finishChatAuthority(epoch, selection, tr("The encryption request topic could not be verified.")); return;
+                    done({}, tr("The encryption request topic could not be verified.")); return;
                 }
                 ids.insert(topic->uuid);
                 if (topic->isDefault) {
                     ++defaults;
-                    if (!m_chatAuthority.defaultTopic.isEmpty() && topic->uuid != m_chatAuthority.defaultTopic) {
-                        finishChatAuthority(epoch, selection, tr("The default topic changed.")); return;
+                    if (!authority->defaultTopic.isEmpty() && topic->uuid != authority->defaultTopic) {
+                        done({}, tr("The default topic changed.")); return;
                     }
-                    m_chatAuthority.defaultTopic = topic->uuid;
+                    authority->defaultTopic = topic->uuid;
                 }
             }
-            m_chatAuthority.topics = ids;
-            if (defaults != 1) { finishChatAuthority(epoch, selection, tr("The encryption request topic could not be verified.")); return; }
+            authority->topics = ids;
+            if (defaults != 1) { done({}, tr("The encryption request topic could not be verified.")); return; }
             chatCollection(messenger + "/stream_bindings/", query, epoch, selection,
-                [this, stream, epoch, selection](const QJsonArray &bindings, const QString &error) {
+                [this, stream, epoch, selection, done, authority](const QJsonArray &bindings, const QString &error) {
                 if (!chatContext(epoch, selection)) return;
-                if (!error.isEmpty()) { finishChatAuthority(epoch, selection, error); return; }
+                if (!error.isEmpty()) { done({}, error); return; }
                 QSet<QString> ids, users;
                 for (const auto &value : bindings) {
                     const auto row = value.toObject(); const auto id = row.value("uuid").toString(); const auto user = row.value("user_uuid").toString();
@@ -564,14 +603,15 @@ void NativeController::ensureChatAuthority(ChatAuthorityCallback done)
                     if (!value.isObject() || !isUuid(id) || ids.contains(id) || !isUuid(user) || users.contains(user)
                         || row.value("project_id").toString() != m_session->project() || row.value("stream_uuid").toString() != stream
                         || !QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(role)) {
-                        finishChatAuthority(epoch, selection, tr("The encryption participants could not be verified.")); return;
+                        done({}, tr("The encryption participants could not be verified.")); return;
                     }
-                    ids.insert(id); users.insert(user); m_chatAuthority.roles.insert(user, role);
+                    ids.insert(id); users.insert(user); authority->roles.insert(user, role);
                 }
-                if (m_chatAuthority.roles.value(m_session->user()) != m_chatAuthority.role) {
-                    finishChatAuthority(epoch, selection, tr("Current channel access could not be verified.")); return;
+                if (authority->roles.value(m_session->user()) != authority->role) {
+                    done({}, tr("Current channel access could not be verified.")); return;
                 }
-                finishChatAuthority(epoch, selection);
+                authority->ready = true;
+                done(*authority, {});
             });
         });
     });
@@ -1104,16 +1144,22 @@ void NativeController::discardRotationStage(const QString &streamUuid, const QSt
         : tr("The rotation stage could not be resolved right now."));
 }
 
-void NativeController::startChatRequest(const QString &keyUuid, bool checking, bool retrying)
+void NativeController::startChatRequest(const QString &keyUuid, bool checking, bool retrying, const QString &secretStream, std::function<bool()> stillNeeded)
 {
     const QPointer<NativeController> lookupGuard(this);
     checkChatLifetime();
     if (!lookupGuard) return;
-    if (m_chatBusy || (m_chatKeyResponse && m_chatKeyResponse->busy)
-        || !chatReadAllowed() || !currentStream() || !currentStream()->encrypted) return;
-    const auto key = keyUuid.isEmpty() && currentStream()->security ? currentStream()->security->currentKey : keyUuid.toLower();
+    const bool secret = !secretStream.isEmpty();
+    const QString source = secret ? secretStream : m_stream;
+    if (m_chatBusy || (m_chatKeyResponse && m_chatKeyResponse->busy) || !chatReadAllowed() || !currentStream()) return;
+    const auto known = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [&](const Stream &row) { return row.uuid == source; });
+    const Stream *target = source == m_stream ? currentStream() : known == m_streams.cend() ? nullptr : &*known;
+    if (!target || (!target->encrypted && !(secret && target->security && target->security->source == "native"))
+        || (m_chatAccessKnown && !m_chatReadableStreams.contains(source))) return;
+    const auto key = keyUuid.isEmpty() && target->security ? target->security->currentKey : keyUuid.toLower();
     if (!isUuid(key)) return;
-    const NativeChatKeyVault::Address address{m_stream, key};
+    const NativeChatKeyVault::Address address{source, key};
     auto existing = m_chatKeys->read(m_chatVaultLease, address);
     const bool usable = existing.failure == NativeChatKeyVault::Failure::None && existing.value.bytes.size() == 32;
     wipeChatBytes(existing.value.bytes);
@@ -1125,6 +1171,7 @@ void NativeController::startChatRequest(const QString &keyUuid, bool checking, b
     if (usable && (checking || retrying || keyUuid.isEmpty())) { scheduleChatPreparation(); return; }
     const auto operation = ++m_chatOperation;
     const auto epoch = m_chatEpoch, selection = m_selection;
+    m_secretRequestStream = secret ? source : QString();
     m_chatRequestKey = key; m_chatLocalRequest.clear(); m_chatBusy = true; m_chatPhase = "verifying"; m_chatError.clear();
     {
         // Existing immutable metadata must not be rewritten to the device's new
@@ -1140,10 +1187,14 @@ void NativeController::startChatRequest(const QString &keyUuid, bool checking, b
     if (!guard || !currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection)) return;
     emit messagesChanged();
     if (!guard || !currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection)) return;
-    ensureChatAuthority([this, key, checking, retrying, operation, epoch, selection](bool okay, const QString &error) {
+    const auto verified = [this, key, source, checking, retrying, operation, epoch, selection, stillNeeded](const ChatAuthority &authority, const QString &error) {
         if (!currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection)) return;
-        if (!okay) { finishChatOperation(operation, key, "unresolved", error); return; }
-        const NativeChatKeyVault::Address address{m_stream, key};
+        if (!error.isEmpty()) { finishChatOperation(operation, key, "unresolved", error); return; }
+        if (stillNeeded && !stillNeeded()) {
+            finishChatOperation(operation, key, "locked");
+            return;
+        }
+        const NativeChatKeyVault::Address address{source, key};
         auto pending = m_chatKeys->pendingRequests(m_chatVaultLease, address);
         const auto cleanup = qScopeGuard([&] { for (auto &item : pending.values) item.clearSecrets(); });
         if (pending.failure != NativeChatKeyVault::Failure::None || pending.values.size() > 1) {
@@ -1155,15 +1206,15 @@ void NativeController::startChatRequest(const QString &keyUuid, bool checking, b
             if (!pair) { finishChatOperation(operation, key, "locked", tr("A secure request key pair could not be created.")); return; }
             auto snapshot = m_chatKeys->read(m_chatVaultLease, address);
             NativeChatKeyVault::PendingRequest saved{QUuid::createUuid().toString(QUuid::WithoutBraces), {}, m_chatKeys->device().name,
-                pair.publicKey, pair.privateKey, QDateTime::currentMSecsSinceEpoch(), snapshot.value.deletionRevision, {}, m_chatAuthority.defaultTopic};
+                pair.publicKey, pair.privateKey, QDateTime::currentMSecsSinceEpoch(), snapshot.value.deletionRevision, {}, authority.defaultTopic};
             const auto scrub = qScopeGuard([&] { saved.clearSecrets(); });
             wipeChatBytes(snapshot.value.bytes); wipeChatBytes(pair.privateKey);
             if (m_chatKeys->putPendingRequest(m_chatVaultLease, address, saved) != NativeChatKeyVault::Failure::None) {
                 finishChatOperation(operation, key, "locked", tr("The key request could not be saved securely.")); return;
             }
-            updateChatPendingState(key, true, true);
+            if (source == m_stream) updateChatPendingState(key, true, true);
             m_chatLocalRequest = saved.localId;
-            postChatRequest(key, saved, epoch, selection, operation); return;
+            postChatRequest(address, saved, epoch, selection, operation); return;
         }
         auto saved = pending.values.first();
         const auto topic = saved.targetTopic;
@@ -1172,28 +1223,33 @@ void NativeController::startChatRequest(const QString &keyUuid, bool checking, b
         saved.clearSecrets();
         m_chatLocalRequest = saved.localId;
         if (placement.isEmpty()) { finishChatOperation(operation, key, "unresolved", tr("This legacy request needs history reconciliation.")); return; }
-        request("GET", messenger + "/messages/" + placement, {}, {}, [this, key, saved, retrying, epoch, selection, operation](const ApiResult &result) {
+        request("GET", messenger + "/messages/" + placement, {}, {}, [this, key, source, saved, address, defaultTopic = authority.defaultTopic, retrying, epoch, selection, operation](const ApiResult &result) {
             if (!currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection)) return;
             const auto parsed = parseMessage(result.data.toObject(), m_session->project());
-            if (result.ok() && parsed && bindChatRequest(*parsed, key, saved, true)) {
+            if (result.ok() && parsed && bindChatRequest(*parsed, key, saved, true, source)) {
                 const QPointer<NativeController> guard(this);
                 finishChatOperation(operation, key, "requested");
                 if (guard && currentChatOperation(operation, key) && chatContext(epoch, selection)) drainChatResponses(parsed->uuid);
                 return;
             }
-            if (result.status == 404 && retrying && !saved.targetTopic.isEmpty() && saved.targetTopic == m_chatAuthority.defaultTopic) {
-                postChatRequest(key, saved, epoch, selection, operation); return;
+            if (result.status == 404 && retrying && !saved.targetTopic.isEmpty() && saved.targetTopic == defaultTopic) {
+                postChatRequest(address, saved, epoch, selection, operation); return;
             }
             finishChatOperation(operation, key, "unresolved", tr("The key request has not been confirmed. Check does not send it again."));
         });
-    });
+    };
+    if (source == m_stream) {
+        ensureChatAuthority([this, verified](bool, const QString &error) { verified(m_chatAuthority, error); });
+    } else {
+        fetchChatAuthority(source, epoch, selection, verified);
+    }
 }
 
 bool NativeController::matchesChatRequest(const Message &message, const QString &key,
-    const NativeChatKeyVault::PendingRequest &saved, bool observed) const
+    const NativeChatKeyVault::PendingRequest &saved, bool observed, const QString &source) const
 {
     if (!message.crypto || message.kind != "key_request" || message.project != m_session->project()
-        || message.stream != m_stream || message.author != m_session->user()
+        || message.stream != (source.isEmpty() ? m_stream : source) || message.author != m_session->user()
         || (!observed && (!message.own || saved.targetTopic.isEmpty() || message.topic != saved.targetTopic))
         || message.crypto->keyUuid != key || message.crypto->deviceId != m_chatKeys->device().id
         || message.crypto->deviceName != saved.deviceName
@@ -1204,18 +1260,19 @@ bool NativeController::matchesChatRequest(const Message &message, const QString 
 }
 
 bool NativeController::bindChatRequest(const Message &message, const QString &key,
-    const NativeChatKeyVault::PendingRequest &saved, bool observed)
+    const NativeChatKeyVault::PendingRequest &saved, bool observed, const QString &source)
 {
-    if (!matchesChatRequest(message, key, saved, observed)) return false;
-    return m_chatKeys->bindPendingRequest(m_chatVaultLease, {m_stream, key}, saved.localId, message.uuid)
+    if (!matchesChatRequest(message, key, saved, observed, source)) return false;
+    return m_chatKeys->bindPendingRequest(m_chatVaultLease, {message.stream, key}, saved.localId, message.uuid)
         == NativeChatKeyVault::Failure::None;
 }
 
-void NativeController::postChatRequest(const QString &key, const NativeChatKeyVault::PendingRequest &pending,
+void NativeController::postChatRequest(const NativeChatKeyVault::Address &address, const NativeChatKeyVault::PendingRequest &pending,
     quint64 epoch, quint64 selection, quint64 operation)
 {
-    if (!currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection) || pending.targetTopic != m_chatAuthority.defaultTopic) return;
-    const NativeChatKeyVault::Address address{m_stream, key};
+    const auto key = address.key;
+    if (!currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection)
+        || (address.stream == m_stream && pending.targetTopic != m_chatAuthority.defaultTopic)) return;
     // A fresh request stages an empty pending slot; a saved-generation re-request
     // (review 4576750804) keeps its durable bytes - either way the row must not
     // have changed since staging (deletionRevision covers delete/replace).
@@ -1227,13 +1284,13 @@ void NativeController::postChatRequest(const QString &key, const NativeChatKeyVa
     if (!current) { finishChatOperation(operation, key, "unresolved", tr("The key request was superseded by a local change.")); return; }
     const QJsonObject payload{{"kind", "key_request"}, {"key_uuid", key}, {"device_id", m_chatKeys->device().id},
         {"device_name", pending.deviceName}, {"public_key", QString::fromLatin1(pending.publicKey.toBase64())}};
-    const QJsonObject body{{"uuid", pending.localId}, {"stream_uuid", m_stream}, {"topic_uuid", pending.targetTopic}, {"payload", payload}};
+    const QJsonObject body{{"uuid", pending.localId}, {"stream_uuid", address.stream}, {"topic_uuid", pending.targetTopic}, {"payload", payload}};
     auto captured = pending; captured.clearSecrets();
     m_chatPhase = "sending";
-    request("POST", messenger + "/messages/", body, {}, [this, key, captured, epoch, selection, operation](const ApiResult &result) {
+    request("POST", messenger + "/messages/", body, {}, [this, key, address, captured, epoch, selection, operation](const ApiResult &result) {
         if (!currentChatOperation(operation, key) || !m_chatBusy || !chatContext(epoch, selection)) return;
         const auto parsed = parseMessage(result.data.toObject(), m_session->project());
-        if (result.ok() && parsed && bindChatRequest(*parsed, key, captured)) {
+        if (result.ok() && parsed && bindChatRequest(*parsed, key, captured, false, address.stream)) {
             const QPointer<NativeController> guard(this);
             finishChatOperation(operation, key, "requested");
             if (guard && currentChatOperation(operation, key) && chatContext(epoch, selection)) drainChatResponses(parsed->uuid);
@@ -1629,6 +1686,8 @@ void NativeController::observeChatRequest(const Message &message)
         return;
     }
     m_chatRequestFactUnits += fact.units - oldUnits;
+    m_chatGrantErrors.remove(message.uuid);
+    m_failedBulkGrants.remove(message.uuid);
     m_chatRequestFacts.insert(message.uuid, std::move(fact)); m_chatIssueChanged = true;
     if (!previousKey.isEmpty() && std::none_of(m_chatRequestFacts.cbegin(), m_chatRequestFacts.cend(),
         [&](const ChatRequestFact &row) { return row.key == previousKey; })) m_chatIssueKeys.remove(previousKey);
@@ -1657,10 +1716,16 @@ void NativeController::updateChatPendingState(const QString &key, bool known, bo
 
 bool NativeController::receiveChatControl(const Message &message)
 {
-    if (!currentStream() || !currentStream()->encrypted
-        || !message.crypto || message.stream != m_stream || message.project != m_session->project()
+    const bool foreign = message.stream != m_stream;
+    if (!currentStream() || (!foreign && !currentStream()->encrypted)
+        || !message.crypto || message.project != m_session->project()
         || (message.kind != "key_request" && message.kind != "key_grant" && message.kind != "key_reject")
         || !chatVaultMatches()) return true;
+    // Other conversations can deliver a reply to a request for a forwarded
+    // fragment. Only inspect grants/rejections addressed to this device. The
+    // durable request and source authority are checked before any vault change.
+    if (foreign && (message.kind == "key_request" || message.crypto->recipientDevice != m_chatKeys->device().id
+        || (m_chatAccessKnown && !m_chatReadableStreams.contains(message.stream)))) return true;
     const QPointer<NativeController> lifetimeGuard(this);
     checkChatLifetime();
     if (!lifetimeGuard) return true;
@@ -1669,14 +1734,16 @@ bool NativeController::receiveChatControl(const Message &message)
         // Catch-up events are already acknowledged by RealtimeClient, while
         // writes/authority remain blocked until its live watermark. Keep only
         // bounded typed data; no binding or key receipt is admitted here.
-        if (m_syncBlocked && m_catalogVerified && !m_snapshotActive && chatReadAllowed()) {
+        if (!foreign && m_syncBlocked && m_catalogVerified && !m_snapshotActive && chatReadAllowed()) {
             observeChatRequest(message);
             retainChatControl(message);
         }
         return true;
     }
-    observeChatRequest(message);
-    observeChatKeyOutcome(message);
+    if (!foreign) {
+        observeChatRequest(message);
+        observeChatKeyOutcome(message);
+    }
     const auto &payload = *message.crypto;
     if (message.kind == "key_request" && !m_chatRequestFactsLimited && !m_chatIssueKeys.contains(payload.keyUuid)) {
         // The same bounded availability cache is shared with announcements.
@@ -1697,7 +1764,7 @@ bool NativeController::receiveChatControl(const Message &message)
     }
     auto known = m_chatKeys->pendingRequests(m_chatVaultLease, {message.stream, payload.keyUuid});
     const auto scrub = qScopeGuard([&] { for (auto &item : known.values) item.clearSecrets(); });
-    updateChatPendingState(payload.keyUuid, known.failure == NativeChatKeyVault::Failure::None, !known.values.isEmpty());
+    if (!foreign) updateChatPendingState(payload.keyUuid, known.failure == NativeChatKeyVault::Failure::None, !known.values.isEmpty());
     if (known.failure != NativeChatKeyVault::Failure::None) return true;
     if (message.kind == "key_request") {
         QVector<qsizetype> bound, candidates;
@@ -1737,14 +1804,25 @@ bool NativeController::receiveChatControl(const Message &message)
     const auto responseKey = message.uuid;
     if (m_chatResponses.size() >= 32 && !m_chatResponses.contains(responseKey)) return false;
     m_chatResponses.insert(responseKey, message);
-    ensureChatAuthority([this, responseKey, epoch, selection](bool okay, const QString &) {
-        if (!okay || !chatContext(epoch, selection) || !m_chatResponses.contains(responseKey)) return;
+    const auto accessRevision = m_chatAccessRevision;
+    const auto verified = [this, responseKey, epoch, selection, foreign, accessRevision](const ChatAuthority &authority, const QString &error) {
+        if (!chatContext(epoch, selection) || !m_chatResponses.contains(responseKey)) return;
+        if (!error.isEmpty() || !authority.ready || (foreign && accessRevision != m_chatAccessRevision)) {
+            if (foreign) m_chatResponses.remove(responseKey);
+            return;
+        }
         const QPointer<NativeController> wake(this);
         const auto resume = qScopeGuard([wake] { if (wake) wake->scheduleChatControls(); });
         const auto message = m_chatResponses.value(responseKey); const auto &payload = *message.crypto;
-        const auto role = m_chatAuthority.roles.value(message.author);
-        if ((message.author != m_chatAuthority.issuerOwner && role != "owner" && role != "administrator")
-            || payload.recipientDevice != m_chatKeys->device().id) { m_chatResponses.remove(responseKey); return; }
+        if (message.stream != authority.stream || (foreign && !authority.topics.contains(message.topic))) {
+            m_chatResponses.remove(responseKey);
+            return;
+        }
+        const auto role = authority.roles.value(message.author);
+        const bool allowed = message.kind == "key_grant" && authority.encrypted
+            ? chatGrantIssuerAllowed(authority, message.author, m_session->user())
+            : message.author == authority.issuerOwner || role == "owner" || role == "administrator";
+        if (!allowed || payload.recipientDevice != m_chatKeys->device().id) { m_chatResponses.remove(responseKey); return; }
         const NativeChatKeyVault::Address address{message.stream, payload.keyUuid};
         auto requests = m_chatKeys->pendingRequests(m_chatVaultLease, address);
         const auto cleanup = qScopeGuard([&] { for (auto &item : requests.values) item.clearSecrets(); });
@@ -1772,7 +1850,7 @@ bool NativeController::receiveChatControl(const Message &message)
             wipeChatBytes(group);
             if (!guard) return;
             if (!chatContext(epoch, selection)) return;
-            if (done == NativeChatKeyVault::Failure::None) {
+            if (!foreign && done == NativeChatKeyVault::Failure::None) {
                 // Completion may synchronously remove the availability entry
                 // through a Grant material signal. Reacquire only afterwards.
                 auto remaining = m_chatKeys->pendingRequests(m_chatVaultLease, address);
@@ -1792,7 +1870,12 @@ bool NativeController::receiveChatControl(const Message &message)
             }
             return;
         }
-    });
+    };
+    if (foreign) {
+        fetchChatAuthority(message.stream, epoch, selection, verified);
+    } else {
+        ensureChatAuthority([this, verified](bool, const QString &error) { verified(m_chatAuthority, error); });
+    }
     return true;
 }
 
@@ -2072,11 +2155,23 @@ bool NativeController::chatIssuerAllowed() const
     return m_chatAuthority.issuerOwner == m_session->user() || role == "owner" || role == "administrator";
 }
 
-bool NativeController::chatResponseAllowed(const ChatRequestFact &fact) const
+bool NativeController::chatGrantIssuerAllowed(const ChatAuthority &authority, const QString &issuer, const QString &requester) const
+{
+    if (!chatContext(m_chatEpoch, m_selection) || !authority.ready || authority.epoch != m_chatEpoch
+        || authority.owner != ownerKey()) return false;
+    if (!authority.allowKeySharingByHolders) return issuer == authority.issuerOwner;
+    const auto participant = [&](const QString &user) {
+        return user == authority.issuerOwner || authority.roles.contains(user);
+    };
+    return participant(issuer) && participant(requester);
+}
+
+bool NativeController::chatResponseAllowed(const ChatRequestFact &fact, bool grant) const
 {
     const auto *stream = currentStream();
     if (!stream) return false;
-    if (stream->encrypted) return chatIssuerAllowed();
+    if (stream->encrypted) return grant ? m_chatAuthority.stream == m_stream
+        && chatGrantIssuerAllowed(m_chatAuthority, m_session->user(), fact.author) : chatIssuerAllowed();
     // Ordinary current participants may relay an exact locally held generation.
     // Managers retain Reject without A; Grant separately checks material/deletion.
     if (!stream->security || stream->security->viewer != m_session->user()
@@ -2128,19 +2223,20 @@ QVariantList NativeController::chatKeyRequestsMetadata() const
         const bool ordinaryEligible = ordinary && participant
             && (m_chatAuthority.issuerOwner == m_session->user() || selfRole == "owner" || selfRole == "administrator"
                 || key.state == ChatKeyAvailability::Present);
-        const bool responseAllowed = chatResponseAllowed(fact);
+        const bool grantAllowed = chatResponseAllowed(fact, true);
+        const bool rejectAllowed = chatResponseAllowed(fact, false);
         const bool pending = m_chatKeyResponse && m_chatKeyResponse->request == id && m_chatKeyResponse->busy;
         const auto status = fact.outcome.isEmpty() ? QStringLiteral("pending") : fact.outcome;
         rows.append(QVariantMap{{"id", id}, {"authorId", fact.author},
-            {"name", userDisplayName(fact.author, QStringLiteral("#") + fact.author.left(8))}, {"deviceName", fact.name},
+            {"name", userDisplayName(fact.author, QStringLiteral("#") + fact.author.left(8))}, {"deviceName", fact.name}, {"avatar", userAvatar(fact.author)},
             {"keyUuid", fact.key}, {"status", status}, {"pending", pending},
             {"ownCurrentDevice", fact.author == m_session->user() && fact.device == localDevice},
             {"canManageKeys", ordinary ? ordinaryEligible : manager}, {"hasRequestedKey", key.state == ChatKeyAvailability::Present},
-            {"offerGrant", responseAllowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"offerReject", responseAllowed && valid && status == "pending"},
-            {"canGrant", responseAllowed && !busy && !retained && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
-            {"canReject", responseAllowed && !busy && !retained && valid && status == "pending"},
-            {"error", m_chatKeyResponse && m_chatKeyResponse->request == id ? m_chatKeyResponse->error : QString{}}});
+            {"offerGrant", grantAllowed && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
+            {"offerReject", rejectAllowed && valid && status == "pending"},
+            {"canGrant", grantAllowed && !busy && !retained && valid && publicKeySize == 32 && status == "pending" && key.state == ChatKeyAvailability::Present},
+            {"canReject", rejectAllowed && !busy && !retained && valid && status == "pending"},
+            {"error", m_chatKeyResponse && m_chatKeyResponse->request == id ? m_chatKeyResponse->error : m_chatGrantErrors.value(id)}});
     }
     return rows;
 }
@@ -2232,11 +2328,14 @@ void NativeController::reduceChatKeyOutcomes()
             if (request == m_chatRequestFacts.end() || request->deleted || !request->outcome.isEmpty()
                 || request->stream != fact.stream || request->key != fact.key || request->device != fact.device
                 || (currentStream() && currentStream()->encrypted
-                    ? fact.author != m_chatAuthority.issuerOwner && role != "owner" && role != "administrator"
+                    ? (fact.outcome == "granted" ? !chatGrantIssuerAllowed(m_chatAuthority, fact.author, request->author)
+                        : fact.author != m_chatAuthority.issuerOwner && role != "owner" && role != "administrator")
                     : (fact.author != m_chatAuthority.issuerOwner && !m_chatAuthority.roles.contains(fact.author))
                         || (request->author != m_chatAuthority.issuerOwner && !m_chatAuthority.roles.contains(request->author)))) continue;
             const auto units = fact.outcome.size() + fact.id.size();
             if (m_chatRequestFactUnits + units > 2000000) { m_chatRequestFactsLimited = true; break; }
+            m_chatGrantErrors.remove(fact.request);
+            m_failedBulkGrants.remove(fact.request);
             request->outcome = fact.outcome; request->response = fact.id; request->units += units;
             m_chatRequestFactUnits += units;
         }
@@ -2269,7 +2368,7 @@ bool NativeController::chatKeyResponseOwned(bool writing) const
     const auto fact = m_chatRequestFacts.constFind(intent.request);
     if (fact == m_chatRequestFacts.cend() || !chatRequestMatches(*fact, intent)
         || (!fact->outcome.isEmpty() && fact->response != intent.publicId)
-        || !chatResponseAllowed(*fact)) return false;
+        || !chatResponseAllowed(*fact, intent.action == "grant")) return false;
     if (intent.action == "grant") {
         const auto key = m_chatIssueKeys.constFind(intent.key);
         if (key == m_chatIssueKeys.cend() || key->state != ChatKeyAvailability::Present || key->deletion != intent.deletion) return false;
@@ -2321,10 +2420,82 @@ void NativeController::interruptChatKeyResponse()
     intent.error = tr("The key response was interrupted. Check its saved status before retrying.");
 }
 
-void NativeController::grantChatKey(const QString &request) { startChatKeyResponse(request, true); }
-void NativeController::rejectChatKey(const QString &request) { startChatKeyResponse(request, false); }
+void NativeController::resetChatGrantQueue()
+{
+    m_chatGrantQueue.clear();
+    m_chatGrantErrors.clear();
+    m_failedBulkGrants.clear();
+    m_chatGrantInFlight.clear();
+    m_chatGrantEpoch = 0;
+}
 
-void NativeController::startChatKeyResponse(const QString &request, bool grant)
+void NativeController::grantAllChatKeys()
+{
+    if (m_chatGrantEpoch || !chatContext(m_chatEpoch, m_selection)) return;
+    QStringList eligible;
+    for (const auto &entry : chatKeyRequestsMetadata()) {
+        const auto row = entry.toMap();
+        if (row.value("canGrant").toBool() && !row.value("ownCurrentDevice").toBool())
+            eligible.append(row.value("id").toString());
+    }
+    if (eligible.isEmpty()) return;
+    m_failedBulkGrants.clear();
+    m_chatGrantQueue = std::move(eligible);
+    m_chatGrantEpoch = m_chatEpoch;
+    advanceChatGrants();
+}
+
+void NativeController::advanceChatGrants()
+{
+    if (!m_chatGrantEpoch || m_chatGrantEpoch != m_chatEpoch || !m_chatGrantInFlight.isEmpty()) return;
+    if (m_chatGrantQueue.isEmpty()) {
+        m_chatGrantEpoch = 0;
+        const QPointer<NativeController> guard(this);
+        emit stateChanged();
+        if (guard && !m_failedBulkGrants.isEmpty())
+            report(tr("Could not send the key. Requests to retry: %1.").arg(m_failedBulkGrants.size()));
+        return;
+    }
+    const auto request = m_chatGrantQueue.takeFirst();
+    m_chatGrantInFlight = request;
+    const QPointer<NativeController> guard(this);
+    const auto oldResponse = m_chatKeyResponse ? m_chatKeyResponse->uuid : QString{};
+    startChatKeyResponse(request, true, true);
+    if (guard && m_chatGrantInFlight == request && (!m_chatKeyResponse || m_chatKeyResponse->uuid == oldResponse)) {
+        m_chatGrantErrors.insert(request, tr("The key could not be sent to this device."));
+        m_failedBulkGrants.insert(request);
+        settleChatGrant(request, false);
+    }
+}
+
+void NativeController::settleChatGrant(const QString &request, bool ambiguous)
+{
+    if (!m_chatGrantEpoch || m_chatGrantInFlight != request) return;
+    m_chatGrantInFlight.clear();
+    if (ambiguous) {
+        // Keep the single uncertain wire identity intact for Check / Retry.
+        // The rest have never been sent and may be selected after recovery.
+        m_chatGrantErrors.insert(request, m_chatKeyResponse->error);
+        m_failedBulkGrants.insert(request);
+        for (const auto &unsent : std::as_const(m_chatGrantQueue)) {
+            m_chatGrantErrors.insert(unsent, tr("This request has not been sent."));
+            m_failedBulkGrants.insert(unsent);
+        }
+        m_chatGrantQueue.clear();
+    }
+    QTimer::singleShot(0, this, &NativeController::advanceChatGrants);
+}
+
+void NativeController::grantChatKey(const QString &request, bool fromDrawer)
+{
+    if (!m_chatGrantEpoch) startChatKeyResponse(request, true, fromDrawer);
+}
+void NativeController::rejectChatKey(const QString &request, bool fromDrawer)
+{
+    if (!m_chatGrantEpoch) startChatKeyResponse(request, false, fromDrawer);
+}
+
+void NativeController::startChatKeyResponse(const QString &request, bool grant, bool fromDrawer)
 {
     const QPointer<NativeController> lookupGuard(this);
     checkChatLifetime();
@@ -2334,11 +2505,12 @@ void NativeController::startChatKeyResponse(const QString &request, bool grant)
     const auto found = m_chatRequestFacts.constFind(request);
     if (found == m_chatRequestFacts.cend() || found->deleted || found->stream != m_stream || !found->outcome.isEmpty()
         || !isUuid(found->key) || found->device.isEmpty() || !isUuid(found->author)
-        || !chatResponseAllowed(*found)) return;
+        || !chatResponseAllowed(*found, grant)) return;
     const auto publicKey = strictChatBase64(found->publicKey, 2048);
     if (publicKey.isEmpty() || (grant && publicKey.size() != 32) || !isUuid(m_chatAuthority.defaultTopic)) return;
     const auto fact = *found;
     ChatKeyResponse intent;
+    intent.fromDrawer = fromDrawer;
     intent.uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
     intent.owner = ownerKey(); intent.project = m_session->project(); intent.user = m_session->user();
     intent.request = request; intent.requester = fact.author; intent.deviceName = fact.name; intent.publicKey = fact.publicKey;
@@ -2378,6 +2550,7 @@ void NativeController::finishChatKeyResponse(const QString &id, quint64 ticket, 
 {
     if (!m_chatKeyResponse || m_chatKeyResponse->uuid != id || m_chatKeyResponse->ticket != ticket) return;
     m_chatKeyResponse->busy = false; m_chatKeyResponse->phase = "uncertain"; m_chatKeyResponse->error = error;
+    settleChatGrant(m_chatKeyResponse->request, true);
     const auto epoch = m_chatEpoch, selection = m_selection;
     const QPointer<NativeController> guard(this);
     emit stateChanged();
@@ -2414,6 +2587,23 @@ void NativeController::postChatKeyResponse(const QString &id, quint64 ticket)
     const QJsonObject body{{"uuid", intent.uuid}, {"stream_uuid", intent.stream}, {"topic_uuid", intent.topic}, {"payload", intent.payload}};
     request("POST", messenger + "/messages/", body, {}, [this, id, ticket](const ApiResult &result) {
         if (!chatKeyResponseContext(id, ticket) || !m_chatKeyResponse->busy) return;
+        if (m_chatKeyResponse->fromDrawer && (result.status == 400 || result.status == 403 || result.status == 404 || result.status == 422)) {
+            const auto request = m_chatKeyResponse->request;
+            const bool bulk = m_chatGrantEpoch && m_chatGrantInFlight == request;
+            const auto error = m_chatKeyResponse->action == "grant"
+                ? tr("The key could not be sent to this device.") : tr("The request could not be rejected.");
+            m_chatGrantErrors.insert(request, error);
+            if (bulk) m_failedBulkGrants.insert(request);
+            if (m_chatKeyResponse->holdsField) finishMessageIntent(m_chatKeyResponse->publicId);
+            m_chatKeyResponse.reset();
+            if (bulk) {
+                settleChatGrant(request, false);
+                emit stateChanged();
+            } else {
+                report(error);
+            }
+            return;
+        }
         if (!result.ok() || !matchesChatKeyResponse(result.data.toObject(), false)) {
             finishChatKeyResponse(id, ticket, tr("The key response was not confirmed. Check does not send it again.")); return;
         }
@@ -2440,6 +2630,7 @@ bool NativeController::confirmChatKeyResponse(const QJsonObject &raw, const QStr
     if (!message) return false;
     m_chatKeyResponse->busy = false; m_chatKeyResponse->phase = "ready"; m_chatKeyResponse->error.clear();
     m_chatKeyResponse->holdsField = false;
+    settleChatGrant(intent.request, false);
     observeChatKeyOutcome(*message);
     const bool visible = inConversation(*message);
     if (visible && !findMessage(message->uuid)) {
@@ -3052,6 +3243,9 @@ QVariantMap NativeController::account() const
 {
     auto profile = m_session->publicProfile();
     if (!profile.isEmpty()) {
+        profile.insert("login", m_session->loginName());
+        const auto host = m_api->server().host();
+        profile.insert("serverLabel", host.isEmpty() ? m_session->loginName() : host);
         profile.insert("avatar", userAvatar(m_session->user()));
         profile.insert("presence", userPresence(m_session->user()));
         profile.insert("statusLabel", userStatusLabel(m_session->user()));
@@ -3255,7 +3449,7 @@ void NativeController::saveOwnStatus(const QString &text, const QString &emoji, 
         const auto name = directoryViewerName(row);
         // A single owned canonical response cannot adopt somebody else's directory.
         if (m_channelDirectoryOwner != owner) {
-            m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryValid = false;
+            m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryValid = false;
             m_channelDirectoryOwner = owner;
         }
         m_names.insert(user, makeUserPresentation(name, row, true, m_names.value(user)));
@@ -3862,6 +4056,30 @@ QVariantList NativeController::chatPickerChoices() const
     return result;
 }
 
+QVariantList NativeController::searchWorkspaceUsers(const QString &query) const
+{
+    const auto needle = query.trimmed();
+    QVariantList matches;
+    if (needle.isEmpty() || !authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return matches;
+    auto addMatch = [&](QVariantMap choice) {
+        if (choice.isEmpty()) return;
+        const auto person = m_names.constFind(choice.value("id").toString());
+        const auto contains = [&](const QString &value) { return value.contains(needle, Qt::CaseInsensitive); };
+        if (!contains(choice.value("displayName").toString()) && !contains(choice.value("username").toString())
+            && !contains(choice.value("email").toString())
+            && (person == m_names.cend() || (!contains(person->statusText) && !contains(person->statusEmoji)))) return;
+        choice["presence"] = person == m_names.cend() ? QString{} : person->presence;
+        choice["statusLabel"] = person == m_names.cend() ? QString{} : person->statusLabel;
+        matches.append(choice);
+    };
+    const auto self = m_session->user();
+    for (const auto &id : m_directoryUserOrder) {
+        addMatch(id == self ? m_mentionSelfChoice : m_channelChoices.value(id));
+        if (matches.size() == 20) break;
+    }
+    return matches;
+}
+
 bool NativeController::channelMembersVerified() const
 {
     return authenticated() && m_usersVerified && m_channelDirectoryValid
@@ -3944,10 +4162,37 @@ QVariantMap NativeController::channelInfoStream() const
     // stream.isPrivate) and `source_name` is the encryption-source witness.
     const auto sourceName = stream->security
         ? stream->security->source : QString{};
+    const bool canEditSummary = stream->viewer == m_session->user()
+        && (stream->role == "owner" || stream->role == "administrator");
     return {{"id", stream->uuid}, {"title", stream->name}, {"description", stream->description},
         {"color", color}, {"notificationMode", stream->notificationMode},
         {"owner", stream->role == "owner"}, {"private", stream->privateStream},
-        {"sourceName", sourceName}};
+        {"sourceName", sourceName},
+        {"canEditTopicSummary", canEditSummary},
+        {"canOpenSummarySettings", canEditSummary || m_session->canConfigureSummaryService()}};
+}
+
+QVariantList NativeController::channelInfoTopics() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream) return {};
+    QHash<QString, const Topic *> byId;
+    for (const auto &topic : m_topics) byId.insert(topic.uuid, &topic);
+    QSet<QString> mentions;
+    for (const auto &entry : m_unreadMentions)
+        if (entry.stream == stream->uuid) mentions.insert(entry.topic);
+    auto rows = topicRows(m_topics, stream);
+    for (auto &value : rows) {
+        auto row = value.toMap();
+        const auto id = row.value("id").toString();
+        const auto *topic = byId.value(id);
+        row.insert("hasUnreadPersonalMention", mentions.contains(id));
+        row.insert("summary", topic->summary);
+        row.insert("summaryEnabled", topic->summaryEnabled);
+        row.insert("summaryHasNewMessages", topic->summaryHasNewMessages);
+        value = row;
+    }
+    return rows;
 }
 
 QVariantList NativeController::channelInfoMembers() const
@@ -4057,50 +4302,69 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
     });
 }
 
-void NativeController::setChannelInfoNotificationMode(const QString &mode)
+void NativeController::applyChannelTopicAction(const QString &id, const QString &action, const QString &value)
 {
     const auto *stream = channelInfoStreamRow();
-    if (!stream || channelInfoNotificationBusy() || stream->notificationMode.isEmpty()
-        || stream->notificationMode == mode || !channelModes.contains(mode)) return;
-    const auto owner = ownerKey();
+    const auto current = std::find_if(m_topics.cbegin(), m_topics.cend(),
+        [&](const Topic &row) { return row.uuid == id && row.stream == m_stream; });
+    if (!stream || !m_topicsVerified || current == m_topics.cend() || current->done) {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    QByteArray method = "POST";
+    QString path = messenger + "/stream_topics/" + id;
+    QJsonObject body;
+    if (action == "notifications" && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
+        path += "/actions/notifications/invoke";
+        body.insert("notification_mode", value);
+    } else if (action == "summary" && channelInfoStream().value("canEditTopicSummary").toBool()
+               && (value == "true" || value == "false")) {
+        path += "/actions/set_summary_prompt/invoke";
+        body.insert("summary_enabled", value == "true");
+    } else if (action == "read" || action == "toggle_done") {
+        path += "/actions/" + action + "/invoke";
+    } else if (action == "rename" && !value.trimmed().isEmpty()) {
+        method = "PUT";
+        body.insert("name", value.trimmed());
+    } else {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
     const auto generation = m_api->generation();
-    const auto streamUuid = stream->uuid;
-    // Per-stream in-flight tracking: the request stamps its own token into its
-    // stream's slot, so a request on any other stream never takes over this
-    // stream's busy state and a follow-up same-stream request is rejected
-    // until this one settles.
-    const auto token = ++m_channelInfoNotificationToken;
-    m_channelInfoNotificationInFlight.insert(streamUuid, token);
-    m_channelInfoNotificationError.clear();
-    emit stateChanged();
-    // runWorkspaceStreamNotificationUpdate -> POST streams/{id}/actions/
-    // notifications/invoke; the canonical stream DTO answers and the store
-    // value then feeds the switch (store mode wins over any stale info).
-    request("POST", messenger + "/streams/" + streamUuid + "/actions/notifications/invoke",
-        QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, streamUuid, token](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        // Only the newest in-flight request for this stream owns its busy
-        // slot: a superseded response must neither release a newer request's
-        // state nor overwrite its result, and the late response of an
-        // abandoned request may only ever release its own stream's slot.
-        if (m_channelInfoNotificationInFlight.value(streamUuid) != token) return;
-        m_channelInfoNotificationInFlight.remove(streamUuid);
-        if (m_stream != streamUuid) return;
-        const auto parsed = result.ok() && result.data.isObject()
-            ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
-        const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
-            [streamUuid](const Stream &row) { return row.uuid == streamUuid; });
-        if (!parsed || parsed->uuid != streamUuid || entry == m_streams.end()) {
-            // The reference shows t("app.error") on any failed update.
-            m_channelInfoNotificationError = tr("Something went wrong");
+    const auto owner = ownerKey(), streamId = m_stream;
+    const auto key = QString::number(generation) + '/' + id;
+    if (m_channelTopicRequests.contains(key)) {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    m_channelTopicRequests.insert(key);
+    const auto revision = m_topicRevision;
+    request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
+        m_channelTopicRequests.remove(key);
+        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) return;
+        const auto dto = response.data.toObject();
+        const auto updated = parseTopic(dto, m_session->project(), streamId);
+        const bool accepted = response.ok() && updated && updated->uuid == id
+            && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
+        staleCache(NativeCache::Kind::Topics, streamId);
+        auto row = std::find_if(m_topics.begin(), m_topics.end(), [&](const Topic &t) { return t.uuid == id; });
+        if (accepted && row != m_topics.end() && revision == m_topicRevision) {
+            *row = *updated;
+            ++m_topicRevision;
+            if (action == "read") mentionIndexClearTopic(streamId, id);
+            emit topicsChanged();
             emit stateChanged();
-            return;
+        } else {
+            // A newer catalog or an uncertain write is reconciled by reading.
+            loadTopics();
         }
-        *entry = *parsed;
-        emit streamsChanged();
-        emit stateChanged();
+        emit channelTopicActionFinished(id, action, accepted);
     });
+}
+
+void NativeController::setChannelInfoNotificationMode(const QString &mode)
+{
+    updateStreamNotificationMode(m_stream, mode, true);
 }
 
 bool NativeController::streamNotificationBusy(const QString &id) const
@@ -4108,46 +4372,55 @@ bool NativeController::streamNotificationBusy(const QString &id) const
     return m_channelInfoNotificationInFlight.contains(id);
 }
 
-// Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the sidebar stream
-// menu's level switch. The endpoint, payload, validation and canonical-response
-// admission mirror setChannelInfoNotificationMode (reference updateStreamNotifications
-// -> POST streams/{id}/actions/notifications/invoke), but this entry point
-// addresses any stream: the store row updates even while another stream is open,
-// because the sidebar menu never changes the selection.
 void NativeController::setStreamNotificationMode(const QString &id, const QString &mode)
 {
-    const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
+    updateStreamNotificationMode(id, mode, false);
+}
+
+void NativeController::updateStreamNotificationMode(QString id, const QString &mode, bool fromDrawer)
+{
+    const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
         [&id](const Stream &row) { return row.uuid == id; });
-    if (!authenticated() || entry == m_streams.end()) return;
-    // One in-flight request per stream, sharing the chat-info switch's slots so
-    // both surfaces observe the same busy state for the same stream.
-    if (m_channelInfoNotificationInFlight.contains(id)) return;
-    if (entry->notificationMode.isEmpty() || entry->notificationMode == mode
-        || !channelModes.contains(mode)) return;
+    if (!authenticated() || entry == m_streams.cend() || !channelModes.contains(mode)
+        || streamNotificationBusy(id)) return;
+    // The drawer shows an unsupported message for a missing mode. The sidebar
+    // uses the reference store selector's mentions-only default for old rows.
+    if (fromDrawer && entry->notificationMode.isEmpty()) return;
+    const auto current = entry->notificationMode.isEmpty() ? QStringLiteral("mentions_only") : entry->notificationMode;
+    if (current == mode) return;
     const auto owner = ownerKey();
     const auto generation = m_api->generation();
     const auto token = ++m_channelInfoNotificationToken;
     m_channelInfoNotificationInFlight.insert(id, token);
+    if (fromDrawer) m_channelInfoNotificationError.clear();
     emit stateChanged();
     request("POST", messenger + "/streams/" + id + "/actions/notifications/invoke",
         QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, id, token](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        if (m_channelInfoNotificationInFlight.value(id) != token) return;
+        [this, owner, generation, id, token, fromDrawer](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_channelInfoNotificationInFlight.value(id) != token
+            || (m_api->generation() != generation && !result.completedAfterTokenRenewal)) return;
         m_channelInfoNotificationInFlight.remove(id);
         const auto parsed = result.ok() && result.data.isObject()
             ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
-        const auto current = std::find_if(m_streams.begin(), m_streams.end(),
-            [&id](const Stream &row) { return row.uuid == id; });
-        if (!parsed || parsed->uuid != id || current == m_streams.end()) {
-            // Failed or foreign answer: release the slot and keep the old level.
-            emit stateChanged();
-            return;
+        const auto row = std::find_if(m_streams.begin(), m_streams.end(),
+            [&id](const Stream &stream) { return stream.uuid == id; });
+        const bool confirmed = parsed && parsed->uuid == id && row != m_streams.end();
+        const QPointer<NativeController> guard(this);
+        if (confirmed) {
+            *row = *parsed;
+            emit streamsChanged();
+        } else if (fromDrawer && m_stream == id) {
+            m_channelInfoNotificationError = tr("Something went wrong");
         }
-        *current = *parsed;
-        emit streamsChanged();
+        if (!guard) return;
+        if (!confirmed && result.completedAfterTokenRenewal) {
+            // The renewal's catalog may have been read before the write
+            // settled. A failed response can still follow a server commit.
+            refresh();
+            if (!guard) return;
+        }
         emit stateChanged();
-    });
+    }, ApiClient::TokenRenewal::AwaitReply);
 }
 
 void NativeController::removeChannelInfoMember(const QString &bindingUuid)
@@ -5020,6 +5293,7 @@ void NativeController::navigateProfileDirect(const ProfileDirectNavigation &navi
 void NativeController::updateChannelDirectory(const QJsonArray &rows, bool authoritative)
 {
     QMap<QString, QVariantMap> choices;
+    QStringList userOrder;
     QVariantMap selfChoice;
     bool valid = rows.size() <= 100000;
     for (const auto &value : rows) {
@@ -5027,9 +5301,15 @@ void NativeController::updateChannelDirectory(const QJsonArray &rows, bool autho
         if (!choice) { valid = false; break; }
         const auto id = choice->value("id").toString();
         if (id == m_session->user()) {
-            if (selfChoice.isEmpty()) selfChoice = *choice;
-        } else if (!choices.contains(id)) choices.insert(id, *choice);
+            if (!selfChoice.isEmpty()) continue;
+            selfChoice = *choice;
+        } else {
+            if (choices.contains(id)) continue;
+            choices.insert(id, *choice);
+        }
+        userOrder.append(id);
     }
+    m_directoryUserOrder = valid ? std::move(userOrder) : QStringList{};
     m_mentionSelfChoice = valid ? selfChoice : QVariantMap{};
     m_channelChoices = valid ? choices : QMap<QString, QVariantMap>{};
     m_channelDirectoryOwner = creationOwnerKey();
@@ -6300,9 +6580,94 @@ bool NativeController::cacheStale() const
             || (!m_historyVerified && !m_messages.isEmpty()))));
 }
 
+void NativeController::clearCachedSearch()
+{
+    if (m_searchState.isEmpty() && m_searchResults.isEmpty()) return;
+    ++m_searchTicket;
+    if (m_cache) m_cache->cancelMessageSearch();
+    m_searchOwner.clear();
+    m_searchQuery.clear();
+    m_searchState.clear();
+    m_searchResults.clear();
+    emit cachedSearchChanged();
+}
+
+void NativeController::searchCachedMessages(const QString &query)
+{
+    const auto needle = query.trimmed().simplified();
+    if (needle.isEmpty() || !authenticated()) { clearCachedSearch(); return; }
+    const auto ticket = ++m_searchTicket;
+    m_searchOwner = ownerKey();
+    m_searchQuery = needle;
+    m_searchResults.clear();
+    auto cache = m_cache;
+    const auto lease = m_cacheLease;
+    const bool available = cache && cache->available() && !lease.owner.isEmpty() && needle.size() <= 256;
+    m_searchState = available ? QStringLiteral("loading") : QStringLiteral("unavailable");
+    const QPointer<NativeController> guard(this);
+    emit cachedSearchChanged();
+    if (!guard || !available || !cache || ticket != m_searchTicket) return;
+    cache->searchMessages(lease, needle, this, [this, ticket, lease](std::optional<QJsonArray> matches) {
+        if (ticket != m_searchTicket || ownerKey() != m_searchOwner
+            || m_cacheLease.owner != lease.owner || m_cacheLease.generation != lease.generation) return;
+        m_searchState = matches ? QStringLiteral("ready") : QStringLiteral("unavailable");
+        if (matches) {
+            for (const auto &value : *matches) {
+                auto row = value.toObject().toVariantMap();
+                const auto streamId = row.value("stream").toString(), topicId = row.value("topic").toString();
+                QString streamName = streamId, topicName = topicId;
+                for (const auto &stream : std::as_const(m_streams))
+                    if (stream.uuid == streamId) {
+                        streamName = isUuid(stream.directUser) ? peerDisplayName(stream.directUser) : stream.name;
+                        break;
+                    }
+                const auto topics = streamId == m_stream ? m_topics : m_inboxTopics.value(streamId);
+                for (const auto &topic : topics)
+                    if (topic.uuid == topicId) { topicName = topic.name; break; }
+                row.insert("location", streamName + QStringLiteral(" / ") + topicName);
+                m_searchResults.append(row);
+            }
+        }
+        emit cachedSearchChanged();
+    });
+}
+
+void NativeController::refreshOpenCachedSearch(bool changeAccepted)
+{
+    if (m_searchQuery.isEmpty() || m_searchOwner != ownerKey()) return;
+    const auto ticket = ++m_searchTicket;
+    m_searchResults.clear();
+    m_searchState = changeAccepted ? QStringLiteral("loading") : QStringLiteral("unavailable");
+    // Coalesce a burst of changes. A closed dialog or new query retires the
+    // ticket. The worker reads behind the write that triggered the refresh.
+    QMetaObject::invokeMethod(this, [this, ticket, changeAccepted] {
+        if (ticket != m_searchTicket) return;
+        if (changeAccepted) searchCachedMessages(m_searchQuery);
+        else emit cachedSearchChanged();
+    }, Qt::QueuedConnection);
+}
+
+bool NativeController::openCachedSearchResult(const QString &id)
+{
+    if (!authenticated() || m_searchOwner != ownerKey() || m_searchState != QStringLiteral("ready")) return false;
+    const auto found = std::find_if(m_searchResults.cbegin(), m_searchResults.cend(), [&id](const QVariant &row) {
+        return row.toMap().value("id").toString() == id;
+    });
+    if (found == m_searchResults.cend()) return false;
+    const auto selected = found->toMap();
+    const auto owner = m_searchOwner;
+    const QPointer<NativeController> guard(this);
+    showSection(QStringLiteral("chat"));
+    if (!guard || owner != ownerKey()) return false;
+    beginAnchorLinkJump(id, selected.value("stream").toString(), selected.value("topic").toString());
+    return true;
+}
+
 void NativeController::closeCache()
 {
     const QPointer<NativeController> openingGuard(this);
+    clearCachedSearch();
+    if (!openingGuard) return;
     interruptTopicOpening();
     if (!openingGuard) return;
     ++m_cacheRevision;
@@ -6320,6 +6685,8 @@ void NativeController::closeCache()
 void NativeController::openCache()
 {
     const QPointer<NativeController> openingGuard(this);
+    clearCachedSearch();
+    if (!openingGuard) return;
     interruptTopicOpening();
     if (!openingGuard) return;
     ++m_cacheRevision;
@@ -6387,8 +6754,10 @@ void NativeController::projectCanonical(const QJsonObject &raw, NativeCache::Pro
                                         const ProjectionContext &context)
 {
     if (context.cache && context.cache == m_cache && context.generation == m_api->generation() &&
-        context.lease.owner == m_cacheLease.owner && context.lease.generation == m_cacheLease.generation)
-        context.cache->projectMessage(context.lease, raw, fields);
+        context.lease.owner == m_cacheLease.owner && context.lease.generation == m_cacheLease.generation) {
+        const bool accepted = context.cache->projectMessage(context.lease, raw, fields);
+        if (fields.testFlag(NativeCache::Projection::Payload)) refreshOpenCachedSearch(accepted);
+    }
 }
 
 void NativeController::observeMessage(const QJsonObject &raw)
@@ -6827,6 +7196,19 @@ void NativeController::appendSessionLog(const QString &level, const QString &sco
     m_sessionLog.append(level, scope, message, data);
 }
 
+QVariantMap NativeController::diagnosticsSupportMeasurements() const
+{
+    QList<qint64> durations;
+    for (qsizetype i = m_apiLatencySamples.size() - m_supportLatencyCount; i < m_apiLatencySamples.size(); ++i)
+        durations.append(m_apiLatencySamples.at(i).second);
+    const auto latency = diagnostics::summarizeLatency(durations);
+    auto summary = m_sessionLog.supportEventCounts();
+    summary.insert("requests", latency.sampleCount);
+    summary.insert("medianMs", latency.medianMs);
+    summary.insert("p95Ms", latency.p95Ms);
+    return summary;
+}
+
 QVariantList NativeController::diagnosticsSessionLogEntries() const
 {
     QVariantList out;
@@ -6905,6 +7287,7 @@ void NativeController::pingServer()
 void NativeController::recordApiLatency(const QString &label, qint64 elapsedMs)
 {
     m_apiLatencySamples.append(qMakePair(label, elapsedMs));
+    m_supportLatencyCount = qMin<qsizetype>(200, m_supportLatencyCount + 1);
     while (m_apiLatencySamples.size() > 200)
         m_apiLatencySamples.removeFirst();
 }
@@ -7916,10 +8299,12 @@ void NativeController::interruptFeedRequest()
 QVariantList NativeController::feedRows() const
 {
     QVariantList rows;
+    const auto today = QDate::currentDate();
+    const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
     for (const auto &message : m_feed.rows) {
         rows.append(QVariantMap{
             {"id", message.uuid}, {"stream", message.stream}, {"topic", message.topic},
-            {"time", feedRowTime(message.created)},
+            {"time", message_time::datedLabel(message.created, locale, today)},
             {"context", feedRowContext(message)},
             // Author names resolve from authorUuid only, falling back to the
             // uuid itself (feed-page.ui.tsx FeedSenderName, test line 251).
@@ -7928,23 +8313,6 @@ QVariantList NativeController::feedRows() const
         });
     }
     return rows;
-}
-
-QString NativeController::feedRowTime(const QDateTime &created) const
-{
-    // datetime.lib.ts:86-96 formatMessageTimeWithDate: the same local day is a
-    // manual 24 h HH:mm; anything older is the locale dated style (2-digit day,
-    // short month, numeric year) followed by a space and HH:mm.
-    if (!created.isValid())
-        return {};
-    const auto local = created.toLocalTime();
-    if (local.date() == QDate::currentDate())
-        return local.toString(QStringLiteral("HH:mm"));
-    const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
-    const auto datePart = locale.language() == QLocale::Russian
-        ? locale.toString(local.date(), QStringLiteral("dd MMM yyyy 'г.'"))
-        : locale.toString(local.date(), QStringLiteral("MMM dd, yyyy"));
-    return datePart + QLatin1Char(' ') + local.toString(QStringLiteral("HH:mm"));
 }
 
 QString NativeController::feedRowContext(const Message &message) const
@@ -8814,7 +9182,11 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!openingGuard) return;
         interruptChannelCreations();
         interruptDirectChats();
+        clearCachedSearch();
+        if (!openingGuard) return;
         m_cache.clear(); m_cacheLease = {}; ++m_cacheRevision;
+        emit cachedSearchAvailabilityChanged();
+        if (!openingGuard) return;
         m_cacheHydrations.clear(); m_cacheWasAvailable = false;
         m_loading = false;
         if (m_cacheForgettingAccount) {
@@ -8844,7 +9216,11 @@ void NativeController::useCache(NativeCacheService *cache)
         if (m_cache != cache) return;
         const bool ready = cache->available();
         const bool becameReady = ready && !m_cacheWasAvailable;
+        const bool changed = ready != m_cacheWasAvailable;
         m_cacheWasAvailable = ready;
+        const QPointer<NativeController> availabilityGuard(this);
+        if (changed) emit cachedSearchAvailabilityChanged();
+        if (!availabilityGuard) return;
         if (!becameReady) return;
         hydrateChatRequestLookups();
         auto pending = std::move(m_cacheHydrations);
@@ -8857,6 +9233,7 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!guard) return;
         refresh();
     }
+    if (guard) emit cachedSearchAvailabilityChanged();
     if (guard) emit stateChanged();
 }
 
@@ -9197,6 +9574,7 @@ void NativeController::refreshReactions(const QString &id)
 NativeController::NativeController(ApiClient *api, Session *session, QObject *parent)
     : QObject(parent), m_api(api), m_session(session)
 {
+    m_externalAccounts = new NativeExternalAccounts(api, session, this);
     m_mediaViewer = new MediaViewerModel(this, this);
     // Issue #51: the log viewer modal subscribes to the ring buffer like the
     // reference subscribeLogHistory (logger.ts), so forward every change.
@@ -9293,12 +9671,19 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_topicMetadataInFlight.clear();
         ++m_sessionGeneration;
         m_sessionGenerationOwner.clear();
+        m_sessionLog.beginSupportScope();
+        m_supportLatencyCount = 0;
+        emit supportScopeChanged();
     });
     connect(m_session, &Session::authenticated, this, [this] {
         const auto owner = creationOwnerKey();
-        if (owner != m_sessionGenerationOwner)
+        if (owner != m_sessionGenerationOwner) {
             ++m_sessionGeneration;
-        m_sessionGenerationOwner = owner;
+            m_sessionGenerationOwner = owner;
+            m_sessionLog.beginSupportScope();
+            m_supportLatencyCount = 0;
+            emit supportScopeChanged();
+        }
     });
     connect(m_authGuard, &NativeAuthGuard::activeChanged,
             this, &NativeController::authGuardActiveChanged);
@@ -9463,6 +9848,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit anchorChanged();
     });
 
+    connect(this, &NativeController::topicsChanged, this, &NativeController::channelInfoTopicsChanged);
+    connect(this, &NativeController::streamsChanged, this, &NativeController::channelInfoTopicsChanged);
+    connect(this, &NativeController::sidebarStreamsChanged, this, &NativeController::channelInfoTopicsChanged);
     connect(session, &Session::signedOut, this, &NativeController::reset);
     connect(session, &Session::error, this, [this](const QString &message) {
         // Remembering a verified session can fail independently of live sync.
@@ -9542,8 +9930,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_loginStep = QStringLiteral("project");
         emit stateChanged();
     });
-    connect(api, &ApiClient::sessionChanged, this, [this] {
+    connect(api, &ApiClient::sessionChanged, this, [this](quint64, bool sameOwnerRenewal) {
         const QPointer<NativeController> lookupGuard(this);
+        // A same-owner renewal lets the original write finish before another
+        // choice can reach the server. Sign-out and account changes retire it.
+        if (!sameOwnerRenewal) m_channelInfoNotificationInFlight.clear();
+        m_channelInfoNotificationError.clear();
         // Transport callbacks from the previous generation will not settle.
         // New projections must be able to resolve their quotes immediately.
         resetMentionIndex();
@@ -9611,50 +10003,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit stateChanged();
         if (guard) emit messagesChanged();
     });
-    connect(session, &Session::authenticated, this, [this] {
-        const QPointer<NativeController> guard(this);
-        prepareOwnStatusPreferences();
-        interruptTopicOpening();
-        if (!guard) return;
-        interruptChannelCreations();
-        interruptDirectChats();
-        // Issue #293: an automatic stage-recovery pass abandoned across the
-        // sign-out (its GET was retired with the previous generation) re-arms
-        // here, once the same owner is ready again.
-        maybeResolveChannelCreateStages();
-        // Issue #294: same contract for an automatic rotation-resolution pass
-        // abandoned across the sign-out.
-        maybeResolveRotationStages();
-        openCache();
-        if (!guard) return;
-        m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
-        for (auto it = m_reactionIntents.begin(); it != m_reactionIntents.end();)
-            if (it->owner != ownerKey()) it = m_reactionIntents.erase(it); else ++it;
-        resetReadState();
-        ++m_selection;
-        prepareConversationRestore();
-        if (!guard) return;
-        m_loading = false;
-        m_sending = false;
-        m_topicChanging = false;
-        ++m_topicMutation;
-        m_recoveringMarker = m_resumeOlder = false;
-        m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
-        m_presenceHeartbeat.start();
-        if (!m_realtimeMode) {
-            refresh();
-            m_poll.start();
-        } else {
-            // Token replacement cancels outstanding route reads. Re-establish
-            // their snapshots behind a fresh epoch barrier while keeping drafts.
-            m_snapshotActive = false;
-            m_snapshotParts = 0;
-            emit resynchronizeRequested();
-        }
-        if (!guard) return;
-        finishDownloadRetries(true);
-        if (guard) emit stateChanged();
-    });
+    connect(session, &Session::authenticated, this, &NativeController::startAuthenticatedWorkspace);
     m_mentionIndexRetry.setSingleShot(true);
     connect(&m_mentionIndexRetry, &QTimer::timeout, this, &NativeController::loadMentionIndex);
     m_poll.setInterval(15000);
@@ -9666,6 +10015,52 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // logging in never adds a request to the bootstrap round itself.
     m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
     connect(&m_presenceHeartbeat, &QTimer::timeout, this, [this] { reportPresenceHeartbeat(); });
+}
+
+void NativeController::startAuthenticatedWorkspace()
+{
+    const QPointer<NativeController> guard(this);
+    prepareOwnStatusPreferences();
+    interruptTopicOpening();
+    if (!guard) return;
+    interruptChannelCreations();
+    interruptDirectChats();
+    // Issue #293: an automatic stage-recovery pass abandoned across the
+    // sign-out (its GET was retired with the previous generation) re-arms
+    // here, once the same owner is ready again.
+    maybeResolveChannelCreateStages();
+    // Issue #294: same contract for an automatic rotation-resolution pass
+    // abandoned across the sign-out.
+    maybeResolveRotationStages();
+    openCache();
+    if (!guard) return;
+    m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
+    for (auto it = m_reactionIntents.begin(); it != m_reactionIntents.end();)
+        if (it->owner != ownerKey()) it = m_reactionIntents.erase(it); else ++it;
+    resetReadState();
+    ++m_selection;
+    prepareConversationRestore();
+    if (!guard) return;
+    m_loading = false;
+    m_sending = false;
+    m_topicChanging = false;
+    ++m_topicMutation;
+    m_recoveringMarker = m_resumeOlder = false;
+    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+    m_presenceHeartbeat.start();
+    if (!m_realtimeMode) {
+        refresh();
+        m_poll.start();
+    } else {
+        // Token replacement cancels outstanding route reads. Re-establish
+        // their snapshots behind a fresh epoch barrier while keeping drafts.
+        m_snapshotActive = false;
+        m_snapshotParts = 0;
+        emit resynchronizeRequested();
+    }
+    if (!guard) return;
+    finishDownloadRetries(true);
+    if (guard) emit stateChanged();
 }
 
 NativeController::~NativeController()
@@ -10662,6 +11057,7 @@ void NativeController::useRealtime(RealtimeClient *client)
         m_syncState = state;
         if (state == "live") {
             m_syncBlocked = false;
+            if (previous) ++m_realtimeRecovery;
             // A healthy realtime link proves reachability on its own: a
             // stale transport-offline flag must not outlive the realtime
             // recovery and mask live sync state with the offline banner.
@@ -10674,7 +11070,9 @@ void NativeController::useRealtime(RealtimeClient *client)
         }
         if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
             || state == "waiting_for_session" || state == "stopped") markCacheStale();
+        const QPointer<NativeController> guard(this);
         if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
+        if (guard && previous && state == "live") retryInterruptedHistory();
     });
     connect(client, &RealtimeClient::eventReceived, this, [this, client](const QJsonObject &event) {
         // Issue #50: diagnostics realtime stats mirror
@@ -10700,13 +11098,15 @@ void NativeController::useRealtime(RealtimeClient *client)
 
 ApiClient::RequestId NativeController::request(const QByteArray &method, const QString &path,
                                const QJsonValue &body, const QUrlQuery &query,
-                               ApiClient::Callback callback)
+                               ApiClient::Callback callback, ApiClient::TokenRenewal renewal)
 {
     QPointer<NativeController> self(this);
     const auto owner = m_api->generation();
+    const auto resetGeneration = m_localResetGeneration;
     const auto started = QDateTime::currentMSecsSinceEpoch();
-    return m_api->request(method, path, body, query, [self, owner, callback, method, path, started](const ApiResult &result) {
-        if (self && self->m_api->generation() == owner) {
+    return m_api->request(method, path, body, query, [self, owner, resetGeneration, callback, method, path, started](const ApiResult &result) {
+        if (self && self->m_localResetGeneration == resetGeneration
+            && (self->m_api->generation() == owner || result.completedAfterTokenRenewal)) {
             self->observeTransport(result);
             // Issue #50: "API latency from HTTP response timing" — every
             // answered HTTP round feeds the bounded diagnostics ring.
@@ -10742,7 +11142,7 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
             }
             callback(result);
         }
-    });
+    }, false, {}, renewal);
 }
 
 void NativeController::login(const QString &server, const QString &user,
@@ -10811,7 +11211,19 @@ static QString resolveRealmIconUrl(const QString &origin, const QString &icon)
 
 void NativeController::setPreferences(NativePreferences *preferences)
 {
-    m_preferences = preferences;
+    if (m_preferences != preferences) {
+        disconnect(m_sidebarSortBinding);
+        disconnect(m_sidebarLocaleBinding);
+        m_preferences = preferences;
+        const auto refreshOrder = [this] { emit streamsChanged(); emit topicsChanged(); };
+        if (preferences) {
+            m_sidebarSortBinding = connect(preferences, &NativePreferences::sidebarSortModeChanged, this, refreshOrder);
+            m_sidebarLocaleBinding = connect(preferences, &NativePreferences::localeChanged, this, [this, refreshOrder] {
+                if (m_preferences && m_preferences->sidebarSortMode() == "alphabetical") refreshOrder();
+            });
+        }
+        refreshOrder();
+    }
     // Issue #165: the guard consumes the per-owner authIdleTimeout preset and
     // re-arms live whenever it changes (the #135 row writes the same key).
     if (preferences && m_authGuard)
@@ -11426,6 +11838,37 @@ bool NativeController::isAuthGuardActive() const
     return m_authGuard && m_authGuard->active();
 }
 
+void NativeController::clearLocalCache()
+{
+    if (!authenticated() || !m_statusPreferences || m_cacheForgettingAccount) return;
+    const auto generation = m_api->generation();
+    const auto resetGeneration = m_localResetGeneration;
+    const QPointer<NativeController> guard(this);
+    const QPointer<NativeCacheService> cache(m_cache);
+    const auto finish = [this, guard, cache, generation, resetGeneration](bool cleared) {
+        if (!guard || cache != m_cache || generation != m_api->generation()
+            || resetGeneration != m_localResetGeneration || !m_cacheForgettingAccount) return;
+        m_cacheForgettingAccount = false;
+        ++m_localResetGeneration;
+        reset();
+        if (!guard || !authenticated() || generation != m_api->generation()) return;
+        const bool preferencesCleared = m_statusPreferences && m_statusPreferences->resetLocalSettings();
+        if (!guard || generation != m_api->generation()) return;
+        m_sessionProjections.clear();
+        startAuthenticatedWorkspace();
+        if (guard && (!cleared || !preferencesCleared)) {
+            m_error = tr("Some local data could not be cleared.");
+            emit stateChanged();
+        }
+    };
+    m_cacheForgettingAccount = true;
+    emit stateChanged();
+    if (!guard || generation != m_api->generation() || cache != m_cache) return;
+    if (!cache) { finish(true); return; }
+    if (!cache->clearAll(m_api->server(), m_session->project(), m_session->user(), this, finish))
+        finish(false);
+}
+
 void NativeController::logout()
 {
     const QPointer<NativeController> self(this);
@@ -11446,7 +11889,9 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    m_channelInfoNotificationInFlight.clear();
     m_pollSendAttempts.clear();
+    m_channelTopicRequests.clear();
     closeEditSession();
     closeReplySession();
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
@@ -11535,7 +11980,7 @@ void NativeController::reset()
     m_ownProfileError.clear(); m_ownAvatarError.clear();
     m_ownProfileLoading = m_ownProfileSaving = m_ownProfileRefresh = m_ownAvatarBusy = false;
     m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
-    m_channelChoices.clear(); m_mentionSelfChoice.clear();
+    m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear();
     m_channelDirectoryOwner.clear();
     m_channelDirectoryValid = false;
     // Issue #293: no stage check may survive the owner it was running for.
@@ -11727,7 +12172,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                 if (!current()) return true;
                 observeChatRequest(*message);
                 observeChatKeyOutcome(*message);
-                if (message->stream == m_stream) receiveChatControl(*message);
+                receiveChatControl(*message);
                 if (!current()) return true;
             }
             NativeCache::ProjectionFields fields = NativeCache::Projection::Insert
@@ -11758,6 +12203,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                     ++m_reactionRevisions[message->uuid]; m_ownReactions.remove(message->uuid);
                 }
                 if (m_confirmedReadIds.contains(message->uuid) || (previous && previous->read)) message->read = true;
+                if (!previous && kind == QLatin1String("message.created") && !m_messages.isEmpty()) {
+                    const auto &tail = m_messages.constLast();
+                    if (message->createdMicros > tail.createdMicros
+                        || (message->createdMicros == tail.createdMicros && message->uuid > tail.uuid))
+                        ++m_historyTailAppends;
+                }
                 ++m_messageRevision;
                 m_messages = mergeMessages(m_messages, {*message});
                 pruneMessageFields();
@@ -11826,6 +12277,8 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             cancelChatRequestLookup(id);
             if (!lookupGuard) return true;
             if (m_chatRequestFacts.contains(id)) {
+                m_chatGrantErrors.remove(id);
+                m_failedBulkGrants.remove(id);
                 m_chatRequestFacts[id].deleted = true;
                 m_chatRequestFacts[id].lookupRetry = ChatRequestFact::LookupRetry::LiveDeleted;
                 m_chatRequestFacts[id].revision = ++m_nextChatRequestFact;
@@ -11842,13 +12295,15 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         const auto stream = payload.value("stream_uuid").toString();
         const auto topic = payload.value("topic_uuid").toString();
-        if (m_cache && m_cache->removeDeletedMessage(m_cacheLease, stream, topic, id)) {
+        const bool removed = m_cache && m_cache->removeDeletedMessage(m_cacheLease, stream, topic, id);
+        if (removed) {
             staleCache(NativeCache::Kind::History, stream, topic);
             invalidateCache(NativeCache::Kind::Streams);
             invalidateCache(NativeCache::Kind::Topics, stream);
         } else {
             invalidateConversation(stream, topic);
         }
+        refreshOpenCachedSearch(removed);
         if (m_messageFields.contains(id)) m_messageFields[id].deleted = true;
         if (payload.value("stream_uuid").toString() == m_stream
             && (m_topic.isEmpty() || payload.value("topic_uuid").toString() == m_topic)) {
@@ -12345,8 +12800,14 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         const auto choice = channelDirectoryChoice(payload, m_session->project());
         if (!choice) m_channelDirectoryValid = false;
         else if (m_channelDirectoryOwner == creationOwnerKey() && m_channelDirectoryValid) {
-            if (id == m_session->user()) m_mentionSelfChoice = *choice;
-            else m_channelChoices.insert(id.toLower(), *choice);
+            const auto user = id.toLower();
+            if (user == m_session->user()) {
+                if (m_mentionSelfChoice.isEmpty()) m_directoryUserOrder.append(user);
+                m_mentionSelfChoice = *choice;
+            } else {
+                if (!m_channelChoices.contains(user)) m_directoryUserOrder.append(user);
+                m_channelChoices.insert(user, *choice);
+            }
         }
         staleCache(NativeCache::Kind::Users);
         if (!current()) return true;
@@ -13024,9 +13485,26 @@ QVariantList NativeController::streams() const
     QHash<QString, qint64> activity;
     for (const auto *stream : ordered)
         activity.insert(stream->uuid, rowActivityMicros(stream->lastMessage, stream->updatedMicros));
+    const auto sortMode = m_preferences ? m_preferences->sidebarSortMode() : QString{};
+    std::optional<QCollator> names;
+    if (sortMode == "alphabetical") {
+        names.emplace(QLocale(m_preferences->locale()));
+        names->setCaseSensitivity(Qt::CaseInsensitive);
+        names->setNumericMode(true);
+    }
+    const auto title = [this](const Stream *stream) {
+        return stream->privateStream && isUuid(stream->directUser)
+            ? peerDisplayName(stream->directUser) : stream->name;
+    };
     std::stable_sort(ordered.begin(), ordered.end(), [&](const Stream *a, const Stream *b) {
+        if (names) {
+            const auto comparison = names->compare(title(a), title(b));
+            return comparison ? comparison < 0 : a->uuid < b->uuid;
+        }
         const int rankA = streamGroupRank(*a), rankB = streamGroupRank(*b);
         if (rankA != rankB) return rankA < rankB;
+        if (sortMode == "unread_first" && rankA == 0 && (a->activeUnread > 0) != (b->activeUnread > 0))
+            return a->activeUnread > 0;
         return activity.value(a->uuid) > activity.value(b->uuid);
     });
     QVariantList result;
@@ -13911,6 +14389,8 @@ QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Str
     for (const auto &topic : topics) sorted.append(&topic);
     std::stable_sort(sorted.begin(), sorted.end(), [&](const Topic *a, const Topic *b) {
         if (rank(a) != rank(b)) return rank(a) < rank(b);
+        if (m_preferences && m_preferences->sidebarSortMode() == "unread_first" && rank(a) == 0
+            && (a->activeUnread > 0) != (b->activeUnread > 0)) return a->activeUnread > 0;
         return timestamps.value(a->lastMessage, a->updatedMicros) > timestamps.value(b->lastMessage, b->updatedMicros);
     });
     QVariantList result;
@@ -14438,6 +14918,114 @@ bool NativeController::unresolvedTopicRoute() const
         });
 }
 
+QVariantMap NativeController::renderSecretMessage(const QString &messageId, const QStringList &ordinaryOpened,
+    const QStringList &revealed)
+{
+    return presentMessageSecrets(messageId, ordinaryOpened, revealed, {}, nullptr, nullptr);
+}
+
+void NativeController::requestSecretMessageKey(const QString &messageId, const QString &handle,
+    const QStringList &ordinaryOpened)
+{
+    QString stream, key;
+    presentMessageSecrets(messageId, ordinaryOpened, {}, handle, &stream, &key);
+    if (stream.isEmpty() || key.isEmpty()) return;
+    const auto stillNeeded = [this, messageId, handle, ordinaryOpened, stream, key] {
+        QString currentStream, currentKey;
+        presentMessageSecrets(messageId, ordinaryOpened, {}, handle, &currentStream, &currentKey, true);
+        return currentStream == stream && currentKey == key;
+    };
+    startChatRequest(key, false, false, stream, stillNeeded);
+}
+
+QVariantMap NativeController::presentMessageSecrets(const QString &messageId, const QStringList &ordinaryOpened,
+    const QStringList &revealed, const QString &requestHandle, QString *requestedStream, QString *requestedKey, bool validating)
+{
+    const auto *message = findMessage(messageId);
+    if (!authenticated() || !message || message->project != m_session->project() || !inConversation(*message)) return {};
+    QString body;
+    if (message->kind == QLatin1String("markdown")) {
+        body = message->content;
+    } else if (message->kind == QLatin1String("e2ee") && chatReadAllowed()) {
+        const auto entry = m_chatPrepared.constFind(messageId);
+        if (entry == m_chatPrepared.cend() || entry->state != ChatKeyAvailability::Present
+            || entry->hash != chatPayloadHash(*message)) return {};
+        body = entry->content;
+    } else {
+        return {};
+    }
+    if (const auto quote = leadingQuoteReference(body)) body = quote->rest;
+    NativeMarkdown renderer;
+    return renderer.renderProtected(body, ordinaryOpened, [&](const QString &target, const QString &occurrence) -> QVariantMap {
+        const auto ref = parseWorkspaceReference(target);
+        if (!ref || !ref->secretValid || !m_catalogVerified || !chatVaultMatches()
+            || !sameChatLease(m_chatVaultLease, m_chatKeys->lease())
+            || (m_chatAccessKnown && !m_chatReadableStreams.contains(ref->streamUuid))) return {};
+        const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+            [&](const Stream &row) { return row.uuid == ref->streamUuid; });
+        if (stream == m_streams.cend() || !stream->security
+            || stream->security->viewer != m_session->user()
+            || (stream->security->source != QLatin1String("native") && !stream->encrypted)) return {};
+        const NativeChatKeyVault::Address address{stream->uuid, ref->keyUuid};
+        auto stored = m_chatKeys->read(m_chatVaultLease, address);
+        auto wipe = qScopeGuard([&] { wipeChatBytes(stored.value.bytes); });
+        if (stored.failure != NativeChatKeyVault::Failure::None) return {};
+        // Revealing applies only to this exact envelope, vault lifetime and deletion generation.
+        const auto hash = QCryptographicHash::hash(target.toUtf8(), QCryptographicHash::Sha256).toHex();
+        const auto handle = QString::fromLatin1(hash) + QLatin1Char('/') + occurrence + QLatin1Char('/')
+            + QString::number(m_chatVaultLease.issuer) + QLatin1Char('/') + QString::number(m_chatVaultLease.generation)
+            + QLatin1Char('/') + QString::number(stored.value.deletionRevision);
+        const bool canRequest = stream->security->source == "native"
+            && stream->security->provider.isEmpty() && stream->security->providerIdentity.isEmpty()
+            && QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(stream->role);
+        QVariantMap state{{"token", handle}};
+        bool badEnvelope = false;
+        if (stored.value.bytes.size() == 32) {
+            const auto bytes = QByteArray::fromBase64(target.section(':', -1).toLatin1(), QByteArray::Base64UrlEncoding);
+            auto plain = NativeChatCrypto::decryptMessage(stored.value.bytes, bytes, {stream->uuid, ref->keyUuid});
+            auto wipePlain = qScopeGuard([&] { wipeChatBytes(plain.bytes); });
+            if (plain) {
+                const auto text = QString::fromUtf8(plain.bytes);
+                if (text.toUtf8() == plain.bytes) {
+                    const bool open = revealed.contains(handle);
+                    state.insert("action", open ? "hide" : "show");
+                    state.insert("label", open ? tr("Hide spoiler") : tr("Show spoiler"));
+                    if (open) {
+                        NativeMarkdown ephemeral;
+                        state.insert("html", ephemeral.render(text).value("html"));
+                    }
+                    return state;
+                }
+            }
+            badEnvelope = true;
+        }
+        if (badEnvelope) {
+            state.insert("error", tr("Could not decrypt message"));
+            state.insert("retry", tr("Retry"));
+        }
+        if (!canRequest) {
+            if (!badEnvelope) return {};
+            state.remove("retry");
+            state.insert("action", "retry");
+            state.insert("label", tr("Retry"));
+            return state;
+        }
+        auto pending = m_chatKeys->pendingRequests(m_chatVaultLease, address);
+        auto wipeRequests = qScopeGuard([&] { for (auto &row : pending.values) row.clearSecrets(); });
+        const auto requestStream = m_secretRequestStream.isEmpty() ? m_stream : m_secretRequestStream;
+        const bool waiting = (m_chatBusy && requestStream == stream->uuid && m_chatRequestKey == ref->keyUuid)
+            || !pending.values.isEmpty();
+        const bool enabled = !waiting && !m_chatBusy && pending.failure == NativeChatKeyVault::Failure::None;
+        state.insert("action", enabled ? "request" : "pending");
+        state.insert("label", waiting ? tr("Waiting for a response") : tr("Request key"));
+        if ((enabled || validating) && !requestHandle.isEmpty() && handle == requestHandle && requestedStream && requestedKey) {
+            *requestedStream = stream->uuid;
+            *requestedKey = ref->keyUuid;
+        }
+        return state;
+    });
+}
+
 void NativeController::offerNotificationCandidate(const Message &message)
 {
     NotificationCandidate candidate;
@@ -14447,6 +15035,7 @@ void NativeController::offerNotificationCandidate(const Message &message)
     candidate.topicUuid = message.topic;
     candidate.authorUuid = message.author;
     candidate.content = message.content;
+    candidate.markdown = message.kind == QStringLiteral("markdown");
     candidate.isOwn = message.own;
     candidate.read = message.read;
     candidate.mentioned = message.mentioned.value_or(false);
@@ -15767,10 +16356,18 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
-    const qreal reserve = qMax<qreal>(100.0, viewportHeightPx);
-    // Reference parity (hook :1172-1197): both comparisons are inclusive, so
-    // a note exactly at the reserve arms and proceeds to the trigger check in
-    // the same call; a note strictly above the reserve only re-arms.
+    const qreal base = qMax<qreal>(100.0, viewportHeightPx);
+    qreal reserve = base;
+    if (m_historyTimingSelection == m_selection && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
+        const auto elapsed = m_scrollSampleClock.elapsed();
+        const qreal travel = m_previousTopDistance - distanceFromTopPx;
+        // Exclude layout jumps and idle gestures. Ahead of steady input, keep
+        // enough rows for the last successful page wait plus the normal buffer.
+        if (elapsed > 0 && elapsed <= m_historyPageWaitMs && travel > 0 && travel <= base)
+            reserve += qMin(3 * base, travel * m_historyPageWaitMs / elapsed);
+    }
+    m_scrollSampleClock.start();
+    m_previousTopDistance = distanceFromTopPx;
     if (distanceFromTopPx >= reserve)
         m_olderPrefetchArmed = true;
     if (distanceFromTopPx > reserve || !m_olderPrefetchArmed || !canLoadOlder())
@@ -15791,6 +16388,7 @@ void NativeController::noteScrollRearm(qreal distanceFromTopPx, qreal viewportHe
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
+    m_scrollSampleClock.invalidate();
     if (distanceFromTopPx >= qMax<qreal>(100.0, viewportHeightPx))
         m_olderPrefetchArmed = true;
 }
@@ -15964,14 +16562,26 @@ void NativeController::loadLatestMessages()
     if (guard) loadMessages(false, true);
 }
 
-void NativeController::loadMessages(bool older, bool latest)
+void NativeController::retryInterruptedHistory()
+{
+    if (!m_interruptedHistory || m_interruptedHistory->selection != m_selection) return;
+    loadMessages(false, false, true);
+}
+
+void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
 {
     if (!authenticated() || !hasConversation() || unresolvedTopicRoute()
         || m_loading || (older && m_before.isEmpty())) return;
+    if (!older && m_interruptedHistory) {
+        if (m_interruptedHistory->selection == m_selection && m_error == m_interruptedHistory->error)
+            m_error.clear();
+        m_interruptedHistory.reset();
+    }
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, older ? m_before : QByteArray{}};
     const auto selection = m_selection;
     const auto generation = m_api->generation();
     const auto revision = m_messageRevision;
+    const auto pageRevision = historyPageRevision(older);
     const auto cacheRevision = m_cacheRevision;
     const auto lease = m_cacheLease;
     const QPointer<NativeCacheService> cache = m_cache;
@@ -15980,20 +16590,27 @@ void NativeController::loadMessages(bool older, bool latest)
     m_loading = true;
     emit stateChanged();
     if (!guard) return;
-    const auto network = [this, guard, older, latest, selection, generation, revision, key, networkStarted] {
+    const auto network = [this, guard, older, latest, selection, generation, pageRevision, key, networkStarted] {
         if (!guard || generation != m_api->generation() || selection != m_selection || *networkStarted) return;
         *networkStarted = true;
         const auto boundary = latest || m_messages.isEmpty() ? std::optional<Message>{} : std::optional<Message>{m_messages.first()};
-        historyPage(older, selection, revision, boundary, older ? key.marker : QByteArray{}, {}, {});
+        historyPage(older, selection, pageRevision, boundary, older ? key.marker : QByteArray{}, {}, {});
     };
-    const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, cacheRevision, older, network](bool savedOnly) {
+    const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, pageRevision, cacheRevision, older, network](bool savedOnly) {
         if (!guard || !cache || cache != m_cache || selection != m_selection || generation != m_api->generation()) return;
-        cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
+        cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, pageRevision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
             if (!guard || selection != m_selection || cache != m_cache || generation != m_api->generation()) return;
-            const bool current = cacheRevision == m_cacheRevision && lease.owner == m_cacheLease.owner
-                && lease.generation == m_cacheLease.generation && revision == m_messageRevision;
-            if (!current) {
-                if (!savedOnly) { m_loading = false; loadMessages(); }
+            const bool sameLease = lease.owner == m_cacheLease.owner && lease.generation == m_cacheLease.generation;
+            if (!sameLease || cacheRevision != m_cacheRevision || revision != m_messageRevision) {
+                if (savedOnly) return;
+                if (sameLease && older && revision != m_messageRevision && pageRevision == historyPageRevision(true)) {
+                    // The cached projection predates a tail arrival. Fetch the original
+                    // older cursor from the server without replaying the visible window.
+                    network();
+                } else {
+                    m_loading = false;
+                    loadMessages();
+                }
                 return;
             }
             if (savedOnly && (m_historyVerified || !m_messages.isEmpty())) return;
@@ -16045,7 +16662,7 @@ void NativeController::loadMessages(bool older, bool latest)
             if (!savedOnly) network();
         });
     };
-    if (latest || !cache || !cache->available()) {
+    if (latest || forceNetwork || !cache || !cache->available()) {
         if (cache && !older) m_cacheHydrations[static_cast<int>(NativeCache::Kind::History)] = [fetchCache] { fetchCache(true); };
         network();
         return;
@@ -16059,6 +16676,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
 {
     const NativeCache::Key key{NativeCache::Kind::History, m_stream, m_topic, marker};
     const auto lease = m_cacheLease;
+    const auto recovery = m_realtimeRecovery;
     const auto cacheRevision = m_cacheRevision;
     const QPointer<NativeCacheService> cache = m_cache;
     QUrlQuery query;
@@ -16069,11 +16687,13 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     query.addQueryItem("page_limit", "50");
     if (!marker.isEmpty())
         query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    QElapsedTimer requestTimer;
+    requestTimer.start();
     request("GET", messenger + "/messages/", {}, query,
-        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache](const ApiResult &result) mutable {
+        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery, requestTimer](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
-        if (revision != m_messageRevision) {
+        if (revision != historyPageRevision(older)) {
             // A confirmed local mutation is newer than this snapshot. Keep the
             // verified rows while rebuilding from a fresh server transaction.
             m_loading = false;
@@ -16095,7 +16715,14 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             // Issue #156: a failed page keeps the older boundary; allow the
             // next user-attributed descent below the reserve to retry once.
             m_olderPrefetchArmed = true;
-            report(tr("Could not load messages. %1").arg(result.error));
+            const bool interrupted = !older && marker.isEmpty() && result.transportFailed && result.status == 0;
+            const auto error = tr("Could not load messages. %1").arg(result.error);
+            if (interrupted) m_interruptedHistory = InterruptedHistory{selection, error};
+            const QPointer<NativeController> guard(this);
+            report(error);
+            // The socket can recover before the failed HTTP reply reaches us.
+            if (guard && interrupted && recovery != m_realtimeRecovery && m_syncState == "live")
+                retryInterruptedHistory();
             return;
         }
         const auto page = result.data.toArray();
@@ -16143,6 +16770,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             m_messages = mergeMessages({}, accumulated);
         }
         pruneMessageFields();
+        if (selection != m_historyTimingSelection) m_scrollSampleClock.invalidate();
+        m_historyTimingSelection = selection;
+        m_historyPageWaitMs = requestTimer.elapsed();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
         // Issue #156: a freshly established window starts from a known
@@ -16171,6 +16801,45 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     });
 }
 
+QString NativeController::composerPreviewBody() const
+{
+    const auto *stream = currentStream();
+    if (!stream) return {};
+    if (stream->encrypted) return canCompose() ? draft() : QString{};
+    return (m_editingMessage.isEmpty() ? composeSendBody() : composeEditBody()).value_or(QString{});
+}
+
+std::optional<QString> NativeController::composeSendBody() const
+{
+    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
+    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
+    // mention serialization happens before the reply quote prefix join) and
+    // apply to every tab's answer, not just the active draft.
+    const auto mentionEntries = composerMentionEntries();
+    auto wire = replaceImageAliases(serializeComposerMentions(draft(), mentionEntries), true);
+    const auto attachments = readyUploadLinks(0);
+    if (!m_replyTabs.isEmpty()) {
+        QStringList blocks;
+        for (const auto &tab : std::as_const(m_replyTabs)) {
+            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
+                replyTabAuthor(tab), tab.message, tab.selectedText);
+            if (quoteLine.isEmpty()) {
+                return std::nullopt;
+            }
+            // The active tab answers with the live composer text; the others
+            // carry the answer captured while they were active - both get the
+            // same mention serialization.
+            auto answer = (tab.id == m_replyActiveTab ? wire
+                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
+            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
+        }
+        auto body = blocks.join(QStringLiteral("\n\n"));
+        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
+        wire = body;
+    }
+    return prependUploadedLinks(wire, attachments);
+}
+
 void NativeController::send()
 {
     if (!m_editingMessage.isEmpty()) return;
@@ -16188,38 +16857,16 @@ void NativeController::send()
     QJsonArray replySnapshot;
     for (const auto &tab : std::as_const(m_replyTabs))
         replySnapshot.append(QJsonArray{tab.id, tab.message, tab.answer});
-    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
-    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
-    // mention serialization happens before the reply quote prefix join) and
-    // apply to every tab's answer, not just the active draft.
-    const auto mentionEntries = composerMentionEntries();
-    auto wire = replaceImageAliases(serializeComposerMentions(text, mentionEntries), true);
-    const auto attachments = readyUploadLinks(0);
+    const auto composed = composeSendBody();
+    if (!composed) {
+        report(tr("This message can no longer be replied to."));
+        return;
+    }
+    const auto &wire = *composed;
     QList<quint64> transferredUploads;
     for (const auto &entry : std::as_const(m_uploadEntries))
         if (entry.task.editSession == 0 && entry.task.conversation == conversationKey()
             && entry.owner == creationOwnerKey() && entry.status == "ready") transferredUploads.append(entry.task.intent);
-    if (!m_replyTabs.isEmpty()) {
-        QStringList blocks;
-        for (const auto &tab : std::as_const(m_replyTabs)) {
-            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
-                replyTabAuthor(tab), tab.message, tab.selectedText);
-            if (quoteLine.isEmpty()) {
-                report(tr("This message can no longer be replied to."));
-                return;
-            }
-            // The active tab answers with the live composer text; the others
-            // carry the answer captured while they were active - both get the
-            // same mention serialization.
-            auto answer = (tab.id == m_replyActiveTab ? wire
-                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
-            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
-        }
-        auto body = blocks.join(QStringLiteral("\n\n"));
-        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
-        wire = body;
-    }
-    wire = prependUploadedLinks(wire, attachments);
     if (!boundedText(wire, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;
@@ -16760,7 +17407,7 @@ void NativeController::openProfileShareLink(const QString &user)
                 valid = valid && validCreationDate(row.value(field));
             if (valid) {
                 if (m_channelDirectoryOwner != owner) {
-                    m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryOwner = owner;
+                    m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryOwner = owner;
                     m_channelDirectoryValid = false;
                 }
                 m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, true, m_names.value(user)));
@@ -16802,7 +17449,7 @@ void NativeController::openProfileShareLink(const QString &user)
             if (row.value("uuid").toString().toLower() != user
                 || !channelDirectoryChoice(row, m_session->project())) continue;
             if (m_channelDirectoryOwner != owner) {
-                m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryOwner = owner;
+                m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryOwner = owner;
                 m_channelDirectoryValid = false;
             }
             m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, false, {}));
@@ -16912,7 +17559,7 @@ void NativeController::flushPendingDeepLink(bool settle)
     applyDeepLink(url);
 }
 
-void NativeController::beginAnchorLinkJump(const QString &target)
+void NativeController::beginAnchorLinkJump(const QString &target, const QString &cachedStream, const QString &cachedTopic)
 {
     // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): the jump owns a
     // visible transition phase until the anchor resolves or the bounded walk
@@ -16926,6 +17573,7 @@ void NativeController::beginAnchorLinkJump(const QString &target)
         emit anchorNavigationErrorChanged();
     }
     m_anchorLinkPending = true;
+    m_anchorFromCachedSearch = !cachedStream.isEmpty();
     m_pendingAnchorMessage = target;
     m_pendingAnchorParsed.reset();
     m_pendingAnchorStream = m_stream;
@@ -16937,8 +17585,25 @@ void NativeController::beginAnchorLinkJump(const QString &target)
         reanchorFromWindow();
         return;
     }
+    const auto open = [this](const QString &stream, const QString &topic) {
+        m_pendingAnchorStream = stream;
+        m_pendingAnchorTopic = topic;
+        if (topic.isEmpty()) {
+            if (stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
+            else selectStream(stream);
+        } else if (stream == m_stream && topic == m_topic) {
+            reanchorFromWindow();
+        } else {
+            openTopic(topic);
+        }
+    };
+    if (m_anchorFromCachedSearch) {
+        // A cached hit supplies a route. Only a row present in the reopened history can be highlighted.
+        open(cachedStream, cachedTopic);
+        return;
+    }
     request("GET", messenger + "/messages/", {}, {{"project_id", m_session->project()}, {"uuid", target}},
-        [this, target](const ApiResult &result) {
+        [this, target, open](const ApiResult &result) {
         if (m_pendingAnchorMessage != target || !m_anchorLinkPending) return;
         const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
         const auto parsed = rows.isEmpty() ? std::optional<Message>{}
@@ -16947,18 +17612,8 @@ void NativeController::beginAnchorLinkJump(const QString &target)
             clearAnchor(deepLinkUnavailableNotice());
             return;
         }
-        if (m_pendingAnchorMessage != target) return;
         m_pendingAnchorParsed = parsed;
-        m_pendingAnchorStream = parsed->stream;
-        m_pendingAnchorTopic = parsed->topic;
-        if (parsed->topic.isEmpty()) {
-            if (parsed->stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
-            else selectStream(parsed->stream);
-        } else if (parsed->stream == m_stream && parsed->topic == m_topic) {
-            reanchorFromWindow();
-        } else {
-            openTopic(parsed->topic);
-        }
+        open(parsed->stream, parsed->topic);
     });
 }
 
@@ -17005,6 +17660,7 @@ void NativeController::clearAnchor(const QString &notice)
     const QString failedTarget = m_pendingAnchorMessage;
     const QString failedConversation = conversationKey();
     m_anchorLinkPending = false;
+    m_anchorFromCachedSearch = false;
     m_conversationOpening.automaticAnchor = false;
     m_pendingAnchorMessage.clear();
     m_pendingAnchorStream.clear();
@@ -17067,6 +17723,7 @@ void NativeController::reanchorFromWindow()
         const auto target = m_pendingAnchorMessage;
         const bool hadLinkJump = m_anchorLinkPending;
         m_anchorLinkPending = false;
+        m_anchorFromCachedSearch = false;
         m_pendingAnchorMessage.clear();
         m_pendingAnchorStream.clear();
         m_pendingAnchorTopic.clear();
@@ -17083,7 +17740,7 @@ void NativeController::reanchorFromWindow()
         return;
     }
     // The lookup determines which conversation owns the around-anchor pages.
-    if (m_anchorLinkPending && !m_pendingAnchorParsed) return;
+    if (m_anchorLinkPending && !m_anchorFromCachedSearch && !m_pendingAnchorParsed) return;
     if (busy()) return; // A live page owns the next reanchor pass.
     // Reference parity (issue #71): a resolved anchor outside the loaded window opens
     // the around-anchor pages (workspace_ui 61dacef7 resolveOpeningMessageWindow in
@@ -17315,16 +17972,7 @@ QString NativeController::summarizeRowPreview(const QString &plainText)
 QString NativeController::formatRowTime(const QDateTime &created, const QLocale &locale,
     const QDate &today, const QString &yesterdayLabel)
 {
-    // workspace_ui 61dacef shared/lib/datetime.lib.ts:65-82 formatMessageTimeRelative:
-    // the same local calendar day is a manual 24 h HH:mm (never Intl), the previous local
-    // day is the chat.yesterday label with no clock time, anything older is the compact
-    // day + short month style, which carries no year at all.
-    if (!created.isValid()) return {};
-    const auto local = created.toLocalTime();
-    if (local.date() == today) return local.toString(QStringLiteral("HH:mm"));
-    if (local.date() == today.addDays(-1)) return yesterdayLabel;
-    return locale.toString(local.date(), locale.language() == QLocale::Russian
-        ? QStringLiteral("d MMM") : QStringLiteral("MMM d"));
+    return message_time::relativeLabel(created, locale, today, yesterdayLabel);
 }
 
 std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const Message &message) const
@@ -17354,7 +18002,7 @@ std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const
         body = prepared->content;
     }
     NativeMarkdown renderer;
-    preview.text = summarizeRowPreview(renderer.render(body).value("plain").toString());
+    preview.text = summarizeRowPreview(renderer.renderPreview(body).value("plain").toString());
     return preview;
 }
 
@@ -17834,7 +18482,7 @@ std::optional<QString> NativeController::replyPlainFor(const QString &id) const
     }
     if (!content) return std::nullopt;
     static NativeMarkdown previewCache;
-    return previewCache.render(*content).value("plain").toString().simplified();
+    return previewCache.renderPreview(*content).value("plain").toString().simplified();
 }
 
 QString NativeController::replyTabPlain(const ReplyTab &tab) const
@@ -17944,7 +18592,7 @@ QString NativeController::replyMediaSummary() const
     // token (message-composer-reply-quote-preview.ui.tsx:74-83 at workspace_ui
     // 230e02b8), then applies the same 80-character QUOTE_PREVIEW_MAX summary.
     static NativeMarkdown summaryRenderer;
-    auto text = summaryRenderer.render(content, true).value(QLatin1String("plain")).toString().simplified();
+    auto text = summaryRenderer.renderPreview(content, true).value(QLatin1String("plain")).toString().simplified();
     static constexpr int maximumCharacters = 80;
     static constexpr int markerLength = 3;
     if (text.size() > maximumCharacters)
@@ -18605,11 +19253,8 @@ void NativeController::cancelEditMessage()
     closeEditSession();
 }
 
-void NativeController::submitEditMessage()
+std::optional<QString> NativeController::composeEditBody() const
 {
-    if (m_editingMessage.isEmpty()) return;
-    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
-    const auto id = m_editingMessage;
     auto text = editAnswer(m_editBuffer, m_editRestoresReply ? m_replyActiveTab : QString());
     // Issue #202: a restored edit re-serializes every quote block the same way a
     // reply send does - quote line + blank line + answer per tab, joined by blank
@@ -18623,8 +19268,7 @@ void NativeController::submitEditMessage()
                 : workspace::buildWorkspaceQuoteReference(replyAuthorFor(tab.message),
                     tab.message, tab.selectedText);
             if (quoteLine.isEmpty()) {
-                report(tr("This message can no longer be replied to."));
-                return;
+                return std::nullopt;
             }
             const auto answer = (tab.id == m_replyActiveTab ? text : editAnswer(tab.answer, tab.id)).trimmed();
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
@@ -18635,7 +19279,20 @@ void NativeController::submitEditMessage()
     text = replaceImageAliases(text, true);
     if (m_editRestoresReply && !m_replyTabs.isEmpty())
         text = NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(QString()));
-    text = prependUploadedLinks(text, readyUploadLinks(m_editSession));
+    return prependUploadedLinks(text, readyUploadLinks(m_editSession));
+}
+
+void NativeController::submitEditMessage()
+{
+    if (m_editingMessage.isEmpty()) return;
+    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
+    const auto id = m_editingMessage;
+    const auto composed = composeEditBody();
+    if (!composed) {
+        report(tr("This message can no longer be replied to."));
+        return;
+    }
+    const auto &text = *composed;
     if (text.size() > 40000 || !boundedText(text, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;
@@ -19588,14 +20245,57 @@ void NativeController::votePollOption(const QString &messageUuid, const QString 
             {QStringLiteral("option_uuid"), optionUuid}, {QStringLiteral("selected"), selected}});
 }
 
+bool NativeController::canManagePoll(const QString &id) const
+{
+    const auto *message = findMessage(id);
+    const auto *stream = currentStream();
+    if (!authenticated() || !authoritativeRoute() || !supportsMessengerPolls(stream) || !message
+        || !message->poll || !message->pollState || message->pollState->isClosed
+        || message->project != m_session->project() || message->stream != m_stream
+        || (!m_topic.isEmpty() && message->topic != m_topic) || message->author != m_session->user())
+        return false;
+    const auto &poll = *message->poll;
+    const auto deadline = QDateTime::fromString(poll.closesAt, Qt::ISODateWithMs);
+    if (deadline.isValid() && deadline <= QDateTime::currentDateTimeUtc()) return false;
+
+    // The bridge owns management of native Zulip poll widgets. Other polls
+    // carried by a Zulip stream use the Workspace management endpoints.
+    if (!stream->security || stream->security->source != QLatin1String("zulip")) return true;
+    if (poll.questions.size() != 1 || !poll.multipleAnswers || poll.isAnonymous || !poll.allowRevote
+        || poll.resultsVisibility != QLatin1String("always") || !poll.allowAddingOptions
+        || !poll.closesAt.isEmpty() || !poll.closedAt.isEmpty()) return true;
+    const auto &question = poll.questions.first();
+    if (!question.correctOptionUuids.isEmpty()) return true;
+    const auto literalLine = [](const QString &value) {
+        const auto space = [](QChar c) { return c.isSpace() || (c.unicode() >= 28 && c.unicode() <= 31); };
+        return (value.isEmpty() || (!space(value.front()) && !space(value.back())))
+            && !value.contains('\r') && !value.contains('\n') && !value.contains(QLatin1String("@*"));
+    };
+    if (!literalLine(question.text)) return true;
+    QSet<QString> labels;
+    for (const auto &option : question.options) {
+        if (labels.contains(option.text) || !literalLine(option.text)) return true;
+        labels.insert(option.text);
+    }
+    return false;
+}
+
 void NativeController::closePoll(const QString &messageUuid)
 {
+    if (!canManagePoll(messageUuid)) {
+        emit pollActionFailed(messageUuid, QStringLiteral("close_poll"), QStringLiteral("not-available"), {});
+        return;
+    }
     invokePollAction(messageUuid, QStringLiteral("close_poll"), QJsonObject{});
 }
 
 void NativeController::updatePollSettings(const QString &messageUuid, const QString &closesAt,
     bool allowAddingOptions)
 {
+    if (!canManagePoll(messageUuid)) {
+        emit pollActionFailed(messageUuid, QStringLiteral("update_settings"), QStringLiteral("not-available"), {});
+        return;
+    }
     // Full-config save: both fields are always present (closes_at null clears).
     QJsonObject settings{{QStringLiteral("allow_adding_options"), allowAddingOptions}};
     settings.insert(QStringLiteral("closes_at"),
@@ -19739,8 +20439,7 @@ void NativeController::callFromProfile(const QString &userUuid)
     const auto navigation = resolveProfileDirect(peer);
     if (navigation.status == ProfileDirectNavigation::Status::MissingDefaultTopic) {
         // :481-489: logged and returned before the pending queue is touched.
-        qInfo().noquote() << "Default topic missing for existing direct stream before call"
-                          << navigation.streamUuid;
+        qInfo("Default topic missing for existing direct stream before call");
         return;
     }
     if (navigation.status == ProfileDirectNavigation::Status::StreamMissing && !canStartDirectChatWith(peer)) {
