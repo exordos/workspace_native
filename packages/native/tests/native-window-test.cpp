@@ -38733,15 +38733,25 @@ private slots:
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void messageTimePanelFollowsChipWhileHistoryScrolls_data()
+    {
+        QTest::addColumn<bool>("retainDelegate");
+        QTest::newRow("offscreen-cached-chip") << true;
+        QTest::newRow("released-chip") << false;
+    }
+
     void messageTimePanelFollowsChipWhileHistoryScrolls()
     {
+        QFETCH(bool, retainDelegate);
         NativeWindowScene scene;
         QVERIFY(scene.exposeWindow());
         auto *window = scene.window;
         auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        // Exercise both ListView lifetimes after the same real wheel movement.
+        QVERIFY(list->setProperty("cacheBuffer", retainDelegate ? qCeil(list->height() * 3) : 0));
         // Choose a visible chip with room to scroll one notch while keeping
         // the reference's preferred placement above the trigger.
-        QQuickItem *chip = nullptr;
+        QPointer<QQuickItem> chip;
         for (int i = 49; i >= 0; --i) {
             auto *candidate = item(list, "message-time-" + NativeWindowScene::messageUuid(i));
             if (!candidate)
@@ -38757,7 +38767,7 @@ private slots:
         auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
         QTRY_VERIFY(panel->property("visible").toBool());
         const auto bottom = [panel] { return panel->property("y").toReal() + panel->property("height").toReal(); };
-        const auto chipY = [chip] { return chip->mapToScene(QPointF()).y(); };
+        const auto chipY = [&chip] { return chip ? chip->mapToScene(QPointF()).y() : qreal(-1); };
         QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
         const auto before = chipY();
         const auto wheelAt = list->mapToScene(QPointF(list->width() - 4, list->height() / 2));
@@ -38765,7 +38775,14 @@ private slots:
         QTRY_VERIFY(chipY() > before + 90);
         QVERIFY(panel->property("visible").toBool());
         QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
+        const auto contentY = list->property("contentY").toReal();
         QTest::wheelEvent(window, wheelAt, QPoint(0, 1200));
+        QTRY_VERIFY(list->property("contentY").toReal() < contentY - 900);
+        if (retainDelegate) {
+            QTRY_VERIFY(chip && chip->mapToItem(list, QPointF()).y() >= list->height());
+        } else {
+            QTRY_VERIFY(chip.isNull());
+        }
         QTRY_VERIFY(!panel->property("visible").toBool());
     }
 
