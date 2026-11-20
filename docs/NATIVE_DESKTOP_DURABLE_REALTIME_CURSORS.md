@@ -276,7 +276,9 @@ The existing path stays authoritative and the persisted row follows it:
 
 - `Session::signedOut`: the client first flushes/stops pending durable writes
   (via `suspend()`), then clears the durable row for the owner key captured
-  while the session was still live, and forgets that key.
+  while the session was still live. If the delete fails, the running client
+  keeps the key pending and skips the stale row on the next login. It retries
+  the delete and persists the new baseline when storage accepts writes again.
 - Owner replacement inside a live client (`resume()` sees a different owner):
   the previous owner's durable row is cleared before the new owner is bound.
   The incoming owner may restore its own row (reference owner-replacement

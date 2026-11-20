@@ -89,8 +89,7 @@ RealtimeClient::RealtimeClient(ApiClient *api, Session *session, QObject *parent
         suspend();
         // A signed-out owner's stream position must not survive anywhere:
         // the next connect re-baselines instead of resuming it.
-        if (m_cursorStore && !m_durableKey.isEmpty())
-            m_cursorStore->clear(m_durableKey);
+        clearDurableCursor(m_durableKey);
         m_durableKey.clear();
         m_cursors.clear();
         m_hydratedOwners.clear();
