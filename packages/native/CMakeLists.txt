@@ -518,6 +518,9 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
+        uiSecretFragmentTracksRequestAndVaultRemoval
+        uiSecretRequestVerifiesTheReferencedStream
+        uiSecretArchivedFragmentUsesItsAccessibleKey
         uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
         uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
         uiEncryptedOsRetryDoesNotSendAKeyRequest

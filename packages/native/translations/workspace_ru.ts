@@ -1841,6 +1841,26 @@
     <context>
         <name>workspace::NativeController</name>
         <message>
+            <source>Show spoiler</source>
+            <translation>Показать спойлер</translation>
+        </message>
+        <message>
+            <source>Hide spoiler</source>
+            <translation>Скрыть спойлер</translation>
+        </message>
+        <message>
+            <source>Request key</source>
+            <translation>Запросить ключ</translation>
+        </message>
+        <message>
+            <source>Waiting for a response</source>
+            <translation>Ожидание ответа</translation>
+        </message>
+        <message>
+            <source>Could not decrypt message</source>
+            <translation>Не удалось расшифровать</translation>
+        </message>
+        <message>
             <source>Some local data could not be cleared.</source>
             <translation>Не удалось очистить часть локальных данных.</translation>
         </message>
