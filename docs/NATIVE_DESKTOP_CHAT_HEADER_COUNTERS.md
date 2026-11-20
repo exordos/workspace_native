@@ -98,10 +98,10 @@ loader contract (`refreshChannelInfo` / `loadChannelInfoPage`):
   items are gated off and the controller never counts for direct streams.
 - Refresh trigger (issue #438 fix): the header publishes its on-screen state
   through the `chatHeaderVisible` property (a `Binding` on the header item's
-  `visible`); the controller fetches a member page only when the selected
-  stream actually changes (`activateStream`'s commit with a different stream)
-  while the header is on screen and favorites is closed, and only when that
-  owner+stream has no projection yet. The original trigger - a `Connections`
+  `visible`). On first display, stream selection, topic selection or a return
+  from Favorites, the controller loads the members for the current channel
+  if the header is visible. In-flight and completed snapshots deduplicate
+  each user action. An initial failure can be retried on the next action. The original trigger - a `Connections`
   with `onSelectedStreamChanged`/`onAuthenticatedChanged` handlers - resolved
   to those properties' NOTIFY, which is the shared `stateChanged`, so every
   state change re-fetched (see the #438 section below).
@@ -162,14 +162,11 @@ PR #432's automatic trigger broke two gui ctest groups at tip `096110d`:
 Fix (same scoping discipline as #434's NOTIFY gate, applied to the fetch):
 
 - `NativeController::ensureChatHeaderMembers()` is the only automatic
-  trigger. It runs on selection edges (an `activateStream` commit whose
-  stream differs from the previous one) and on the `authenticated` signal.
-  A member page loads only while `chatHeaderVisible` is set (a `Binding`
-  fed by the header item's effective `visible`) and favorites is closed,
-  and only when the current owner+stream has no projection yet - so
-  mounting a window, topic switches, feed/inbox overlays and hidden
-  controllers produce zero member traffic. Empty or direct selections clear
-  the projection without a request.
+  trigger. It checks the owner, stream, in-flight request and completed
+  snapshot at each selection or visibility change. A user can recover from
+  a failed initial load by revisiting the same channel. Headless controllers
+  and Favorites issue no header request. Empty or direct selections clear
+  the previous channel's projection.
 - `setChatHeaderVisible` stays silent on `stateChanged`; its QML value
   expression reads only the item's `visible` (reading any controller
   property would loop, since they all notify through `stateChanged`).
@@ -184,9 +181,16 @@ Fix (same scoping discipline as #434's NOTIFY gate, applied to the fetch):
   `selectedDeletedTopic...(selected-deletion-opens-owned-canonical-topic)`,
   zero elsewhere; `globalChannelCreationUsesVerifiedHttp` expects the one
   read of the created channel (`bindingGets - initialBindings == 1`). The
-  pinned `native-native-e2ee-ui` budgets were not touched.
+  encryption-authority request budgets still apply. For an ordinary channel
+  opened before the window mounts, the initial header reads one membership
+  page. Opening or collapsing a service message adds zero membership reads.
 - Regression coverage: `chatHeaderCountersFetchFollowsVisibleSelectionEdges`
-  (controller) pins headless silence, mount-is-not-an-edge, one page per new
+  (controller) pins headless silence, a single first-mount request, one page per new
   visible selection, no refetch on re-activation, direct clear without a
   request, and the ticket fence for a page that completes after its
   selection was replaced (the deferred-response race behind the abort).
+
+
+The visible localized caption is exposed to assistive technology as static
+text in the channel header. Presence and selection changes update that same
+caption without introducing another Tab stop.

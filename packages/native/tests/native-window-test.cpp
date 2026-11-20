@@ -16880,6 +16880,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::newRow("history") << QString("history") << QString("en");
         QTest::newRow("public-shortcut") << QString("shortcut") << QString("en");
         QTest::newRow("credentials") << QString("credentials") << QString("en");
+        QTest::newRow("submit-from-password") << QString("submit-password") << QString("en");
+        QTest::newRow("submit-from-username") << QString("submit-username") << QString("en");
+        QTest::newRow("empty-credentials") << QString("empty") << QString("en");
+        QTest::newRow("empty-credentials-ru") << QString("empty") << QString("ru");
     }
 
     void loginWizardReferenceSurfaces()
@@ -16950,11 +16954,158 @@ mv -Tf "$root/.current-new" "$root/current"
             field->setProperty("text", server.origin().toString());
             click(window, item(content, "organizationNextButton"));
             QTRY_VERIFY(visibleItem(content, "userInput"));
-            QVERIFY(hasVisibleText(content, "Email or login"));
+            const bool russian = locale == "ru";
+            QVERIFY(hasVisibleText(content, russian ? QString("Email или логин") : QString("Email or login")));
             QCOMPARE(item(content, "userInput")->property("placeholderText").toString(),
-                     QString("email@example.com or login"));
-            QVERIFY(hasVisibleText(content, "Password"));
-            QCOMPARE(item(content, "signInButton")->property("text").toString(), QString("Next"));
+                     russian ? QString("email@example.com или логин") : QString("email@example.com or login"));
+            QVERIFY(hasVisibleText(content, russian ? QString("Пароль") : QString("Password")));
+            QCOMPARE(item(content, "signInButton")->property("text").toString(),
+                     russian ? QString("Далее") : QString("Next"));
+            if (surface == "empty") {
+                click(window, item(content, "signInButton"));
+                QVERIFY(hasVisibleText(content, russian ? QString("Заполните все поля") : QString("Please fill in all fields")));
+                QCOMPARE(server.requests.size(), 1);
+            } else if (surface.startsWith("submit-")) {
+                auto *username = visibleItem(content, "userInput");
+                auto *password = visibleItem(content, "passwordInput");
+                username->setProperty("text", "synthetic-user");
+                password->setProperty("text", "synthetic-password");
+                click(window, surface == "submit-password" ? password : username);
+                QTest::keyClick(window, Qt::Key_Return);
+                QTRY_VERIFY(visibleItem(content, "projectSelect"));
+            }
+        }
+        window->close();
+    }
+
+    void loginLinkedOrganizationDiscoversOnlyAKnownOrigin_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto &scenario : {"matching-default", "unknown-organization", "replaced-link", "ambiguous-origin", "edited-address", "history-only"})
+            QTest::newRow(scenario) << QString::fromLatin1(scenario);
+    }
+
+    void loginLinkedOrganizationDiscoversOnlyAKnownOrigin()
+    {
+        QFETCH(QString, scenario);
+        const bool known = scenario != "unknown-organization";
+        const bool replaced = scenario == "replaced-link";
+        const bool edited = scenario == "edited-address";
+        const bool ambiguous = scenario == "ambiguous-origin";
+        MockServer server;
+        std::function<void()> finish;
+        server.handler = [&](const Request &) {
+            Response response{QJsonObject{{"realm_name", "Known organization"}}};
+            if (replaced || edited)
+                response.defer = [&](std::function<void()> reply) { finish = std::move(reply); };
+            return response;
+        };
+        const auto oldUrl = qgetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+        qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL",
+                scenario == "history-only" ? QByteArray{} : server.origin().toEncoded());
+        const auto restore = qScopeGuard([&] {
+            if (oldUrl.isNull()) qunsetenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL");
+            else qputenv("WORKSPACE_NATIVE_DEFAULT_LOGIN_ORGANIZATION_URL", oldUrl);
+        });
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        if (scenario == "history-only") preferences.recordOrganizationOrigin(server.origin().toString());
+        WindowSecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        if (ambiguous) {
+            // Both origins map to the same route segment: host:port and host-port.
+            const QUrl alias("https://" + workspace::orgRouteIdFromOrigin(server.origin()));
+            SavedAccount account{SessionVault::accountId(alias, projectId, userId), alias,
+                                 projectId, userId, "test", "Project"};
+            bool saved = false;
+            vault.save(account, "fixture", [&](const QString &error) { saved = error.isEmpty(); });
+            QTRY_VERIFY(saved);
+        }
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.setPreferences(&preferences);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window && QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        const auto organization = known ? workspace::orgRouteIdFromOrigin(server.origin())
+                                        : QStringLiteral("unknown.example");
+        controller.openMessageLink(QStringLiteral("ew://open/org/%1/project/%2/message/%3")
+                                   .arg(organization, projectId, messageId));
+        if (edited) {
+            QTRY_VERIFY(bool(finish));
+            auto *field = visibleItem(content, "serverInput");
+            QVERIFY(field);
+            click(window, field);
+            QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+            QTest::keyClick(window, Qt::Key_X);
+            QCOMPARE(field->property("text").toString(), QString("x"));
+            finish();
+            QTRY_VERIFY(!controller.organizationLoading());
+            QVERIFY(visibleItem(content, "serverInput"));
+            QCOMPARE(controller.organizationRealm(), QString("x"));
+            QVERIFY(!visibleItem(content, "userInput"));
+        } else if (replaced) {
+            QTRY_VERIFY(bool(finish));
+            controller.openMessageLink(QStringLiteral("ew://open/org/unknown.example/project/%1/message/%2")
+                                       .arg(projectId, messageId));
+            finish();
+            QTRY_VERIFY(!controller.organizationLoading());
+            QVERIFY(visibleItem(content, "serverInput"));
+            QVERIFY(controller.organizationRealm().isEmpty());
+            QVERIFY(!visibleItem(content, "userInput"));
+        } else if (known && !ambiguous && scenario != "history-only") {
+            QTRY_VERIFY(visibleItem(content, "userInput"));
+            QCOMPARE(controller.organizationRealm(), server.origin().toString());
+            QCOMPARE(server.requests.size(), 1);
+            QCOMPARE(server.requests.front().target.path(), QString("/api/workspace/v1/messenger/server_settings"));
+        } else {
+            QTest::qWait(100);
+            QVERIFY(visibleItem(content, "serverInput"));
+            QVERIFY(controller.organizationRealm().isEmpty());
+            QVERIFY(server.requests.isEmpty());
+        }
+        window->close();
+    }
+
+    void loginRealmPreviewUsesOnlyAdvertisedBranding_data()
+    {
+        QTest::addColumn<bool>("hasName");
+        QTest::newRow("missing-branding") << false;
+        QTest::newRow("advertised-name") << true;
+    }
+
+    void loginRealmPreviewUsesOnlyAdvertisedBranding()
+    {
+        QFETCH(bool, hasName);
+        MockServer server;
+        server.handler = [hasName](const Request &) {
+            QJsonObject settings;
+            if (hasName) settings.insert("realm_name", "Example organization");
+            return Response{settings};
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window && QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        item(content, "serverInput")->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(visibleItem(content, "userInput"));
+        QCOMPARE(visibleItem(content, "realmPreviewCard") != nullptr, hasName);
+        if (hasName) {
+            auto *name = visibleItem(content, "realmPreviewName");
+            QVERIFY(name);
+            QCOMPARE(name->property("text").toString(), QString("Example organization"));
+            QCOMPARE(name->property("font").value<QFont>().pixelSize(), 14);
         }
         window->close();
     }
@@ -17339,7 +17490,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
         click(window, item(content, "organizationNextButton"));
         QTRY_VERIFY(!controller.error().isEmpty());
-        QVERIFY(visibleItem("organizationErrorBanner"));
+        auto *banner = visibleItem(content, "organizationErrorBanner");
+        QVERIFY(banner);
+        auto *next = item(content, "organizationNextButton");
+        QVERIFY(banner->mapToScene(QPointF(0, banner->height())).y() <= next->mapToScene({}).y());
         // Reference test 470: discovery failure keeps the credentials hidden.
         QVERIFY(!item(content, "userInput"));
         QCOMPARE(controller.error(),
@@ -17439,6 +17593,8 @@ mv -Tf "$root/.current-new" "$root/current"
         item(content, "passwordInput")->setProperty("text", "synthetic-password");
         click(window, item(content, "signInButton"));
         QTRY_VERIFY(item(content, "projectSelect"));
+        QVERIFY(visibleItem(content, "realmPreviewCard"));
+        QVERIFY(hasVisibleText(content, "Acme Realm"));
         // Step hint and the FormField label (auth.projectStepHint, auth.selectProject).
         QCOMPARE(item(content, "loginDescription")->property("text").toString(), locale == "ru"
             ? QString::fromUtf8("Выберите проект, который хотите открыть.")
@@ -17644,6 +17800,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(item(content, "projectErrorText")->property("text").toString(),
             QString("Sign in to an account for the organization and project in this link."));
         QVERIFY(!controller.authenticated());
+        QList<QQuickItem *> pending{content};
+        int errorTextCount = 0;
+        while (!pending.isEmpty()) {
+            const auto *child = pending.takeLast();
+            if (!child->isVisible()) continue;
+            if (child->property("text").toString() == controller.error()) ++errorTextCount;
+            pending.append(child->childItems());
+        }
+        QCOMPARE(errorTextCount, 1);
         // The right selection commits; the parked link survives for the flush.
         click(window, select);
         QTRY_VERIFY(item(content, "projectOption-" + linkedProject));
@@ -17694,6 +17859,14 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *content = window->contentItem();
         item(content, "serverInput")->setProperty("text", server.origin().toString());
         click(window, item(content, "organizationNextButton"));
+        if (kind == "wrong-organization") {
+            QTRY_COMPARE_WITH_TIMEOUT(controller.error(),
+                QString("Sign in to an account for the organization and project in this link."), 1500);
+            QVERIFY(server.requests.isEmpty());
+            QVERIFY(!visibleItem(content, "userInput"));
+            window->close();
+            return;
+        }
         QTRY_VERIFY(item(content, "userInput"));
         item(content, "userInput")->setProperty("text", "synthetic-user");
         item(content, "passwordInput")->setProperty("text", "synthetic-password");
@@ -33347,6 +33520,40 @@ private slots:
             {"created_at", flip.value("updated_at")}, {"updated_at", flip.value("updated_at")}}));
         QTRY_COMPARE_WITH_TIMEOUT(scene.text("chatHeaderCounters"),
             QStringLiteral("2 members, 2 online"), 5000);
+    }
+
+    void chatHeaderCounterCaptionFollowsSelectionInAccessibleTree()
+    {
+        WindowChatHeaderCountersScene scene;
+        const auto accessibleCaptionCount = [&scene](const QString &expected) {
+            auto *root = QAccessible::queryAccessibleInterface(scene.window);
+            std::function<int(QAccessibleInterface *)> count = [&](QAccessibleInterface *item) {
+                if (!item || item->state().invisible)
+                    return 0;
+                int matches = item->role() == QAccessible::StaticText
+                    && item->text(QAccessible::Name) == expected;
+                for (int i = 0; i < item->childCount(); ++i)
+                    matches += count(item->child(i));
+                return matches;
+            };
+            return count(root);
+        };
+        scene.controller.selectStream(streamId);
+        const QString pair = QStringLiteral("2 members, 1 online");
+        const QString solo = QStringLiteral("1 member, 1 online");
+        QTRY_COMPARE(scene.text("chatHeaderCounters"), pair);
+        QTRY_COMPARE(accessibleCaptionCount(pair), 1);
+        auto *caption = visibleItem("chatHeaderCounters");
+        QVERIFY(caption && !caption->activeFocusOnTab());
+        auto *previous = caption->nextItemInFocusChain(false);
+        QVERIFY(previous && previous->nextItemInFocusChain(true) != caption);
+        scene.controller.selectStream(scene.fixture.soloStreamId);
+        QTRY_COMPARE(scene.text("chatHeaderCounters"), solo);
+        QTRY_COMPARE(accessibleCaptionCount(solo), 1);
+        QCOMPARE(accessibleCaptionCount(pair), 0);
+        scene.controller.selectStream(windowDirectId());
+        QTRY_VERIFY(scene.controller.isDirectConversation());
+        QTRY_COMPARE(accessibleCaptionCount(solo), 0);
     }
 
     void chatHeaderCountersSingularAndHiddenForDirectChats()

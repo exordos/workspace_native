@@ -1903,7 +1903,7 @@ public:
         QVERIFY(!worker->row.contains("pinned"));QVERIFY(!worker->row.contains("updated_at"));
         QCOMPARE(worker->row.value("payload"),rp);QCOMPARE(worker->row,expectedWorker);
         QTRY_VERIFY(c.f.api.findChildren<QNetworkReply *>().isEmpty());
-        QCOMPARE(c.lookupCount,1);QVERIFY(c.exactQuery);QCOMPARE(c.f.posts,0);QCOMPARE(c.f.streamGets,0);QCOMPARE(c.f.bindingGets,0);
+        QCOMPARE(c.lookupCount,1);QVERIFY(c.exactQuery);QCOMPARE(c.f.posts,0);QCOMPARE(c.f.streamGets,0);QCOMPARE(c.f.bindingGets,1);
         QVERIFY(!c.f.vault.available());QVERIFY(c.f.secrets.values.isEmpty());const auto encryption=c.f.controller.encryption();
         QVERIFY(encryption.value("keyRequests").toList().isEmpty());
         const auto facts=c.metadata();QVERIFY(facts.value("recipientKnown").toBool());QCOMPARE(facts.value("recipientId").toString(),userId);
@@ -1917,7 +1917,8 @@ public:
         const auto catalogRows=actual.value("/api/workspace/v1/messenger/streams/").toArray();QJsonObject catalog;
         for(const auto &row:catalogRows)if(row.toObject().value("uuid").toString()==streamId)catalog=row.toObject();
         QCOMPARE(catalog,c.f.stream);QVERIFY(!catalog.value("encryption").toBool());
-        QVERIFY(!actual.contains("/api/workspace/v1/messenger/stream_bindings/"));
+        const auto bindings=actual.value("/api/workspace/v1/messenger/stream_bindings/");
+        QVERIFY(bindings.isArray());QCOMPARE(bindings.toArray().size(),2);
         QVERIFY(!actual.contains("/api/workspace/v1/messenger/streams/"+streamId));
         auto *header=encryptedUiItem(window,"serviceGroupToggle-"+messageId);QVERIFY(header);QVERIFY(!header->property("expanded").toBool());
         QVERIFY(!encryptedUiItem(window,"keyServiceResponse-"+messageId));
@@ -1938,7 +1939,7 @@ public:
                 {"request",c.requestId},{"response",messageId}}},{"viewerName",c.f.controller.viewerDisplayName()},
             {"authorLabels",QJsonObject{{userId,facts.value("recipientName").toString()},{Issuer,facts.value("senderName").toString()}}},
             {"request",c.request},{"response",c.f.cipher},{"messages",QJsonArray{c.f.cipher}},{"catalog",catalog},{"topics",topics},
-            {"bindings",QJsonValue::Null},{"users",users},{"initialState",initial},{"safeAbsenceState",absence},
+            {"bindings",bindings},{"users",users},{"initialState",initial},{"safeAbsenceState",absence},
             {"capture",QJsonObject{{"locale","en"},{"mode","light"},{"phase","resolved-expanded"},{"finalPhase","post-space-collapsed"},{"viewport",QJsonObject{{"width",1440},{"height",900},{"dpr",1}}},
                 {"expandedFrame",expandedStem+".png"},{"collapsedFrame",collapsedStem+".png"}}},
             {"transport",QJsonObject{{"snapshots",snapshots},{"observations",observations},{"actualLookup",lookup},{"exactLookupCount",c.lookupCount}}},
@@ -5892,6 +5893,15 @@ private slots:
         }
         QCOMPARE(c.lookupRows,QJsonValue(QJsonArray{c.request}));
         c.lookupDelay=0; // The response is held by a real transport gate instead of a timer.
+        // The visible channel header reads the ordinary membership page on mount.
+        const auto previous = c.f.http.handler;
+        c.f.http.handler = [previous](const Request &wire) {
+            auto response = previous(wire);
+            if (wire.method == "GET" && wire.target.path() == "/api/workspace/v1/messenger/stream_bindings/")
+                response.data = QJsonArray{chatInfoBindingRow(messageId, userId, "guest"),
+                    chatInfoBindingRow(returnedId, Issuer, "moderator")};
+            return response;
+        };
         AccountUiResponseGate gate(c.f,c.requestId);QVERIFY(gate.available());
         AccountPublicCapture capture(c); // passive, after the existing delivery gate; destructs first
         QVERIFY(parseMessage(c.request,projectId));QVERIFY(parseMessage(c.f.cipher,projectId));
@@ -5906,6 +5916,7 @@ private slots:
         QCOMPARE(c.f.controller.messages().size(),1);QVERIFY(displayed(c.f.controller,c.requestId).isEmpty());
         NativePreferences preferences(c.f.directory.filePath("ordinary-account-prefilter-ui.ini"));
         preferences.setOwner(c.f.controller.ownerKey());preferences.setLocale("en");preferences.setMode("light");
+        QCOMPARE(c.f.bindingGets,0);
         QQmlApplicationEngine engine;loadNativeUi(engine,&c.f.controller,&preferences);
         auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));QVERIFY(window);
         const auto close=qScopeGuard([window=QPointer<QQuickWindow>(window)] {
@@ -5922,6 +5933,8 @@ private slots:
         QTRY_VERIFY(c.f.controller.property("messageHistoryReady").toBool());
         QTRY_VERIFY(serviceUiProperty(list,"serviceSession").toMap().value("ready").toBool());
         QVERIFY(serviceUiProperty(list,"serviceLiveEnabled").toBool());
+        QTRY_COMPARE(c.f.controller.chatHeaderMemberCount(),2);
+        QCOMPARE(c.f.bindingGets,1);
         const auto initialSession=serviceUiProperty(list,"serviceSession").toMap();
         QVERIFY(initialSession.value("seen").toMap().isEmpty());
         QVERIFY(initialSession.value("preferences").toMap().isEmpty());QVERIFY(initialSession.value("latest").isNull());
@@ -5959,7 +5972,7 @@ private slots:
         QVERIFY(!facts.value("hasKey").toBool());QVERIFY(!facts.value("offerRequest").toBool());QVERIFY(!facts.value("canRequest").toBool());
         QVERIFY(!c.f.vault.available());QVERIFY(c.f.controller.encryption().value("keyRequests").toList().isEmpty());
         QCOMPARE(c.f.controller.messages().size(),1);QVERIFY(displayed(c.f.controller,c.requestId).isEmpty());
-        QCOMPARE(c.f.posts,0);QCOMPARE(c.f.streamGets,0);QCOMPARE(c.f.bindingGets,0);
+        QCOMPARE(c.f.posts,0);QCOMPARE(c.f.streamGets,0);QCOMPARE(c.f.bindingGets,1);
         capture.writeFinal(window,external,grant,historyRevision);QVERIFY(!QTest::currentTestFailed());
     }
 
@@ -10243,6 +10256,11 @@ private slots:
         // Real member and presence counts, never invented zeros.
         QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
         QTRY_COMPARE(scene.f.controller.channelInfoOnlineCount(), 1);
+        // Membership is ready before the repeater's Column has positioned
+        // its new delegates. Measure the presented layout.
+        QSignalSpy membersFrame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!membersFrame.isEmpty());
         auto *drawer = scene.require("nativeRightDrawer"); QVERIFY(drawer);
         // xl avatar: 64 px circle, radius 32, resolveAvatarBackgroundColor
         // fallback (no stream color) is the bg token with a border-subtle ring.

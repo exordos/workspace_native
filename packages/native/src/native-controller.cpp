@@ -4324,85 +4324,36 @@ void NativeController::refreshChatHeaderMembers()
 
 void NativeController::setChatHeaderVisible(bool visible)
 {
-    // Issue #438: store the header item's raw on-screen state. The favorites
-    // surface (#70) replaces the header contents, so favorites open also
-    // counts as "not on screen"; it is folded in by ensureChatHeaderMembers
-    // at decision time, which keeps the QML value expression free of
-    // controller reads (any controller property read would loop: every
-    // controller property notifies through stateChanged).
-    //
-    // The write itself must stay silent: the QML value expression reads the
-    // header item's effective visible, which depends on workspace.visible -
-    // itself bound to controller.authenticated through the shared
-    // stateChanged NOTIFY - so emitting here is a QML binding loop. No QML
-    // consumer renders chatHeaderVisible; caption re-renders follow the
-    // stateChanged emissions of the projection itself.
-    //
-    // Issue #438 review (finding 4633233517): a selection edge skipped while
-    // the header was off screen would never come back - the caption stayed
-    // absent forever. The rising visibility edge is that skipped edge's
-    // deferred half, so it re-checks the projection (a deduplicated no-op
-    // whenever the selected stream already owns its page, which keeps the
-    // #434-pinned budgets and surface blinks silent). The re-check is
-    // deferred so this setter never emits stateChanged synchronously into
-    // the visibility binding that drives it.
     if (m_chatHeaderVisible == visible) return;
     m_chatHeaderVisible = visible;
-    // Issue #438 review (finding 4633233517): a selection edge skipped while
-    // the header was off screen would never come back - the caption stayed
-    // absent forever. The rising visibility edge is that skipped edge's
-    // deferred half, so it re-checks the projection whenever an obligation
-    // was recorded (see ensureChatHeaderMembers). Mounting a window over an
-    // already-selected stream arms nothing: the #434-pinned budgets (also
-    // pinned by the e2ee suites) mount windows on pre-selected streams and
-    // must refetch nothing on mount, and surface blinks with no skipped edge
-    // stay silent too. The re-check is deferred so this setter never emits
-    // stateChanged synchronously into the visibility binding that drives it.
-    if (visible) {
-        m_chatHeaderVisibilityMounted = true;
-        if (m_chatHeaderDeferredEdge)
-            QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
-    }
+    // Defer the load: this setter may run inside the QML visibility binding.
+    if (visible)
+        QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
 }
 
 void NativeController::ensureChatHeaderMembers()
 {
-    // Issue #438: the automatic fetch trigger for the #89 projection, scoped
-    // with the same discipline #434 applied to the binding-event NOTIFY
-    // (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md). The projection follows
-    // the selected stream itself: clearing is unconditional, while a member
-    // page may only load for a selection edge that (a) has a chat header
-    // actually on screen and (b) has no projection of its own yet - and for
-    // the deferred arrival of such an edge: a selection skipped while hidden
-    // or behind favorites is re-checked by setChatHeaderVisible and
-    // leaveFavorites, where (b) is the dedup key. The #432
-    // trigger missed both: its QML handlers named onSelectedStreamChanged/
-    // onAuthenticatedChanged resolved to the properties' NOTIFY -
-    // stateChanged - so every stateChanged re-issued the GET, over-fetching
-    // into the exact-traffic fixtures and racing teardown (the abort).
     const auto *row = channelInfoStreamRow();
     if (!authenticated() || m_stream.isEmpty() || !row || row->privateStream) {
-        m_chatHeaderDeferredEdge = false; // nothing left to recover
-        refreshChatHeaderMembers(); // clears the stale projection; never fetches
+        if (!m_chatHeaderMembersStream.isEmpty())
+            refreshChatHeaderMembers(); // discard a previous channel without fetching
         return;
     }
-    // Favorites replaces the header contents (#70): no member page for a
-    // selection made behind the favorites surface.
-    if (!m_chatHeaderVisible || m_favoritesVisible) {
-        // Issue #438 review (finding 4633233517): after the header has been
-        // on screen at least once, a selection edge blocked by the surface
-        // being away (or by favorites) records the obligation so the next
-        // visibility/favorites-close edge can recover it exactly once. A
-        // pre-mount skip arms nothing: mounting a window on an already-
-        // selected stream refetches nothing (#434-pinned budgets).
-        if (m_chatHeaderVisibilityMounted
-            && (m_chatHeaderMembersStream != m_stream
-                || m_chatHeaderMembersOwner != ownerKey()))
-            m_chatHeaderDeferredEdge = true;
+    if (!m_chatHeaderVisible || m_favoritesVisible) return;
+    if (m_chatHeaderMembersStream == m_stream && m_chatHeaderMembersOwner == ownerKey()
+        && (m_chatHeaderMembersLoading || m_chatHeaderMembersKnown))
+        return;
+    // Key management may already have verified the whole membership for this
+    // channel. Read its current snapshot without starting another binding GET.
+    if (m_chatAuthority.ready && m_chatAuthority.epoch == m_chatEpoch
+        && m_chatAuthority.owner == ownerKey() && m_chatAuthority.stream == m_stream) {
+        ++m_chatHeaderMembersTicket;
+        m_chatHeaderMembersKnown = false;
+        m_chatHeaderMembersStream = m_stream;
+        m_chatHeaderMembersOwner = ownerKey();
+        publishChatHeaderMembers(m_chatAuthority.roles.keys());
         return;
     }
-    if (m_chatHeaderMembersStream == m_stream && m_chatHeaderMembersOwner == ownerKey()) return;
-    m_chatHeaderDeferredEdge = false;
     refreshChatHeaderMembers();
 }
 
@@ -4447,18 +4398,23 @@ void NativeController::loadChatHeaderMembersPage(const QString &marker, quint64 
             if (event.first == QLatin1String("stream_binding.deleted")) accepted.removeAll(event.second);
             else if (!accepted.contains(event.second)) accepted.append(event.second);
         }
-        m_chatHeaderMembersLoading = false;
-        m_chatHeaderMembersPendingEvents.clear();
-        const bool firstSnapshot = !m_chatHeaderMembersKnown;
-        m_chatHeaderMembersKnown = true;
-        const auto changed = m_chatHeaderMemberUuids != accepted;
-        m_chatHeaderMemberUuids = accepted;
-        // Issue #89 round 3 (issue #434): the read-path harness pins the
-        // notifications around authority refreshes, so a page that re-serves
-        // the same member set must not re-notify stateChanged.
-        if (firstSnapshot || changed) emit mentionMembershipChanged();
-        if (changed) emit stateChanged();
+        publishChatHeaderMembers(std::move(accepted));
     });
+}
+
+void NativeController::publishChatHeaderMembers(QStringList accepted)
+{
+    m_chatHeaderMembersLoading = false;
+    m_chatHeaderMembersPendingEvents.clear();
+    const bool firstSnapshot = !m_chatHeaderMembersKnown;
+    m_chatHeaderMembersKnown = true;
+    const auto changed = m_chatHeaderMemberUuids != accepted;
+    m_chatHeaderMemberUuids = std::move(accepted);
+    // Issue #89 round 3 (issue #434): the read-path harness pins the
+    // notifications around authority refreshes, so a page that re-serves
+    // the same member set must not re-notify stateChanged.
+    if (firstSnapshot || changed) emit mentionMembershipChanged();
+    if (changed) emit stateChanged();
 }
 
 // Issue #89 round 3 (issue #434): a realtime binding event for the selected
@@ -7476,14 +7432,7 @@ void NativeController::leaveFavorites()
     m_favoritesVisible = false;
     m_favoritesStatus.clear();
     m_favoritesError.clear();
-    // Issue #438 review (finding 4633233517): closing favorites re-exposes
-    // the selected channel's header without any selection edge, so it is the
-    // deferred half of a selection edge that favorites had blocked. Only a
-    // recorded obligation is recovered, and it is deferred and deduplicated
-    // exactly like the visibility edge in setChatHeaderVisible: an ordinary
-    // activation that leaves favorites on its own edge already requests the
-    // page before this re-check runs.
-    if (m_chatHeaderDeferredEdge)
+    if (m_chatHeaderVisible)
         QTimer::singleShot(0, this, [this] { ensureChatHeaderMembers(); });
 }
 
@@ -9542,6 +9491,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         const QPointer<NativeController> lookupGuard(this);
         // Transport callbacks from the previous generation will not settle.
         // New projections must be able to resolve their quotes immediately.
+        ++m_chatHeaderMembersTicket;
+        m_chatHeaderMembersLoading = false;
+        m_chatHeaderMembersPendingEvents.clear();
         m_quoteInFlight.clear();
         m_quoteRetryAfter.clear();
         // Retired transport callbacks are deliberately dropped. Settle their
@@ -10730,6 +10682,11 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
 void NativeController::login(const QString &server, const QString &user,
                              const QString &password, const QString &otp)
 {
+    if (m_loginStep == QLatin1String("credentials") && (user.trimmed().isEmpty() || password.isEmpty())) {
+        m_error = tr("Please fill in all fields");
+        emit stateChanged();
+        return;
+    }
     m_error.clear();
     m_notice.clear();
     m_uploads = m_downloads = 0;
@@ -11104,7 +11061,7 @@ void NativeController::organizationInputChanged(const QString &text)
     // one invalidates the check, the pending advance and the error slot.
     const auto origin = organizationOriginFor(text);
     const auto originKey = origin.isEmpty() ? QString{} : origin.toString();
-    if (originKey == m_checkedOrganizationOrigin)
+    if (!originKey.isEmpty() && originKey == m_checkedOrganizationOrigin)
         return;
     ++m_organizationAttempt;
     m_organizationLoading = false;
@@ -11117,7 +11074,27 @@ void NativeController::organizationInputChanged(const QString &text)
     emit stateChanged();
 }
 
+bool NativeController::rejectMismatchedLoginOrganization(const QUrl &origin)
+{
+    QString org, project;
+    if (!linkedMessageTarget(&org, &project) || org == workspace::orgRouteIdFromOrigin(origin))
+        return false;
+    ++m_organizationAttempt;
+    m_organizationLoading = false;
+    m_pendingOrganizationOrigin.clear();
+    m_checkedOrganizationOrigin.clear();
+    m_organizationSettings.clear();
+    m_error = tr("Sign in to an account for the organization and project in this link.");
+    emit stateChanged();
+    return true;
+}
+
 void NativeController::discoverOrganization(const QString &text)
+{
+    discoverLoginOrganization(text, 0);
+}
+
+void NativeController::discoverLoginOrganization(const QString &text, quint64 linkSerial)
 {
     if (authenticated())
         return;
@@ -11135,16 +11112,26 @@ void NativeController::discoverOrganization(const QString &text)
         }
         return;
     }
+    if (rejectMismatchedLoginOrganization(origin))
+        return;
     const auto originKey = origin.toString();
     const auto attempt = ++m_organizationAttempt;
     m_organizationLoading = true;
     emit stateChanged();
     QPointer<NativeController> guard(this);
-    m_session->fetchOrganizationSettings(origin, [guard, attempt, originKey, this](
+    m_session->fetchOrganizationSettings(origin, [guard, attempt, originKey, linkSerial, this](
             bool ok, QVariantMap raw, QString error) {
         if (!guard || attempt != m_organizationAttempt)
             return;
         m_organizationLoading = false;
+        if (linkSerial != 0 && linkSerial != m_deepLinkSerial) {
+            // A newer link arrived while this automatic discovery was pending.
+            m_pendingOrganizationOrigin.clear();
+            m_organizationRealm.clear();
+            emit stateChanged();
+            if (guard) discoverInitialLinkedOrganization();
+            return;
+        }
         if (ok) {
             QVariantMap settings;
             settings.insert(QStringLiteral("organizationOrigin"), originKey);
@@ -11188,6 +11175,8 @@ void NativeController::continueFromOrganization(const QString &text)
         emit stateChanged();
         return;
     }
+    if (rejectMismatchedLoginOrganization(origin))
+        return;
     const auto originKey = origin.toString();
     if (originKey == m_checkedOrganizationOrigin) {
         // Reference: a completed check either reveals credentials or repeats
@@ -15180,9 +15169,6 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
                                       const QString &directPublishingAttempt,
                                       const Topic *initialTopic, quint64 openingTicket)
 {
-    // Issue #438: the member projection must follow only the real selection
-    // edges of this activation (see ensureChatHeaderMembers).
-    const auto previousHeaderStream = m_stream;
     if (!id.isEmpty() && std::none_of(m_streams.begin(), m_streams.end(),
             [&id](const Stream &stream) { return stream.uuid == id; }))
         return;
@@ -15263,9 +15249,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     if (current()) {
         syncCallBridge();
         attemptPendingCallHandoff();
-        // Issue #438: commit point of the selection edge; a re-activation of
-        // the same stream (topic switch) is not an edge and fetches nothing.
-        if (m_stream != previousHeaderStream) ensureChatHeaderMembers();
+        ensureChatHeaderMembers();
     }
 }
 
@@ -15631,6 +15615,7 @@ void NativeController::selectTopic(const QString &id)
     if (guard && selection == m_selection) {
         syncCallBridge();
         attemptPendingCallHandoff();
+        ensureChatHeaderMembers();
     }
 }
 
@@ -16442,8 +16427,42 @@ void NativeController::openMessageLink(const QString &url)
     const bool clearedFailure = std::exchange(m_profileLinkFailed, false);
     const QPointer<NativeController> guard(this);
     if (clearedFailure) emit stateChanged();
-    if (!guard || serial != m_deepLinkSerial || defer) return;
+    if (!guard || serial != m_deepLinkSerial) return;
+    if (defer) {
+        discoverInitialLinkedOrganization();
+        return;
+    }
     applyDeepLink(url);
+}
+
+void NativeController::discoverInitialLinkedOrganization()
+{
+    if (authenticated() || busy() || m_loginStep != QLatin1String("organization")
+        || m_organizationLoading || !m_organizationRealm.isEmpty()) return;
+    QString org, project;
+    if (!linkedMessageTarget(&org, &project)) return;
+
+    // The route segment can represent more than one deployment origin. Resolve
+    // it only against configured and saved origins, as the desktop reference does.
+    QStringList candidates{m_defaultOrganizationUrl};
+    for (const auto &account : m_session->savedAccounts())
+        candidates.append(account.server.toString());
+    QSet<QUrl> matches;
+    for (const auto &candidate : candidates) {
+        auto origin = organizationOriginFor(candidate);
+        if (origin.isEmpty() || !m_api->canSetServer(origin) || workspace::orgRouteIdFromOrigin(origin) != org)
+            continue;
+        if ((origin.scheme() == QLatin1String("https") && origin.port() == 443)
+            || (origin.scheme() == QLatin1String("http") && origin.port() == 80))
+            origin.setPort(-1);
+        matches.insert(origin);
+    }
+    if (matches.size() != 1) return;
+
+    const auto origin = matches.constBegin()->toString();
+    m_error.clear();
+    m_pendingOrganizationOrigin = origin;
+    discoverLoginOrganization(origin, m_deepLinkSerial);
 }
 
 void NativeController::applyDeepLink(const QString &url)
