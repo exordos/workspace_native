@@ -14073,7 +14073,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::newRow("prepend-day-boundary") << QString("prepend-day-boundary");
         QTest::newRow("incoming-bottom") << QString("incoming-bottom");
         QTest::newRow("own-send-away") << QString("own-send-away");
-        for (const auto *scenario : {"incoming-away", "own-incoming-away", "prepend-day-boundary", "incoming-bottom"})
+        for (const auto *scenario : {"incoming-away", "own-incoming-away", "prepend", "prepend-day-boundary", "incoming-bottom"})
             QTest::newRow(qPrintable("aggregate-" + QString::fromLatin1(scenario)))
                 << "aggregate-" + QString::fromLatin1(scenario);
     }
@@ -14103,6 +14103,7 @@ mv -Tf "$root/.current-new" "$root/current"
         };
         for (int i = 0; i < 130; ++i) history.insert(i, row(i));
         QStringList readAnchors;
+        QStringList olderPageMarkers;
         QJsonObject sent;
         const auto unread = [&] {
             int count = 0;
@@ -14141,6 +14142,7 @@ mv -Tf "$root/.current-new" "$root/current"
                     return Response{QJsonArray{}};
                 }
                 const auto marker = query.queryItemValue("page_marker");
+                if (!marker.isEmpty()) olderPageMarkers.append(marker);
                 const auto boundary = marker.isEmpty() ? 1000 : marker.right(12).toInt();
                 QJsonArray page;
                 bool more = false;
@@ -14205,6 +14207,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
+        const auto initialOldest = controller.messages().first().toMap().value("id").toString();
         const auto lastId = controller.messages().last().toMap().value("id").toString();
         QTRY_VERIFY(item(window->contentItem(), "message-" + lastId));
         QTRY_VERIFY(item(window->contentItem(), "message-" + lastId)->mapToItem(list, QPointF()).y() < list->height());
@@ -14262,6 +14265,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 // (docs/NATIVE_DESKTOP_AUTO_PAGING.md): the older page arrives
                 // on its own, without the button click.
                 QTRY_COMPARE(controller.messages().size(), 100);
+                QCOMPARE(olderPageMarkers, QStringList{initialOldest});
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
             }
