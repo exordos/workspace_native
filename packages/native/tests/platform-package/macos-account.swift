@@ -20,7 +20,8 @@ func find(_ item: AXUIElement, _ name: String, _ role: String, _ depth: Int = 0)
         let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute]
             .compactMap { attr(item, $0 as CFString) as? String }
         let staticValue = role == kAXStaticTextRole as String ? attr(item, kAXValueAttribute as CFString) as? String : nil
-        if (labels.contains(name) || staticValue == name), (attr(item, kAXEnabledAttribute as CFString) as? Bool) != false { return item }
+        let secure = name == "Password" && attr(item, kAXSubroleAttribute as CFString) as? String == kAXSecureTextFieldSubrole as String
+        if (labels.contains(name) || staticValue == name || secure), (attr(item, kAXEnabledAttribute as CFString) as? Bool) != false { return item }
     }
     for child in attr(item, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] {
         if let match = find(child, name, role, depth + 1) { return match }
@@ -58,6 +59,16 @@ func fill(_ name: String, _ value: String) throws {
     guard AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
         throw fail("The \(name) field refused focus.")
     }
+    if name == "Password" {
+        // A secure text field can deliberately withhold its value. The server
+        // accepts the sign-in only after the actual password arrives.
+        for code: CGKeyCode in [35, 0, 8, 40, 0, 5, 14, 27, 2, 14, 46, 31] { // package-demo
+            for down in [true, false] {
+                CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)?.postToPid(pid)
+            }
+        }
+        return
+    }
     let board = NSPasteboard.general
     board.clearContents()
     board.setString(value, forType: .string)
@@ -67,10 +78,10 @@ func fill(_ name: String, _ value: String) throws {
     let deadline = Date().addingTimeInterval(3)
     repeat {
         let content = attr(field, kAXValueAttribute as CFString) as? String ?? ""
-        if content == value || (name == "Password" && !content.isEmpty) { return }
+        if content == value { return }
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     } while Date() < deadline
-    if name != "Password" { throw fail("The \(name) field did not receive its value.") }
+    throw fail("The \(name) field did not receive its value.")
 }
 func press(_ name: String) throws {
     let button = try control(name, kAXButtonRole as String)
