@@ -253,7 +253,7 @@ int main(int argc, char **argv)
         if (controller.authenticated()) {
             for (const auto &value : controller.streams()) {
                 const auto unread = qMax<qint64>(0, value.toMap().value("unread").toLongLong());
-                count += qMin(unread, std::numeric_limits<qint64>::max() - count);
+                count += qMin(unread, (std::numeric_limits<qint64>::max)() - count);
             }
         }
         desktop.setUnreadCount(count);
