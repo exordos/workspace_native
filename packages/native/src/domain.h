@@ -136,6 +136,7 @@ struct Stream {
     // from the crypto security witness. The profile Message action opens the
     // direct stream's default topic exactly as the reference resolver does.
     QString defaultTopic;
+    QString viewer;
 };
 
 // Issue #134 profile Message/Call target resolution, a port of
@@ -167,6 +168,9 @@ struct Topic {
     QString lastMessage;
     QString notificationMode;
     qint64 updatedMicros = 0;
+    QString summary;
+    bool summaryEnabled = true;
+    bool summaryHasNewMessages = false;
 };
 
 struct Message {
