@@ -1,11 +1,14 @@
 #include "native-platform-shell.h"
 
+#include <QAbstractNativeEventFilter>
+#include <QCoreApplication>
 #include <QImage>
 #include <QPainter>
 #include <QScopeGuard>
 #include <QWindow>
 #include <qt_windows.h>
 #include <shobjidl.h>
+#include <optional>
 
 namespace workspace {
 namespace {
@@ -24,9 +27,8 @@ void withTaskbar(QWindow *window, Operation operation)
     if (SUCCEEDED(taskbar->HrInit()))
         operation(taskbar, reinterpret_cast<HWND>(window->winId()));
 }
-}
 
-void setPlatformUnread(QWindow *window, bool unread, bool, const QString &label)
+void publishUnread(QWindow *window, bool unread, const QString &label)
 {
     withTaskbar(window, [&](ITaskbarList3 *taskbar, HWND handle) {
         HICON icon = nullptr;
@@ -46,7 +48,7 @@ void setPlatformUnread(QWindow *window, bool unread, bool, const QString &label)
     });
 }
 
-void setPlatformTaskbarProgress(QWindow *window, qreal progress)
+void publishProgress(QWindow *window, qreal progress)
 {
     withTaskbar(window, [progress](ITaskbarList3 *taskbar, HWND handle) {
         if (progress < 0) {
@@ -58,6 +60,68 @@ void setPlatformTaskbarProgress(QWindow *window, qreal progress)
     });
 }
 
+// Explorer sends TaskbarButtonCreated for a new window button and again
+// after the shell restarts. Keep only the latest hints belonging to this window.
+class WindowTaskbarHints final : public QObject, public QAbstractNativeEventFilter {
+    Q_OBJECT
+public:
+    explicit WindowTaskbarHints(QWindow *window)
+        : QObject(window), m_window(window)
+    {
+        QCoreApplication::instance()->installNativeEventFilter(this);
+    }
+
+    static WindowTaskbarHints *forWindow(QWindow *window)
+    {
+        if (!window) return nullptr;
+        auto *hints = window->findChild<WindowTaskbarHints *>(Qt::FindDirectChildrenOnly);
+        return hints ? hints : new WindowTaskbarHints(window);
+    }
+
+    void setUnread(bool unread, const QString &label)
+    {
+        m_unread = unread;
+        m_label = label;
+        if (m_window->isExposed()) publishUnread(m_window, unread, label);
+    }
+
+    void setProgress(qreal progress)
+    {
+        m_progress = progress;
+        if (m_window->isExposed()) publishProgress(m_window, progress);
+    }
+
+    bool nativeEventFilter(const QByteArray &type, void *message, qintptr *) override
+    {
+        if (type != "windows_generic_MSG") return false;
+        const auto *event = static_cast<const MSG *>(message);
+        if (m_buttonCreated && event->message == m_buttonCreated && m_window->handle()
+            && event->hwnd == reinterpret_cast<HWND>(m_window->winId())) {
+            if (m_unread.has_value()) publishUnread(m_window, *m_unread, m_label);
+            if (m_progress.has_value()) publishProgress(m_window, *m_progress);
+        }
+        return false;
+    }
+
+private:
+    QWindow *m_window;
+    const UINT m_buttonCreated = RegisterWindowMessageW(L"TaskbarButtonCreated");
+    std::optional<bool> m_unread;
+    QString m_label;
+    std::optional<qreal> m_progress;
+};
+}
+
+void setPlatformUnread(QWindow *window, bool unread, bool, const QString &label)
+{
+    if (auto *hints = WindowTaskbarHints::forWindow(window)) hints->setUnread(unread, label);
+}
+
+void setPlatformTaskbarProgress(QWindow *window, qreal progress)
+{
+    if (auto *hints = WindowTaskbarHints::forWindow(window)) hints->setProgress(progress);
+}
+
 void setPlatformAttention(quintptr windowId, bool requested)
 {
     if (!windowId) return;
@@ -66,3 +130,5 @@ void setPlatformAttention(quintptr windowId, bool requested)
     FlashWindowEx(&info);
 }
 }
+
+#include "native-platform-shell-windows.moc"
