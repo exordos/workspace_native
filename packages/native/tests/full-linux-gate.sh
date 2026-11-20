@@ -49,6 +49,11 @@ if [[ -z "${PULSE_SERVER:-}" ]]; then
     pulse_pid=$!
     for _ in {1..100}; do [[ -S "$state/pulse" ]] && break; sleep 0.1; done
     test -S "$state/pulse"
+    # Chromium excludes monitor sources from its microphone list.
+    monitor=$(pactl get-default-source)
+    [[ "$monitor" == *.monitor ]]
+    pactl load-module module-remap-source master="$monitor" source_name=gate_microphone > /dev/null
+    pactl set-default-source gate_microphone
 fi
 # Disable service activation for the fixture bus used by the controller tests.
 cat > "$state/bus.conf" <<'EOF'
