@@ -6303,9 +6303,77 @@ bool NativeController::cacheStale() const
             || (!m_historyVerified && !m_messages.isEmpty()))));
 }
 
+void NativeController::clearCachedSearch()
+{
+    if (m_searchState.isEmpty() && m_searchResults.isEmpty()) return;
+    ++m_searchTicket;
+    if (m_cache) m_cache->cancelMessageSearch();
+    m_searchOwner.clear();
+    m_searchState.clear();
+    m_searchResults.clear();
+    emit cachedSearchChanged();
+}
+
+void NativeController::searchCachedMessages(const QString &query)
+{
+    const auto needle = query.trimmed().simplified();
+    if (needle.isEmpty() || !authenticated()) { clearCachedSearch(); return; }
+    const auto ticket = ++m_searchTicket;
+    m_searchOwner = ownerKey();
+    m_searchResults.clear();
+    auto cache = m_cache;
+    const auto lease = m_cacheLease;
+    const bool available = cache && cache->available() && !lease.owner.isEmpty() && needle.size() <= 256;
+    m_searchState = available ? QStringLiteral("loading") : QStringLiteral("unavailable");
+    const QPointer<NativeController> guard(this);
+    emit cachedSearchChanged();
+    if (!guard || !available || !cache || ticket != m_searchTicket) return;
+    cache->searchMessages(lease, needle, this, [this, ticket, lease](std::optional<QJsonArray> matches) {
+        if (ticket != m_searchTicket || ownerKey() != m_searchOwner
+            || m_cacheLease.owner != lease.owner || m_cacheLease.generation != lease.generation) return;
+        m_searchState = matches ? QStringLiteral("ready") : QStringLiteral("unavailable");
+        if (matches) {
+            for (const auto &value : *matches) {
+                auto row = value.toObject().toVariantMap();
+                const auto streamId = row.value("stream").toString(), topicId = row.value("topic").toString();
+                QString streamName = streamId, topicName = topicId;
+                for (const auto &stream : std::as_const(m_streams))
+                    if (stream.uuid == streamId) {
+                        streamName = isUuid(stream.directUser) ? peerDisplayName(stream.directUser) : stream.name;
+                        break;
+                    }
+                const auto topics = streamId == m_stream ? m_topics : m_inboxTopics.value(streamId);
+                for (const auto &topic : topics)
+                    if (topic.uuid == topicId) { topicName = topic.name; break; }
+                row.insert("location", streamName + QStringLiteral(" / ") + topicName);
+                m_searchResults.append(row);
+            }
+        }
+        emit cachedSearchChanged();
+    });
+}
+
+bool NativeController::openCachedSearchResult(const QString &id)
+{
+    if (!authenticated() || m_searchOwner != ownerKey() || m_searchState != QStringLiteral("ready")) return false;
+    const auto found = std::find_if(m_searchResults.cbegin(), m_searchResults.cend(), [&id](const QVariant &row) {
+        return row.toMap().value("id").toString() == id;
+    });
+    if (found == m_searchResults.cend()) return false;
+    const auto selected = found->toMap();
+    const auto owner = m_searchOwner;
+    const QPointer<NativeController> guard(this);
+    showSection(QStringLiteral("chat"));
+    if (!guard || owner != ownerKey()) return false;
+    beginAnchorLinkJump(id, selected.value("stream").toString(), selected.value("topic").toString());
+    return true;
+}
+
 void NativeController::closeCache()
 {
     const QPointer<NativeController> openingGuard(this);
+    clearCachedSearch();
+    if (!openingGuard) return;
     interruptTopicOpening();
     if (!openingGuard) return;
     ++m_cacheRevision;
@@ -6323,6 +6391,8 @@ void NativeController::closeCache()
 void NativeController::openCache()
 {
     const QPointer<NativeController> openingGuard(this);
+    clearCachedSearch();
+    if (!openingGuard) return;
     interruptTopicOpening();
     if (!openingGuard) return;
     ++m_cacheRevision;
@@ -8817,7 +8887,11 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!openingGuard) return;
         interruptChannelCreations();
         interruptDirectChats();
+        clearCachedSearch();
+        if (!openingGuard) return;
         m_cache.clear(); m_cacheLease = {}; ++m_cacheRevision;
+        emit cachedSearchAvailabilityChanged();
+        if (!openingGuard) return;
         m_cacheHydrations.clear(); m_cacheWasAvailable = false;
         m_loading = false;
         if (m_cacheForgettingAccount) {
@@ -8847,7 +8921,11 @@ void NativeController::useCache(NativeCacheService *cache)
         if (m_cache != cache) return;
         const bool ready = cache->available();
         const bool becameReady = ready && !m_cacheWasAvailable;
+        const bool changed = ready != m_cacheWasAvailable;
         m_cacheWasAvailable = ready;
+        const QPointer<NativeController> availabilityGuard(this);
+        if (changed) emit cachedSearchAvailabilityChanged();
+        if (!availabilityGuard) return;
         if (!becameReady) return;
         hydrateChatRequestLookups();
         auto pending = std::move(m_cacheHydrations);
@@ -8860,6 +8938,7 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!guard) return;
         refresh();
     }
+    if (guard) emit cachedSearchAvailabilityChanged();
     if (guard) emit stateChanged();
 }
 
@@ -15805,10 +15884,18 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
-    const qreal reserve = qMax<qreal>(100.0, viewportHeightPx);
-    // Reference parity (hook :1172-1197): both comparisons are inclusive, so
-    // a note exactly at the reserve arms and proceeds to the trigger check in
-    // the same call; a note strictly above the reserve only re-arms.
+    const qreal base = qMax<qreal>(100.0, viewportHeightPx);
+    qreal reserve = base;
+    if (m_historyTimingSelection == m_selection && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
+        const auto elapsed = m_scrollSampleClock.elapsed();
+        const qreal travel = m_previousTopDistance - distanceFromTopPx;
+        // Exclude layout jumps and idle gestures. Ahead of steady input, keep
+        // enough rows for the last successful page wait plus the normal buffer.
+        if (elapsed > 0 && elapsed <= m_historyPageWaitMs && travel > 0 && travel <= base)
+            reserve += qMin(3 * base, travel * m_historyPageWaitMs / elapsed);
+    }
+    m_scrollSampleClock.start();
+    m_previousTopDistance = distanceFromTopPx;
     if (distanceFromTopPx >= reserve)
         m_olderPrefetchArmed = true;
     if (distanceFromTopPx > reserve || !m_olderPrefetchArmed || !canLoadOlder())
@@ -15829,6 +15916,7 @@ void NativeController::noteScrollRearm(qreal distanceFromTopPx, qreal viewportHe
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
+    m_scrollSampleClock.invalidate();
     if (distanceFromTopPx >= qMax<qreal>(100.0, viewportHeightPx))
         m_olderPrefetchArmed = true;
 }
@@ -16119,8 +16207,10 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     query.addQueryItem("page_limit", "50");
     if (!marker.isEmpty())
         query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    QElapsedTimer requestTimer;
+    requestTimer.start();
     request("GET", messenger + "/messages/", {}, query,
-        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery](const ApiResult &result) mutable {
+        [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery, requestTimer](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
         if (revision != m_messageRevision) {
@@ -16200,6 +16290,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             m_messages = mergeMessages({}, accumulated);
         }
         pruneMessageFields();
+        if (selection != m_historyTimingSelection) m_scrollSampleClock.invalidate();
+        m_historyTimingSelection = selection;
+        m_historyPageWaitMs = requestTimer.elapsed();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
         // Issue #156: a freshly established window starts from a known
@@ -16228,6 +16321,45 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     });
 }
 
+QString NativeController::composerPreviewBody() const
+{
+    const auto *stream = currentStream();
+    if (!stream) return {};
+    if (stream->encrypted) return canCompose() ? draft() : QString{};
+    return (m_editingMessage.isEmpty() ? composeSendBody() : composeEditBody()).value_or(QString{});
+}
+
+std::optional<QString> NativeController::composeSendBody() const
+{
+    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
+    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
+    // mention serialization happens before the reply quote prefix join) and
+    // apply to every tab's answer, not just the active draft.
+    const auto mentionEntries = composerMentionEntries();
+    auto wire = replaceImageAliases(serializeComposerMentions(draft(), mentionEntries), true);
+    const auto attachments = readyUploadLinks(0);
+    if (!m_replyTabs.isEmpty()) {
+        QStringList blocks;
+        for (const auto &tab : std::as_const(m_replyTabs)) {
+            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
+                replyTabAuthor(tab), tab.message, tab.selectedText);
+            if (quoteLine.isEmpty()) {
+                return std::nullopt;
+            }
+            // The active tab answers with the live composer text; the others
+            // carry the answer captured while they were active - both get the
+            // same mention serialization.
+            auto answer = (tab.id == m_replyActiveTab ? wire
+                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
+            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
+        }
+        auto body = blocks.join(QStringLiteral("\n\n"));
+        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
+        wire = body;
+    }
+    return prependUploadedLinks(wire, attachments);
+}
+
 void NativeController::send()
 {
     if (!m_editingMessage.isEmpty()) return;
@@ -16245,38 +16377,16 @@ void NativeController::send()
     QJsonArray replySnapshot;
     for (const auto &tab : std::as_const(m_replyTabs))
         replySnapshot.append(QJsonArray{tab.id, tab.message, tab.answer});
-    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
-    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
-    // mention serialization happens before the reply quote prefix join) and
-    // apply to every tab's answer, not just the active draft.
-    const auto mentionEntries = composerMentionEntries();
-    auto wire = replaceImageAliases(serializeComposerMentions(text, mentionEntries), true);
-    const auto attachments = readyUploadLinks(0);
+    const auto composed = composeSendBody();
+    if (!composed) {
+        report(tr("This message can no longer be replied to."));
+        return;
+    }
+    const auto &wire = *composed;
     QList<quint64> transferredUploads;
     for (const auto &entry : std::as_const(m_uploadEntries))
         if (entry.task.editSession == 0 && entry.task.conversation == conversationKey()
             && entry.owner == creationOwnerKey() && entry.status == "ready") transferredUploads.append(entry.task.intent);
-    if (!m_replyTabs.isEmpty()) {
-        QStringList blocks;
-        for (const auto &tab : std::as_const(m_replyTabs)) {
-            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
-                replyTabAuthor(tab), tab.message, tab.selectedText);
-            if (quoteLine.isEmpty()) {
-                report(tr("This message can no longer be replied to."));
-                return;
-            }
-            // The active tab answers with the live composer text; the others
-            // carry the answer captured while they were active - both get the
-            // same mention serialization.
-            auto answer = (tab.id == m_replyActiveTab ? wire
-                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
-            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
-        }
-        auto body = blocks.join(QStringLiteral("\n\n"));
-        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
-        wire = body;
-    }
-    wire = prependUploadedLinks(wire, attachments);
     if (!boundedText(wire, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;
@@ -16969,7 +17079,7 @@ void NativeController::flushPendingDeepLink(bool settle)
     applyDeepLink(url);
 }
 
-void NativeController::beginAnchorLinkJump(const QString &target)
+void NativeController::beginAnchorLinkJump(const QString &target, const QString &cachedStream, const QString &cachedTopic)
 {
     // Issue #107 (docs/NATIVE_DESKTOP_ANCHOR_TRANSITION.md): the jump owns a
     // visible transition phase until the anchor resolves or the bounded walk
@@ -16983,6 +17093,7 @@ void NativeController::beginAnchorLinkJump(const QString &target)
         emit anchorNavigationErrorChanged();
     }
     m_anchorLinkPending = true;
+    m_anchorFromCachedSearch = !cachedStream.isEmpty();
     m_pendingAnchorMessage = target;
     m_pendingAnchorParsed.reset();
     m_pendingAnchorStream = m_stream;
@@ -16994,8 +17105,25 @@ void NativeController::beginAnchorLinkJump(const QString &target)
         reanchorFromWindow();
         return;
     }
+    const auto open = [this](const QString &stream, const QString &topic) {
+        m_pendingAnchorStream = stream;
+        m_pendingAnchorTopic = topic;
+        if (topic.isEmpty()) {
+            if (stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
+            else selectStream(stream);
+        } else if (stream == m_stream && topic == m_topic) {
+            reanchorFromWindow();
+        } else {
+            openTopic(topic);
+        }
+    };
+    if (m_anchorFromCachedSearch) {
+        // A cached hit supplies a route. Only a row present in the reopened history can be highlighted.
+        open(cachedStream, cachedTopic);
+        return;
+    }
     request("GET", messenger + "/messages/", {}, {{"project_id", m_session->project()}, {"uuid", target}},
-        [this, target](const ApiResult &result) {
+        [this, target, open](const ApiResult &result) {
         if (m_pendingAnchorMessage != target || !m_anchorLinkPending) return;
         const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
         const auto parsed = rows.isEmpty() ? std::optional<Message>{}
@@ -17004,18 +17132,8 @@ void NativeController::beginAnchorLinkJump(const QString &target)
             clearAnchor(deepLinkUnavailableNotice());
             return;
         }
-        if (m_pendingAnchorMessage != target) return;
         m_pendingAnchorParsed = parsed;
-        m_pendingAnchorStream = parsed->stream;
-        m_pendingAnchorTopic = parsed->topic;
-        if (parsed->topic.isEmpty()) {
-            if (parsed->stream == m_stream && m_topic.isEmpty()) reanchorFromWindow();
-            else selectStream(parsed->stream);
-        } else if (parsed->stream == m_stream && parsed->topic == m_topic) {
-            reanchorFromWindow();
-        } else {
-            openTopic(parsed->topic);
-        }
+        open(parsed->stream, parsed->topic);
     });
 }
 
@@ -17062,6 +17180,7 @@ void NativeController::clearAnchor(const QString &notice)
     const QString failedTarget = m_pendingAnchorMessage;
     const QString failedConversation = conversationKey();
     m_anchorLinkPending = false;
+    m_anchorFromCachedSearch = false;
     m_conversationOpening.automaticAnchor = false;
     m_pendingAnchorMessage.clear();
     m_pendingAnchorStream.clear();
@@ -17124,6 +17243,7 @@ void NativeController::reanchorFromWindow()
         const auto target = m_pendingAnchorMessage;
         const bool hadLinkJump = m_anchorLinkPending;
         m_anchorLinkPending = false;
+        m_anchorFromCachedSearch = false;
         m_pendingAnchorMessage.clear();
         m_pendingAnchorStream.clear();
         m_pendingAnchorTopic.clear();
@@ -17140,7 +17260,7 @@ void NativeController::reanchorFromWindow()
         return;
     }
     // The lookup determines which conversation owns the around-anchor pages.
-    if (m_anchorLinkPending && !m_pendingAnchorParsed) return;
+    if (m_anchorLinkPending && !m_anchorFromCachedSearch && !m_pendingAnchorParsed) return;
     if (busy()) return; // A live page owns the next reanchor pass.
     // Reference parity (issue #71): a resolved anchor outside the loaded window opens
     // the around-anchor pages (workspace_ui 61dacef7 resolveOpeningMessageWindow in
@@ -18654,11 +18774,8 @@ void NativeController::cancelEditMessage()
     closeEditSession();
 }
 
-void NativeController::submitEditMessage()
+std::optional<QString> NativeController::composeEditBody() const
 {
-    if (m_editingMessage.isEmpty()) return;
-    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
-    const auto id = m_editingMessage;
     auto text = editAnswer(m_editBuffer, m_editRestoresReply ? m_replyActiveTab : QString());
     // Issue #202: a restored edit re-serializes every quote block the same way a
     // reply send does - quote line + blank line + answer per tab, joined by blank
@@ -18672,8 +18789,7 @@ void NativeController::submitEditMessage()
                 : workspace::buildWorkspaceQuoteReference(replyAuthorFor(tab.message),
                     tab.message, tab.selectedText);
             if (quoteLine.isEmpty()) {
-                report(tr("This message can no longer be replied to."));
-                return;
+                return std::nullopt;
             }
             const auto answer = (tab.id == m_replyActiveTab ? text : editAnswer(tab.answer, tab.id)).trimmed();
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
@@ -18684,7 +18800,20 @@ void NativeController::submitEditMessage()
     text = replaceImageAliases(text, true);
     if (m_editRestoresReply && !m_replyTabs.isEmpty())
         text = NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(QString()));
-    text = prependUploadedLinks(text, readyUploadLinks(m_editSession));
+    return prependUploadedLinks(text, readyUploadLinks(m_editSession));
+}
+
+void NativeController::submitEditMessage()
+{
+    if (m_editingMessage.isEmpty()) return;
+    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
+    const auto id = m_editingMessage;
+    const auto composed = composeEditBody();
+    if (!composed) {
+        report(tr("This message can no longer be replied to."));
+        return;
+    }
+    const auto &text = *composed;
     if (text.size() > 40000 || !boundedText(text, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;

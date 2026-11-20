@@ -25,6 +25,7 @@ class NativeCacheService final : public QObject
     using ProjectionFields = NativeCache::ProjectionFields;
     using Completion = std::function<void(bool)>;
     using ReadCallback = std::function<void(std::optional<Entry>)>;
+    using SearchCallback = std::function<void(std::optional<QJsonArray>)>;
     using BodyReadCallback = std::function<void(std::optional<MessageBody>)>;
     static constexpr int MaximumQueuedJobs = 8;
     static constexpr qint64 MaximumQueuedBytes = 32 * 1024 * 1024;
@@ -51,6 +52,8 @@ class NativeCacheService final : public QObject
     // actual DB+WAL+SHM fits; reductions can remain pending in the background.
     bool setDiskLimitBytes(qint64 bytes);
 
+    void searchMessages(const Lease &lease, const QString &query, QObject *receiver, SearchCallback done);
+    void cancelMessageSearch();
     void get(const Lease &lease, const Key &key, QObject *receiver, ReadCallback done);
     void getMessageBody(const Lease &lease, const QString &uuid, QObject *receiver, BodyReadCallback done);
     bool putMessageBody(const Lease &lease, const QJsonObject &canonical,

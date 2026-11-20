@@ -1,5 +1,6 @@
 #include "native-cache.h"
 #include "domain.h"
+#include "native-markdown.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -489,6 +490,80 @@ bool NativeCache::put(const Lease &lease, const Key &key, const QJsonArray &rows
     m_fresh.insert(hash, {key.kind, routeStream, routeTopic, {}});
     if (!checkpoint()) return fail();
     return true;
+}
+
+std::optional<QJsonArray> NativeCache::searchMessages(const Lease &lease, const QString &query)
+{
+    const auto needle = query.trimmed();
+    if (!accepts(lease) || needle.isEmpty() || needle.size() > 256) return {};
+    QJsonArray results;
+    QSet<QUuid> seen;
+    NativeMarkdown markdown;
+    QSqlQuery pages(m_database);
+    pages.setForwardOnly(true);
+    // Sort only compact row IDs. SQLite would otherwise retain response blobs
+    // in a temporary sort for large histories. Prefer the newest copy of an edit,
+    // using the fresh rowid assigned by INSERT OR REPLACE for same-clock writes.
+    pages.prepare("SELECT rowid FROM entries WHERE owner=? AND kind IN (4,5) "
+                  "ORDER BY saved_at DESC,rowid DESC");
+    pages.addBindValue(m_owner);
+    if (!pages.exec()) return {};
+    QSqlQuery contents(m_database);
+    contents.prepare("SELECT kind,stream,topic,marker,payload FROM entries WHERE owner=? AND rowid=? AND length(payload)<=?");
+    while (pages.next()) {
+        if (shouldCancel()) return {};
+        contents.bindValue(0, m_owner);
+        contents.bindValue(1, pages.value(0));
+        contents.bindValue(2, m_policy.maxEntryBytes);
+        if (!contents.exec()) return {};
+        if (!contents.next()) continue;
+        const Key key{static_cast<Kind>(contents.value(0).toInt()), contents.value(1).toString(),
+            contents.value(2).toString(), contents.value(3).toByteArray()};
+        const auto doc = QJsonDocument::fromJson(contents.value(4).toByteArray());
+        contents.finish();
+        if (!doc.isArray()) continue;
+        const auto rows = sanitize(key, doc.array());
+        if (!rows) continue;
+        for (auto it = rows->constEnd(); it != rows->constBegin();) {
+            if (shouldCancel()) return {};
+            const auto row = (*--it).toObject();
+            const auto viewer = row.value("user_uuid").toString();
+            if (!viewer.isEmpty() && viewer.compare(m_user, Qt::CaseInsensitive)) continue;
+            const QUuid id(row.value("uuid").toString());
+            if (seen.contains(id)) continue;
+            seen.insert(id);
+            const auto payload = row.value("payload").toObject();
+            const auto kind = payload.value("kind").toString();
+            QString text;
+            if (kind == "markdown") {
+                const auto raw = payload.value("content").toString();
+                const bool simple = std::all_of(raw.cbegin(), raw.cend(), [](QChar ch) {
+                    return ch.isLetterOrNumber() || ch.isSpace();
+                });
+                text = simple ? raw : markdown.render(raw).value("plain").toString();
+            } else if (kind == "poll") {
+                QStringList parts;
+                for (const auto &value : payload.value("questions").toArray()) {
+                    const auto question = value.toObject();
+                    parts << question.value("text").toString();
+                    for (const auto &option : question.value("options").toArray())
+                        parts << option.toObject().value("text").toString();
+                }
+                text = parts.join(' ');
+            } else continue;
+            text = text.simplified();
+            const auto match = text.indexOf(needle, 0, Qt::CaseInsensitive);
+            if (match < 0) continue;
+            const auto start = std::max<qsizetype>(0, match - 35);
+            const auto end = std::min(text.size(), match + needle.size() + 75);
+            const QString snippet = (start ? QStringLiteral("…") : QString{}) + text.mid(start, end - start)
+                + (end < text.size() ? QStringLiteral("…") : QString{});
+            results.append(QJsonObject{{"id", row.value("uuid")}, {"stream", row.value("stream_uuid")},
+                {"topic", row.value("topic_uuid")}, {"created", row.value("created_at")}, {"text", snippet}});
+            if (results.size() == MaximumSearchResults) return results;
+        }
+    }
+    return pages.lastError().isValid() ? std::nullopt : std::optional<QJsonArray>(results);
 }
 
 std::optional<NativeCache::MessageBody> NativeCache::getMessageBody(const Lease &lease, const QString &uuid)

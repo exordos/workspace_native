@@ -149,7 +149,7 @@ qml/NativeSelect.qml
 qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
-qml/NativeForwardDialog.qml
+qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
     qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
@@ -340,7 +340,8 @@ if(BUILD_TESTING)
         endif()
         if(test STREQUAL "native-locale")
             target_compile_definitions(${test}-test PRIVATE
-                WORKSPACE_NATIVE_LUPDATE_EXECUTABLE="${WORKSPACE_NATIVE_LUPDATE}")
+                WORKSPACE_NATIVE_LUPDATE_EXECUTABLE="${WORKSPACE_NATIVE_LUPDATE}"
+                WORKSPACE_NATIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         endif()
         if(test STREQUAL "native-chat-crypto")
             target_compile_definitions(${test}-test PRIVATE

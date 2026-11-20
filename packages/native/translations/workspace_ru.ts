@@ -61,7 +61,23 @@
         </message>
     </context>
     <context>
+        <name>ComposerMode</name>
+        <message>
+            <source>Preview</source>
+            <translation>Предпросмотр</translation>
+        </message>
+        <message>
+            <source>Write</source>
+            <translation>Написание</translation>
+        </message>
+    </context>
+    <context>
         <name>Main</name>
+        <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
+        <message>
+            <source>Nothing to preview yet</source>
+            <translation>Пока нечего предпросматривать</translation>
+        </message>
         <message>
             <source>AI assistant</source>
             <translation>AI assistant</translation>
@@ -4944,5 +4960,17 @@
         <message><source>Loading…</source><translation>Загрузка…</translation></message>
         <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
         <message><source>Try again</source><translation>Попробовать снова</translation></message>
+    </context>
+    <context>
+        <name>NativeCachedMessageSearch</name>
+        <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
+        <message><source>Searches history saved on this device for the selected account and project.</source><translation>Поиск по истории выбранного аккаунта и проекта, сохранённой на этом устройстве.</translation></message>
+        <message><source>Search message text</source><translation>Поиск по тексту сообщения</translation></message>
+        <message><source>Enter text to search.</source><translation>Введите текст для поиска.</translation></message>
+        <message><source>The local message cache is unavailable.</source><translation>Локальный кэш сообщений недоступен.</translation></message>
+        <message><source>Searching…</source><translation>Поиск…</translation></message>
+        <message><source>No matches in cached messages.</source><translation>В сохранённых сообщениях совпадений нет.</translation></message>
+        <message><source>Showing 50 matches. Refine your search for more specific results.</source><translation>Показано 50 совпадений. Уточните запрос.</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
     </context>
 </TS>
