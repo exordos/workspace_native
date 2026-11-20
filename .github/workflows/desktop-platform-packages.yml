@@ -38,6 +38,7 @@ jobs:
           $drivers = @(Get-ChildItem "$destination/plugins/sqldrivers/*.dll")
           if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
           ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
+          python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe"
       - name: Verify and run the relocated macOS application
         if: runner.os == 'macOS'
         run: |
@@ -50,3 +51,4 @@ jobs:
           test "$(find "$drivers" -name '*.dylib' | wc -l | tr -d ' ')" = 1
           codesign --verify --deep --strict "$destination/workspace-native.app"
           swift packages/native/tests/platform-package/macos-window.swift "$destination/workspace-native.app/Contents/MacOS/workspace-native"
+          python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native"
