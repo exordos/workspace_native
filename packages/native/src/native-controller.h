@@ -880,7 +880,9 @@ public:
     Q_INVOKABLE void addPollOption(const QString &messageUuid, const QString &questionUuid,
         const QString &optionUuid, const QString &optionText);
     Q_INVOKABLE void loadPollVoters(const QString &messageUuid, const QString &questionUuid,
-        const QString &optionUuid, const QString &pageMarker = QString(), int pageLimit = 0);
+        const QString &optionUuid, const QString &pageMarker = QString(), int pageLimit = 0,
+        const QString &requestTag = {});
+    Q_INVOKABLE void cancelPollVoterRequest(const QString &requestTag);
     // Issue #216: locale rendering of poll deadline/closed dates
     // (workspace-message-poll.ui.tsx:47-49 in the reference).
     Q_INVOKABLE QString formatPollDate(const QString &isoDateTime) const;
@@ -1025,7 +1027,7 @@ signals:
     // Empty detail confirms success; interrupted is an uncertain send.
     void pollCreationFinished(QString operation, QString detail);
     void pollVotersLoaded(QString messageUuid, QString questionUuid, QString optionUuid,
-        QVariantList voters, QString nextMarker, QString error);
+        QVariantList voters, QString nextMarker, QString error, QString requestTag);
     void snapshotReloaded();
     void snapshotFailed();
     void resynchronizeRequested();
@@ -2047,6 +2049,7 @@ private:
     // parked memos come from exactly the same data the banner renders from.
     std::optional<QString> replyPlainFor(const QString &id) const;
     void primeReplyTabMemos(QList<ReplyTab> &tabs) const;
+    QHash<QString, ApiClient::RequestId> m_pollVoterRequests;
     struct QuoteRecord {
         QString authorId, content;
         bool missing = false, decrypt = false;
