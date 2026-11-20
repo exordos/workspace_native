@@ -15216,8 +15216,9 @@ mv -Tf "$root/.current-new" "$root/current"
         server.handler = [](const Request &request) {
             if (request.target.path().endsWith("/streams/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
-                    {"name", "Source layout fixture"}, {"description", "Not a message preview"}, {"encryption", false}}}};
-            if (request.target.path().endsWith("/users/")) return Response{QJsonArray{}};
+                    {"name", "source layout fixture"}, {"description", "Not a message preview"}, {"encryption", false}}}};
+            if (request.target.path().endsWith("/users/"))
+                return Response{QJsonArray{WindowChatHeaderCountersFixture::headerUser(channelPeer, "alice", "alice", "active")}};
             if (request.target.path().endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "Source topic"}}}};
@@ -15382,6 +15383,11 @@ mv -Tf "$root/.current-new" "$root/current"
         } else {
             auto *initial = item(content, "message-avatar-initial-" + messageId);
             QVERIFY(initial);
+            QTRY_COMPARE(initial->property("text").toString(), QStringLiteral("a"));
+            auto *sidebarInitial = visibleItem(content, "streamInitial-" + streamId);
+            QVERIFY(sidebarInitial);
+            QCOMPARE(sidebarInitial->property("text").toString(), QStringLiteral("s"));
+            QCOMPARE(sidebarInitial->property("font").value<QFont>().pixelSize(), 12);
             // Shared Avatar's generated text-text-primary utility wins the
             // equal-specificity text-accent-soft class in the pinned stylesheet.
             const auto colors = window->property("colors").toMap();
@@ -29038,11 +29044,11 @@ private slots:
         const QString lastSeenExpected=russian?QString::fromUtf8("был(а) 15:30"):QString("last seen 15:30");
         WindowDirectFixture fixture; fixture.seed();
         fixture.users=QJsonArray{
-            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","Cassi"},{"last_name","Synthetic"},
+            QJsonObject{{"uuid",userId},{"username","cassi"},{"first_name","cassi"},{"last_name","Synthetic"},
                 {"email","cassi@example.invalid"},{"avatar",QJsonValue::Null},
                 {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
                 {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}},
-            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","Alice"},{"last_name","Synthetic"},
+            QJsonObject{{"uuid",channelPeer},{"username","alice"},{"first_name","alice"},{"last_name","Synthetic"},
                 {"email","alice@example.invalid"},{"avatar",QJsonValue::Null},
                 {"source","iam"},{"status","active"},{"last_ping_at","2026-01-02T10:00:00Z"},
                 {"created_at","2026-01-02T10:00:00Z"},{"updated_at","2026-01-02T10:00:00Z"}}};
@@ -29066,6 +29072,13 @@ private slots:
         QTRY_COMPARE(controller.selectedStream(),windowDirectId());
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(visibleItem("directPresenceStatus"));
+        auto *headerInitial = visibleItem("directHeaderInitial"); QVERIFY(headerInitial);
+        QCOMPARE(headerInitial->property("font").value<QFont>().pixelSize(), 12);
+        QCOMPARE(headerInitial->property("text").toString(), QStringLiteral("A"));
+        auto *rowInitial = visibleItem("streamInitial-" + windowDirectId()); QVERIFY(rowInitial);
+        QCOMPARE(rowInitial->property("text").toString(), QStringLiteral("a"));
+        QCOMPARE(rowInitial->property("font").value<QFont>().pixelSize(), 12);
+        QTRY_COMPARE(visibleItem("profileInitial")->property("text").toString(), QStringLiteral("C"));
         auto caption=[&] {return visibleItem("directPresenceStatus")->property("text").toString();};
         // Reference caption class contract text-xs text-text-muted truncate
         // (chat-header-direct.ui.tsx:45): 12px text-muted with elision.

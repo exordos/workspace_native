@@ -5387,10 +5387,12 @@ component NativeMentionChip: Item {
                                 Text {
                                     anchors.centerIn: parent
                                     visible: !Boolean(streamDelegate.modelData.encrypted) && !streamPhoto.replacesFallback
-                                    text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1).toUpperCase()
+                                    objectName: "streamInitial-" + streamDelegate.modelData.id
+                                    text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1)
                                     textFormat: Text.PlainText
                                     color: root.colors["text-primary"]
-                                    font.pixelSize: 16
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
                                 }
                                 Rectangle {
                                     // Keyboard focus ring for the avatar action below, the
@@ -6301,10 +6303,12 @@ component NativeMentionChip: Item {
                         Text {
                             visible: !directHeaderPhoto.replacesFallback
                             anchors.centerIn: parent
+                            objectName: "directHeaderInitial"
                             text: String(root.controller.directPeer.displayName || "").slice(0, 1).toUpperCase()
                             textFormat: Text.PlainText
                             color: root.colors["text-muted"]
-                            font.pixelSize: 16
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
                         }
                     }
                     ColumnLayout {
@@ -8219,7 +8223,7 @@ component NativeMentionChip: Item {
                             visible: !messagePhoto.replacesFallback
                             objectName: "message-avatar-initial-" + messageRow.modelData.id
                             anchors.centerIn: parent
-                            text: String(messageRow.modelData.author).slice(0, 1).toUpperCase()
+                            text: String(messageRow.modelData.author).slice(0, 1)
                             textFormat: Text.PlainText
                             color: root.colors["text-primary"]
                             font.pixelSize: 18
