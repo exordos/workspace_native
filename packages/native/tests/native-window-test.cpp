@@ -16880,6 +16880,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::newRow("history") << QString("history") << QString("en");
         QTest::newRow("public-shortcut") << QString("shortcut") << QString("en");
         QTest::newRow("credentials") << QString("credentials") << QString("en");
+        QTest::newRow("submit-from-password") << QString("submit-password") << QString("en");
+        QTest::newRow("submit-from-username") << QString("submit-username") << QString("en");
+        QTest::newRow("empty-credentials") << QString("empty") << QString("en");
     }
 
     void loginWizardReferenceSurfaces()
@@ -16955,6 +16958,19 @@ mv -Tf "$root/.current-new" "$root/current"
                      QString("email@example.com or login"));
             QVERIFY(hasVisibleText(content, "Password"));
             QCOMPARE(item(content, "signInButton")->property("text").toString(), QString("Next"));
+            if (surface == "empty") {
+                click(window, item(content, "signInButton"));
+                QVERIFY(hasVisibleText(content, "Please fill in all fields"));
+                QCOMPARE(server.requests.size(), 1);
+            } else if (surface.startsWith("submit-")) {
+                auto *username = visibleItem(content, "userInput");
+                auto *password = visibleItem(content, "passwordInput");
+                username->setProperty("text", "synthetic-user");
+                password->setProperty("text", "synthetic-password");
+                click(window, surface == "submit-password" ? password : username);
+                QTest::keyClick(window, Qt::Key_Return);
+                QTRY_VERIFY(visibleItem(content, "projectSelect"));
+            }
         }
         window->close();
     }
@@ -17339,7 +17355,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "organizationNextButton")->isEnabled());
         click(window, item(content, "organizationNextButton"));
         QTRY_VERIFY(!controller.error().isEmpty());
-        QVERIFY(visibleItem("organizationErrorBanner"));
+        auto *banner = visibleItem(content, "organizationErrorBanner");
+        QVERIFY(banner);
+        auto *next = item(content, "organizationNextButton");
+        QVERIFY(banner->mapToScene(QPointF(0, banner->height())).y() <= next->mapToScene({}).y());
         // Reference test 470: discovery failure keeps the credentials hidden.
         QVERIFY(!item(content, "userInput"));
         QCOMPARE(controller.error(),
@@ -17644,6 +17663,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(item(content, "projectErrorText")->property("text").toString(),
             QString("Sign in to an account for the organization and project in this link."));
         QVERIFY(!controller.authenticated());
+        QList<QQuickItem *> pending{content};
+        int errorTextCount = 0;
+        while (!pending.isEmpty()) {
+            const auto *child = pending.takeLast();
+            if (!child->isVisible()) continue;
+            if (child->property("text").toString() == controller.error()) ++errorTextCount;
+            pending.append(child->childItems());
+        }
+        QCOMPARE(errorTextCount, 1);
         // The right selection commits; the parked link survives for the flush.
         click(window, select);
         QTRY_VERIFY(item(content, "projectOption-" + linkedProject));

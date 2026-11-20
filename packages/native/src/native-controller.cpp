@@ -10730,6 +10730,11 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
 void NativeController::login(const QString &server, const QString &user,
                              const QString &password, const QString &otp)
 {
+    if (m_loginStep == QLatin1String("credentials") && (user.trimmed().isEmpty() || password.isEmpty())) {
+        m_error = tr("Please fill in all fields");
+        emit stateChanged();
+        return;
+    }
     m_error.clear();
     m_notice.clear();
     m_uploads = m_downloads = 0;

@@ -1703,6 +1703,28 @@ component NativeMentionChip: Item {
         }
     }
 
+    component LoginErrorBanner: Rectangle {
+        visible: root.controller.error.length > 0
+        Layout.fillWidth: true
+        implicitHeight: bannerText.implicitHeight + 16
+        radius: 8
+        readonly property color tone: root.colors["notice-base"]
+        border.color: Qt.rgba(tone.r, tone.g, tone.b, 0.2)
+        color: Qt.rgba(tone.r, tone.g, tone.b, 0.1)
+        Text {
+            id: bannerText
+            x: 12
+            y: 8
+            width: parent.width - 24
+            text: root.controller.error
+            textFormat: Text.PlainText
+            color: parent.tone
+            font.pixelSize: 14
+            wrapMode: Text.Wrap
+            Accessible.role: Accessible.AlertMessage
+        }
+    }
+
     component LoginFieldLabel: Text {
         color: root.colors["text-primary"]
         font.pixelSize: 14
@@ -2064,6 +2086,7 @@ component NativeMentionChip: Item {
                                 }
                             }
                         }
+                        LoginErrorBanner { objectName: "organizationErrorBanner" }
                         NativeButton {
                             objectName: "organizationNextButton"
                             colors: root.colors
@@ -2153,6 +2176,7 @@ component NativeMentionChip: Item {
                                 placeholderText: qsTr("email@example.com or login")
                                 Component.onCompleted: text = root.controller.loginUsername
                                 Accessible.name: qsTr("Email or login")
+                                onAccepted: if (signInButton.enabled) signInButton.clicked()
                             }
                         }
                         ColumnLayout {
@@ -2169,8 +2193,10 @@ component NativeMentionChip: Item {
                                 echoMode: TextInput.Password
                                 inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
                                 Accessible.name: qsTr("Password")
+                                onAccepted: if (signInButton.enabled) signInButton.clicked()
                             }
                         }
+                        LoginErrorBanner {}
                         NativeButton {
                             id: signInButton
                             objectName: "signInButton"
@@ -2178,8 +2204,7 @@ component NativeMentionChip: Item {
                             primary: true
                             Layout.fillWidth: true
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Next")
-                            enabled: !root.controller.busy && root.controller.organizationRealm.trim().length > 0
-                                && userInput.text.trim().length > 0 && passwordInput.text.length > 0
+                            enabled: !root.controller.busy
                             onClicked: {
                                 if (enabled) {
                                     root.controller.login(root.controller.organizationRealm,
@@ -2521,26 +2546,8 @@ component NativeMentionChip: Item {
                     enabled: !root.controller.busy
                     onClicked: root.controller.backToCredentials()
                 }
-                Text {
-                    objectName: "organizationErrorBanner"
-                    visible: root.controller.error.length > 0 && root.controller.loginStep === "organization"
-                    text: root.controller.error
-                    textFormat: Text.PlainText
-                    color: root.colors.danger
-                    wrapMode: Text.Wrap
-                    font.pixelSize: 13
-                    Layout.fillWidth: true
-                    Accessible.role: Accessible.AlertMessage
-                }
-                Text {
-                    visible: root.controller.error.length > 0 && root.controller.loginStep !== "organization" && root.controller.loginStep !== "otp"
-                    text: root.controller.error
-                    textFormat: Text.PlainText
-                    color: root.colors.danger
-                    wrapMode: Text.Wrap
-                    font.pixelSize: 13
-                    Layout.fillWidth: true
-                    Accessible.role: Accessible.AlertMessage
+                LoginErrorBanner {
+                    visible: loginCard.savedAccountsOnly && root.controller.error.length > 0
                 }
             }
         }

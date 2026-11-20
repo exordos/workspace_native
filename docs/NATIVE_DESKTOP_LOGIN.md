@@ -238,3 +238,8 @@ The Qt Quick window case `loginWizardReferenceSurfaces` exercises the English
 and Russian organization form, filtered keyboard selection, the public shortcut
 and the credentials form. The latter has separate login and password labels
 and a Next action.
+
+
+The credentials form accepts Enter from the username or password field. An
+empty submission keeps the form open and asks the user to fill in all fields.
+Discovery and credential errors appear in the form above the submit button.
