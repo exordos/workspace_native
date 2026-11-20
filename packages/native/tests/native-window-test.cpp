@@ -14772,6 +14772,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
+        auto *model = qobject_cast<QAbstractItemModel *>(list->property("model").value<QObject *>());
+        QVERIFY(model);
+        QSignalSpy inserted(model, &QAbstractItemModel::rowsInserted);
         const auto initialOldest = controller.messages().first().toMap().value("id").toString();
         const auto lastId = controller.messages().last().toMap().value("id").toString();
         QTRY_VERIFY(item(window->contentItem(), "message-" + lastId));
@@ -14831,6 +14834,11 @@ mv -Tf "$root/.current-new" "$root/current"
                 QTRY_COMPARE(controller.messages().size(), 100);
                 QTRY_VERIFY(!list->property("positioning").toBool());
                 QCOMPARE(olderPageMarkers, QStringList{initialOldest});
+                // One arriving page must trigger a single view insertion, even
+                // though every retained message can still update its roles.
+                QCOMPARE(inserted.size(), 1);
+                QCOMPARE(inserted.first().at(1).toInt(), 0);
+                QCOMPARE(inserted.first().at(2).toInt(), 49);
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
             }

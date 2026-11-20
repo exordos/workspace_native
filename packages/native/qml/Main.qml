@@ -7433,27 +7433,45 @@ component NativeMentionChip: Item {
                     visibleReadTimer.stop();
                     pendingViewport = snapshot;
                     displayedRoute = route;
-                    for (let i = 0; i < projection.length; ++i) {
+                    const added = projection.length - renderedMessages.count;
+                    let firstExisting = 0;
+                    if (sameRoute && added > 0 && renderedMessages.count > 0) {
+                        // A normal history page extends the front. Insert it as one
+                        // range so the view can keep the existing row delegates.
+                        let keepsSuffix = true;
+                        for (let i = 0; i < renderedMessages.count; ++i) {
+                            if (String(projection[added + i].entry.id) !== String(renderedMessages.get(i).entry.id)) {
+                                keepsSuffix = false;
+                                break;
+                            }
+                        }
+                        if (keepsSuffix) {
+                            renderedMessages.insert(0, projection.slice(0, added));
+                            firstExisting = added;
+                        }
+                    }
+                    for (let i = firstExisting; i < projection.length; ++i) {
+                        if (i >= renderedMessages.count) {
+                            renderedMessages.append(projection.slice(i));
+                            break;
+                        }
                         const model = projection[i];
                         const id = String(model.entry.id);
-                        if (i >= renderedMessages.count) {
-                            renderedMessages.append(model);
-                        } else {
-                            if (String(renderedMessages.get(i).entry.id) !== id) {
-                                let previous = -1;
-                                for (let j = i + 1; j < renderedMessages.count; ++j) {
-                                    if (String(renderedMessages.get(j).entry.id) === id) {
-                                        previous = j;
-                                        break;
-                                    }
+                        if (String(renderedMessages.get(i).entry.id) !== id) {
+                            let previous = -1;
+                            for (let j = i + 1; j < renderedMessages.count; ++j) {
+                                if (String(renderedMessages.get(j).entry.id) === id) {
+                                    previous = j;
+                                    break;
                                 }
-                                if (previous >= 0)
-                                    renderedMessages.move(previous, i, 1);
-                                else
-                                    renderedMessages.insert(i, model);
                             }
-                            renderedMessages.set(i, model);
+                            if (previous < 0) {
+                                renderedMessages.insert(i, model);
+                                continue;
+                            }
+                            renderedMessages.move(previous, i, 1);
                         }
+                        renderedMessages.set(i, model);
                     }
                     if (renderedMessages.count > projection.length)
                         renderedMessages.remove(projection.length, renderedMessages.count - projection.length);
