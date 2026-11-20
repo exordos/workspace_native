@@ -9362,6 +9362,137 @@ private slots:
         const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss();
         QVERIFY2(closed, "Visual window teardown did not observe inactive focus before close");
     }
+    // Issue #90 (docs/NATIVE_DESKTOP_E2EE_HEADER_AVATAR.md): the reference
+    // paints the encrypted header lock avatar with
+    // resolveAvatarBackgroundColor(stream.color) -
+    // chat-header-channel.ui.tsx:56 and avatar-color.lib.ts:2-7
+    // (0..0xffffff -> #rrggbb, 0 -> #000000, null -> Avatar bg-bg fallback,
+    // avatar.tsx:61). Contract test: chat-header-channel.ui.test.tsx:8-17.
+    void uiEncryptedSourceHeaderAvatarUsesStreamColor_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
+    void uiEncryptedSourceHeaderAvatarUsesStreamColor() {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        Fixture f; f.stream = fullEncryptedStream(); f.stream["current_encryption_key_uuid"] = OtherGeneration;
+        f.stream["color"] = 0x2563eb; // chat-header-channel.ui.test.tsx:12
+        QVERIFY(f.start());
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("missing"));
+        NativePreferences preferences(f.directory.filePath("source-stream-color.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        QCOMPARE(preferences.locale(), locale); QCOMPARE(preferences.mode(), mode);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Visual window teardown did not observe inactive focus before close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!rendered.isEmpty());
+        auto *header = encryptedUiItem(window, "encryptedConversationHeader"); QVERIFY(header);
+        auto *face = encryptedUiAvatarCircle(header, 32); QVERIFY(face);
+        QCOMPARE(face->size(), QSizeF(32, 32)); QCOMPARE(face->property("radius").toReal(), qreal(16));
+        // Avatar sm stays 32x32 (avatar.tsx:8); the resolved stream color
+        // overrides only the bg-bg surface, never the border-subtle ring.
+        QCOMPARE(face->property("color").value<QColor>(), QColor("#2563eb"));
+        QCOMPARE(QQmlProperty(face, "border.width").read().toReal(), qreal(1));
+        QCOMPARE(QQmlProperty(face, "border.color").read().value<QColor>(), QColor(mode == "dark" ? "#33384d" : "#d8e4ef"));
+        // A real stream.updated with color 0 resolves to #000000, never the
+        // fallback (avatar-color.lib.ts:7 pads 0; chat-header-channel.ui.test.tsx:15).
+        auto zeroChanged = cryptoEvent(f.stream); auto zeroPayload = zeroChanged.value("payload").toObject();
+        zeroPayload["kind"] = "stream.updated"; zeroPayload["color"] = 0; zeroChanged["payload"] = zeroPayload;
+        QVERIFY(f.controller.applyRealtimeEvent(zeroChanged));
+        QTRY_COMPARE(face->property("color").value<QColor>(), QColor("#000000"));
+        // Dropping color removes the inline background: the Avatar falls back
+        // to its bg-bg token (avatar-color.lib.ts:3-5, avatar.tsx:61) - the
+        // exact tokens pinned by uiEncryptedSourceHeaderAvatarUsesDefaultThemeCircle.
+        auto nullChanged = cryptoEvent(f.stream); auto nullPayload = nullChanged.value("payload").toObject();
+        nullPayload["kind"] = "stream.updated"; nullPayload.remove("color"); nullChanged["payload"] = nullPayload;
+        QVERIFY(f.controller.applyRealtimeEvent(nullChanged));
+        QTRY_COMPARE(face->property("color").value<QColor>(), QColor(mode == "dark" ? "#141517" : "#e4ecf3"));
+        QCOMPARE(f.posts, 0);
+        const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss();
+        QVERIFY2(closed, "Visual window teardown did not observe inactive focus before close");
+    }
+    // Issue #90: the protected label tooltip carries the title plus exactly
+    // the five reference bullets (chat-header-channel.ui.tsx:86-110,
+    // en.json:1632-1637, ru.json:1645-1650), opens on hover and focus
+    // (app-tooltip.ui.tsx:97-107) and its click must not toggle the right
+    // panel (reference z-10 wrapper, chat-header-channel.ui.tsx:88).
+    void uiEncryptedSourceProtectedChatTooltip_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
+    void uiEncryptedSourceProtectedChatTooltip() {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        Fixture f; f.stream = fullEncryptedStream(); f.stream["current_encryption_key_uuid"] = OtherGeneration;
+        QVERIFY(f.start());
+        QTRY_COMPARE(displayed(f.controller, messageId).value("encryptionState").toString(), QString("missing"));
+        NativePreferences preferences(f.directory.filePath("source-tooltip.ini"));
+        preferences.setOwner(f.controller.ownerKey()); preferences.setLocale(locale); preferences.setMode(mode);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &f.controller, &preferences);
+        QCOMPARE(preferences.locale(), locale); QCOMPARE(preferences.mode(), mode);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Visual window teardown did not observe inactive focus before close", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QSignalSpy rendered(window, &QQuickWindow::frameSwapped); window->update(); QTRY_VERIFY(!rendered.isEmpty());
+        auto *info = encryptedUiItem(window, "protectedChatInformation"); QVERIFY(info);
+        // Reference texts, verbatim: en.json:1632-1637 / ru.json:1645-1650.
+        const QString title = locale == "ru" ? QString::fromUtf8("Особенности защищённого чата")
+                                             : QStringLiteral("Protected chat information");
+        const QStringList features = locale == "ru" ? QStringList{
+            QString::fromUtf8("Текст сообщений и все ссылки внутри них защищены сквозным шифрованием."),
+            QString::fromUtf8("Ключи хранятся на устройстве. Для разных периодов истории могут понадобиться разные ключи."),
+            QString::fromUtf8("Без нужного ключа сообщение нельзя прочитать, даже если оно уже загружено на устройство."),
+            QString::fromUtf8("Изображения, видео и файлы хранятся без сквозного шифрования и доступны серверу и хранилищу."),
+            QString::fromUtf8("Чтобы открыть вложение из чата, нужно расшифровать сообщение со ссылкой на него.")} : QStringList{
+            QStringLiteral("Message text and all links within it are protected by end-to-end encryption."),
+            QStringLiteral("Keys are stored on the device. Different periods of chat history may require different keys."),
+            QStringLiteral("Without the matching key, a message cannot be read even if it has already been downloaded to the device."),
+            QStringLiteral("Images, videos, and files are stored without end-to-end encryption and can be accessed by the server and storage."),
+            QStringLiteral("To open an attachment from the chat, you need to decrypt the message containing its link.")};
+        QVERIFY2(features.size() == 5, "the reference tooltip carries exactly five bullets (chat-header-channel.ui.tsx:93-97)");
+        QVERIFY2(encryptedUiItem(window, "protectedChatTooltipTitle") == nullptr,
+            "no tooltip content may exist while nothing hovers or focuses the label");
+        // Hover opens the tooltip (app-tooltip.ui.tsx:91-94 show on pointer enter).
+        QTest::mouseMove(window, info->mapToScene(QPointF(info->width() / 2, info->height() / 2)).toPoint());
+        auto *tooltip = encryptedUiItem(window, "protectedChatTooltip"); QVERIFY(tooltip);
+        QTRY_VERIFY(tooltip->isVisible());
+        // Surface: w-80 = 320 px (app-tooltip.ui.tsx:212).
+        QCOMPARE(qRound(tooltip->width()), 320);
+        auto *titleText = encryptedUiItem(window, "protectedChatTooltipTitle"); QVERIFY(titleText);
+        QCOMPARE(titleText->property("text").toString(), title);
+        // Title plus five list items with the exact reference sentences, in
+        // the reference order (chat-header-channel.ui.tsx:93-97).
+        for (int i = 0; i < 5; ++i) {
+            auto *row = encryptedUiItem(window, "protectedChatTooltipFeature-" + QString::number(i)); QVERIFY(row);
+            QVERIFY(row->isVisible());
+            auto *body = encryptedUiItem(window, "protectedChatTooltipFeatureText-" + QString::number(i)); QVERIFY(body);
+            QCOMPARE(body->property("text").toString(), features.value(i));
+        }
+        QVERIFY2(encryptedUiItem(window, "protectedChatTooltipFeature-5") == nullptr,
+            "the reference list has exactly five items (chat-header-channel.ui.tsx:93-97)");
+        // Focus alone keeps the tooltip open after the pointer leaves
+        // (app-tooltip.ui.tsx:97-100 shows on focus).
+        window->requestActivate(); QTest::qWait(250);
+        info->forceActiveFocus();
+        QTRY_VERIFY2(info->property("visualFocus").toBool(), "the label did not take keyboard focus");
+        QTest::mouseMove(window, QPoint(4, int(window->height()) - 4));
+        QTRY_VERIFY(encryptedUiItem(window, "protectedChatTooltip"));
+        window->contentItem()->forceActiveFocus();
+        QTRY_VERIFY2(encryptedUiItem(window, "protectedChatTooltip") == nullptr,
+            "losing hover and focus must close the tooltip");
+        // Clicking the label must not toggle the right panel (reference keeps
+        // the toggle on a separate element: chat-header-channel.ui.tsx:10-11).
+        auto *drawer = window->findChild<QQuickItem *>("nativeRightDrawer"); QVERIFY(drawer);
+        const bool drawerWasOpen = drawer->isVisible();
+        QTest::mouseMove(window, info->mapToScene(QPointF(info->width() / 2, info->height() / 2)).toPoint());
+        encryptedUiClick(info);
+        window->update(); QTRY_VERIFY(encryptedUiItem(window, "protectedChatTooltip"));
+        QCOMPARE(drawer->isVisible(), drawerWasOpen);
+        QTest::mouseMove(window, QPoint(4, int(window->height()) - 4));
+        QTRY_VERIFY(encryptedUiItem(window, "protectedChatTooltip") == nullptr);
+        QCOMPARE(f.posts, 0);
+        const bool closed = closeEncryptedVisualWindow(window); closeWindow.dismiss();
+        QVERIFY2(closed, "Visual window teardown did not observe inactive focus before close");
+    }
     void uiEncryptedSourceSidebarAvatarUsesLockFallback_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
     void uiEncryptedSourceSidebarAvatarUsesLockFallback() {
         QFETCH(QString, locale); QFETCH(QString, mode);
