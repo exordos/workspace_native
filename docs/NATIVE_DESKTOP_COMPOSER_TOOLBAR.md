@@ -140,3 +140,5 @@ The keyboard case covers both short and three-line drafts and requires each
 action to be inside the window, including the layout repair from #314. It also
 checks traversal beyond the last action and skips formatting actions when the
 toolbar is collapsed.
+
+The expansion persistence test measures the three 1 × 28 separators and the action positions after the expanded toolbar presents a frame. The visibility notification arrives before the layout has assigned the rectangles their size.
