@@ -15,11 +15,23 @@ function Control([string]$Name, $Type) {
     $condition = [System.Windows.Automation.AndCondition]::new(
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $Name),
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $Type))
+    if ($Name -eq 'Password') {
+        $condition = [System.Windows.Automation.AndCondition]::new(
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $Type),
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::IsPasswordProperty, $true))
+    }
     $deadline = (Get-Date).AddSeconds(15)
     do {
         $results = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
             Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
-        if ($results.Count -eq 1) { return $results[0] }
+        if ($results.Count -eq 1) {
+            if ($Name -eq 'Password') {
+                $label = $results[0].Current.Name
+                $safeLabel = if ($label -match '^[a-zA-Z ():.-]{1,65}$') { $label } else { "<length $($label.Length)>" }
+                Write-Host "The protected input's accessible name is $safeLabel."
+            }
+            return $results[0]
+        }
         Start-Sleep -Milliseconds 100
     } while ((Get-Date) -lt $deadline)
     $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
@@ -41,9 +53,13 @@ function Key([string]$Value) {
 function Fill([string]$Name, [string]$Value) {
     $item = Control $Name ([System.Windows.Automation.ControlType]::Edit)
     $item.SetFocus()
-    Set-Clipboard -Value $Value
     Key '^a'
-    Key '^v'
+    if ($Name -eq 'Password') {
+        Key $Value
+    } else {
+        Set-Clipboard -Value $Value
+        Key '^v'
+    }
 }
 function Press([string]$Name) {
     $item = Control $Name ([System.Windows.Automation.ControlType]::Button)
