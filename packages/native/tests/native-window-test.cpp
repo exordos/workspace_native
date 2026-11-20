@@ -16301,6 +16301,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QJsonObject postedRequest, canonical;
         int uploads = 0, messagePosts = 0, canonicalGets = 0, historyGets = 0;
         int metadataGets = 0, binaryGets = 0, fileWrites = 0;
+        std::function<void()> releaseMetadata;
         bool uploadHeadersOkay = true, fileHeadersOkay = true, postContractOkay = true;
         WindowChannelFixture fixture;
         const auto fallback = fixture.server.handler;
@@ -16346,7 +16347,12 @@ mv -Tf "$root/.current-new" "$root/current"
                     && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
                     && request.headers.value("cookie").isEmpty();
                 if (request.method != "GET") { ++fileWrites; return Response{QJsonObject{}, 405}; }
-                if (path == filePath) { ++metadataGets; return Response{metadata}; }
+                if (path == filePath) {
+                    Response response{metadata};
+                    if (++metadataGets == 1)
+                        response.defer = [&](auto send) { releaseMetadata = std::move(send); };
+                    return response;
+                }
                 if (path == filePath + "/actions/download") {
                     ++binaryGets; Response result; result.rawBody = png; result.rawContentType = "image/png";
                     return result;
@@ -16449,6 +16455,13 @@ mv -Tf "$root/.current-new" "$root/current"
                 && row.value("authorId").toString() == userId && row.value("own").toBool();
         };
         QTRY_VERIFY(canonicalLoaded());
+        QTRY_VERIFY(bool(releaseMetadata));
+        auto refreshed = canonical;
+        refreshed["kind"] = "message.updated";
+        refreshed["updated_at"] = "2026-01-02T13:00:00Z";
+        QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", refreshed}}));
+        releaseMetadata();
         QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
         QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), QString{});
         const auto ownId = canonical.value("uuid").toString();

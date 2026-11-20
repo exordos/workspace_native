@@ -64,6 +64,7 @@ private:
     QByteArray currentOwner() const;
     bool scopeCurrent() const;
     void refreshScope();
+    void releaseConsumer(const QString &uuid);
     void drain();
     void downloaded(const QString &scope, quint64 job, const FileResult &result);
     void decoded(const QString &scope, quint64 job, const QImage &image, const QSize &naturalSize);

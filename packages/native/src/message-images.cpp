@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <QQuickImageProvider>
+#include <QTimer>
 #include <QUuid>
 #include <limits>
 
@@ -235,6 +236,19 @@ void MessageImages::release(quint64 token)
 {
     const auto lease = m_leases.find(token); if (lease == m_leases.end()) return;
     const auto uuid = lease.value(); m_leases.erase(lease);
+    const auto entry = m_entries.constFind(uuid);
+    if (entry != m_entries.cend() && entry->consumers == 1 && entry->job) {
+        // A model refresh destroys and recreates the visible image delegate.
+        // Allow the replacement delegate to be incubated on the next frames.
+        QTimer::singleShot(100, this, [this, uuid, scope = m_scope] {
+            if (scope == m_scope) releaseConsumer(uuid);
+        });
+        return;
+    }
+    releaseConsumer(uuid);
+}
+void MessageImages::releaseConsumer(const QString &uuid)
+{
     auto entry = m_entries.find(uuid); if (entry == m_entries.end() || --entry->consumers) return;
     entry->touched = ++m_order;
     if (entry->phase == Phase::Ready || entry->phase == Phase::Failed) return; // bounded retained hit/failure
