@@ -336,8 +336,9 @@ public:
     // Issue #221: per-message decrypt Retry on the encrypted message error row.
     Q_INVOKABLE void retryMessageDecrypt(const QString &messageUuid);
     QStringList decryptRetryPendingUuids() const;
-    Q_INVOKABLE void grantChatKey(const QString &request);
-    Q_INVOKABLE void rejectChatKey(const QString &request);
+    Q_INVOKABLE void grantAllChatKeys();
+    Q_INVOKABLE void grantChatKey(const QString &request, bool fromDrawer = false);
+    Q_INVOKABLE void rejectChatKey(const QString &request, bool fromDrawer = false);
     Q_INVOKABLE void resolveKeyServiceRequest(const QString &responseId);
     Q_INVOKABLE void resolveKeyServiceRequest(const QString &responseId, quint64 disclosureSerial);
     Q_INVOKABLE void checkChatKeyResponse(const QString &request);
@@ -657,6 +658,7 @@ public:
     Q_INVOKABLE void appendSessionLog(const QString &level, const QString &scope,
         const QString &message, const QVariantMap &data = QVariantMap());
     Q_INVOKABLE QVariantList diagnosticsSessionLogEntries() const;
+    Q_INVOKABLE QVariantMap diagnosticsSupportMeasurements() const;
     Q_INVOKABLE QVariantList diagnosticsSessionLogsFiltered(const QString &levelFilter,
         const QString &sourceFilter, const QString &scopeFilter,
         const QString &runtimeFilter, const QString &searchQuery) const;
@@ -982,6 +984,7 @@ signals:
     // log viewer modal re-reads its rows on this signal (reference
     // subscribeLogHistory).
     void sessionLogChanged();
+    void supportScopeChanged();
     void stateChanged();
     void secretKeysChanged();
     void mentionMembershipChanged();
@@ -1075,6 +1078,8 @@ private:
         quint64 epoch = 0;
         bool ready = false;
         QSet<QString> topics;
+        bool allowKeySharingByHolders = false;
+        bool encrypted = false;
     };
     QVariantMap presentMessageSecrets(const QString &messageId, const QStringList &ordinaryOpened,
         const QStringList &revealed, const QString &requestHandle, QString *requestedStream, QString *requestedKey, bool validating = false);
@@ -1237,9 +1242,11 @@ private:
         quint64 ticket = 0, epoch = 0, selection = 0, catalog = 0, generation = 0, access = 0;
         quint64 requestRevision = 0, deletion = 0;
         bool busy = false, dispatched = false, materialLost = false, statusOnly = false, deleted = false, holdsField = false;
+        bool fromDrawer = false;
     };
     bool chatIssuerAllowed() const;
-    bool chatResponseAllowed(const ChatRequestFact &fact) const;
+    bool chatGrantIssuerAllowed(const ChatAuthority &authority, const QString &issuer, const QString &requester) const;
+    bool chatResponseAllowed(const ChatRequestFact &fact, bool grant) const;
     bool chatRequestMatches(const ChatRequestFact &fact, const ChatKeyResponse &intent) const;
     QVariantList chatKeyRequestsMetadata() const;
     QVariantMap chatKeyResponseMetadata() const;
@@ -1250,7 +1257,7 @@ private:
     bool chatKeyResponseContext(const QString &id, quint64 ticket) const;
     void captureChatKeyResponse(bool statusOnly);
     void interruptChatKeyResponse();
-    void startChatKeyResponse(const QString &request, bool grant);
+    void startChatKeyResponse(const QString &request, bool grant, bool fromDrawer);
     void recoverChatKeyResponse(const QString &request, bool retry);
     void finishChatKeyResponse(const QString &id, quint64 ticket, const QString &error);
     void postChatKeyResponse(const QString &id, quint64 ticket);
@@ -1258,6 +1265,14 @@ private:
     bool matchesChatKeyResponse(const QJsonObject &raw, bool realtime) const;
     bool confirmChatKeyResponse(const QJsonObject &raw, const QString &id, quint64 ticket, bool realtime = false);
     std::optional<ChatKeyResponse> m_chatKeyResponse;
+    QStringList m_chatGrantQueue;
+    QHash<QString, QString> m_chatGrantErrors;
+    QSet<QString> m_failedBulkGrants;
+    QString m_chatGrantInFlight;
+    quint64 m_chatGrantEpoch = 0;
+    void advanceChatGrants();
+    void settleChatGrant(const QString &request, bool ambiguous);
+    void resetChatGrantQueue();
     QHash<QString, ChatIssueKey> m_chatIssueKeys;
     quint64 m_nextChatKeyResponse = 0, m_nextChatRequestFact = 0;
     bool m_chatIssueChanged = false;
@@ -2266,7 +2281,6 @@ private:
     void interruptFolderMutation();
     void resetFeed();
     QVariantList feedRows() const;
-    QString feedRowTime(const QDateTime &created) const;
     QString feedRowContext(const Message &message) const;
     QString feedRowPreview(const Message &message) const;
     QString summarizeFeedMarkdown(const QString &content) const;
@@ -2373,6 +2387,7 @@ private:
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;
     int m_realtimeReconnectAttempts = 0;
+    qsizetype m_supportLatencyCount = 0;
     QList<QPair<QString, qint64>> m_apiLatencySamples; // bounded to 200, insertion order
     bool m_pingInFlight = false;
     bool m_bootstrapError = false;

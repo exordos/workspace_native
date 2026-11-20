@@ -114,7 +114,8 @@ private slots:
         QCOMPARE(f.secrets.reads.size(), 1); QCOMPARE(f.secrets.writes.size(), 1);
         const auto state = f.controller.encryption();
         QCOMPARE(state.keys(), (QStringList{"actionError", "available", "busy", "canRequest", "canRequestCurrentKey", "canRotate",
-            "currentKeyUuid", "error", "keyAnnouncedAt", "keyRequests", "keyResponse", "keyUuid", "pendingSend", "presentationEpoch", "reissueBusy",
+            "currentKeyUuid", "error", "grantAllBusy", "grantAllFailures", "grantedKeyRequests", "incomingKeyRequests", "keyAnnouncedAt",
+            "keyRequests", "keyResponse", "keyUuid", "pendingSend", "presentationEpoch", "reissueBusy", "rejectedKeyRequests",
             "sendingKeyUuid", "state", "storeOpening"}));
         QVERIFY(state.value("presentationEpoch").toULongLong() > 0);
         QVERIFY(state.value("keyRequests").toList().isEmpty());

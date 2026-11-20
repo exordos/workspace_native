@@ -351,3 +351,36 @@ dark/light over `ProtectedChatInfoScene`:
 Every new `qsTr` string (context `NativeEncryptedChatInfo`) and every new
 controller `tr` string lands in `packages/native/translations/workspace_ru.ts`
 (native-native-locale enforces placeholder parity).
+
+## Managing requests from the drawer (issue #245)
+
+In the reference `EncryptedChatInfo` and `KeyRequestHistory` render request
+metadata from the selected stream's loaded history. The info screen lists pending
+requests above the member list. The key screen groups pending, granted and
+rejected requests, with each nonempty group initially collapsed. Groups contain
+public display names and device labels. In the source topic on Orion I opened
+Channel info → Encryption keys as the signed-in account. The page showed
+“Key unavailable” and “Keys on this device (0)”. Request actions and completed
+history are exercised against a synthetic stream.
+
+The request row uses a 56 px minimum height, 16 px horizontal inset, 12 px gap,
+32 px avatar and 24 px accessible actions. The loaded-history hint uses a 12 px
+muted label. Completed rows display their names and devices. Incoming rows
+offer the existing confirmed Grant and Reject flows. A pending response disables
+the row actions and displays a spinner. An error stays with its request, and a
+response whose delivery is uncertain retains the existing status check before
+any explicit retry.
+
+Grant all snapshots the currently eligible incoming IDs and processes each under
+the selected account, project and stream. The drawer reports the count requiring
+attention and preserves per-request outcomes. A selection change cancels any
+remaining work. The interface receives public request metadata only.
+
+Reference files are `features/encrypted-chat-info/encrypted-chat-info.ui.tsx`
+(lines 28–86, 326–378, 484–519 and 607–623) and
+`entities/messenger/chat-crypto-runtime.lib.ts` (grant issuer and requester
+rules). The server field `allow_key_sharing_by_holders` governs grants in
+encrypted streams. Owner-only sharing is the default and an affirmative policy
+allows a verified participant holding the requested generation to grant it to
+another verified participant. The native client reuses its authority, local
+generation, response confirmation and recovery checks.

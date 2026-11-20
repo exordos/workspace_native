@@ -74,6 +74,7 @@
     <context>
         <name>Main</name>
         <message><source>Folder list</source><translation>Список папок</translation></message>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>
             <source>Nothing to preview yet</source>
@@ -1845,6 +1846,24 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message><source>Retry</source><translation>Повторить</translation></message>
+    <message>
+        <source>Could not send the key. Requests to retry: %1.</source>
+        <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
+    </message>
+    <message>
+        <source>The request could not be rejected.</source>
+        <translation>Не удалось отклонить запрос.</translation>
+    </message>
+    <message>
+        <source>This request has not been sent.</source>
+        <translation>Этот запрос ещё не отправлен.</translation>
+    </message>
+    <message>
+        <source>The key could not be sent to this device.</source>
+        <translation>Не удалось отправить ключ на это устройство.</translation>
+    </message>
+
         <message>
             <source>Show spoiler</source>
             <translation>Показать спойлер</translation>
@@ -4968,7 +4987,24 @@
         <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
     </context>
     <context>
+        <name>NativeSupportReport</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
+        <message><source>Describe what you expected, what happened, when it happened and how to reproduce it. This description is kept separate from the diagnostic file.</source><translation>Опишите, что вы ожидали, что и когда произошло и как это воспроизвести. Описание сохраняется отдельно от файла диагностики.</translation></message>
+        <message><source>Problem description</source><translation>Описание проблемы</translation></message>
+        <message><source>Copy description</source><translation>Скопировать описание</translation></message>
+        <message><source>Include session counts and response times</source><translation>Включить счётчики событий и время ответа за сессию</translation></message>
+        <message><source>Preparing report…</source><translation>Подготовка отчёта…</translation></message>
+        <message><source>Prepare report</source><translation>Подготовить отчёт</translation></message>
+        <message><source>Diagnostic file preview</source><translation>Предпросмотр файла диагностики</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Save report</source><translation>Сохранить отчёт</translation></message>
+        <message><source>JSON files (*.json)</source><translation>Файлы JSON (*.json)</translation></message>
+        <message><source>Report saved</source><translation>Отчёт сохранён</translation></message>
+        <message><source>Could not save the report</source><translation>Не удалось сохранить отчёт</translation></message>
+    </context>
+    <context>
         <name>NativeDiagnosticsPage</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Full runtime diagnostics with searchable session logs.</source><translation>Полная диагностика рантайма и сессионных логов с поиском.</translation></message>
         <message><source>Memory</source><translation>Память</translation></message>
@@ -5062,6 +5098,61 @@
         <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
         <message><source>Try again</source><translation>Попробовать снова</translation></message>
     </context>
+<context>
+    <name>NativeKeyRequests</name>
+    <message>
+        <source>Sending response</source>
+        <translation>Отправляется ответ</translation>
+    </message>
+    <message>
+        <source>Security key requests (%1)</source>
+        <translation>Запросы ключа безопасности (%1)</translation>
+    </message>
+    <message>
+        <source>Showing loaded history.</source>
+        <translation>Показаны данные из загруженной истории.</translation>
+    </message>
+    <message>
+        <source>No key requests</source>
+        <translation>Нет запросов ключа</translation>
+    </message>
+    <message>
+        <source>Incoming requests (%1)</source>
+        <translation>Входящие запросы (%1)</translation>
+    </message>
+    <message>
+        <source>Granted keys (%1)</source>
+        <translation>Выданные ключи (%1)</translation>
+    </message>
+    <message>
+        <source>Rejected requests (%1)</source>
+        <translation>Отклонённые запросы (%1)</translation>
+    </message>
+    <message>
+        <source>Grant all</source>
+        <translation>Выдать всем</translation>
+    </message>
+    <message>
+        <source>Grant access to %1</source>
+        <translation>Выдать доступ: %1</translation>
+    </message>
+    <message>
+        <source>Reject request from %1</source>
+        <translation>Отклонить запрос: %1</translation>
+    </message>
+    <message>
+        <source>Check</source>
+        <translation>Проверить</translation>
+    </message>
+    <message>
+        <source>Retry</source>
+        <translation>Повторить</translation>
+    </message>
+    <message>
+        <source>Could not send the key. Requests to retry: %1.</source>
+        <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
+    </message>
+</context>
     <context>
         <name>NativeCachedMessageSearch</name>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>

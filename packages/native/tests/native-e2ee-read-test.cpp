@@ -416,6 +416,10 @@ const QString SourceRecipientDevice = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 
 std::shared_ptr<QHash<QString, QString>> addSourceRecipientBinding(Fixture &fixture)
 {
+    // Existing issuer round-trips run as a non-owner administrator holding the
+    // requested generation. Their stream explicitly allows sharing by holders.
+    if (!fixture.stream.contains("allow_key_sharing_by_holders") && fixture.stream.value("role") == "administrator")
+        fixture.stream["allow_key_sharing_by_holders"] = true;
     const auto previous = fixture.http.handler;
     const auto roles = std::make_shared<QHash<QString, QString>>();
     fixture.http.handler = [&fixture, previous, roles](const Request &request) {
@@ -3175,6 +3179,133 @@ private slots:
         QCOMPARE(f.http.requests.size(), network);
     }
 
+    void drawerBulkGrantRetainsPerRequestOutcomes_data()
+    {
+        QTest::addColumn<QString>("resolution");
+        QTest::newRow("retry") << QString("retry");
+        QTest::newRow("request-deleted") << QString("deleted");
+        QTest::newRow("request-replaced") << QString("replaced");
+    }
+
+    void drawerBulkGrantRetainsPerRequestOutcomes()
+    {
+        QFETCH(QString, resolution);
+        Fixture f;
+        f.stream = fullEncryptedStream();
+        f.stream["owner"] = userId;
+        f.stream["role"] = "owner";
+        addSourceRecipientBinding(f);
+        useCompleteSendEcho(f);
+        QVERIFY(f.start());
+        SourceRecipientPeer peer;
+        QVERIFY(peer.prepare(f, false));
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, QByteArray(32, 's'), 0), NativeChatKeyVault::Failure::None);
+        const QString denied = "10100000-0000-4000-8000-000000000001";
+        const QString accepted = "20200000-0000-4000-8000-000000000002";
+        const QString rejected = "30300000-0000-4000-8000-000000000003";
+        for (const auto &id : {denied, accepted, rejected}) {
+            auto row = peer.requestDto;
+            row["uuid"] = id;
+            f.savedRequests.insert(id, row);
+            QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(row)));
+        }
+        const auto rows = [&](const char *group) { return f.controller.encryption().value(group).toList(); };
+        QTRY_COMPARE(rows("incomingKeyRequests").size(), 3);
+        QTRY_VERIFY(incomingKeyRequestRow(f.controller, rejected).value("canReject").toBool());
+        f.controller.rejectChatKey(rejected);
+        QTRY_COMPARE(rows("rejectedKeyRequests").size(), 1);
+        auto deniedPosts = std::make_shared<int>(0);
+        auto acceptedPosts = std::make_shared<int>(0);
+        const auto previous = f.http.handler;
+        f.http.handler = [=](const Request &request) {
+            const auto payload = request.body.value("payload").toObject();
+            if (request.method == "POST" && payload.value("kind") == "key_grant") {
+                if (payload.value("request_message_uuid") == denied && ++*deniedPosts == 1)
+                    return Response{QJsonObject{}, 403, 35};
+                if (payload.value("request_message_uuid") == accepted) ++*acceptedPosts;
+            }
+            return previous(request);
+        };
+        f.controller.grantAllChatKeys();
+        QVERIFY(f.controller.encryption().value("grantAllBusy").toBool());
+        f.controller.grantAllChatKeys();
+        QTRY_VERIFY(!f.controller.encryption().value("grantAllBusy").toBool());
+        QCOMPARE(*deniedPosts, 1); QCOMPARE(*acceptedPosts, 1);
+        QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 1);
+        QCOMPARE(rows("rejectedKeyRequests").first().toMap().value("id").toString(), rejected);
+        QCOMPARE(rows("grantedKeyRequests").size(), 1);
+        QCOMPARE(rows("grantedKeyRequests").first().toMap().value("id").toString(), accepted);
+        QCOMPARE(rows("incomingKeyRequests").size(), 1);
+        const auto failed = rows("incomingKeyRequests").first().toMap();
+        QCOMPARE(failed.value("id").toString(), denied);
+        QVERIFY(!failed.value("error").toString().isEmpty());
+        QVERIFY(failed.value("canGrant").toBool());
+        if (resolution == "deleted") {
+            auto event = cryptoEvent(QJsonObject{{"uuid", denied}, {"stream_uuid", streamId}, {"topic_uuid", topicId}});
+            auto payload = event.value("payload").toObject();
+            payload["kind"] = "message.deleted";
+            event["payload"] = payload;
+            QVERIFY(f.controller.applyRealtimeEvent(event));
+            QTRY_VERIFY(rows("incomingKeyRequests").isEmpty());
+            QCOMPARE(rows("grantedKeyRequests").size(), 1);
+        } else if (resolution == "replaced") {
+            auto replacement = f.savedRequests.value(denied);
+            replacement["payload"] = QJsonObject{{"kind", "markdown"}, {"content", "Ordinary message"}};
+            QVERIFY(f.controller.applyRealtimeEvent(updatedControl(replacement)));
+            QTRY_VERIFY(rows("incomingKeyRequests").isEmpty());
+            QCOMPARE(rows("grantedKeyRequests").size(), 1);
+        } else {
+            f.controller.grantChatKey(denied);
+            QTRY_COMPARE(rows("grantedKeyRequests").size(), 2);
+        }
+        QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 0);
+        QCOMPARE(*deniedPosts, resolution == "retry" ? 2 : 1);
+        QCOMPARE(*acceptedPosts, 1);
+    }
+
+    void drawerSharingPolicyControlsGrantDispatch_data()
+    {
+        QTest::addColumn<int>("policy");
+        QTest::addColumn<bool>("owner");
+        QTest::addColumn<bool>("permitted");
+        QTest::newRow("absent-owner") << -1 << true << true;
+        QTest::newRow("absent-other-holder") << -1 << false << false;
+        QTest::newRow("false-owner") << 0 << true << true;
+        QTest::newRow("false-other-holder") << 0 << false << false;
+        QTest::newRow("true-owner") << 1 << true << true;
+        QTest::newRow("true-other-holder") << 1 << false << true;
+    }
+    void drawerSharingPolicyControlsGrantDispatch()
+    {
+        QFETCH(int, policy); QFETCH(bool, owner); QFETCH(bool, permitted);
+        Fixture f;
+        f.stream = fullEncryptedStream();
+        f.stream["owner"] = owner ? userId : Issuer;
+        f.stream["role"] = owner ? "owner" : "member";
+        if (policy >= 0) f.stream["allow_key_sharing_by_holders"] = bool(policy);
+        addSourceRecipientBinding(f);
+        useCompleteSendEcho(f);
+        QVERIFY(f.start());
+        QCOMPARE(f.vault.put(f.vault.lease(), {streamId, returnedId}, QByteArray(32, 's'), 0),
+            NativeChatKeyVault::Failure::None);
+        SourceRecipientPeer peer;
+        QVERIFY(peer.prepare(f, false));
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(peer.requestDto)));
+        f.savedRequests.insert(peer.requestId, peer.requestDto);
+        QTRY_VERIFY(incomingKeyRequestRow(f.controller, peer.requestId).value("hasRequestedKey").toBool());
+        QTRY_COMPARE(incomingKeyRequestRow(f.controller, peer.requestId).value("offerGrant").toBool(), permitted);
+        QCOMPARE(incomingKeyRequestRow(f.controller, peer.requestId).value("offerReject").toBool(), owner);
+        const auto posts = f.posts;
+        f.controller.grantChatKey(peer.requestId);
+        if (permitted) {
+            QTRY_COMPARE(f.posts, posts + 1);
+            QTRY_COMPARE(incomingKeyRequestRow(f.controller, peer.requestId).value("status").toString(), QString("granted"));
+        } else {
+            QTRY_VERIFY(f.api.findChildren<QNetworkReply *>().isEmpty());
+            QCOMPARE(f.posts, posts);
+        }
+    }
+
     void issuerSourceRightsAndDispatch_data() {
         QTest::addColumn<QString>("mode");
         for (const auto *mode : {"archived-grant", "closed-default-reject", "same-account-other-device", "requester-no-current-binding"})
@@ -3203,6 +3334,14 @@ private slots:
         const auto restore = qScopeGuard([&] { c.f.http.handler = previous; });
         if (mode == "archived-grant") c.f.stream["is_archived"] = true;
         QVERIFY(c.start(mode == "archived-grant"));
+        if (mode == "requester-no-current-binding") {
+            QVERIFY(absentBinding);
+            QVERIFY(!c.row().value("canGrant").toBool());
+            const auto posts = c.f.posts;
+            c.f.controller.grantChatKey(c.peer.requestId);
+            QCOMPARE(c.f.posts, posts);
+            return;
+        }
         if (mode == "same-account-other-device") {
             auto own = c.peer.requestDto; own["author_uuid"] = userId; own["is_own"] = true;
             QVERIFY(own.value("payload").toObject().value("device_id").toString() != c.f.vault.device().id);
@@ -3215,7 +3354,6 @@ private slots:
         QTRY_COMPARE(c.response().value("phase").toString(), QString("ready")); QCOMPARE(c.f.posts, posts + 1);
         QCOMPARE(c.f.requestBody.value("topic_uuid").toString(), secondTopicId);
         QCOMPARE(c.f.requestBody.value("payload").toObject().value("request_message_uuid").toString(), c.peer.requestId);
-        if (mode == "requester-no-current-binding") QVERIFY(absentBinding);
         if (mode == "same-account-other-device") {
             // Core metadata/HTTP control only; this independent helper owns a
             // different account. Do not call it a same-account peer import proof.
@@ -3233,7 +3371,8 @@ private slots:
         QTest::newRow("member-with-A") << QString("member"); QTest::newRow("guest-with-A") << QString("guest");
     }
     void nonManagersCannotIssueEvenWithA() {
-        QFETCH(QString, role); IssuerCase c; c.f.stream["role"] = role; QVERIFY(c.start());
+        QFETCH(QString, role); IssuerCase c; c.f.stream["role"] = role;
+        c.f.stream["allow_key_sharing_by_holders"] = false; QVERIFY(c.start());
         auto key = c.f.vault.read(c.f.vault.lease(), {streamId, returnedId});
         const auto wipe = qScopeGuard([&] { key.value.bytes.fill(0); }); QCOMPARE(key.value.bytes.size(), 32);
         const auto before = c.f.posts;
@@ -3549,8 +3688,10 @@ private slots:
         const auto posts = c.f.posts, details = c.f.streamGets, bindings = c.f.bindingGets;
         QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.peer.requestDto)));
         QTRY_VERIFY(!c.row().isEmpty());
-        QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.grant)));
+        // A non-owner participant can still grant under holder sharing after
+        // demotion, but the earlier manager-only rejection loses authority.
         QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.reject)));
+        QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.grant)));
         QStringList trace{c.row().value("status").toString()};
         for (const auto &role : {QString("member"), QString("administrator")}) {
             const auto beforeDetail = c.f.streamGets, beforeBindings = c.f.bindingGets;
@@ -3566,7 +3707,7 @@ private slots:
             QTRY_VERIFY(!c.row().isEmpty() && c.row().value("canManageKeys").toBool());
             trace.append(c.row().value("status").toString());
         }
-        QCOMPARE(trace, (QStringList{"granted", "pending", "granted"}));
+        QCOMPARE(trace, (QStringList{"rejected", "granted", "rejected"}));
         QCOMPARE(c.f.posts, posts); QCOMPARE(c.f.streamGets, details + 2); QCOMPARE(c.f.bindingGets, bindings + 2);
     }
 
@@ -4525,14 +4666,20 @@ private slots:
     void nativeIssuerGrantsExactGenerationToIndependentSourceRecipient() {
         QFETCH(QString, role); QFETCH(QString, current); QFETCH(bool, actualOwner);
         Fixture f; f.stream = fullEncryptedStream(); f.stream["role"] = role; f.issuerRole = "administrator";
-        if (actualOwner) f.stream["owner"] = userId;
+        if (actualOwner) {
+            f.stream["owner"] = userId;
+            // The fixture first receives the generation from another holder.
+            f.stream["allow_key_sharing_by_holders"] = true;
+        }
         const auto bindingRoles = addSourceRecipientBinding(f); useCompleteSendEcho(f); QVERIFY(f.start());
         SourceRecipientPeer peer; QVERIFY(peer.prepare(f, true));
         QCOMPARE(bindingRoles->value(userId), f.stream.value("role").toString());
         QCOMPARE(bindingRoles->value(Issuer), f.issuerRole);
         QCOMPARE(bindingRoles->value(SourceRecipient), QString("member"));
-        if (current != "A") {
-            f.stream["current_encryption_key_uuid"] = current == "B" ? QJsonValue(OtherGeneration) : QJsonValue(QJsonValue::Null);
+        if (current != "A" || actualOwner) {
+            if (actualOwner) f.stream["allow_key_sharing_by_holders"] = false;
+            if (current != "A")
+                f.stream["current_encryption_key_uuid"] = current == "B" ? QJsonValue(OtherGeneration) : QJsonValue(QJsonValue::Null);
             auto event = cryptoEvent(f.stream); auto payload = event.value("payload").toObject();
             payload["kind"] = "stream.updated"; event["payload"] = payload;
             QVERIFY(f.controller.applyRealtimeEvent(event));
@@ -10531,6 +10678,116 @@ private slots:
     // Reference oracle: features/encrypted-chat-info/encrypted-chat-info.ui.tsx
     // info screen :562-627, settings screen :379-415, gating
     // widgets/right-panel/right-panel-workspace-info.ui.tsx:828-845.
+    void uiKeyRequestHistoryShowsEmptyAndIncomingRows_data()
+    {
+        uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data();
+    }
+    void uiKeyRequestHistoryShowsEmptyAndIncomingRows()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ProtectedChatInfoScene scene(locale, mode, true, 2, true);
+        scene.f.stream["owner"] = userId;
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([&] { closeEncryptedVisualWindow(scene.window); });
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatSettingsButton"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatKeysRow"));
+        encryptedUiClick(scene.require("protectedChatKeysRow"));
+        QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        QTRY_VERIFY2(scene.item("drawerKeyRequestsEmpty"), "An empty key-request history needs a visible explanation");
+        QCOMPARE(scene.text("drawerKeyRequestsEmpty"), locale == "ru" ? QStringLiteral("Нет запросов ключа") : QString("No key requests"));
+        QTRY_VERIFY2(scene.f.controller.encryption().value("canRequest").toBool(), "The verified stream must be ready before delivering the new request");
+        const QString requestedKey = "9aa00000-0000-4000-8000-000000000011";
+        SourceRecipientPeer peer;
+        QVERIFY(peer.prepare(scene.f, false, requestedKey));
+        QCOMPARE(scene.f.vault.put(scene.f.vault.lease(), {streamId, requestedKey}, QByteArray(32, 's'), 0),
+            NativeChatKeyVault::Failure::None);
+        QVERIFY(scene.f.controller.applyRealtimeEvent(cryptoEvent(peer.requestDto)));
+        QTRY_VERIFY(scene.item("drawerKeyRequests-incoming"));
+        QVERIFY(!scene.item("drawerKeyRequestsEmpty"));
+        QVERIFY(scene.item("drawerKeyRequestHistoryHint"));
+        const auto clickVisible = [&](const QString &name) {
+            auto *target = scene.item(name);
+            auto *scroll = scene.item("protectedChatScroll");
+            if (!target || !scroll) return false;
+            const qreal current = scroll->property("contentY").toReal();
+            const auto center = [&] { return target->mapToItem(scroll, QPointF(target->width()/2, target->height()/2)); };
+            const qreal limit = std::max(qreal(0), scroll->property("contentHeight").toReal() - scroll->height());
+            scroll->setProperty("contentY", std::clamp(current + center().y() - scroll->height()/2, qreal(0), limit));
+            QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+            scene.window->update();
+            if (!QTest::qWaitFor([&] { return !frame.isEmpty(); }, 2000)) return false;
+            target = scene.item(name);
+            if (!target || !target->isEnabled() || !scroll->contains(center())) return false;
+            QSignalSpy clicked(target, SIGNAL(clicked()));
+            encryptedUiClick(target);
+            return clicked.count() == 1;
+        };
+        QVERIFY(clickVisible("drawerKeyRequests-incoming"));
+        QTRY_VERIFY(scene.item("drawerKeyRequestDevice-" + peer.requestId));
+        QCOMPARE(scene.text("drawerKeyRequestDevice-" + peer.requestId), peer.requestDto.value("payload").toObject().value("device_name").toString());
+        QTRY_VERIFY2(incomingKeyRequestRow(scene.f.controller, peer.requestId).value("offerGrant").toBool(),
+            qPrintable(QString::fromUtf8(QJsonDocument::fromVariant(incomingKeyRequestRow(scene.f.controller, peer.requestId)).toJson(QJsonDocument::Compact))));
+        QTRY_VERIFY(scene.item("drawerKeyGrantAll"));
+        QVERIFY(scene.item("drawerKeyGrant-" + peer.requestId));
+        QVERIFY(scene.item("drawerKeyReject-" + peer.requestId));
+        const bool fromInfo = locale == "ru";
+        if (fromInfo) {
+            encryptedUiClick(scene.require("nativeRightDrawerBack"));
+            QTRY_VERIFY(scene.item("protectedChatKeysRow"));
+            encryptedUiClick(scene.require("nativeRightDrawerBack"));
+            QTRY_VERIFY(scene.item("protectedChatIdentity"));
+            QTRY_COMPARE(scene.text("drawerKeyInfoTitle"), QStringLiteral("Запросы ключа безопасности (1)"));
+            QVERIFY(scene.item("drawerKeyRequestHistoryHint"));
+            QVERIFY(scene.item("drawerKeyGrantAll"));
+            QVERIFY(!scene.item("drawerKeyRequests-incoming"));
+        }
+        const bool grant = mode == "light";
+        useCompleteSendEcho(scene.f);
+        auto release = std::make_shared<std::function<void()>>();
+        auto denyFirst = std::make_shared<bool>(!fromInfo);
+        const auto previous = scene.f.http.handler;
+        const auto requestId = peer.requestId;
+        scene.f.http.handler = [=](const Request &request) {
+            if (request.method != "POST" || request.body.value("payload").toObject().value("request_message_uuid") != requestId)
+                return previous(request);
+            if (std::exchange(*denyFirst, false))
+                return Response{QJsonObject{}, 403};
+            auto result = previous(request);
+            result.defer = [release](std::function<void()> send) { *release = std::move(send); };
+            return result;
+        };
+        if (*denyFirst) {
+            QVERIFY(clickVisible(grant ? QString("drawerKeyGrantAll") : "drawerKeyReject-" + peer.requestId));
+            QTRY_VERIFY(scene.item("drawerKeyRequestError-" + peer.requestId));
+            QVERIFY(!scene.text("drawerKeyRequestError-" + peer.requestId).isEmpty());
+            const auto action = (grant ? "drawerKeyGrant-" : "drawerKeyReject-") + peer.requestId;
+            QTRY_VERIFY(scene.item(action) && scene.item(action)->isEnabled());
+        }
+        const auto posts = scene.f.posts;
+        QVERIFY(clickVisible((grant ? "drawerKeyGrant-" : "drawerKeyReject-") + peer.requestId));
+        QTRY_VERIFY(*release);
+        QCOMPARE(scene.f.posts, posts + 1);
+        QVERIFY(!scene.item("drawerKeyGrant-" + peer.requestId)->isEnabled());
+        QVERIFY(!scene.item("drawerKeyReject-" + peer.requestId)->isEnabled());
+        if (grant) QVERIFY(scene.item("drawerKeyGrantPending-" + peer.requestId));
+        (*release)();
+        if (fromInfo) {
+            QTRY_VERIFY(!scene.item("drawerKeyInfoTitle"));
+            encryptedUiClick(scene.require("protectedChatSettingsButton"));
+            QTRY_VERIFY(scene.item("protectedChatKeysRow"));
+            encryptedUiClick(scene.require("protectedChatKeysRow"));
+            QTRY_VERIFY(scene.item("encryptedChatKeyScreen"));
+        }
+        QTRY_VERIFY(scene.item(grant ? "drawerKeyRequests-granted" : "drawerKeyRequests-rejected"));
+        QVERIFY(clickVisible(grant ? "drawerKeyRequests-granted" : "drawerKeyRequests-rejected"));
+        QTRY_VERIFY(scene.item("drawerKeyRequestDevice-" + peer.requestId));
+        QVERIFY(!scene.item("drawerKeyGrant-" + peer.requestId));
+        QVERIFY(!scene.item("drawerKeyReject-" + peer.requestId));
+        QCOMPARE(scene.f.requestBody.value("payload").toObject().value("request_message_uuid").toString(), peer.requestId);
+    }
+
     void uiEncryptedChatInfoDrawerShowsProtectedIdentity_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
     void uiEncryptedChatInfoDrawerShowsProtectedIdentity() {
         QFETCH(QString, locale); QFETCH(QString, mode);

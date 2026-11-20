@@ -30089,6 +30089,56 @@ private slots:
 
     // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
 
+    void keyDrawerBulkGrantKeepsOnlyTheFailedRequestIncoming()
+    {
+        const QString denied = "51000000-0000-4000-8000-000000000001";
+        const QString granted = "51000000-0000-4000-8000-000000000002";
+        QJsonObject saved;
+        QStringList posted;
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        const auto previous = f.server.handler;
+        f.server.handler = [&, previous](const Request &request) -> Response {
+            const auto payload = request.body.value("payload").toObject();
+            if (request.method == "POST" && payload.value("kind") == "key_grant") {
+                const auto id = payload.value("request_message_uuid").toString();
+                posted.append(id);
+                if (id == denied) return {QJsonObject{}, 403};
+                const auto topic = request.body.value("topic_uuid").toString();
+                const auto placed = QUuid::createUuidV5(QUuid(topic), request.body.value("uuid").toString().toUtf8());
+                saved = message({}, placed.toString(QUuid::WithoutBraces), topic);
+                saved["payload"] = payload;
+                return {saved, 201};
+            }
+            if (!saved.isEmpty() && request.method == "GET"
+                && request.target.path().endsWith('/' + saved.value("uuid").toString())) return {saved, 200};
+            return previous(request);
+        };
+        int epoch = 100;
+        for (const auto &id : {denied, granted}) {
+            auto row = message({}, id);
+            row["author_uuid"] = KeyManagementFixture::SecondMember;
+            row["is_own"] = false;
+            row["payload"] = QJsonObject{{"kind", "key_request"}, {"key_uuid", KeyManagementFixture::KeyCurrent},
+                {"device_id", "peer-device"}, {"device_name", "Peer device"},
+                {"public_key", QString::fromLatin1(QByteArray(32, 'p').toBase64())}};
+            QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("message.created", row, ++epoch)));
+        }
+        const auto rows = [&](const char *group) { return f.controller.encryption().value(group).toList(); };
+        QTRY_COMPARE(rows("incomingKeyRequests").size(), 2);
+        QTRY_VERIFY(rows("incomingKeyRequests").first().toMap().value("canGrant").toBool());
+        f.controller.grantAllChatKeys();
+        QTRY_COMPARE(rows("grantedKeyRequests").size(), 1);
+        QTRY_VERIFY(!f.controller.encryption().value("grantAllBusy").toBool());
+        QCOMPARE(posted, (QStringList{denied, granted}));
+        QCOMPARE(rows("grantedKeyRequests").first().toMap().value("id").toString(), granted);
+        QCOMPARE(rows("incomingKeyRequests").size(), 1);
+        QCOMPARE(rows("incomingKeyRequests").first().toMap().value("id").toString(), denied);
+        QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 1);
+        QVERIFY(rows("rejectedKeyRequests").isEmpty());
+    }
+
     void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()
     {
         KeyManagementFixture f;
