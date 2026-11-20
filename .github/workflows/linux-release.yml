@@ -26,11 +26,13 @@ jobs:
   package-linux:
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
-    timeout-minutes: 45
-    env:
+    timeout-minutes: 90
+    env: &linux-env
       DEBIAN_FRONTEND: noninteractive
       LANG: C.UTF-8
       LC_ALL: C.UTF-8
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1G
     steps:
       # The runner network cannot reach archive.ubuntu.com / security.ubuntu.com,
       # so point APT at the Yandex mirror first, same as workspace_ui's CI.
@@ -39,7 +41,8 @@ jobs:
       # is reached over plain HTTP: APT still verifies InRelease signatures
       # against the keyring, so repository integrity does not depend on TLS.
       # Runs as root inside the container, hence no sudo.
-      - name: Use Yandex Ubuntu mirror
+      - &mirror
+        name: Use Yandex Ubuntu mirror
         shell: bash
         run: |
           set -euo pipefail
@@ -76,13 +79,14 @@ jobs:
             || grep -H --fixed-strings \
               'http://mirror.yandex.ru/ubuntu' /etc/apt/apt-mirrors.txt
 
-      - name: Install documented build and runtime dependencies
+      - &dependencies
+        name: Install documented build and runtime dependencies
         shell: bash
         run: |
           set -euo pipefail
           apt-get update
           apt-get install --no-install-recommends -y \
-            ca-certificates git build-essential binutils pkg-config python3 \
+            ca-certificates git build-essential binutils pkg-config python3 ccache \
             cmake ninja-build patchelf gh nodejs qt6-base-dev qt6-image-formats-plugins \
             qt6-declarative-dev qt6-svg-dev qt6-svg-plugins qt6-websockets-dev qt6-l10n-tools \
             qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev qt6-multimedia-dev \
@@ -95,9 +99,17 @@ jobs:
             qml6-module-qtquick-window qml6-module-qtquick-templates \
             qml6-module-qtqml-workerscript
 
-      - uses: actions/checkout@v6
+      - &checkout
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Restore compiler cache for the release build
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: linux-release-ccache-v1-${{ github.sha }}
+          restore-keys: linux-release-ccache-v1-
 
       - name: Check repository for generated artifacts
         # The release container and checkout action run as different users.
@@ -122,24 +134,27 @@ jobs:
         run: |
           set -euo pipefail
           cmake -S packages/native -B build/linux-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test native-about-policy-test native-updater-http2-recovery-driver native-updater-http2-controls-driver api-client-test domain-test native-draft-store-test native-draft-service-test native-drafts-test native-draft-sync-test --parallel "$(nproc)"
 
-      - name: Check owned draft storage and conditional HTTP metadata
-        run: ctest --test-dir build/linux-release -R '^native-(api-client|domain|native-draft-(store|service|sync)|native-drafts)$' --output-on-failure
-
-      - name: Check update transport and installer contracts
-        run: ctest --test-dir build/linux-release -R '^native-updater$' --output-on-failure
-
-      - name: Check real TLS and HTTP2 update recovery without a native window
-        run: ctest --test-dir build/linux-release -R '^native-updater-http2-' --output-on-failure
-
-      - name: Check About policy without creating a native window
+      - name: Check draft, HTTP metadata, update transport and About contracts
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build/linux-release -R '^native-about-policy$' --output-on-failure
+        run: >-
+          dbus-run-session -- ctest --test-dir build/linux-release --parallel "$(nproc)"
+          -R '^native-(api-client|domain|native-draft-(store|service|sync)|native-drafts|updater|updater-http2-.*|about-policy)$'
+          --output-on-failure --no-tests=error
+
+      - name: Run the full release gate on Xvnc and Openbox
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get install --no-install-recommends -y tigervnc-standalone-server openbox xauth x11-utils pulseaudio fonts-noto-core libgl1-mesa-dri
+          cmake --build build/linux-release --parallel "$(nproc)"
+          dbus-run-session -- bash packages/native/tests/full-linux-gate.sh build/linux-release
 
       - name: Package installed runtime
         shell: bash
@@ -202,3 +217,35 @@ jobs:
             --verify-tag --title "Workspace Native ${GITHUB_REF_NAME} — Linux preview" \
             --notes-file "build/release-notes-${GITHUB_REF_NAME}.md" \
             dist/linux/*.tar.gz dist/linux/SHA256SUMS
+
+  quick-linux:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env: *linux-env
+    steps:
+      - *mirror
+      - *dependencies
+      - *checkout
+      - name: Restore compiler cache for the headless build
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: linux-headless-ccache-v1-${{ github.sha }}
+          restore-keys: linux-headless-ccache-v1-
+      - name: Build the headless test executables
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON \
+            -DWORKSPACE_NATIVE_QUICK_GATE=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/headless --target native-headless-tests --parallel "$(nproc)"
+      - name: Run all headless groups
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          env -u DISPLAY -u WAYLAND_DISPLAY dbus-run-session --
+          ctest --test-dir build/headless -LE gui --parallel "$(nproc)" --output-on-failure --no-tests=error

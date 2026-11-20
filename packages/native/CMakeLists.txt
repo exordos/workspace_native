@@ -279,6 +279,10 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(BUILD_TESTING)
+    option(WORKSPACE_NATIVE_QUICK_GATE "Use independent QtTest processes for headless Linux CI" OFF)
+    if(WORKSPACE_NATIVE_QUICK_GATE)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    endif()
     find_package(Qt6 REQUIRED COMPONENTS Test DBus)
     add_executable(native-updater-test tests/native-updater-test.cpp src/native-updater.cpp src/native-updater.h
         src/native-updater-taskbar.cpp src/native-updater-taskbar.h)
@@ -357,7 +361,12 @@ if(BUILD_TESTING)
                 PREFIX /workspace/qml BASE qml FILES ${native_qml_files})
         endif()
         set_target_properties(${test}-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
-        add_test(NAME native-${test} COMMAND ${test}-test)
+        if(WORKSPACE_NATIVE_QUICK_GATE AND test STREQUAL "native-controller")
+            add_test(NAME native-${test} COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:${test}-test>" --jobs 8)
+        else()
+            add_test(NAME native-${test} COMMAND ${test}-test)
+        endif()
         set_tests_properties(native-${test} PROPERTIES TIMEOUT 45)
         if(test STREQUAL "native-controller")
             # The diagnostics source-contract guard (fix-round-1 finding 2)
@@ -475,7 +484,12 @@ if(BUILD_TESTING)
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}"
         WORKSPACE_NATIVE_E2EE_PEER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tests/e2ee-peer/peer.mjs")
     set_target_properties(native-e2ee-read-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
-    add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
+    if(WORKSPACE_NATIVE_QUICK_GATE)
+        add_test(NAME native-native-e2ee-read COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:native-e2ee-read-test>" --jobs 6)
+    else()
+        add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
+    endif()
     # Original189 cases plus42 additive observer/resolver/lifecycle/disclosure data.
     # Measured old suite359.164s + new42 focus130.768s + RT control17.018s;
     # 25% headroom rounded up to30s:660s. Individual waits stay unchanged.
@@ -608,6 +622,33 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")
+
+    get_property(registered_tests DIRECTORY PROPERTY TESTS)
+    foreach(test IN LISTS registered_tests)
+        get_property(labels TEST "${test}" PROPERTY LABELS)
+        if(NOT "gui" IN_LIST labels)
+            set_property(TEST "${test}" APPEND PROPERTY LABELS headless)
+            if(WORKSPACE_NATIVE_QUICK_GATE)
+                get_property(locks TEST "${test}" PROPERTY RESOURCE_LOCK)
+                list(REMOVE_ITEM locks xdisplay)
+                set_property(TEST "${test}" PROPERTY RESOURCE_LOCK "${locks}")
+            endif()
+        endif()
+    endforeach()
+
+    # Only skip binaries with exclusively window-driven tests. The Python HTTP2
+    # and clipboard cases additionally invoke driver executables and preload helpers.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_custom_target(native-headless-tests)
+        get_property(native_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(target IN LISTS native_targets)
+            if(target MATCHES "(-test|-driver)$" AND NOT
+                    target MATCHES "^(native-window|native-e2ee-ui|native-preferences)-test$")
+                add_dependencies(native-headless-tests "${target}")
+            endif()
+        endforeach()
+        add_dependencies(native-headless-tests native-clipboard-slow-read native-clipboard-path-race)
+    endif()
 endif()
 
 # Throwaway Jitsi embed spike for docs/NATIVE_DESKTOP_CALL_STACK.md (#160).

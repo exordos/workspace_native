@@ -728,6 +728,25 @@ ctest --test-dir packages/native/build --output-on-failure
 git diff --check
 ```
 
+On Linux each CTest group carries exactly one display label. List the groups
+with `ctest --test-dir build/headless -N -L headless` or `-L gui`. For the
+same display-free gate as pull requests, run from the repository root:
+
+```sh
+cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON -DWORKSPACE_NATIVE_QUICK_GATE=ON
+cmake --build build/headless --target native-headless-tests --parallel
+env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- \
+  ctest --test-dir build/headless -LE gui --parallel 8 --output-on-failure
+```
+
+The quick configuration distributes long QtTest suites across processes using
+the executable's current function/data inventory. The full configuration runs
+the original suites and retains the shared-display locks. Before creating a
+release tag, dispatch **Linux release artifacts** on the intended release commit
+and wait for the full Xvnc/Openbox gate. Tag builds repeat that gate before
+publishing. It uses a 1440×900 display, software Qt Quick rendering and an
+audio service for window tests that treat Qt warnings as failures.
+
 Tests use synthetic fixtures. Physical HTTP tests permit only loopback addresses
 through an explicit C++ test constructor option; the application uses HTTPS-only
 defaults. Saved-session tests inject a narrow HTTPS request executor and fake
