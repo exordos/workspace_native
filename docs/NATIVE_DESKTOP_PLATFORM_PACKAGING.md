@@ -30,9 +30,13 @@ Each platform test minimizes the existing window and launches the unpacked execu
 | Capability | Windows x64 | macOS arm64 |
 | --- | --- | --- |
 | Start in a relocated archive, restore the original window, clipboard text in both directions | PASS on Windows Server 2022 | PASS on macOS 15 |
+| Sign in, quit, restore the rotated account in a second process and sign out | PASS, including Windows Credential Manager entry creation and removal | Keychain acceptance in progress |
+| Check for updates in App version | The Windows preview shows that updates are unavailable for this platform | Packaged UI check in progress |
 | OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
 | Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
 | Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
+
+The account check uses a disposable loopback HTTPS organization. The normal installed executable performs password login, rotates its project-scoped refresh credential, and signs in again after restart. The test inspects the presence of its randomly identified OS credential without reading the secret. Signing out must return to the login screen and remove that account. The runner removes the temporary certificate and account data before disposal.
 
 The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).
 
