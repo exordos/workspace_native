@@ -55,6 +55,8 @@ jobs:
               ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
             }
           } elseif ('${{ inputs.slice }}' -eq 'media') {
+            powershell -NoProfile -File packages/native/tests/platform-package/windows-capture-inventory.ps1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $env:CASSI_CAPTURE_FIXTURE = '1'
             python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-media
           } elseif ('${{ inputs.slice }}' -eq 'update') {
@@ -83,6 +85,7 @@ jobs:
           elif [ "${{ inputs.slice }}" = "update" ]; then
             python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
           elif [ "${{ inputs.slice }}" = "media" ]; then
+            swift -e 'import AVFoundation; print("macOS available audio capture devices:", AVCaptureDevice.devices(for: .audio).count); print("macOS available video capture devices:", AVCaptureDevice.devices(for: .video).count)' 
             python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-media
           else
             python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native"
