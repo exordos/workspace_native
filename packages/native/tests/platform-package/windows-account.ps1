@@ -24,6 +24,14 @@ function Control([string]$Name, $Type) {
     do {
         $results = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
             Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
+        # Qt WebEngine can expose the same Qt control through many fragments.
+        # Coalesce only identical owning PIDs, identifiers and screen rectangles.
+        if ($results.Count -gt 1 -and $results[0].Current.AutomationId) {
+            $presentations = @($results | ForEach-Object {
+                "$($_.Current.ProcessId)/$($_.Current.AutomationId)/$($_.Current.BoundingRectangle)"
+            } | Select-Object -Unique)
+            if ($presentations.Count -eq 1) { $results = @($results[0]) }
+        }
         if ($results.Count -eq 1) {
             if ($Name -eq 'Password') {
                 $field = $results[0].Current
@@ -75,6 +83,11 @@ switch ($Mode) {
         Press 'Next'
         Press 'Login'
     }
+    'join-call' {
+        Press 'General Chat: Cassi hosted channel'
+        Press 'Join call'
+    }
+    'close-call' { Press 'Close call' }
     'update' {
         Press 'Profile'
         Press 'App version'

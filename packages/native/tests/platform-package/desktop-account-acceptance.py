@@ -17,6 +17,8 @@ import time
 import uuid
 import urllib.request
 
+from hosted_capture import HostedCapture
+
 
 HERE = Path(__file__).resolve().parent
 WINDOWS = sys.platform == "win32"
@@ -43,6 +45,7 @@ def wait_for(operation, message, timeout=25):
 class SessionFixture(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
+        self.capture = None
         self.refresh = secrets.token_hex(24)
         self.base = secrets.token_hex(22)
         self.access = secrets.token_hex(23)
@@ -78,9 +81,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         fixture = self.server
         path = self.path.partition("?")[0]
+        if fixture.capture and fixture.capture.handle(self):
+            return
         if path.endswith("/messenger/server_settings"):
             fixture.settings_count += 1
-            self.reply(200, {"realm_name": "Cassi package fixture"})
+            settings = {"realm_name": "Cassi package fixture"}
+            if fixture.capture:
+                settings["meet_url"] = fixture.capture.origin
+            self.reply(200, settings)
         elif path == "/api/core/v1/iam/projects/" and self.headers.get("Authorization") == "Bearer " + fixture.base:
             self.reply(200, [{"uuid": PROJECT, "name": "Package acceptance", "status": "ACTIVE"}])
         elif path.endswith("/actions/introspect") and self.headers.get("Authorization") == "Bearer " + fixture.access:
@@ -186,7 +194,23 @@ def drive(pid, mode, origin):
         run("swift", HERE / "macos-account.swift", pid, mode, origin, timeout=100)
 
 
-def scenario(executable, check_updater):
+def capture_inventory():
+    if WINDOWS:
+        output = run("powershell", "-NoProfile", "-File", HERE / "windows-capture-inventory.ps1",
+                     stdout=subprocess.PIPE, text=True).stdout
+    else:
+        script = ('import AVFoundation; import Foundation; '
+                  'let devices = ["audio": AVCaptureDevice.devices(for: .audio).count, '
+                  '"video": AVCaptureDevice.devices(for: .video).count]; '
+                  'FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: devices))')
+        output = run("swift", "-e", script, stdout=subprocess.PIPE, text=True).stdout
+    counts = json.loads(output)
+    check(all(type(counts.get(kind)) is int and counts[kind] >= 0 for kind in ("audio", "video")),
+          "Could not enumerate the native capture endpoints")
+    return counts
+
+
+def scenario(executable, check_updater, check_capture):
     check(os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
           "The TLS fixture requires a disposable GitHub-hosted runner")
     check(WINDOWS or sys.platform == "darwin", "A Windows or macOS desktop is required")
@@ -198,6 +222,10 @@ def scenario(executable, check_updater):
             fixture.tls = context
             print("Trusted an ephemeral loopback TLS fixture.", flush=True)
             origin = "https://127.0.0.1:" + str(fixture.server_port)
+            if check_capture:
+                fixture.capture = HostedCapture(PROJECT, USER, origin)
+                devices = capture_inventory()
+                print("Native capture devices:", devices, flush=True)
             identity = json.dumps(["workspace-session-v1", origin, PROJECT, USER], separators=(",", ":"))
             record = hashlib.sha256(identity.encode()).hexdigest()
             check(not stored(record), "The new account already has an OS store entry")
@@ -227,6 +255,17 @@ def scenario(executable, check_updater):
                                 if check_updater:
                                     drive(app.pid, "update", origin)
                                     print("The installed application reported its unsupported update channel in App version.", flush=True)
+                                if check_capture:
+                                    drive(app.pid, "join-call", origin)
+                                    results = fixture.capture.results
+                                    wait_for(lambda: all(kind in results for kind in ("page", "audio", "video")),
+                                             "The installed meeting did not report both media results", timeout=40)
+                                    check(results["page"] == "loaded", "The installed meeting did not load")
+                                    for kind in ("audio", "video"):
+                                        expected = "live" if devices[kind] else "NotFoundError"
+                                        check(results[kind] == expected, f"{kind}: {results[kind]}, expected {expected}")
+                                    print("Installed meeting capture:", results, flush=True)
+                                    drive(app.pid, "close-call", origin)
                                 drive(app.pid, "logout", origin)
                                 wait_for(lambda: not stored(record), "Signing out did not remove the OS credential")
                                 print("The restarted package restored the rotated session, then sign-out removed the OS credential.", flush=True)
@@ -259,5 +298,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("executable")
     parser.add_argument("--check-updater", action="store_true")
+    parser.add_argument("--check-capture", action="store_true")
     args = parser.parse_args()
-    scenario(args.executable, args.check_updater)
+    scenario(args.executable, args.check_updater, args.check_capture)
