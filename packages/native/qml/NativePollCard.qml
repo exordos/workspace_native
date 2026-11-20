@@ -20,6 +20,7 @@ Item {
     required property string messageUuid
     property var colors: ({})
     property var controller: null
+    required property var previewStore
     property bool readOnly: false
     // Right inset reserved on the card's final line for the bubble time
     // (workspace-message-poll.css:152-156 reserves 48 px).

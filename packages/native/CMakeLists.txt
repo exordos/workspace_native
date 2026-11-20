@@ -151,6 +151,7 @@ qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCachedMessageSearch.qml
 qml/NativePollVoters.qml
+qml/NativePollVoterPreviews.qml
 qml/NativePollVoterAvatar.qml
 qml/NativeForwardDialog.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml

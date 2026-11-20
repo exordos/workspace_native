@@ -9,7 +9,8 @@ do not request or display voter identities.
 The option shows up to five overlapping 28 px avatars with 8 px overlap. Use
 the identities supplied by the poll state first. For eligible options with
 votes and no preview, request their first five voters, for at most five options
-per poll revision and at most three simultaneous requests. A failed preview
+per poll revision and at most three simultaneous requests. The conversation
+shares these requests across replacements of the same poll delegate. A failed preview
 leaves the count and explicit voter list usable.
 
 The option button opens its voter list. When the summary is visible on an open

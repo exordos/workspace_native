@@ -16,10 +16,6 @@ Popup {
     readonly property string identity: JSON.stringify([owner, hostCard.messageUuid])
     readonly property string revision: JSON.stringify([identity, (hostCard.poll && hostCard.poll.state ? hostCard.poll.state.revision : 0),
         questions.map(q => [q.uuid, hostCard.stateFor(q)])])
-    property string previewVersion: ""
-    property var previewQueue: []
-    property var previewRequests: ({})
-    property var loadedPreviews: ({})
     property string questionId: ""
     property string optionId: ""
     property bool overview: false
@@ -51,19 +47,11 @@ Popup {
     function preview(q, o) {
         if (!questions.some(item => item.uuid === q.uuid) || votesFor(q, o) <= 0) return []
         const seed = seedFor(q, o)
-        return (seed.length ? seed : loadedPreviews[q.uuid + ":" + o.uuid] || []).slice(0, 5)
-    }
-    function cancelPreviews() {
-        const previous = Object.keys(previewRequests)
-        previewRequests = {}
-        previewQueue = []
-        loadedPreviews = {}
-        if (controller) previous.forEach(tag => controller.cancelPollVoterRequest(tag))
+        return (seed.length ? seed : hostCard.previewStore.get(hostCard.messageUuid, revision,
+            q.uuid + ":" + o.uuid)).slice(0, 5)
     }
     function startPreviews() {
-        if (!initialized || previewVersion === revision) return
-        previewVersion = revision
-        cancelPreviews()
+        if (!initialized) return
         const jobs = []
         for (const q of questions) {
             for (const o of q.options) {
@@ -71,16 +59,7 @@ Popup {
                     jobs.push({questionId:q.uuid, optionId:o.uuid})
             }
         }
-        previewQueue = jobs
-        pumpPreviews()
-    }
-    function pumpPreviews() {
-        while (previewQueue.length && Object.keys(previewRequests).length < 3) {
-            const job = previewQueue.shift()
-            const tag = hostCard.newClientUuid()
-            previewRequests[tag] = job.questionId + ":" + job.optionId
-            controller.loadPollVoters(hostCard.messageUuid, job.questionId, job.optionId, "", 5, tag)
-        }
+        hostCard.previewStore.ensure(hostCard.messageUuid, revision, jobs)
     }
     function cancelPage() {
         const tag = pageRequest
@@ -117,21 +96,18 @@ Popup {
         showFor(first, first.options.find(o => hostCard.selectedFor(first).includes(o.uuid)) || first.options[0], true)
     }
 
-    onRevisionChanged: if (initialized) Qt.callLater(startPreviews)
+    Timer { id: previewUpdate; interval: 0; onTriggered: dialog.startPreviews() }
+    Timer { id: pageUpdate; interval: 0; onTriggered: dialog.resetPage() }
+    onRevisionChanged: if (initialized) previewUpdate.restart()
     onIdentityChanged: if (initialized && visible) close()
-    onTargetVersionChanged: if (initialized && visible) Qt.callLater(resetPage)
-    Component.onCompleted: { initialized = true; Qt.callLater(startPreviews) }
-    Component.onDestruction: { cancelPage(); cancelPreviews() }
+    onTargetVersionChanged: if (initialized && visible) pageUpdate.restart()
+    Component.onCompleted: { initialized = true; previewUpdate.start() }
+    Component.onDestruction: cancelPage()
     Connections {
         target: dialog.controller
         function onPollVotersLoaded(message, questionId, optionId, voters, next, failure, tag) {
             if (!tag || message !== dialog.hostCard.messageUuid) return
-            const key = dialog.previewRequests[tag]
-            if (key) {
-                delete dialog.previewRequests[tag]
-                if (!failure) dialog.loadedPreviews = Object.assign({}, dialog.loadedPreviews, {[key]: voters})
-                dialog.pumpPreviews()
-            } else if (tag === dialog.pageRequest && dialog.questionId === questionId && dialog.optionId === optionId) {
+            if (tag === dialog.pageRequest && dialog.questionId === questionId && dialog.optionId === optionId) {
                 dialog.pageRequest = ""
                 dialog.error = Boolean(failure)
                 if (!failure) {
