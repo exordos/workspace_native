@@ -7164,7 +7164,15 @@ mv -Tf "$root/.current-new" "$root/current"
             const auto expected = action == "server" ? QString("Changed on another client") : QString("My conflicting draft");
             QCOMPARE(fixture.draftPuts, action == "server" ? 1 : 2); QCOMPARE(fixture.draftDeletes, 0);
             QCOMPARE(fixture.drafts[returnedId].value("payload").toObject().value("content").toString(), expected);
-            QTRY_VERIFY(view("draft-open-" + returnedId)); click(window, view("draft-open-" + returnedId));
+            // Refreshing the list can replace a visible delegate between finding
+            // its action and delivering the physical click.
+            const auto siblingId = QStringLiteral("75000000-0000-4500-8500-000000000028");
+            auto sibling = WindowDraftFixture::row(siblingId, "Another saved draft");
+            sibling["topic_uuid"] = secondTopicId;
+            fixture.drafts.insert(siblingId, sibling);
+            QTRY_VERIFY(view("draft-open-" + returnedId));
+            QTimer::singleShot(0, &controller, &NativeController::refreshDrafts);
+            clickCurrentItem(window, "draft-open-" + returnedId);
             QTRY_VERIFY(!controller.draftsVisible() && composer->isVisible());
             QTRY_COMPARE(composer->property("text").toString(), expected);
             QCOMPARE(drafts.capture(streamId, topicId).uuid, returnedId);
