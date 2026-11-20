@@ -10256,6 +10256,11 @@ private slots:
         // Real member and presence counts, never invented zeros.
         QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
         QTRY_COMPARE(scene.f.controller.channelInfoOnlineCount(), 1);
+        // Membership is ready before the repeater's Column has positioned
+        // its new delegates. Measure the presented layout.
+        QSignalSpy membersFrame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!membersFrame.isEmpty());
         auto *drawer = scene.require("nativeRightDrawer"); QVERIFY(drawer);
         // xl avatar: 64 px circle, radius 32, resolveAvatarBackgroundColor
         // fallback (no stream color) is the bg token with a border-subtle ring.
