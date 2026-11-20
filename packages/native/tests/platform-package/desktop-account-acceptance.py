@@ -119,6 +119,11 @@ def run(*args, **kwargs):
 
 @contextlib.contextmanager
 def trust_loopback_certificate(directory):
+    openssl = "openssl"
+    if sys.platform == "darwin":
+        prefix = subprocess.check_output(["brew", "--prefix", "openssl@3"], text=True).strip()
+        openssl = str(Path(prefix) / "bin/openssl")
+    run(openssl, "version")
     ca = directory / "ca.pem"
     ca_key = directory / "ca.key"
     cert = directory / "server.pem"
@@ -130,14 +135,17 @@ def trust_loopback_certificate(directory):
                       "keyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n")
     quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     subject = "/CN=Cassi desktop package " + uuid.uuid4().hex
-    run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-sha256",
+    run(openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-sha256",
         "-subj", subject, "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
         "-addext", "subjectKeyIdentifier=hash", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
         "-keyout", ca_key, "-out", ca, **quiet)
-    run("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", csr, **quiet)
-    run("openssl", "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key, "-CAcreateserial",
+    run(openssl, "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=127.0.0.1", "-keyout", key, "-out", csr, **quiet)
+    run(openssl, "x509", "-req", "-in", csr, "-CA", ca, "-CAkey", ca_key, "-CAcreateserial",
         "-days", "1", "-sha256", "-extfile", config, "-out", cert, **quiet)
-    run("openssl", "verify", "-purpose", "sslserver", "-x509_strict", "-verify_ip", "127.0.0.1", "-CAfile", ca, cert)
+    for certificate in (ca, cert):
+        run(openssl, "x509", "-in", certificate, "-noout", "-subject", "-issuer", "-ext",
+            "subjectKeyIdentifier,authorityKeyIdentifier,basicConstraints")
+    run(openssl, "verify", "-purpose", "sslserver", "-x509_strict", "-verify_ip", "127.0.0.1", "-CAfile", ca, cert)
     der = ssl.PEM_cert_to_DER_cert(ca.read_text())
     thumbprint = hashlib.sha1(der).hexdigest().upper()
     if WINDOWS:
