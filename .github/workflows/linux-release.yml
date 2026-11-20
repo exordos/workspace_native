@@ -241,9 +241,11 @@ jobs:
       matrix:
         include:
           - suite: controller
+            workers: 16
             include_label: '^controller$'
             exclude_label: '^gui$'
           - suite: other
+            workers: 12
             include_label: '^headless$'
             exclude_label: '^(gui|controller)$'
     runs-on: ubuntu-24.04
@@ -261,8 +263,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: linux-headless-${{ matrix.suite }}-ccache-v1-${{ github.sha }}
-          restore-keys: linux-headless-${{ matrix.suite }}-ccache-v1-
+          key: linux-headless-${{ matrix.suite }}-ccache-v2-${{ github.sha }}
+          restore-keys: linux-headless-${{ matrix.suite }}-ccache-v2-
       - name: Build the headless test executables
         shell: bash
         run: |
@@ -276,14 +278,14 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: linux-headless-${{ matrix.suite }}-ccache-v1-${{ github.sha }}
+          key: linux-headless-${{ matrix.suite }}-ccache-v2-${{ github.sha }}
       - name: Run all headless groups
         env:
           QT_QPA_PLATFORM: offscreen
         run: >-
           env -u DISPLAY -u WAYLAND_DISPLAY dbus-run-session --
           ctest --test-dir build/headless -L '${{ matrix.include_label }}' -LE '${{ matrix.exclude_label }}'
-          --parallel 12 --output-on-failure --no-tests=error
+          --parallel ${{ matrix.workers }} --output-on-failure --no-tests=error
 
   quick-linux:
     needs: headless-tests
