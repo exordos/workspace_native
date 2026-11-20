@@ -34335,7 +34335,8 @@ private slots:
         controller.selectStream(streamId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *content = window->contentItem();
-        auto *chip = item(content, "message-time-" + TimestampWindowFixture::secondsId); QVERIFY(chip);
+        QQuickItem *chip = nullptr;
+        QTRY_VERIFY((chip = item(content, "message-time-" + TimestampWindowFixture::secondsId)));
         QVERIFY(chip->isVisible());
         const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
         const auto historyBefore = fixture.historyGets;
@@ -34382,12 +34383,49 @@ private slots:
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void messageTimePanelFollowsChipWhileHistoryScrolls()
+    {
+        NativeWindowScene scene;
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        // Choose a visible chip with room to scroll one notch while keeping
+        // the reference's preferred placement above the trigger.
+        QQuickItem *chip = nullptr;
+        for (int i = 49; i >= 0; --i) {
+            auto *candidate = item(list, "message-time-" + NativeWindowScene::messageUuid(i));
+            if (!candidate)
+                continue;
+            const auto y = candidate->mapToItem(list, QPointF()).y();
+            if (y > 0.5 * list->height() && y < list->height() - 150) {
+                chip = candidate;
+                break;
+            }
+        }
+        QVERIFY(chip);
+        click(window, chip);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        const auto bottom = [panel] { return panel->property("y").toReal() + panel->property("height").toReal(); };
+        const auto chipY = [chip] { return chip->mapToScene(QPointF()).y(); };
+        QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
+        const auto before = chipY();
+        const auto wheelAt = list->mapToScene(QPointF(list->width() - 4, list->height() / 2));
+        QTest::wheelEvent(window, wheelAt, QPoint(0, 120));
+        QTRY_VERIFY(chipY() > before + 90);
+        QVERIFY(panel->property("visible").toBool());
+        QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
+        QTest::wheelEvent(window, wheelAt, QPoint(0, 1200));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeViewerOpensFromKeyboardAndTimeReference_data()
     {
         QTest::addColumn<QString>("scenario");
         QTest::newRow("enter") << QString("enter");
         QTest::newRow("space") << QString("space");
         QTest::newRow("reference") << QString("reference");
+        QTest::newRow("assistive-press") << QString("assistive-press");
     }
     void messageTimeViewerOpensFromKeyboardAndTimeReference()
     {
@@ -34431,10 +34469,20 @@ private slots:
         }
         // Reference contract: Enter/Space on the focused time element opens the
         // same viewer (workspace-message-body-interactions.hook.ts:490-496).
-        auto *chip = item(content, "message-time-" + TimestampWindowFixture::secondsId); QVERIFY(chip);
-        chip->forceActiveFocus(Qt::TabFocusReason);
-        QTRY_VERIFY(chip->hasActiveFocus());
-        QTest::keyClick(window, scenario == "enter" ? Qt::Key_Return : Qt::Key_Space);
+        QQuickItem *chip = nullptr;
+        QTRY_VERIFY((chip = item(content, "message-time-" + TimestampWindowFixture::secondsId)));
+        if (scenario == "assistive-press") {
+            auto *iface = QAccessible::queryAccessibleInterface(chip); QVERIFY(iface);
+            QCOMPARE(iface->role(), QAccessible::Button);
+            auto *actions = iface->actionInterface(); QVERIFY(actions);
+            const auto press = QAccessibleActionInterface::pressAction();
+            QVERIFY(actions->actionNames().contains(press));
+            actions->doAction(press);
+        } else {
+            chip->forceActiveFocus(Qt::TabFocusReason);
+            QTRY_VERIFY(chip->hasActiveFocus());
+            QTest::keyClick(window, scenario == "enter" ? Qt::Key_Return : Qt::Key_Space);
+        }
         auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY2(panel, "Keyboard trigger must open the read-only panel");
         QTRY_VERIFY(panel->property("visible").toBool());
         QCOMPARE(panel->property("width").toReal(), qreal(371));
