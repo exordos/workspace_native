@@ -85,6 +85,11 @@ Error line `text-xs text-notice-base` (`app.error`). When the stream
 notification mode is null/empty an unsupported box replaces the switch:
 `rounded-lg bg-bg-elevated px-2 py-2 text-sm text-text-muted`.
 
+The drawer exposes the three levels as radio buttons in the localized
+Notifications group. Its checked state follows the confirmed stream mode.
+The drawer and sidebar both use the stream's pending write. Session renewal
+releases interrupted writes and reloads the canonical stream catalog.
+
 Description block (730-739): heading `text-sm font-medium mb-3 px-2`
 (`chatInfo.description`); value block `rounded-lg bg-bg-elevated px-3 py-2
 text-sm text-text-primary`; rendered only when the description is non-empty.

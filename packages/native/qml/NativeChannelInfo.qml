@@ -272,6 +272,8 @@ Item {
                 Rectangle {
                     id: notificationSwitch
                     objectName: "channelInfoNotificationSwitch"
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: qsTr("Notifications")
                     visible: page.notificationSupported
                     width: flow.width
                     height: 44
@@ -308,6 +310,9 @@ Item {
                                 icon.width: 28
                                 icon.height: 28
                                 icon.color: segment.isCurrent ? page.colors["icon-active"] : page.colors["text-muted"]
+                                Accessible.role: Accessible.RadioButton
+                                Accessible.checkable: true
+                                Accessible.checked: segment.isCurrent
                                 Accessible.name: modelData.label
                                 background: Rectangle {
                                     radius: 8

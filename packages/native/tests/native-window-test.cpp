@@ -2063,8 +2063,8 @@ public:
                 notifBody = request.body;
                 // streams/{uuid}/actions/notifications/invoke: the invoke
                 // answers with the canonical DTO of the stream it addressed.
-                auto row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
-                row["notification_mode"] = request.body.value("notification_mode");
+                auto &row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
+                if (notifStatus == 200) row["notification_mode"] = request.body.value("notification_mode");
                 return {row, notifStatus, notifStatus == 200 ? 180 : 160};
             }
             if (request.method == "DELETE" && path.contains("/stream_bindings/")) {
@@ -20904,6 +20904,54 @@ mv -Tf "$root/.current-new" "$root/current"
             QStringLiteral("muted"));
     }
 
+    void windowChannelNotificationLevelsAndUnsupportedFallback_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void windowChannelNotificationLevelsAndUnsupportedFallback()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.openChannelInfo();
+        auto *control = visibleItem("channelInfoNotificationSwitch"); QVERIFY(control);
+        auto *group = QAccessible::queryAccessibleInterface(control); QVERIFY(group);
+        QCOMPARE(group->role(), QAccessible::Grouping);
+        QCOMPARE(group->text(QAccessible::Name), locale == "ru" ? QString("Уведомления") : QString("Notifications"));
+        const QStringList segments{"channelInfoNotifSubscribed", "channelInfoNotifDefault", "channelInfoNotifMuted"};
+        for (const auto &name : segments) {
+            auto *segment = visibleItem(name); QVERIFY(segment);
+            QCOMPARE(segment->height(), qreal(36));
+            auto *choice = QAccessible::queryAccessibleInterface(segment); QVERIFY(choice);
+            QCOMPARE(choice->role(), QAccessible::RadioButton);
+            QVERIFY(choice->state().checkable);
+            if (name != segments.first()) click(scene.window, segment);
+            QTRY_VERIFY(choice->state().checked);
+        }
+        QTRY_VERIFY(visibleItem("streamNotif-" + streamId));
+        QCOMPARE(scene.fixture.notifPosts, 2);
+        scene.controller.refresh();
+        QTRY_VERIFY(!scene.controller.busy());
+        QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), QString("muted"));
+
+        scene.fixture.streamRow.remove("notification_mode");
+        scene.controller.refresh();
+        QTRY_VERIFY(scene.controller.channelInfoNotificationMode().isEmpty());
+        QTRY_VERIFY(!visibleItem("channelInfoNotificationSwitch"));
+        auto *fallback = visibleItem("channelInfoNotificationUnsupported"); QVERIFY(fallback);
+        QVERIFY(!fallback->childItems().isEmpty());
+        QCOMPARE(fallback->childItems().first()->property("text").toString(), locale == "ru"
+            ? QString("Это действие пока недоступно в этом чате.")
+            : QString("This action is not available in this conversation yet."));
+    }
+
     // Issue #132: a failed level update keeps the previous mode and surfaces
     // the reference failure text (t("app.error") -> "Something went wrong",
     // notification-level-switch.lib.ts), under the switch, and a later
@@ -33485,8 +33533,15 @@ private slots:
     // Selecting a level closes the menu and posts {notification_mode} against
     // streams/{id}/actions/notifications/invoke; the canonical response flips the
     // sidebar row (indicator + 0.7 dim) and a same-level repeat sends nothing.
+    void windowStreamContextMenuNotificationSwitch_data()
+    {
+        QTest::addColumn<bool>("missingMode");
+        QTest::newRow("all-messages") << false;
+        QTest::newRow("missing-means-mentions") << true;
+    }
     void windowStreamContextMenuNotificationSwitch()
     {
+        QFETCH(bool, missingMode);
         WindowChannelFixture fixture;
         const QString direct = QStringLiteral("97000000-0000-4000-8000-970000000002");
         int notifPosts = 0; QJsonObject notifBody; QString notifPath;
@@ -33503,7 +33558,13 @@ private slots:
             if (request.method == "GET" && path.endsWith("/streams/")) {
                 auto response = fallback(request);
                 auto rows = response.data.toArray();
+                if (missingMode) {
+                    auto channel = rows.first().toObject();
+                    channel.remove("notification_mode");
+                    rows.replace(0, channel);
+                }
                 auto directRow = windowChannel(direct, "Alice Adams");
+                if (missingMode) directRow.remove("notification_mode");
                 directRow["private"] = true; directRow["direct_user_uuid"] = channelPeer;
                 rows.append(directRow);
                 response.data = rows;
@@ -33540,6 +33601,8 @@ private slots:
         QVERIFY(visibleItem("streamMenuNotifMuted"));
         QVERIFY(visibleItem("streamMenuNotifSubscribed"));
         // Switching to Muted closes the menu and persists through the invoke endpoint.
+        QVERIFY(visibleItem(missingMode ? "streamMenuNotifDefault" : "streamMenuNotifSubscribed")
+            ->property("isCurrent").toBool());
         click(window, visibleItem("streamMenuNotifMuted"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 1);
@@ -33557,7 +33620,7 @@ private slots:
         openMenu("stream-" + direct);
         QVERIFY(!visibleItem("streamMenuNotifDefault"));
         QVERIFY(visibleItem("streamMenuNotifMuted"));
-        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        QVERIFY(visibleItem("streamMenuNotifSubscribed")->property("isCurrent").toBool());
         menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
         menu->setProperty("visible", false);
     }

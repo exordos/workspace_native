@@ -84,6 +84,12 @@ Direct-private streams render `DIRECT_PRIVATE_STREAM_NOTIFICATION_OPTIONS`
 (`bell_off`) and `subscribed` (`bell`) - DMs already notify on every inbound message, so
 the mentions-only level is not offered (lib.ts:66-72).
 
+If an older stream row omits `notification_mode`, the sidebar selects
+`mentions_only` for a channel and accepts a change to a different level.
+Direct chats display their mentions-only default as subscribed, matching
+the reference's direct-chat mapping. The drawer keeps its unsupported
+fallback until the stream provides a mode.
+
 Selection semantics (switch `handleSelect` + `handleSetNotificationMode`): a disabled
 segment or a click on the current level sends nothing; a change closes the menu first,
 then fires one update; while pending the switch is disabled.

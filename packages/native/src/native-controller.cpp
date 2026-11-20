@@ -4031,48 +4031,7 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
 
 void NativeController::setChannelInfoNotificationMode(const QString &mode)
 {
-    const auto *stream = channelInfoStreamRow();
-    if (!stream || channelInfoNotificationBusy() || stream->notificationMode.isEmpty()
-        || stream->notificationMode == mode || !channelModes.contains(mode)) return;
-    const auto owner = ownerKey();
-    const auto generation = m_api->generation();
-    const auto streamUuid = stream->uuid;
-    // Per-stream in-flight tracking: the request stamps its own token into its
-    // stream's slot, so a request on any other stream never takes over this
-    // stream's busy state and a follow-up same-stream request is rejected
-    // until this one settles.
-    const auto token = ++m_channelInfoNotificationToken;
-    m_channelInfoNotificationInFlight.insert(streamUuid, token);
-    m_channelInfoNotificationError.clear();
-    emit stateChanged();
-    // runWorkspaceStreamNotificationUpdate -> POST streams/{id}/actions/
-    // notifications/invoke; the canonical stream DTO answers and the store
-    // value then feeds the switch (store mode wins over any stale info).
-    request("POST", messenger + "/streams/" + streamUuid + "/actions/notifications/invoke",
-        QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, streamUuid, token](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        // Only the newest in-flight request for this stream owns its busy
-        // slot: a superseded response must neither release a newer request's
-        // state nor overwrite its result, and the late response of an
-        // abandoned request may only ever release its own stream's slot.
-        if (m_channelInfoNotificationInFlight.value(streamUuid) != token) return;
-        m_channelInfoNotificationInFlight.remove(streamUuid);
-        if (m_stream != streamUuid) return;
-        const auto parsed = result.ok() && result.data.isObject()
-            ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
-        const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
-            [streamUuid](const Stream &row) { return row.uuid == streamUuid; });
-        if (!parsed || parsed->uuid != streamUuid || entry == m_streams.end()) {
-            // The reference shows t("app.error") on any failed update.
-            m_channelInfoNotificationError = tr("Something went wrong");
-            emit stateChanged();
-            return;
-        }
-        *entry = *parsed;
-        emit streamsChanged();
-        emit stateChanged();
-    });
+    updateStreamNotificationMode(m_stream, mode, true);
 }
 
 bool NativeController::streamNotificationBusy(const QString &id) const
@@ -4080,44 +4039,44 @@ bool NativeController::streamNotificationBusy(const QString &id) const
     return m_channelInfoNotificationInFlight.contains(id);
 }
 
-// Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the sidebar stream
-// menu's level switch. The endpoint, payload, validation and canonical-response
-// admission mirror setChannelInfoNotificationMode (reference updateStreamNotifications
-// -> POST streams/{id}/actions/notifications/invoke), but this entry point
-// addresses any stream: the store row updates even while another stream is open,
-// because the sidebar menu never changes the selection.
 void NativeController::setStreamNotificationMode(const QString &id, const QString &mode)
 {
-    const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
+    updateStreamNotificationMode(id, mode, false);
+}
+
+void NativeController::updateStreamNotificationMode(QString id, const QString &mode, bool fromDrawer)
+{
+    const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
         [&id](const Stream &row) { return row.uuid == id; });
-    if (!authenticated() || entry == m_streams.end()) return;
-    // One in-flight request per stream, sharing the chat-info switch's slots so
-    // both surfaces observe the same busy state for the same stream.
-    if (m_channelInfoNotificationInFlight.contains(id)) return;
-    if (entry->notificationMode.isEmpty() || entry->notificationMode == mode
-        || !channelModes.contains(mode)) return;
+    if (!authenticated() || entry == m_streams.cend() || !channelModes.contains(mode)
+        || streamNotificationBusy(id)) return;
+    // The drawer shows an unsupported message for a missing mode. The sidebar
+    // uses the reference store selector's mentions-only default for old rows.
+    if (fromDrawer && entry->notificationMode.isEmpty()) return;
+    const auto current = entry->notificationMode.isEmpty() ? QStringLiteral("mentions_only") : entry->notificationMode;
+    if (current == mode) return;
     const auto owner = ownerKey();
     const auto generation = m_api->generation();
     const auto token = ++m_channelInfoNotificationToken;
     m_channelInfoNotificationInFlight.insert(id, token);
+    if (fromDrawer) m_channelInfoNotificationError.clear();
     emit stateChanged();
     request("POST", messenger + "/streams/" + id + "/actions/notifications/invoke",
         QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, id, token](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        if (m_channelInfoNotificationInFlight.value(id) != token) return;
+        [this, owner, generation, id, token, fromDrawer](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation
+            || m_channelInfoNotificationInFlight.value(id) != token) return;
         m_channelInfoNotificationInFlight.remove(id);
         const auto parsed = result.ok() && result.data.isObject()
             ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
-        const auto current = std::find_if(m_streams.begin(), m_streams.end(),
-            [&id](const Stream &row) { return row.uuid == id; });
-        if (!parsed || parsed->uuid != id || current == m_streams.end()) {
-            // Failed or foreign answer: release the slot and keep the old level.
-            emit stateChanged();
-            return;
+        const auto row = std::find_if(m_streams.begin(), m_streams.end(),
+            [&id](const Stream &stream) { return stream.uuid == id; });
+        if (parsed && parsed->uuid == id && row != m_streams.end()) {
+            *row = *parsed;
+            emit streamsChanged();
+        } else if (fromDrawer && m_stream == id) {
+            m_channelInfoNotificationError = tr("Something went wrong");
         }
-        *current = *parsed;
-        emit streamsChanged();
         emit stateChanged();
     });
 }
@@ -9540,6 +9499,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     });
     connect(api, &ApiClient::sessionChanged, this, [this] {
         const QPointer<NativeController> lookupGuard(this);
+        // These replies are retired with the old transport. Authentication
+        // refreshes the canonical stream catalog for the current account.
+        m_channelInfoNotificationInFlight.clear();
+        m_channelInfoNotificationError.clear();
         // Transport callbacks from the previous generation will not settle.
         // New projections must be able to resolve their quotes immediately.
         m_quoteInFlight.clear();

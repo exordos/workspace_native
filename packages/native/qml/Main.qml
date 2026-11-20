@@ -12126,10 +12126,11 @@ component NativeMentionChip: Item {
                                 padding: 0
                                 display: AbstractButton.IconOnly
                                 property bool isCurrent: {
-                                    const rows = root.controller.streams;
-                                    const stream = root.currentStream(root.streamMenuTarget);
-                                    return stream != null
-                                        && String(stream.notificationMode || "") === String(modelData.mode);
+                                    const stream = root.currentStream(root.streamMenuTarget)
+                                    if (!stream) return false
+                                    const mode = String(stream.notificationMode || "mentions_only")
+                                    const selected = stream.isDirect && mode === "mentions_only" ? "all_messages" : mode
+                                    return selected === modelData.mode
                                 }
                                 icon.source: "qrc:/workspace/icons/" + modelData.asset
                                 icon.width: 22
@@ -12143,8 +12144,9 @@ component NativeMentionChip: Item {
                                 }
                                 onClicked: {
                                     const target = root.streamMenuTarget
+                                    const selected = isCurrent
                                     streamMenu.close()
-                                    root.controller.setStreamNotificationMode(target, String(modelData.mode))
+                                    if (!selected) root.controller.setStreamNotificationMode(target, String(modelData.mode))
                                 }
                             }
                         }

@@ -1786,6 +1786,7 @@ private:
         QString bindingUuid, userUuid, role;
     };
     const Stream *channelInfoStreamRow() const;
+    void updateStreamNotificationMode(QString id, const QString &mode, bool fromDrawer);
     bool channelInfoContext(quint64 ticket, const QString &stream) const;
     void loadChannelInfoPage(const QString &marker, quint64 ticket, const QString &stream,
                              QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers);
