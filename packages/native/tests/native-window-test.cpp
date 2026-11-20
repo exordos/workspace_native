@@ -22357,6 +22357,64 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("externalAccountsEmpty"));
     }
 
+    void externalAccountDismissedSubmissionRefreshesAfterTheServerCommits_data()
+    {
+        QTest::addColumn<bool>("reopenList");
+        QTest::newRow("keep-list-open") << false;
+        QTest::newRow("reopen-list-before-commit") << true;
+    }
+
+    void externalAccountDismissedSubmissionRefreshesAfterTheServerCommits()
+    {
+        QFETCH(bool, reopenList);
+        ChannelInfoWindowScene scene;
+        const QString path = "/api/workspace/v1/messenger/external_accounts/";
+        QJsonArray accounts;
+        QJsonObject submitted;
+        int lists = 0, writes = 0;
+        std::function<void()> finish;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() != path) return base(request);
+            if (request.method == "GET") {
+                ++lists;
+                return {accounts};
+            }
+            ++writes;
+            auto settings = request.body.value("settings").toObject();
+            settings.remove("api_key");
+            submitted = {{"uuid", request.body.value("uuid")}, {"settings", settings}, {"status", "active"},
+                {"live_ready", true}, {"project_id", projectId}, {"user_uuid", userId}};
+            Response response{submitted};
+            response.defer = [&](auto send) { finish = std::move(send); };
+            return response;
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QTRY_VERIFY(visibleItem("externalAccountsEmpty"));
+        click(scene.window, visibleItem("externalAccountConnect"));
+        QTRY_VERIFY(visibleItem("externalAccountServer"));
+        visibleItem("externalAccountServer")->setProperty("text", "https://chat.example.invalid");
+        visibleItem("externalAccountEmail")->setProperty("text", "peer@example.invalid");
+        visibleItem("externalAccountCredential")->setProperty("text", "fixture-only");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_VERIFY(bool(finish));
+        click(scene.window, visibleItem("externalAccountCancel"));
+        QTRY_VERIFY(!visibleItem("externalAccountCancel"));
+        if (reopenList) {
+            click(scene.window, visibleItem("externalAccountsToggle"));
+            QTRY_VERIFY(!visibleItem("externalAccountsEmpty"));
+            click(scene.window, visibleItem("externalAccountsToggle"));
+        }
+        QTRY_VERIFY(scene.controller.externalAccounts()->busy() || lists > 1);
+        accounts.append(submitted);
+        finish();
+        QTRY_VERIFY(visibleItem("externalAccountName-" + submitted.value("uuid").toString()));
+        QCOMPARE(writes, 1);
+    }
+
     void externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision()
     {
         ChannelInfoWindowScene scene;

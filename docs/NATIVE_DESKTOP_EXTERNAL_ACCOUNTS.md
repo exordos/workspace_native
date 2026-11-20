@@ -19,5 +19,8 @@ Read that canonical UUID in the current project and check the submitted server
 and email before showing it. Edit reads the current account, preserves its provider options
 and sends the replacement settings with the current ETag. Reconnect updates a
 credential for a degraded or authentication-required account. Delete requires
-confirmation. When a form or the account menu closes, discard the secret and
-cancel outstanding work. A later open refreshes the server's canonical state.
+confirmation. Closing a form discards the secret and cancels a pending read before submission.
+After sending a change, keep the transport observation alive and refresh the
+list once the server replies, including when the user closes and reopens the
+list before the commit finishes. Changing the actor or project discards these
+callbacks and clears the previous list.

@@ -26,7 +26,7 @@ NativeExternalAccounts::NativeExternalAccounts(ApiClient* api, Session* session,
     const auto invalidate = [this] {
         if (m_owner.isEmpty())
             return;
-        close();
+        reset();
         emit contextLost();
     };
     connect(api, &ApiClient::sessionChanged, this, invalidate);
@@ -48,7 +48,7 @@ bool NativeExternalAccounts::current(quint64 ticket) const
         && m_generation == m_api->generation();
 }
 
-QVariantList NativeExternalAccounts::rows() const { return current(m_ticket) ? m_rows : QVariantList { }; }
+QVariantList NativeExternalAccounts::rows() const { return m_listOpen && current(m_ticket) ? m_rows : QVariantList { }; }
 
 void NativeExternalAccounts::cancel()
 {
@@ -60,7 +60,19 @@ void NativeExternalAccounts::cancel()
 
 void NativeExternalAccounts::close()
 {
+    m_listOpen = false;
+    if (m_writeSent && current(m_ticket)) {
+        m_refreshAfterWrite = true;
+        emit changed();
+        return;
+    }
+    reset();
+}
+
+void NativeExternalAccounts::reset()
+{
     cancel();
+    m_listOpen = false;
     m_owner.clear();
     m_attemptId.clear();
     m_attemptServer.clear();
@@ -70,12 +82,21 @@ void NativeExternalAccounts::close()
     m_seenRows.clear();
     m_markers.clear();
     m_busy = m_loading = m_saveFailed = m_loadFailed = false;
+    m_writeSent = m_refreshAfterWrite = false;
     emit changed();
 }
 
 void NativeExternalAccounts::open()
 {
-    close();
+    if (m_writeSent && current(m_ticket)) {
+        m_listOpen = true;
+        m_refreshAfterWrite = true;
+        m_loading = true;
+        emit changed();
+        return;
+    }
+    reset();
+    m_listOpen = true;
     m_owner = owner();
     m_generation = m_api->generation();
     if (m_owner.isEmpty())
@@ -141,8 +162,13 @@ void NativeExternalAccounts::page(quint64 ticket, const QByteArray& marker)
 
 void NativeExternalAccounts::cancelForm()
 {
+    if (m_writeSent) {
+        // The server may already be committing. The transport callback will
+        // refresh the list once it observes the outcome.
+        m_refreshAfterWrite = true;
+        return;
+    }
     if (m_busy) {
-        // A server may already have accepted a cancelled write.
         open();
         return;
     }
@@ -158,8 +184,16 @@ void NativeExternalAccounts::finishWrite(
 {
     if (!current(ticket))
         return;
-    m_busy = false;
     m_request = { };
+    m_writeSent = false;
+    if (m_refreshAfterWrite) {
+        if (m_listOpen)
+            open();
+        else
+            reset();
+        return;
+    }
+    m_busy = false;
     m_saveFailed = !success;
     if (success) {
         m_attemptId.clear();
@@ -184,6 +218,7 @@ void NativeExternalAccounts::finishWrite(
 void NativeExternalAccounts::write(quint64 ticket, const QString& id, const QByteArray& method,
     const QString& path, const QJsonObject& body, const Headers& headers)
 {
+    m_writeSent = true;
     const bool creating = method == "POST" && path == collection;
     const bool removing = method == "DELETE";
     m_request = m_api->request(

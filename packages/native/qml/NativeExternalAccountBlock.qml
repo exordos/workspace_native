@@ -107,7 +107,7 @@ ColumnLayout {
                         }
                         NativeIconButton {
                             objectName: "externalAccountActions-" + entry.modelData.id; asset: "more"; colors: block.colors
-                            Accessible.name: qsTr("External account actions"); implicitWidth: 24; implicitHeight: 24
+                            enabled: !block.directory.busy; Accessible.name: qsTr("External account actions"); implicitWidth: 24; implicitHeight: 24
                             onClicked: menu.popup()
                             Menu {
                                 id: menu
@@ -134,7 +134,7 @@ ColumnLayout {
                 icon.width: 20; icon.height: 20; icon.color: block.colors.accent
                 palette.buttonText: block.colors.accent
                 background: Rectangle { radius: 8; color: block.colors["card-bg-active"]; border.width: connectButton.visualFocus ? 2 : 0; border.color: block.colors.accent }
-                enabled: !block.directory.loading && !block.directory.loadFailed
+                enabled: !block.directory.busy && !block.directory.loading && !block.directory.loadFailed
                 onClicked: block.begin("create", {})
             }
         }

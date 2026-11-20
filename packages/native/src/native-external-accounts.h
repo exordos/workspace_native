@@ -41,6 +41,7 @@ private:
     QString owner() const;
     bool current(quint64 ticket) const;
     void cancel();
+    void reset();
     void page(quint64 ticket, const QByteArray& marker = { });
     void write(quint64 ticket, const QString& id, const QByteArray& method, const QString& path,
         const QJsonObject& body, const Headers& headers);
@@ -51,6 +52,7 @@ private:
     QString m_owner, m_attemptId, m_attemptServer, m_attemptEmail;
     quint64 m_generation = 0, m_ticket = 0;
     bool m_loading = false, m_busy = false, m_loadFailed = false, m_saveFailed = false;
+    bool m_listOpen = false, m_writeSent = false, m_refreshAfterWrite = false;
     ApiClient::RequestId m_request;
     QVariantList m_rows, m_pendingRows;
     QSet<QString> m_seenRows;
