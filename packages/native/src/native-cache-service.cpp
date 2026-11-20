@@ -329,9 +329,18 @@ struct NativeCacheService::Private {
                     return;
                 const bool valid =
                     required || (generation == guard->d->lease.generation && rev == guard->d->revision);
-                if (job.search)
-                    job.search(okay && valid && job.input.searchTicket == guard->d->shared->searchTicket.load()
-                        ? std::move(matches) : std::nullopt);
+                if (job.search) {
+                    const bool current = generation == guard->d->lease.generation
+                        && job.input.searchTicket == guard->d->shared->searchTicket.load();
+                    if (current && okay && !valid && guard->available()) {
+                        // A read receipt or deletion completed while this snapshot
+                        // was in flight. Run behind it before returning any rows.
+                        job.revision = guard->d->revision;
+                        guard->d->enqueue(std::move(job));
+                        return;
+                    }
+                    job.search(current && okay && valid ? std::move(matches) : std::nullopt);
+                }
                 if (job.read)
                     job.read(valid ? std::move(entry) : std::optional<Entry>{});
                 if (job.readBody)

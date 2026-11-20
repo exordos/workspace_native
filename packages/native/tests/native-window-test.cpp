@@ -11238,8 +11238,8 @@ mv -Tf "$root/.current-new" "$root/current"
         const QString first = "9a000000-0000-4000-8000-000000000001";
         const QString second = "9a000000-0000-4000-8000-000000000002";
         const QString ignored = "9a000000-0000-4000-8000-000000000003";
-        const auto firstRow = message(QStringLiteral("First **Иголка** result."), first, secondTopicId);
-        const auto secondRow = message(QStringLiteral("Second иголка result."), second, secondTopicId);
+        const auto firstRow = message(QStringLiteral("Original **Иголка** result."), first, secondTopicId);
+        const auto secondRow = message(QStringLiteral("Another иголка result."), second, secondTopicId);
         const QString foreignUser = "9a000000-0000-4000-8000-000000000004";
         const QString foreignProject = "9a000000-0000-4000-8000-000000000005";
         {
@@ -11256,7 +11256,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
             const QString edited = "9a000000-0000-4000-8000-000000000006";
             QVERIFY(seed.putMessageBody(seed.lease(), message("Obsolete searchable text", edited, secondTopicId)));
-            ++savedAt;
+            // Real replies and edits can be persisted within the same millisecond.
             auto opaque = message({}, ignored, secondTopicId);
             opaque["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", foreignProject},
                 {"content", QStringLiteral("Transport иголка must stay hidden")}};

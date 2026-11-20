@@ -73,6 +73,17 @@ class NativeCacheServiceTest final : public QObject
         QSet<QString> ids;
         for (const auto &entry : *matches) ids.insert(entry.toObject().value("id").toString());
         QCOMPARE(ids.size(), NativeCache::MaximumSearchResults);
+
+        bool finished = false;
+        matches.reset();
+        service.searchMessages(lease, "needle", this, [&](auto result) {
+            matches = std::move(result);
+            finished = true;
+        });
+        QVERIFY(service.markHistoryRead(lease, Stream, Topic, {history.first().toObject().value("uuid").toString()}));
+        QTRY_VERIFY(finished);
+        QVERIFY2(matches, "A read receipt cannot make the active search unavailable");
+        QCOMPARE(matches->size(), NativeCache::MaximumSearchResults);
     }
 
     // Same five logical local-worker oracles; callbacks own their completion

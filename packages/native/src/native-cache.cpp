@@ -503,9 +503,9 @@ std::optional<QJsonArray> NativeCache::searchMessages(const Lease &lease, const 
     pages.setForwardOnly(true);
     // Sort only compact row IDs. SQLite would otherwise retain response blobs
     // in a temporary sort for large histories. Prefer the newest copy of an edit,
-    // then an exact body over a history snapshot saved at the same instant.
+    // using the fresh rowid assigned by INSERT OR REPLACE for same-clock writes.
     pages.prepare("SELECT rowid FROM entries WHERE owner=? AND kind IN (4,5) "
-                  "ORDER BY saved_at DESC,kind DESC,rowid DESC");
+                  "ORDER BY saved_at DESC,rowid DESC");
     pages.addBindValue(m_owner);
     if (!pages.exec()) return {};
     QSqlQuery contents(m_database);
