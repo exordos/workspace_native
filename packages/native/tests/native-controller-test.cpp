@@ -31349,7 +31349,11 @@ private slots:
                 for (const auto &item : query.queryItems()) {
                     if (item.first != QLatin1String("uuid")) continue;
                     if (item.second == sourceA) rows.append(message("First source", sourceA));
-                    if (item.second == sourceB) rows.append(pollMessageDto(sourceB, 1, false));
+                    if (item.second == sourceB) {
+                        auto encrypted = message({}, sourceB);
+                        encrypted["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", sourceB}, {"content", "opaque"}};
+                        rows.append(encrypted);
+                    }
                 }
                 return Response{rows};
             }

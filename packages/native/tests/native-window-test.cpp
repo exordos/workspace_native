@@ -29488,14 +29488,16 @@ private slots:
         QTRY_VERIFY(qml("forwardTopicCombo")->property("enabled").toBool());
     }
 
-    // Review round 1, finding 4 (cid 4586012837): the reference keeps every
-    // server message selectable and rejects the whole batch with a visible
-    // reason when a source cannot build a snapshot (workspace_ui 75bd21f37
-    // workspace-message-list.ui.tsx:503 + workspace-forward-message.lib.ts:78-84).
-    // A mixed markdown+poll selection therefore confirms into an alert, not
-    // into a silently-truncated forward.
-    void forwardModalRejectsMixedBatchWithUnsupportedSources()
+    void forwardModalHandlesMixedPollAndUnsupportedSources_data()
     {
+        QTest::addColumn<bool>("supported");
+        QTest::newRow("text-and-poll") << true;
+        QTest::newRow("text-and-encrypted") << false;
+    }
+
+    void forwardModalHandlesMixedPollAndUnsupportedSources()
+    {
+        QFETCH(bool, supported);
         QTest::failOnWarning();
         ForwardWindowFixture fixture;
         const QString pollMessageId = QStringLiteral("9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e");
@@ -29516,9 +29518,16 @@ private slots:
                 {"voter_count", 0}, {"option_counts", QJsonObject{{optionOne, 0}, {optionTwo, 0}}}}}},
             {"my_votes", QJsonArray{}}};
         const auto inner = fixture.base.server.handler;
-        fixture.base.server.handler = [inner, &fixture, pollNote](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+        fixture.base.server.handler = [inner, &fixture, pollNote, supported](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                if (!supported && QUrlQuery(request.target).hasQueryItem("uuid")) {
+                    auto encrypted = pollNote;
+                    encrypted["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", pollNote["uuid"]}, {"content", "opaque"}};
+                    encrypted.remove("poll_state");
+                    return {QJsonArray{fixture.firstNote, encrypted}};
+                }
                 return {QJsonArray{fixture.firstNote, pollNote}};
+            }
             return inner(request);
         };
         QTemporaryDir directory;
@@ -29583,6 +29592,15 @@ private slots:
         QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
         click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
 
+        if (supported) {
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("opened").toBool(), 5000);
+            QCOMPARE(fixture.posts, 1);
+            const auto body = fixture.postedBody["payload"].toObject()["content"].toString();
+            QVERIFY(body.contains("urn:forward:" + messageId));
+            QVERIFY(body.contains("urn:forward:" + pollMessageId));
+            QVERIFY(body.contains("&format=plain"));
+            return;
+        }
         // The mixed batch is rejected with a visible reason and never posts a
         // silently-truncated snapshot; the dialog stays open for a retry.
         QTRY_VERIFY_WITH_TIMEOUT(qml("forwardErrorAlert")->property("visible").toBool(), 5000);
