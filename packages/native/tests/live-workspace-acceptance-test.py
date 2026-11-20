@@ -4,13 +4,15 @@
 import runpy
 import socket
 import socketserver
+import ssl
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from importlib.util import find_spec
 from pathlib import Path
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from live_acceptance_metrics import (
@@ -212,12 +214,45 @@ class Controls(unittest.TestCase):
             "password": "temporary",
             "project": "fixture",
         }
-        desktop.lookup.side_effect = runner["Blocked"]("preview-arrived")
+        desktop.lookup.side_effect = [Mock(), runner["Blocked"]("preview-arrived")]
         runner["Desktop"].login(desktop)
         self.assertEqual(
             desktop.click.call_args_list[:2],
             [call("organizationNextButton"), call("organizationNextButton")],
         )
+
+    def test_wrong_visible_organization_stops_before_submitting_credentials(self):
+        runner = runpy.run_path(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "scripts"
+                / "live-workspace-acceptance.py"
+            )
+        )
+        desktop = object.__new__(runner["Desktop"])
+        desktop.config = {
+            "origin": "https://fixture.invalid",
+            "username": "user",
+            "password": "temporary",
+            "project": "fixture",
+        }
+        desktop.fill = Mock()
+        desktop.lookup = Mock()
+        desktop.lookup.return_value.get_text_iface.return_value.get_text.return_value = (
+            "https://elsewhere.invalid"
+        )
+        desktop.click = Mock()
+
+        def until(predicate, reason, seconds=15):
+            if not predicate():
+                raise runner["Blocked"](reason)
+
+        desktop.until = until
+        desktop.authenticated = True
+        with self.assertRaisesRegex(runner["Blocked"], "^organization-field-mismatch$"):
+            desktop.login()
+        desktop.fill.assert_called_once_with("serverInput", desktop.config["origin"])
+        desktop.click.assert_not_called()
 
     def test_normal_workload_records_an_action_and_its_end(self):
         runner = runpy.run_path(
@@ -388,6 +423,59 @@ class Echo(socketserver.BaseRequestHandler):
 
 
 class NetworkControlTests(unittest.TestCase):
+    def test_runner_settings_probe_classifies_only_the_public_discovery_result(self):
+        from live_acceptance_network import probe_organization_settings
+
+        origin = "https://fixture.invalid:8443"
+        with patch("live_acceptance_network.http.client.HTTPSConnection") as factory:
+            connection = factory.return_value
+            response = connection.getresponse.return_value
+            response.status = 200
+            response.read.return_value = b'{"realm_name":"private display name"}'
+            self.assertEqual(probe_organization_settings(origin), "ready")
+            connection.request.assert_called_once_with(
+                "GET", "/api/workspace/v1/messenger/server_settings"
+            )
+            for status, body, expected in [
+                (302, b"redirect", "http-302"),
+                (503, b"private details", "http-503"),
+                (200, b"[]", "invalid-settings"),
+                (200, b"broken", "invalid-settings"),
+                (200, b" " * 65536 + b"{}", "invalid-settings"),
+            ]:
+                with self.subTest(expected=expected):
+                    response.status, response.read.return_value = status, body
+                    self.assertEqual(probe_organization_settings(origin), expected)
+            for error, expected in [
+                (socket.gaierror("private hostname"), "dns"),
+                (ssl.SSLError("private issuer"), "tls"),
+                (TimeoutError(), "timeout"),
+                (ConnectionRefusedError(), "connect"),
+            ]:
+                with self.subTest(expected=expected):
+                    connection.request.side_effect = error
+                    self.assertEqual(probe_organization_settings(origin), expected)
+            self.assertEqual(connection.close.call_count, 10)
+
+    def test_discovery_budget_includes_time_spent_waiting_for_settings(self):
+        from live_acceptance_network import probe_organization_settings
+
+        with patch(
+            "live_acceptance_network.SETTINGS_TIMEOUT", 0.05, create=True
+        ), patch("live_acceptance_network.http.client.HTTPSConnection") as factory:
+            response = factory.return_value.getresponse.return_value
+            response.status = 200
+
+            def delayed_settings(_):
+                time.sleep(0.25)
+                return b"{}"
+
+            response.read.side_effect = delayed_settings
+            self.assertEqual(
+                probe_organization_settings("https://fixture.invalid"), "timeout"
+            )
+            factory.return_value.close.assert_called_once()
+
     def test_shutdown_with_a_connected_client_waiting_for_the_backend(self):
         with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Echo) as endpoint:
             threading.Thread(target=endpoint.serve_forever, daemon=True).start()
