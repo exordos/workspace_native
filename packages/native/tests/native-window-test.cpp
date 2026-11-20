@@ -19994,7 +19994,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(viewer && !viewer->open());
         QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
         QCOMPARE(visibleItem(content, "mediaViewer-counter")->property("text").toString(), QString("1 / 2"));
@@ -20034,6 +20034,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
 
         wheel({}, QPoint(0, 120));
         QCOMPARE(image->scale(), 1.12);
@@ -20082,7 +20083,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // [64,189] and [1251,1376]) is a backdrop click and closes the viewer.
         QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(100, 450));
         QTRY_VERIFY(!viewer->open());
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
 
         // Click and keyboard navigation clamps without wrap-around.
@@ -20102,7 +20103,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
         // A thumbnail navigates; a backdrop click closes the overlay.
-        click(window, visibleItem(content, "inline-image-" + second));
+        clickActiveInlineImage(window, second);
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->index(), 1);
         QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-0"));
