@@ -821,10 +821,14 @@ env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- 
   ctest --test-dir build/headless -LE gui --parallel 12 --output-on-failure
 ```
 
-Pull requests build and run the 24 controller suites and the other headless groups on two independent runners. The quick-linux check reports their combined result. The local command above runs both sets together. The quick gate distributes the history and channel controller cases across two processes each, using the QtTest function/data inventory. CTest reserves two worker slots for each group. It
-distributes the encrypted-read suite across processes using its current QtTest
-function/data inventory. Its extra headless group runs
-the two 100 ms encrypted-read responsiveness checks with exclusive CTest access.
+Pull requests build the 24 controller suites on one runner and the other headless
+groups on a second runner. The `quick-linux` check reports their combined result.
+The local command above runs both sets together. The quick gate divides each
+of the history and channel controller suites between two processes. It runs the
+encrypted-read cases in ten processes. Each process receives complete functions
+from the QtTest inventory, including every data row. CTest reserves one worker
+slot per process. The two 100 ms encrypted-read responsiveness checks run in a
+separate group with exclusive access.
 The full configuration runs the original suites and retains the shared-display
 locks. Before tagging, run the full gate on the intended release commit. A
 manual **Linux release artifacts** workflow runs it on a private display. A

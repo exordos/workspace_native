@@ -582,11 +582,11 @@ if(BUILD_TESTING)
         set_tests_properties(native-native-e2ee-pulse PROPERTIES RUN_SERIAL TRUE TIMEOUT 45)
         add_test(NAME native-native-e2ee-read COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:native-e2ee-read-test>"
-            --jobs 6 --separate ${e2ee_pulse_cases})
+            --jobs 10 --separate ${e2ee_pulse_cases})
         # A fresh CI directory has no CTestCostData.txt. Start the longest
         # headless suite early so its TLS peer waits overlap other tests.
         # Charge each worker to the limit shared with the other CTest suites.
-        set_tests_properties(native-native-e2ee-read PROPERTIES COST 1000 PROCESSORS 6)
+        set_tests_properties(native-native-e2ee-read PROPERTIES COST 1000 PROCESSORS 10)
     else()
         add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
     endif()
