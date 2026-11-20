@@ -6,6 +6,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -28,6 +29,14 @@ if not qt.is_dir() or not openssl.is_dir():
 
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
+
+def pe_machine(image):
+    with image.open("rb") as stream:
+        stream.seek(0x3C)
+        stream.seek(struct.unpack("<I", stream.read(4))[0])
+        if stream.read(4) != b"PE\0\0":
+            raise ValueError(f"Invalid PE header in {image}")
+        return struct.unpack("<H", stream.read(2))[0]
 
 def install(name, source, destination, *options):
     tree = build / name
@@ -66,6 +75,14 @@ for driver in sql_drivers.glob("qsql*.dll" if windows else "libqsql*.dylib"):
 if windows:
     if not (stage / "bin/workspace-native.exe").is_file():
         sys.exit("The Windows package is missing its executable.")
+    if windows_arm64:
+        # The Microsoft ARM64 redist also carries an x64 companion for emulated apps.
+        companion = stage / "bin/vcruntime140_1.dll"
+        if companion.is_file() and pe_machine(companion) == 0x8664:
+            companion.unlink()
+        for image in stage.rglob("*"):
+            if image.suffix.lower() in {".exe", ".dll"} and pe_machine(image) != 0xAA64:
+                sys.exit(f"The Windows ARM64 archive contains a non-native image: {image}")
     shutil.make_archive(str(archive.with_suffix("")), "zip", stage)
 else:
     app = stage / "workspace-native.app"
