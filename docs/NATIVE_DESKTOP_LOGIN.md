@@ -37,12 +37,11 @@ exist (line 423); description mt-1 (4 px) text-sm `text-text-muted`, per-step
 key `auth.organizationStepHint` ("Enter your organization address first." /
 "Сначала укажите адрес вашей организации.").
 
-Deviation note (mapping, not restyle): the reference back row on the
-organization step navigates to the session-list home route. The native client
-has no separate home route - the saved-accounts list lives inside the login
-card - so the back affordance is rendered only from the credentials step,
-where it has an action (return to the organization step). Everything else is
-reproduced exactly.
+On the organization step, Back returns to the saved-account list when the
+device has remembered accounts. Add server reopens the address form. Later
+steps have an Organization link above the heading. The project and OTP forms
+also provide Back to return to credentials. Leaving project selection discards
+the prepared session and preserves the checked address and login name.
 
 Organization step form (lines 464-510), column gap 16 px:
 - FormField label `auth.serverUrl` ("Server address" / "Адрес сервера");

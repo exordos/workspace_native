@@ -15072,13 +15072,16 @@ mv -Tf "$root/.current-new" "$root/current"
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls_data()
     {
         QTest::addColumn<bool>("startup");
-        QTest::newRow("manual-continue") << false;
-        QTest::newRow("automatic-startup") << true;
+        QTest::addColumn<bool>("accountList");
+        QTest::newRow("manual-continue") << false << false;
+        QTest::newRow("automatic-startup") << true << false;
+        QTest::newRow("saved-account-list") << false << true;
     }
 
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls()
     {
         QFETCH(bool, startup);
+        QFETCH(bool, accountList);
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
         WindowSecrets backend;
@@ -15126,6 +15129,19 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *content = window->contentItem();
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "resume-" + saved.id), 1000);
         QCOMPARE(item(content, "remembered-label-" + saved.id)->property("text").toString(), saved.projectName);
+        auto *home = visibleItem(content, "savedAccountsBackButton");
+        QVERIFY(home);
+        click(window, home);
+        QTRY_VERIFY(visibleItem(content, "resume-" + saved.id));
+        QVERIFY(!visibleItem(content, "serverInput"));
+        QVERIFY(!controller.authenticated());
+        auto *add = visibleItem(content, "savedAccountsAddServer");
+        QVERIFY(add);
+        if (!accountList) {
+            click(window, add);
+            QTRY_VERIFY(visibleItem(content, "serverInput"));
+        }
+        QCOMPARE(controller.savedAccounts().size(), 1);
         backend.holdRead = true;
         backend.readError = SessionSecretStore::Error::Unavailable;
         if (startup) {
@@ -15135,9 +15151,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.busy());
         QVERIFY(!item(content, "resume-" + saved.id)->isEnabled());
         QVERIFY(!item(content, "forget-" + saved.id)->isEnabled());
-        QVERIFY(!item(content, "serverInput")->isEnabled());
+        if (!accountList) QVERIFY(!item(content, "serverInput")->isEnabled());
         backend.finishRead();
         QTRY_VERIFY(!controller.error().isEmpty());
+        QVERIFY(hasVisibleText(content, controller.error()));
         QVERIFY(!controller.authenticated());
         QCOMPARE(controller.savedAccounts().size(), 1);
         QCOMPARE(requests, 0);
@@ -17687,8 +17704,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("projectLoginButton"));
         QCOMPARE(controller.error(), QString());
         QVERIFY(!controller.authenticated());
-        // The wizard back affordance returns to the organization step.
-        click(window, item(content, "projectBackButton"));
+        auto *credentialsBack = visibleItem(content, "projectCredentialsBackButton");
+        QVERIFY(credentialsBack);
+        click(window, credentialsBack);
+        QTRY_VERIFY(visibleItem(content, "userInput"));
+        QCOMPARE(item(content, "userInput")->property("text").toString(), QString("synthetic-user"));
+        QCOMPARE(item(content, "passwordInput")->property("text").toString(), QString());
+        QCOMPARE(controller.organizationRealm(), server.origin().toString());
+        QCOMPARE(session.projects().size(), 0);
+        QVERIFY(!controller.authenticated());
+        // The top organization link still returns to address selection.
+        click(window, item(content, "loginBackButton"));
         QTRY_VERIFY(item(content, "serverInput"));
         QVERIFY(!controller.authenticated());
         window->close();
@@ -22121,6 +22147,38 @@ private:
         QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void composerHashPopupInsertsReferenceAndPastesKnownLink()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("references.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer);
+        click(window, composer);
+        QTest::keyClick(window, Qt::Key_NumberSign);
+        QTRY_VERIFY(mentionPopupVisible(window));
+        const auto rows = controller.composerReferences({});
+        QVERIFY(!rows.isEmpty());
+        const auto expected = rows.first().toMap().value("markdown").toString();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(controller.draft(), expected + " ");
+        const auto origin = fixture.server.origin();
+        const auto link = origin.toString() + "/org/" + orgRouteIdFromOrigin(origin) + "/project/" + projectId
+            + "/stream/" + rows.first().toMap().value("stream").toString();
+        QGuiApplication::clipboard()->setText(link);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        QTRY_COMPARE(controller.draft(), expected + " " + expected);
     }
 
     void composerMentionPopupInsertsDisambiguatedDuplicateNames()
@@ -34419,7 +34477,8 @@ private slots:
         controller.selectStream(streamId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *content = window->contentItem();
-        auto *chip = item(content, "message-time-" + TimestampWindowFixture::secondsId); QVERIFY(chip);
+        QQuickItem *chip = nullptr;
+        QTRY_VERIFY((chip = item(content, "message-time-" + TimestampWindowFixture::secondsId)));
         QVERIFY(chip->isVisible());
         const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
         const auto historyBefore = fixture.historyGets;
@@ -34466,12 +34525,49 @@ private slots:
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void messageTimePanelFollowsChipWhileHistoryScrolls()
+    {
+        NativeWindowScene scene;
+        QVERIFY(scene.exposeWindow());
+        auto *window = scene.window;
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        // Choose a visible chip with room to scroll one notch while keeping
+        // the reference's preferred placement above the trigger.
+        QQuickItem *chip = nullptr;
+        for (int i = 49; i >= 0; --i) {
+            auto *candidate = item(list, "message-time-" + NativeWindowScene::messageUuid(i));
+            if (!candidate)
+                continue;
+            const auto y = candidate->mapToItem(list, QPointF()).y();
+            if (y > 0.5 * list->height() && y < list->height() - 150) {
+                chip = candidate;
+                break;
+            }
+        }
+        QVERIFY(chip);
+        click(window, chip);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        const auto bottom = [panel] { return panel->property("y").toReal() + panel->property("height").toReal(); };
+        const auto chipY = [chip] { return chip->mapToScene(QPointF()).y(); };
+        QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
+        const auto before = chipY();
+        const auto wheelAt = list->mapToScene(QPointF(list->width() - 4, list->height() / 2));
+        QTest::wheelEvent(window, wheelAt, QPoint(0, 120));
+        QTRY_VERIFY(chipY() > before + 90);
+        QVERIFY(panel->property("visible").toBool());
+        QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
+        QTest::wheelEvent(window, wheelAt, QPoint(0, 1200));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeViewerOpensFromKeyboardAndTimeReference_data()
     {
         QTest::addColumn<QString>("scenario");
         QTest::newRow("enter") << QString("enter");
         QTest::newRow("space") << QString("space");
         QTest::newRow("reference") << QString("reference");
+        QTest::newRow("assistive-press") << QString("assistive-press");
     }
     void messageTimeViewerOpensFromKeyboardAndTimeReference()
     {
@@ -34515,10 +34611,20 @@ private slots:
         }
         // Reference contract: Enter/Space on the focused time element opens the
         // same viewer (workspace-message-body-interactions.hook.ts:490-496).
-        auto *chip = item(content, "message-time-" + TimestampWindowFixture::secondsId); QVERIFY(chip);
-        chip->forceActiveFocus(Qt::TabFocusReason);
-        QTRY_VERIFY(chip->hasActiveFocus());
-        QTest::keyClick(window, scenario == "enter" ? Qt::Key_Return : Qt::Key_Space);
+        QQuickItem *chip = nullptr;
+        QTRY_VERIFY((chip = item(content, "message-time-" + TimestampWindowFixture::secondsId)));
+        if (scenario == "assistive-press") {
+            auto *iface = QAccessible::queryAccessibleInterface(chip); QVERIFY(iface);
+            QCOMPARE(iface->role(), QAccessible::Button);
+            auto *actions = iface->actionInterface(); QVERIFY(actions);
+            const auto press = QAccessibleActionInterface::pressAction();
+            QVERIFY(actions->actionNames().contains(press));
+            actions->doAction(press);
+        } else {
+            chip->forceActiveFocus(Qt::TabFocusReason);
+            QTRY_VERIFY(chip->hasActiveFocus());
+            QTest::keyClick(window, scenario == "enter" ? Qt::Key_Return : Qt::Key_Space);
+        }
         auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY2(panel, "Keyboard trigger must open the read-only panel");
         QTRY_VERIFY(panel->property("visible").toBool());
         QCOMPARE(panel->property("width").toReal(), qreal(371));

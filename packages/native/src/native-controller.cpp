@@ -10733,10 +10733,10 @@ void NativeController::login(const QString &server, const QString &user,
     m_error.clear();
     m_notice.clear();
     m_uploads = m_downloads = 0;
-    m_startingWizardLogin = m_loginStep == QLatin1String("credentials");
+    m_preserveLoginWizard = m_loginStep == QLatin1String("credentials");
     const QPointer<NativeController> guard(this);
     m_session->login(QUrl::fromUserInput(server), user, password, otp);
-    if (guard) guard->m_startingWizardLogin = false;
+    if (guard) guard->m_preserveLoginWizard = false;
 }
 
 // Mirrors reference isValidRealmUrl (workspace_ui shared/lib/validation.ts):
@@ -11246,28 +11246,45 @@ void NativeController::submitOtp(const QString &otp)
     m_session->submitOtp(otp);
 }
 
+QString NativeController::loginUsername() const
+{
+    const auto name = m_session->loginName();
+    return name.isEmpty() ? m_previousLoginName : name;
+}
+
+void NativeController::leaveLoginStep(const QString &step)
+{
+    if (m_busy || authenticated())
+        return;
+
+    const QPointer<NativeController> guard(this);
+    if (m_loginStep == QLatin1String("project")) {
+        // Discard the prepared session. Keep the checked organization and login
+        // name so the user can choose another account without repeating discovery.
+        m_previousLoginName = m_session->loginName();
+        m_preserveLoginWizard = true;
+        m_session->detach();
+        if (!guard) return;
+        m_preserveLoginWizard = false;
+    } else if (m_loginStep == QLatin1String("otp")) {
+        m_session->cancelOtp();
+        if (!guard) return;
+    }
+    m_pendingOrganizationOrigin.clear();
+    m_error.clear();
+    m_loginStep = step;
+    emit stateChanged();
+}
+
 void NativeController::backToCredentials()
 {
-    if (m_busy || m_loginStep != QLatin1String("otp")) return;
-    m_session->cancelOtp();
-    m_error.clear();
-    m_loginStep = QStringLiteral("credentials");
-    emit stateChanged();
+    if (m_loginStep == QLatin1String("otp") || m_loginStep == QLatin1String("project"))
+        leaveLoginStep(QStringLiteral("credentials"));
 }
 
 void NativeController::backToOrganization()
 {
-    if (authenticated())
-        return;
-    // Issue #60: leaving the project step drops the not-yet-committed login,
-    // mirroring the reference discarding its prepared login; saved vault
-    // identities and any already-committed session stay untouched.
-    if (m_loginStep == QLatin1String("project"))
-        m_session->detach();
-    m_pendingOrganizationOrigin.clear();
-    m_error.clear();
-    m_loginStep = QStringLiteral("organization");
-    emit stateChanged();
+    leaveLoginStep(QStringLiteral("organization"));
 }
 
 void NativeController::selectDefaultOrganization()
@@ -11416,7 +11433,8 @@ void NativeController::reset()
     // A cold-start deep link is user intent captured before the session
     // settled; it survives login transitions and is consumed on apply.
     m_deepLinkFlushScheduled = false;
-    if (!m_startingWizardLogin) {
+    if (!m_preserveLoginWizard) {
+        m_previousLoginName.clear();
         ++m_deepLinkSerial;
         disconnect(m_profileLinkCacheDestroyed);
         m_profileLinkSelection.reset();

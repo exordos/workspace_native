@@ -546,7 +546,7 @@ ApplicationWindow {
     // ComposerMentionTrigger.REMINDER: "@query" only counts as a mention token at
     // a line start or after whitespace/punctuation, never inside "name@example".
     function composerMentionTokenBefore(caretText) {
-        return /(?:^|[\s([{,.:;!?])(@)(\S*)$/.exec(caretText);
+        return /(?:^|[\s([{,.:;!?])([@#])(\S*)$/.exec(caretText);
     }
     // WorkspaceAvatar fallback: first character of the display name, then of
     // the username, then "?" (message-composer-mention-dropdown.ui.tsx:78).
@@ -573,7 +573,9 @@ ApplicationWindow {
         composerMentionPopup.tokenStart = composerText.selectionStart - match[2].length - 1;
         // Positional snapshot: each keystroke replaces the whole array so no
         // delegate can dangle over a refreshed C++ candidate list.
-        composerMentionPopup.rows = root.controller.mentionSuggestions(match[2]);
+        composerMentionPopup.references = match[1] === "#";
+        composerMentionPopup.rows = composerMentionPopup.references
+            ? root.controller.composerReferences(match[2]) : root.controller.mentionSuggestions(match[2]);
         composerMentionPopup.activeIndex = 0;
         root.positionComposerMentionPopup();
         composerMentionPopup.open();
@@ -1460,6 +1462,30 @@ ApplicationWindow {
         messageTimePanel.open()
     }
 
+    // The history uses translated items. Reading each position makes this
+    // binding follow row layout and the Flickable's moving content item.
+    function messageTimeOffset(item, ancestor) {
+        let x = 0, y = 0
+        for (let node = item; node && node !== ancestor; node = node.parent) {
+            x += node.x
+            y += node.y
+        }
+        return Qt.point(x, y)
+    }
+    readonly property point messageTimeChipInList: messageTimeAnchor
+        ? messageTimeOffset(messageTimeAnchor, messageList) : Qt.point(0, 0)
+    readonly property bool messageTimeChipOffscreen: !!messageTimeAnchor
+        && (messageTimeChipInList.y >= messageList.height || messageTimeChipInList.y + messageTimeAnchor.height <= 0)
+    onMessageTimeChipOffscreenChanged: {
+        if (messageTimeChipOffscreen)
+            Qt.callLater(function() {
+                if (messageTimePanel.visible && root.messageTimeChipOffscreen) {
+                    root.messageTimeAnchor = null
+                    messageTimePanel.close()
+                }
+            })
+    }
+
     // Mirrors computeFloatingPickerPosition (floating-panel-position.lib.ts:1-46):
     // 8 px viewport margin, 8 px anchor gap, centered, prefer above, clamp.
     // The panel binds x/y to this so every open recomputes from the trigger.
@@ -1474,7 +1500,8 @@ ApplicationWindow {
         const anchor = root.messageTimeAnchor
         if (anchor == null)
             return Qt.point(margin, Math.max(margin, root.height - panelHeight - margin))
-        const origin = anchor.mapToItem(messageTimePanel.parent, 0, 0)
+        const listOrigin = messageTimeOffset(messageList, messageTimePanel.parent)
+        const origin = Qt.point(listOrigin.x + messageTimeChipInList.x, listOrigin.y + messageTimeChipInList.y)
         const maxLeft = Math.max(margin, root.width - panelWidth - margin)
         const x = Math.min(Math.max(margin, origin.x + anchor.width / 2 - panelWidth / 2), maxLeft)
         const topAbove = origin.y - panelHeight - gap
@@ -1587,6 +1614,8 @@ component NativeMentionChip: Item {
             // Quote frames and inline message anchors jump to the origin (source
             // workspace-message-quote.ui.tsx:353-397 onOpenMessage contract).
             root.controller.openMessageInChat(reference.id);
+        } else if (reference.kind === "stream" && root.controller.authenticated) {
+            root.controller.openStreamReference(reference.id);
         } else if (reference.kind === "topic" && root.controller.authenticated) {
             root.controller.openTopic(reference.id, reference.stream || "");
         } else if (reference.kind === "user" && root.controller.authenticated) {
@@ -1709,7 +1738,11 @@ component NativeMentionChip: Item {
 
     Item {
         id: loginCard
+        property bool showSavedAccounts: false
+        readonly property bool savedAccountsOnly: showSavedAccounts && root.controller.savedAccounts.length > 0
+            && root.controller.loginStep === "organization"
         visible: !root.controller.authenticated
+        onVisibleChanged: if (!visible) showSavedAccounts = false
         width: Math.min(root.width - 32, 448)
         height: Math.min(root.height - 32, loginContent.implicitHeight)
         anchors.centerIn: parent
@@ -1723,7 +1756,41 @@ component NativeMentionChip: Item {
                 id: loginContent
                 width: loginScroll.availableWidth
                 spacing: 24
+                ToolButton {
+                    id: wizardBack
+                    objectName: root.controller.loginStep === "organization" ? "savedAccountsBackButton"
+                        : root.controller.loginStep === "project" ? "projectBackButton" : "loginBackButton"
+                    visible: !loginCard.savedAccountsOnly && (root.controller.loginStep !== "organization"
+                        || root.controller.savedAccounts.length > 0)
+                    enabled: !root.controller.busy
+                    Layout.alignment: Qt.AlignLeft
+                    padding: 0
+                    spacing: 8
+                    font.pixelSize: 14
+                    text: root.controller.loginStep === "organization" ? qsTr("Back") : qsTr("Organization")
+                    contentItem: RowLayout {
+                        spacing: 8
+                        Image {
+                            source: "qrc:/workspace/icons/chevron-right.svg"
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            rotation: 180
+                            Accessible.ignored: true
+                        }
+                        Text {
+                            text: wizardBack.text
+                            color: root.colors["text-muted"]
+                            font.pixelSize: 14
+                        }
+                    }
+                    onClicked: {
+                        const returnToAccounts = root.controller.loginStep === "organization";
+                        root.controller.backToOrganization();
+                        loginCard.showSavedAccounts = returnToAccounts;
+                    }
+                }
                 ColumnLayout {
+                    visible: !loginCard.savedAccountsOnly
                     Layout.fillWidth: true
                     spacing: 4
                     Text {
@@ -1836,10 +1903,18 @@ component NativeMentionChip: Item {
                         }
                     }
                 }
+                NativeButton {
+                    objectName: "savedAccountsAddServer"
+                    visible: loginCard.savedAccountsOnly
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    text: qsTr("Add server")
+                    onClicked: loginCard.showSavedAccounts = false
+                }
                 Loader {
                     objectName: "organizationFormLoader"
                     visible: active
-                    active: root.controller.projects.length === 0
+                    active: !loginCard.savedAccountsOnly && root.controller.projects.length === 0
                         && root.controller.loginStep === "organization"
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
@@ -2030,7 +2105,7 @@ component NativeMentionChip: Item {
                 }
                 Loader {
                     objectName: "realmPreviewLoader"
-                    visible: active
+                    visible: active && !loginCard.savedAccountsOnly
                     active: Boolean((root.controller.organizationSettings.realmName || "").trim()
                         || root.controller.organizationSettings.realmIconUrl)
                     Layout.fillWidth: true
@@ -2089,14 +2164,6 @@ component NativeMentionChip: Item {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 12
-                        NativeButton {
-                            objectName: "loginBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
@@ -2331,14 +2398,6 @@ component NativeMentionChip: Item {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 16
-                        NativeButton {
-                            objectName: "projectBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
@@ -2427,14 +2486,6 @@ component NativeMentionChip: Item {
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
                         spacing: 16
-                        NativeButton {
-                            objectName: "projectBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            text: qsTr("Back")
-                            enabled: !root.controller.busy
-                            onClicked: root.controller.backToOrganization()
-                        }
                         Rectangle {
                             objectName: "noProjectsBanner"
                             Layout.fillWidth: true
@@ -2484,6 +2535,15 @@ component NativeMentionChip: Item {
                             }
                         }
                     }
+                }
+                NativeButton {
+                    objectName: "projectCredentialsBackButton"
+                    visible: root.controller.loginStep === "project"
+                    colors: root.colors
+                    Layout.fillWidth: true
+                    text: qsTr("Back")
+                    enabled: !root.controller.busy
+                    onClicked: root.controller.backToCredentials()
                 }
                 Text {
                     objectName: "organizationErrorBanner"
@@ -9451,17 +9511,21 @@ component NativeMentionChip: Item {
                             activeFocusOnTab: true
                             Accessible.role: Accessible.Button
                             Accessible.name: text
+                            function openViewer() {
+                                root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                            }
+                            Accessible.onPressAction: openViewer()
                             MouseArea {
                                 anchors.fill: parent
                                 anchors.margins: -2
                                 acceptedButtons: Qt.LeftButton
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                                onClicked: messageTime.openViewer()
                             }
                             Keys.onPressed: event => {
                                 if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
                                     event.accepted = true
-                                    root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                                    messageTime.openViewer()
                                 }
                             }
                         }
@@ -10775,11 +10839,11 @@ component NativeMentionChip: Item {
                                         const start = composerMentionPopup.tokenStart;
                                         if (start < 0 || !row || typeof row !== "object")
                                             return;
-                                        const visible = String(row.visibleText || row.displayName);
-                                        const next = text.slice(0, start) + "@" + visible
-                                            + " " + text.slice(selectionEnd);
-                                        const caret = start + 1 + visible.length + 1;
-                                        root.controller.recordMentionPick(String(row.userUuid));
+                                        const insertion = row.markdown || ("@" + String(row.visibleText || row.displayName));
+                                        const next = text.slice(0, start) + insertion + " " + text.slice(selectionEnd);
+                                        const caret = start + insertion.length + 1;
+                                        if (!row.markdown)
+                                            root.controller.recordMentionPick(String(row.userUuid));
                                         const owner = root.controller.ownStatusContextKey;
                                         const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
                                         root.controller.draft = next;
@@ -10837,10 +10901,18 @@ component NativeMentionChip: Item {
                                             return;
                                         }
                                         const editing = root.controller.editingMessageId.length > 0;
-                                        if (event.key === Qt.Key_V && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier))
-                                            && !(event.modifiers & (Qt.AltModifier | Qt.GroupSwitchModifier))
-                                            && (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments())) {
-                                            event.accepted = true;
+                                        if (event.matches(StandardKey.Paste)) {
+                                            if (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments()) {
+                                                event.accepted = true;
+                                                return;
+                                            }
+                                            const converted = root.controller.composerReferenceClipboardText();
+                                            if (converted.length) {
+                                                const at = selectionStart;
+                                                remove(at, selectionEnd);
+                                                insert(at, converted);
+                                                event.accepted = true;
+                                            }
                                         } else if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
                                             // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
                                             composerMentionPopup.close();
@@ -11447,9 +11519,10 @@ component NativeMentionChip: Item {
     Popup {
         id: composerMentionPopup
         objectName: "composerMentionPopup"
+        property bool references: false
         Connections {
             target: root.controller
-            enabled: composerMentionPopup.visible
+            enabled: composerMentionPopup.visible && !composerMentionPopup.references
             function onMentionMembershipChanged() {
                 const current = composerMentionPopup.rows[composerMentionPopup.activeIndex];
                 const rows = root.controller.mentionSuggestions(composerMentionPopup.query);
@@ -11512,18 +11585,19 @@ component NativeMentionChip: Item {
                             // WorkspaceAvatar size="sm": 32px circle, 12px initials,
                             // first character of the display name (username fallback).
                             Rectangle {
-                                Layout.preferredWidth: 32
-                                Layout.preferredHeight: 32
+                                Layout.preferredWidth: composerMentionPopup.references ? 28 : 32
+                                Layout.preferredHeight: composerMentionPopup.references ? 28 : 32
                                 Layout.alignment: Qt.AlignVCenter
-                                radius: 16
+                                radius: composerMentionPopup.references ? 4 : 16
                                 color: root.colors["bg"]
                                 Text {
                                     anchors.centerIn: parent
-                                    text: String(root.composerMentionInitials(mentionRow))
+                                    text: mentionRow.kind === "topic" ? "›" : String(root.composerMentionInitials(mentionRow))
                                     font.pixelSize: 12
                                     color: root.colors["text-primary"]
                                 }
                                 PresenceBadge {
+                                    visible: !composerMentionPopup.references
                                     presence: String(mentionRow.status || "")
                                 }
                             }
@@ -11568,7 +11642,8 @@ component NativeMentionChip: Item {
                                 Text {
                                     objectName: "composerMentionSecondary" + index
                                     Layout.fillWidth: true
-                                    text: mentionRow.username ? "@" + String(mentionRow.username)
+                                    text: composerMentionPopup.references ? String(mentionRow.secondary || "")
+                                        : mentionRow.username ? "@" + String(mentionRow.username)
                                         : String(mentionRow.email || "")
                                     visible: text.length > 0
                                     elide: Text.ElideRight

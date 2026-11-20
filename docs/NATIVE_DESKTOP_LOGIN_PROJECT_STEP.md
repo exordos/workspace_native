@@ -126,7 +126,7 @@ no projects are available" (581).
   notice banner `noProjectsBanner`, error banner `projectErrorBanner`.
   Selection preselects the linked project when present, else the first row.
   Submit is disabled until a selection exists and shows `Logging in…` while the
-  session is refreshing. The project step gets the wizard's "Back" affordance
+  session is refreshing. The project step gets the wizard's "Organization" affordance
   (back to the organization step, mirroring the reference back row).
 - The legacy `project-` button Repeater and the "Back to sign in" button leave
   the card; the title no longer flips to "Workspace"/"Choose a project" (the
@@ -138,9 +138,6 @@ no projects are available" (581).
   reference source at the cited sha uses the em dash " - " (U+2014). The source
   measurement wins (mirrored in tests through the reference test strings
   "Customer support - Example organization" style).
-- The reference renders the back affordance as a text row above the card for
-  every non-initial step; the native wizard keeps the established inline
-  NativeButton "Back" affordance inside the card (accepted precedent from #58/#59).
 - The reference "wrong account" rejection keeps the *prepared* login in memory
   (page-local state) and simply leaves it unusable; the native client drops the
   in-memory token of the rejected attempt via `Session::detach()` because a

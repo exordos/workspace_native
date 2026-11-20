@@ -513,7 +513,7 @@ public:
     // Login wizard organization step (docs/NATIVE_DESKTOP_LOGIN.md).
     QString loginStep() const { return m_loginStep; }
     QString projectPreselection() const;
-    QString loginUsername() const { return m_session->loginName(); }
+    QString loginUsername() const;
     QString organizationRealm() const { return m_organizationRealm; }
     bool organizationLoading() const { return m_organizationLoading; }
     QVariantMap organizationSettings() const { return m_organizationSettings; }
@@ -909,6 +909,10 @@ public:
     // name, then locale order; membership marks carry "outsideChannel".
     static QVariantList rankMentionSuggestions(const QString &query, const QVariantList &candidates,
         const MentionRankingContext &context);
+    Q_INVOKABLE QVariantList composerReferences(const QString &query) const;
+    QString replaceComposerReferenceLinks(const QString &text) const;
+    Q_INVOKABLE QString composerReferenceClipboardText() const;
+    Q_INVOKABLE void openStreamReference(const QString &id);
     Q_INVOKABLE QVariantList mentionSuggestions(const QString &query) const;
     Q_INVOKABLE bool composerMentionsEnabled() const;
     Q_INVOKABLE void recordMentionPick(const QString &userUuid);
@@ -2267,7 +2271,9 @@ private:
     quint64 m_nextConversationOpening = 0;
     QTimer m_anchorHighlight;
     QString m_error;
-    bool m_startingWizardLogin = false;
+    void leaveLoginStep(const QString &step);
+    bool m_preserveLoginWizard = false;
+    QString m_previousLoginName;
     QString m_loginStep = QStringLiteral("organization");
     QString m_organizationRealm;
     QString m_checkedOrganizationOrigin;
