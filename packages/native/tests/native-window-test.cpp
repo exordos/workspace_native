@@ -17245,6 +17245,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(title->property("font").value<QFont>().pixelSize(), 20);
             QCOMPARE(title->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
             QCOMPARE(field->width(), qreal(448));
+            QCOMPARE(item(content, "organizationNextButton")->height(), 36.);
             QVERIFY(hasVisibleText(content, locale == "en" ? QString("Server address") : QString("Адрес сервера")));
             QCOMPARE(field->property("placeholderText").toString(), QString("https://chat.example.com"));
             QCOMPARE(item(content, "organizationNextButton")->property("text").toString(),
@@ -17276,6 +17277,21 @@ mv -Tf "$root/.current-new" "$root/current"
             click(window, item(content, "organizationNextButton"));
             QTRY_VERIFY(visibleItem(content, "userInput"));
             const bool russian = locale == "ru";
+            auto *username = item(content, "userInput");
+            auto *password = item(content, "passwordInput");
+            auto *next = item(content, "signInButton");
+            QCOMPARE(item(content, "loginBackButton")->height(), 20.);
+            QCOMPARE(item(content, "realmPreviewCard")->height(), 102.);
+            QCOMPARE(username->height(), 46.);
+            QCOMPARE(password->height(), 46.);
+            QCOMPARE(username->property("font").value<QFont>().pixelSize(), 16);
+            QCOMPARE(QQmlProperty(username, "background.color").read().value<QColor>(),
+                     item(content, "realmPreviewCard")->property("color").value<QColor>());
+            QCOMPARE(next->height(), 36.);
+            const auto top = item(content, "loginBackButton")->mapToScene(QPointF()).y();
+            const auto bottom = next->mapToScene(QPointF(0, next->height())).y();
+            QVERIFY(std::abs(top - (content->height() - bottom)) <= 1.);
+            QCOMPARE(next->mapToScene(QPointF()).y() - password->mapToScene(QPointF(0, password->height())).y(), 22.);
             QVERIFY(hasVisibleText(content, russian ? QString("Email или логин") : QString("Email or login")));
             QCOMPARE(item(content, "userInput")->property("placeholderText").toString(),
                      russian ? QString("email@example.com или логин") : QString("email@example.com or login"));
@@ -17618,7 +17634,23 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!item(content, "passwordInput")->isVisible());
         QTRY_VERIFY(item(content, "otpInput")->hasActiveFocus());
         QVERIFY(!item(content, "otpConfirmButton")->isEnabled());
-        QCOMPARE(item(content, "otpInput")->height(), qreal(50));
+        auto *otp = item(content, "otpInput");
+        // The focused, still-empty field must paint its six-digit hint, outside the blinking caret.
+        auto paintsPlaceholder = [&] {
+            const auto pixels = window->grabWindow();
+            if (pixels.isNull()) return false;
+            const auto center = otp->mapToScene(QPointF(otp->width() / 2, otp->height() / 2));
+            const auto scale = pixels.devicePixelRatio();
+            const auto paper = pixels.pixelColor(qRound((center.x() - 65) * scale), qRound(center.y() * scale));
+            int ink = 0;
+            for (int y = -7; y <= 7; ++y)
+                for (int x = -37; x <= -6; ++x)
+                    if (pixels.pixelColor(qRound((center.x() + x) * scale), qRound((center.y() + y) * scale)) != paper)
+                        ++ink;
+            return ink > 8;
+        };
+        QTRY_VERIFY(paintsPlaceholder());
+        QCOMPARE(otp->height(), qreal(47));
         QCOMPARE(item(content, "otpConfirmButton")->height(), qreal(36));
         QCOMPARE(item(content, "otpBackButton")->height(), qreal(36));
         QVERIFY(item(content, "otpBackButton")->mapToScene(QPointF()).y()
@@ -17922,6 +17954,12 @@ mv -Tf "$root/.current-new" "$root/current"
             : QString("Choose the project you want to open."));
         QCOMPARE(item(content, "projectStepLabel")->property("text").toString(),
             locale == "ru" ? QString::fromUtf8("Проект") : QString("Project"));
+        auto *back = item(content, "projectCredentialsBackButton");
+        QVERIFY(back);
+        QCOMPARE(back->height(), 36.);
+        QCOMPARE(back->mapToScene(QPointF()).y() - item(content, "projectLoginButton")->mapToScene(QPointF(0, 36)).y(), 16.);
+        QTest::mouseMove(window, QPoint(2, 2));
+        QTRY_COMPARE(QQmlProperty(back, "background.color").read().value<QColor>().alpha(), 0);
         // The first project is preselected with the organization suffix (U+2014
         // separator, login-page-project-form.ui.tsx:46-56).
         auto *select = item(content, "projectSelect");
