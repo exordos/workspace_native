@@ -17968,6 +17968,34 @@ mv -Tf "$root/.current-new" "$root/current"
         // Select trigger geometry: h-10 px-3 rounded-lg (listbox.lib.ts:6-9).
         QCOMPARE(select->height(), qreal(40));
         QVERIFY(select->width() > 100);
+        const auto image = window->grabWindow().scaled(window->size());
+        QVERIFY(!image.isNull());
+        const auto muted = window->property("colors").value<QVariantMap>().value("text-muted").value<QColor>();
+        QVERIFY(muted.isValid());
+        const auto selectCenter = select->mapToScene(QPointF(select->width() - 20, select->height() / 2)).toPoint();
+        const auto *backLink = item(content, "projectBackButton");
+        QVERIFY(backLink);
+        const auto backCenter = backLink->mapToScene(QPointF(8, backLink->height() / 2)).toPoint();
+        auto tintedInk = [&](QPoint center) {
+            QRect bounds;
+            for (int y = -9; y <= 9; ++y) {
+                for (int x = -9; x <= 9; ++x) {
+                    const auto color = image.pixelColor(center + QPoint(x, y));
+                    if (qAbs(color.red() - muted.red()) < 32 && qAbs(color.green() - muted.green()) < 32
+                        && qAbs(color.blue() - muted.blue()) < 32)
+                        bounds |= QRect(x, y, 1, 1);
+                }
+            }
+            return bounds.size();
+        };
+        const auto downInk = tintedInk(selectCenter);
+        QVERIFY2(downInk.width() >= 12 && downInk.width() <= 16 && downInk.height() >= 6 && downInk.height() <= 9,
+            qPrintable(QString("Expected a muted, wide chevron, got %1×%2").arg(downInk.width()).arg(downInk.height())));
+        QVERIFY(tintedInk(backCenter).height() >= 12);
+        select->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(select->hasActiveFocus());
+        QCOMPARE(QQmlProperty(select, "background.border.color").read().value<QColor>(),
+                 QColor(window->property("colors").toMap().value("accent").toString()));
         QCOMPARE(QQmlProperty(select, "radius").read().toReal(), 8.);
         // Submit is enabled once a selection exists and shows the step copy
         // auth.login / auth.loginLoading.

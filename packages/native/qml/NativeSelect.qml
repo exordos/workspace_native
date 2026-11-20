@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
+import QtQuick.Controls.impl as ControlsImpl
 
 pragma ComponentBehavior: Bound
 
@@ -46,19 +46,16 @@ ComboBox {
         y: (control.height - height) / 2
         width: 16                                       // chevron-down size 16
         height: 16
-        Image {
-            anchors.fill: parent
+        ControlsImpl.ColorImage {
+            anchors.centerIn: parent
+            width: 16
+            height: 8
             source: "qrc:/workspace/icons/chevron-down.svg"
-            sourceSize.width: 16
-            sourceSize.height: 16
-            asynchronous: false
+            sourceSize: Qt.size(16, 8)
+            fillMode: Image.PreserveAspectFit
+            color: control.colors["text-muted"]
             rotation: control.popup.visible ? 180 : 0
             Behavior on rotation { NumberAnimation { duration: 100 } }
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                colorizationColor: control.colors["text-muted"]
-                colorization: 1.0
-            }
             Accessible.ignored: true
         }
     }
@@ -67,7 +64,7 @@ ComboBox {
         radius: control.radius                          // rounded-lg
         color: control.colors["text-field-bg"]
         border.width: 1
-        border.color: control.pressed || control.popup.visible
+        border.color: control.activeFocus || control.pressed || control.popup.visible
             ? control.colors.accent : control.colors["border-subtle"]
         opacity: control.enabled ? 1.0 : 0.5            // disabled:opacity-50
     }
