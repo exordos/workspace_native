@@ -4979,4 +4979,39 @@
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
     </context>
+    <context>
+        <name>NativeChannelTopics</name>
+        <message><source>General chat</source><translation>Общий чат</translation></message>
+        <message><source>Muted</source><translation>Без звука</translation></message>
+        <message><source>Followed</source><translation>Отслеживается</translation></message>
+        <message><source>Unmuted</source><translation>Со звуком</translation></message>
+        <message><source>Default</source><translation>По умолчанию</translation></message>
+        <message><source>Topics</source><translation>Темы</translation></message>
+        <message><source>Collapse topics</source><translation>Свернуть темы</translation></message>
+        <message><source>Expand topics</source><translation>Развернуть темы</translation></message>
+        <message><source>No topics</source><translation>Нет тем</translation></message>
+        <message><source>Topic notifications: %1</source><translation>Уведомления топика: %1</translation></message>
+        <message><source>Could not update the topic. Please try again.</source><translation>Не удалось обновить топик. Попробуйте ещё раз.</translation></message>
+        <message><source>Mark as read</source><translation>Отметить как прочитанное</translation></message>
+        <message><source>Rename topic</source><translation>Переименовать тему</translation></message>
+        <message><source>Mark topic as done</source><translation>Отметить топик завершённым</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+    </context>
+    <context>
+        <name>NativeTopicSummary</name>
+        <message><source>Topic context</source><translation>Контекст топика</translation></message>
+        <message><source>Open AI summary settings</source><translation>Открыть настройки AI-выжимки</translation></message>
+        <message><source>Collapse topic context</source><translation>Свернуть контекст топика</translation></message>
+        <message><source>Expand topic context</source><translation>Развернуть контекст топика</translation></message>
+        <message><source>The summary will appear after the messages are processed.</source><translation>Выжимка появится после обработки сообщений.</translation></message>
+        <message><source>There is no summary for this topic.</source><translation>Для этой темы пока нет выжимки.</translation></message>
+        <message><source>There are new messages that are not yet included in the summary.</source><translation>Есть новые сообщения, которые пока не вошли в выжимку.</translation></message>
+        <message><source>Automatic summary updates are disabled for this topic.</source><translation>Автоматическое обновление выжимки для этой темы отключено.</translation></message>
+        <message><source>AI summary settings</source><translation>Настройки AI-выжимки</translation></message>
+        <message><source>Automatic summary updates</source><translation>Автоматическое обновление выжимки</translation></message>
+        <message><source>Could not update the topic. Please try again.</source><translation>Не удалось обновить топик. Попробуйте ещё раз.</translation></message>
+        <message><source>Close</source><translation>Закрыть</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
+    </context>
 </TS>

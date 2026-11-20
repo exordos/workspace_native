@@ -76,6 +76,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
+#include <QTextCursor>
 #include <QTextOption>
 #include <QUrlQuery>
 #include <QWheelEvent>
@@ -2176,11 +2177,23 @@ struct ChannelInfoWindowScene {
     NativeController controller;
     QQmlApplicationEngine engine;
     QPointer<QQuickWindow> window;
-    explicit ChannelInfoWindowScene(bool streamOwner = true)
+    explicit ChannelInfoWindowScene(bool streamOwner = true, const QString &permission = {})
         : fixture(streamOwner), preferences(directory.filePath("channel-info.ini")),
           session(&api), controller(&api, &session)
     {
         QVERIFY(directory.isValid());
+        if (!permission.isEmpty()) {
+            const auto base = fixture.server.handler;
+            fixture.server.handler = [base, permission](const Request &request) {
+                auto response = base(request);
+                if (request.target.path().endsWith("/actions/introspect")) {
+                    auto identity = response.data.toObject();
+                    identity["permissions"] = QJsonArray{permission};
+                    response.data = identity;
+                }
+                return response;
+            };
+        }
         preferences.setLocale("en");
         loadNativeUi(engine, &controller, &preferences);
         window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -22301,6 +22314,181 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(signOut->mapToScene(QPointF{}), position);
         click(scene.window, signOut);
         QTRY_VERIFY(!scene.controller.authenticated());
+    }
+
+    void channelInfoTopicRowsNavigateAndCollapse()
+    {
+        ChannelInfoWindowScene scene;
+        auto item = windowChannelTopic(secondTopicId, streamId, "");
+        item["is_default"] = false;
+        item["notification_mode"] = "mute";
+        item["passive_unread_count"] = 1203;
+        item["unread_count"] = 1203;
+        item["kind"] = "topic.created";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        auto mention = message("A synthetic mention", messageId, secondTopicId);
+        mention["kind"] = "message.created";
+        mention["author_uuid"] = channelPeer;
+        mention["is_own"] = false;
+        mention["read"] = false;
+        mention["mentioned"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", mention}}));
+        scene.openChannelInfo();
+        auto *toggle = visibleItem("channelTopicsToggle");
+        QVERIFY(toggle);
+        auto *row = visibleItem("channelTopicRow-" + secondTopicId);
+        QVERIFY(row);
+        QVERIFY(visibleItem("channelTopicMention-" + secondTopicId));
+        QCOMPARE(QQmlProperty(toggle, "Accessible.name").read().toString(), QString("Collapse topics"));
+        QCOMPARE(QQmlProperty(row, "Accessible.description").read().toString(), QString("Topic notifications: Muted"));
+        QCOMPARE(visibleItem("channelTopicTitle-" + secondTopicId)->property("font").value<QFont>().italic(), true);
+        QVERIFY(visibleItem("channelTopicBell-" + secondTopicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        QCOMPARE(scene.text("channelTopicUnread-" + secondTopicId), QString("1k+"));
+        click(scene.window, toggle);
+        QVERIFY(!visibleItem("channelTopicRow-" + secondTopicId));
+        QCOMPARE(QQmlProperty(toggle, "Accessible.name").read().toString(), QString("Expand topics"));
+        click(scene.window, toggle);
+        row = visibleItem("channelTopicRow-" + secondTopicId);
+        QVERIFY(row);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier, row->mapToScene(QPointF(12, 15)).toPoint());
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        click(scene.window, row);
+        QTRY_COMPARE(scene.controller.selectedTopic(), secondTopicId);
+    }
+
+    void channelInfoSummaryFollowsSelectedTopicAndPermission_data()
+    {
+        QTest::addColumn<bool>("owner");
+        QTest::addColumn<QString>("permission");
+        QTest::addColumn<bool>("gear");
+        QTest::newRow("channel-owner") << true << QString() << true;
+        QTest::newRow("ordinary-member") << false << QString() << false;
+        QTest::newRow("project-settings") << false << QString("workspace.topic_summary_settings.manage") << true;
+        QTest::newRow("project-endpoint") << false << QString("workspace.topic_summary_endpoint.manage") << true;
+        QTest::newRow("lookalike-permission") << false << QString("workspace.topic_summary_endpoint.read") << false;
+    }
+
+    void channelInfoSummaryFollowsSelectedTopicAndPermission()
+    {
+        QFETCH(bool, owner);
+        QFETCH(QString, permission);
+        QFETCH(bool, gear);
+        ChannelInfoWindowScene scene(owner, permission);
+        const bool russian = permission.endsWith("manage");
+        scene.preferences.setLocale(russian ? "ru" : "en");
+        scene.preferences.setMode(russian ? "dark" : "light");
+        auto item = windowChannelTopic(topicId, streamId, "General");
+        item["kind"] = "topic.updated";
+        item["summary"] = "**Synthetic** summary";
+        item["summary_enabled"] = false;
+        item["summary_has_new_messages"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        scene.openChannelInfo();
+        auto *text = visibleItem("channelTopicSummaryMarkdown");
+        QVERIFY(text);
+        QTextDocument rendered;
+        rendered.setHtml(text->property("text").toString());
+        QCOMPARE(rendered.toPlainText().trimmed(), QString("Synthetic summary"));
+        QVERIFY(rendered.find("Synthetic").charFormat().fontWeight() > QFont::Normal);
+        QVERIFY(visibleItem("channelTopicSummaryStale"));
+        QVERIFY(visibleItem("channelTopicSummaryDisabled"));
+        QCOMPARE(bool(visibleItem("channelTopicSummarySettings")), gear);
+        if (gear) {
+            click(scene.window, visibleItem("channelTopicSummarySettings"));
+            QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+            QCOMPARE(visibleItem("channelTopicSummaryEnabled")->isEnabled(), owner);
+            QTest::keyClick(scene.window, Qt::Key_Escape);
+        }
+        item["summary"] = QJsonValue(QJsonValue::Null);
+        item["summary_enabled"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        QTRY_COMPARE(scene.text("channelTopicSummaryEmpty"), russian
+            ? QString("Выжимка появится после обработки сообщений.")
+            : QString("The summary will appear after the messages are processed."));
+        QVERIFY(!visibleItem("channelTopicSummaryStale"));
+    }
+
+    void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
+    {
+        ChannelInfoWindowScene scene;
+        auto dto = windowChannelTopic(topicId, streamId, "General Topic");
+        dto["summary_enabled"] = true;
+        int mutations = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.contains("/stream_topics/" + topicId + "/actions/")) {
+                ++mutations;
+                if (path.endsWith("/notifications/invoke") && request.body == QJsonObject{{"notification_mode","mute"}})
+                    dto["notification_mode"] = "mute";
+                else if (path.endsWith("/set_summary_prompt/invoke") && request.body == QJsonObject{{"summary_enabled",false}})
+                    dto["summary_enabled"] = false;
+                else return {QJsonObject{}, 400};
+                return {dto};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        auto *row = visibleItem("channelTopicRow-" + topicId);
+        QVERIFY(row);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier, row->mapToScene(QPointF(12, 15)).toPoint());
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
+        click(scene.window, visibleItem("channelTopicMuteAction"));
+        QTRY_COMPARE(mutations, 1);
+        QTRY_VERIFY(visibleItem("channelTopicBell-" + topicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(mutations, 2);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+        click(scene.window, visibleItem("channelTopicSummaryToggle"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryDisabled"));
+    }
+
+    void channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending()
+    {
+        ChannelInfoWindowScene scene;
+        auto dto = windowChannelTopic(topicId, streamId, "General Topic");
+        std::function<void()> release;
+        int writes = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().contains("/stream_topics/" + topicId + "/actions/")) {
+                ++writes;
+                if (request.target.path().endsWith("/notifications/invoke")) {
+                    dto["notification_mode"] = "mute";
+                    Response response{dto};
+                    response.defer = [&](auto finish) { release = std::move(finish); };
+                    return response;
+                }
+                dto["summary_enabled"] = false;
+                return {dto};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        scene.controller.applyChannelTopicAction(topicId, "notifications", "mute");
+        QTRY_VERIFY(bool(release));
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save);
+        const bool retryable = save->isEnabled();
+        release();
+        QCOMPARE(writes, 1);
+        QVERIFY2(retryable, "a competing topic request left the settings form permanently pending");
+        QTRY_VERIFY(visibleItem("channelTopicBell-" + topicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        click(scene.window, save);
+        QTRY_COMPARE(writes, 2);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySave"));
     }
 
     void windowChannelInfoHeaderSummary()

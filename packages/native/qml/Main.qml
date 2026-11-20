@@ -115,6 +115,7 @@ ApplicationWindow {
         onFavoritesActiveChanged: if (favoritesActive) rightDrawer.close()
         NativeChannelInfo {
             id: channelInfoLayer
+            onReferenceActivated: link => root.openReference(link)
             objectName: "channelInfoLayer"
             colors: root.colors
             controller: root.controller
