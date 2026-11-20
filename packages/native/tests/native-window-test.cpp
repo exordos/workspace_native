@@ -9624,6 +9624,8 @@ mv -Tf "$root/.current-new" "$root/current"
         }
         QMap<QString, QList<std::function<void()>>> pending;
         std::function<void()> releaseUsers;
+        QList<std::function<void()>> releaseTopicPages;
+        bool holdTopicPages = true;
         server.handler = [&](const Request &request) {
             const auto path = request.target.path();
             if (path.endsWith("/users/")) {
@@ -9634,8 +9636,13 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/streams/")) return Response{streams};
             if (path.endsWith("/streams/" + streamId)) return Response{streams[0]};
             if (path.endsWith("/streams/" + otherStream)) return Response{streams[1]};
-            if (path.endsWith("/stream_topics/"))
-                return Response{QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream ? otherTopics : firstTopics};
+            if (path.endsWith("/stream_topics/")) {
+                const bool second = QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream;
+                Response response{second ? otherTopics : firstTopics};
+                if (second && holdTopicPages)
+                    response.defer = [&](auto send) { releaseTopicPages.append(std::move(send)); };
+                return response;
+            }
             if (path.endsWith("/messages/")) {
                 const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
                 if (topic.isEmpty()) return Response{QJsonArray{}};
@@ -9671,6 +9678,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(status->property("text").toString(), QString("Showing saved messages · Updating…"));
         clickCurrentItem(window, "stream-" + otherStream);
         QTRY_VERIFY(item(content, "topic-" + secondTopicId));
+        // Select the cached topic while its server catalog is still in flight.
+        QTRY_VERIFY(!releaseTopicPages.isEmpty());
         clickCurrentItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!pending.value(secondTopicId).isEmpty());
         QTRY_COMPARE(controller.messages().size(), 0);
@@ -9684,6 +9693,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(controller.messages().size(), 0);
         QCOMPARE(status->property("text").toString(), QString("Showing saved chats · Updating…"));
         for (const auto &send : std::as_const(pending[secondTopicId])) send();
+        holdTopicPages = false;
+        for (const auto &send : std::as_const(releaseTopicPages)) send();
         releaseUsers();
         QTRY_VERIFY(!controller.cacheStale());
         QTRY_VERIFY(!status->isVisible());
