@@ -9,12 +9,16 @@ public class ShellProbe {
  [StructLayout(LayoutKind.Sequential)] public struct IconId { public uint cbSize; public IntPtr hWnd; public uint id; public Guid guid; }
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cl,string title);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr root,IntPtr prev,string cl,string title);
+ [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,EnumWin func,IntPtr arg);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder buf,int len);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
  [DllImport("shell32.dll")] public static extern int Shell_NotifyIconGetRect(ref IconId id,out Rect r);
  public static void Inventory(int pid) {
+  var fg=GetForegroundWindow();uint fgpid;GetWindowThreadProcessId(fg,out fgpid);
+  var cl=new StringBuilder(100);GetClassName(fg,cl,100);
+  Console.WriteLine("Foreground class "+cl+" process "+ System.Diagnostics.Process.GetProcessById((int)fgpid).ProcessName);
   var tray=FindWindow("Shell_TrayWnd",null);
   Console.WriteLine("Explorer taskbar " + tray);
   EnumChildWindows(tray,(h,arg)=>{var name=new StringBuilder(100);GetClassName(h,name,100);Rect r;GetWindowRect(h,out r);Console.WriteLine("TASKBAR "+name+" "+r.left+","+r.top+","+r.right+","+r.bottom);return true;},IntPtr.Zero);
