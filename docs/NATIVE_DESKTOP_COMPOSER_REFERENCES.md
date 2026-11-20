@@ -7,7 +7,8 @@ click inserts a Markdown link followed by a space. Topic labels use the
 separator ` › `. Brackets and backslashes in labels are escaped.
 
 Pasting a link to a known stream or topic from this Workspace inserts the same
-Markdown link. Other text and trailing punctuation stay in the draft. A
+Markdown link. Existing Markdown link destinations keep their labels and URLs.
+Surrounding quotation marks, brackets and trailing punctuation stay in the draft. A
 different server, project or stream cannot supply a label from the current
 conversation. The picker reads the local catalog without additional requests.
 

@@ -61,8 +61,12 @@ QString NativeController::replaceComposerReferenceLinks(const QString &text) con
     qsizetype cursor = 0;
     while (matches.hasNext()) {
         const auto match = matches.next();
+        auto start = match.capturedStart();
+        if (start > 0 && text.at(start - 1) == '<') --start;
+        while (start > 0 && text.at(start - 1).isSpace()) --start;
+        if (start >= 2 && QStringView(text).mid(start - 2, 2) == QLatin1String("](")) continue;
         auto candidate = match.capturedView();
-        while (!candidate.isEmpty() && QStringLiteral(".,!?;:").contains(candidate.back())) candidate.chop(1);
+        while (!candidate.isEmpty() && QStringLiteral(".,!?;:\"']”’»").contains(candidate.back())) candidate.chop(1);
         const QUrl url(candidate.toString(), QUrl::StrictMode);
         if (!url.isValid() || !url.userInfo().isEmpty()) continue;
         if (url.scheme() == QLatin1String("ew")) {

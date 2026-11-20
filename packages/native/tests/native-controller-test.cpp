@@ -24708,6 +24708,30 @@ private slots:
         QCOMPARE(f.controller.replaceComposerReferenceLinks(links), streamMd + ", " + topicMd + "! " + foreign + " " + unknown);
     }
 
+    void pasteWorkspaceLinkBoundaries_data()
+    {
+        QTest::addColumn<QString>("input");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("markdown-destination") << QStringLiteral("[custom](URL)") << QStringLiteral("[custom](URL)");
+        QTest::newRow("angle-destination") << QStringLiteral("[custom](<URL>)") << QStringLiteral("[custom](<URL>)");
+        QTest::newRow("spaced-destination") << QStringLiteral("[custom]( URL )") << QStringLiteral("[custom]( URL )");
+        QTest::newRow("quoted") << QStringLiteral("\"URL\"") << QStringLiteral("\"MD\"");
+        QTest::newRow("bracketed") << QStringLiteral("[URL]") << QStringLiteral("[MD]");
+    }
+
+    void pasteWorkspaceLinkBoundaries()
+    {
+        QFETCH(QString, input);
+        QFETCH(QString, expected);
+        Fixture f;
+        QVERIFY(f.start());
+        const auto url = f.server.origin().toString() + "/org/" + orgRouteIdFromOrigin(f.server.origin())
+            + "/project/" + projectId + "/stream/" + streamId;
+        const auto stream = f.controller.composerReferences({}).first().toMap().value("markdown").toString();
+        QCOMPARE(f.controller.replaceComposerReferenceLinks(input.replace("URL", url)),
+            expected.replace("URL", url).replace("MD", stream));
+    }
+
     void mentionRankTriggerRequiresBoundaryBeforeAt()
     {
         // ComposerMentionTrigger.REMINDER in the reference: a mention token only
