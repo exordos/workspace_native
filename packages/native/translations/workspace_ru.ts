@@ -999,6 +999,18 @@
             <translation>Ключи хранятся на устройстве. Для разных периодов истории могут понадобиться разные ключи.</translation>
         </message>
         <message>
+            <source>Message text and all links within it are protected by end-to-end encryption.</source>
+            <translation>Текст сообщений и все ссылки внутри них защищены сквозным шифрованием.</translation>
+        </message>
+        <message>
+            <source>Images, videos, and files are stored without end-to-end encryption and can be accessed by the server and storage.</source>
+            <translation>Изображения, видео и файлы хранятся без сквозного шифрования и доступны серверу и хранилищу.</translation>
+        </message>
+        <message>
+            <source>To open an attachment from the chat, you need to decrypt the message containing its link.</source>
+            <translation>Чтобы открыть вложение из чата, нужно расшифровать сообщение со ссылкой на него.</translation>
+        </message>
+        <message>
             <source>New key announced</source>
             <translation>Объявлен новый ключ</translation>
         </message>
