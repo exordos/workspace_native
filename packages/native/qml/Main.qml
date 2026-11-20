@@ -2031,9 +2031,8 @@ component NativeMentionChip: Item {
                 Loader {
                     objectName: "realmPreviewLoader"
                     visible: active
-                    active: root.controller.projects.length === 0
-                        && Boolean((root.controller.organizationSettings.realmName || "").trim()
-                            || root.controller.organizationSettings.realmIconUrl)
+                    active: Boolean((root.controller.organizationSettings.realmName || "").trim()
+                        || root.controller.organizationSettings.realmIconUrl)
                     Layout.fillWidth: true
                     sourceComponent: Rectangle {
                         objectName: "realmPreviewCard"
@@ -2073,7 +2072,7 @@ component NativeMentionChip: Item {
                                 visible: text.trim().length > 0
                                 textFormat: Text.PlainText
                                 color: root.colors["text-primary"]
-                                font.pixelSize: 16
+                                font.pixelSize: 14
                                 font.weight: Font.Medium
                                 wrapMode: Text.Wrap
                                 horizontalAlignment: Text.AlignHCenter

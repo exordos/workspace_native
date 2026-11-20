@@ -17051,7 +17051,12 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "organizationNextButton"));
         QTRY_VERIFY(visibleItem(content, "userInput"));
         QCOMPARE(visibleItem(content, "realmPreviewCard") != nullptr, hasName);
-        if (hasName) QVERIFY(hasVisibleText(content, "Example organization"));
+        if (hasName) {
+            auto *name = visibleItem(content, "realmPreviewName");
+            QVERIFY(name);
+            QCOMPARE(name->property("text").toString(), QString("Example organization"));
+            QCOMPARE(name->property("font").value<QFont>().pixelSize(), 14);
+        }
         window->close();
     }
 
@@ -17535,6 +17540,8 @@ mv -Tf "$root/.current-new" "$root/current"
         item(content, "passwordInput")->setProperty("text", "synthetic-password");
         click(window, item(content, "signInButton"));
         QTRY_VERIFY(item(content, "projectSelect"));
+        QVERIFY(visibleItem(content, "realmPreviewCard"));
+        QVERIFY(hasVisibleText(content, "Acme Realm"));
         // Step hint and the FormField label (auth.projectStepHint, auth.selectProject).
         QCOMPARE(item(content, "loginDescription")->property("text").toString(), locale == "ru"
             ? QString::fromUtf8("Выберите проект, который хотите открыть.")
