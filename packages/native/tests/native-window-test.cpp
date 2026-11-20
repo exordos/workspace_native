@@ -34054,6 +34054,10 @@ private slots:
         QVERIFY(body);
         const QString html = body->property("text").toString();
         QVERIFY2(html.contains(QStringLiteral(">@Alice<")), qPrintable(html));
+        // Reference chip style: accent colour + medium weight, no underline.
+        QVERIFY2(html.contains(QStringLiteral("#7087ff")), qPrintable(html));
+        QVERIFY2(html.contains(QStringLiteral("font-weight:500")), qPrintable(html));
+        QVERIFY2(!html.contains(QStringLiteral("underline")), qPrintable(html));
         QVERIFY2(html.contains(QStringLiteral(">Note<")), qPrintable(html));
         QVERIFY(!html.contains(QStringLiteral(">@Note<")));
         QVERIFY(html.contains(QStringLiteral("@Ghost")));

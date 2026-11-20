@@ -1507,7 +1507,7 @@ ApplicationWindow {
         const accent = String(root.colors["accent"] || "#7087ff");
         return String(html).replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
             function (whole, head, tail) {
-                return head + " color:" + accent + "; font-weight:500;" + tail;
+                return head + " color:" + accent + "; font-weight:500; text-decoration:none;" + tail;
             });
     }
 
