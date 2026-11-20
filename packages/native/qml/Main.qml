@@ -7704,9 +7704,11 @@ ApplicationWindow {
                             return [];
                         const width = messageBody.width, height = messageBody.height;
                         const runs = [];
+                        let probes = 0;
                         for (let y = 1; y < height; y += 3) {
                             let run = null;
                             for (let x = 1; x < width; x += 3) {
+                                probes += 1;
                                 const href = String(messageBody.linkAt(x, y) || "");
                                 if (href.indexOf("urn:user:") === 0) {
                                     if (run === null) run = { urn: href, firstX: x, lastX: x, y: y };
@@ -7729,13 +7731,15 @@ ApplicationWindow {
                                 rects.push({ urn: run.urn, y: run.y, bottom: run.y, firstX: run.firstX, lastX: run.lastX });
                             }
                         }
-                        return rects.map(rect => ({
+                        const result = rects.map(rect => ({
                             urn: rect.urn,
                             x: Math.max(0, rect.firstX - 2),
                             y: Math.max(0, rect.y - 5),
                             w: Math.max(4, Math.min(width, rect.lastX + 2) - Math.max(0, rect.firstX - 2)),
                             h: rect.bottom - rect.y + 12
                         }));
+                        messageBody.linkAtProbes = probes;
+                        return result;
                     }
                     function imagePartHtml(part, index) {
                         const html = root.mentionChipHtml(String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;'));
@@ -8707,6 +8711,11 @@ ApplicationWindow {
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
                                 palette.link: root.colors.accent
                                 onLinkActivated: link => root.openReference(link)
+                                // Test seam (issue #109 review F6): counts the
+                                // linkAt samples the mention locator performs
+                                // for this body, so window cases can assert
+                                // the locator's work stays bounded.
+                                property int linkAtProbes: 0
                                 // Issue #109: transparent per-mention hit
                                 // targets aligned with the rich-text anchors
                                 // (see docs/NATIVE_DESKTOP_MENTION_CHIPS.md).
