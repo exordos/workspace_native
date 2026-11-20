@@ -340,7 +340,8 @@ if(BUILD_TESTING)
         endif()
         if(test STREQUAL "native-locale")
             target_compile_definitions(${test}-test PRIVATE
-                WORKSPACE_NATIVE_LUPDATE_EXECUTABLE="${WORKSPACE_NATIVE_LUPDATE}")
+                WORKSPACE_NATIVE_LUPDATE_EXECUTABLE="${WORKSPACE_NATIVE_LUPDATE}"
+                WORKSPACE_NATIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         endif()
         if(test STREQUAL "native-chat-crypto")
             target_compile_definitions(${test}-test PRIVATE
