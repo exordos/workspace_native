@@ -82,7 +82,7 @@ jobs:
           set -euo pipefail
           apt-get update
           apt-get install --no-install-recommends -y \
-            ca-certificates git build-essential binutils pkg-config python3 \
+            ca-certificates git build-essential binutils pkg-config python3 python3-yaml \
             cmake ninja-build patchelf gh nodejs qt6-base-dev qt6-image-formats-plugins \
             qt6-declarative-dev qt6-svg-dev qt6-svg-plugins qt6-websockets-dev qt6-l10n-tools \
             qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev qt6-multimedia-dev \
@@ -115,6 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 packages/native/tests/linux-installer-test.py -v
+          python3 packages/native/tests/platform-package/test-workflow-paths.py -v
           python3 packages/native/tests/linux-package-test.py -v
           python3 packages/native/tests/release-notes-test.py -v
           python3 packages/native/tests/matched-screenshot-acceptance-test.py -v

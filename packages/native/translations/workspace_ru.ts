@@ -2885,6 +2885,10 @@
     <context>
         <name>workspace::NativeDesktop</name>
         <message>
+            <source>Unread messages</source>
+            <translation>Непрочитанные сообщения</translation>
+        </message>
+        <message>
             <source>Check for updates</source>
             <translation>Проверить обновления</translation>
         </message>
