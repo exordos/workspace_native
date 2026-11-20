@@ -35097,8 +35097,8 @@ private slots:
                 .arg(hrefAtChip.isEmpty() ? QStringLiteral("plain text") : hrefAtChip);
         // Clicking the plain copy opens nothing.
         if (copyRect.isValid() && copyRect.width() > 0) {
-            const auto copyScene = chip->mapToScene(QPointF(0, 0))
-                + body->mapToScene(copyRect.center());
+            const auto copyScene = body->mapToScene(copyRect.center());
+            QVERIFY(QRectF(0, 0, window->width(), window->height()).contains(copyScene));
             QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, copyScene.toPoint());
             QTest::qWait(400);
             if (visibleItem("profileLayer"))
