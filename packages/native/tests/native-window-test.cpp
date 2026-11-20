@@ -1523,6 +1523,7 @@ public:
     QJsonObject lastSettings;
     std::function<void()> releaseManagement;
     bool secondPollOnPage = false;
+    QJsonArray replies;
     // Poll config (reference defaults per the polls contract).
     bool multipleAnswers = true;
     bool anonymous = false;
@@ -1725,6 +1726,7 @@ public:
                 return {QJsonArray{QJsonObject{{"uuid", userId}, {"username", QStringLiteral("cassi")}}}};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 QJsonArray rows{row()};
+                for (const auto &reply : replies) rows.append(reply);
                 if (secondPollOnPage)
                     rows.append(row(messageUuidTwo, QStringLiteral("Where?")));
                 return {rows};
@@ -29254,6 +29256,55 @@ QTRY_VERIFY(create->property("enabled").toBool());
         return prefix + "-" + messageUuid;
     }
 
+    void pollQuoteFrameAndComposerRenderPlainText_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void pollQuoteFrameAndComposerRenderPlainText()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        PollBubbleScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.fixture.closesAt.clear();
+        const auto id = scene.fixture.messageUuid;
+        const auto quotedId = scene.fixture.messageUuidTwo;
+        const QString selectedId = "8d000000-0000-4000-8000-000000000003";
+        scene.fixture.addedOptions.append({pollBubbleOptionThree, "**Office**"});
+        scene.fixture.replies.append(message("[Peer](urn:quote:" + id + ")\n\nAnswer", quotedId));
+        scene.fixture.replies.append(message("[Peer](urn:quote:" + id + "?text=Monday)\n\nAnswer", selectedId));
+        scene.start();
+        const QString expected = "Which day?\n• Monday\n• Tuesday\n• **Office**";
+        auto *content = scene.content();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(content, "quotePlainText-" + quotedId), 2000);
+        auto *plain = visibleItem(content, "quotePlainText-" + quotedId);
+        QCOMPARE(plain->property("text").toString(), expected);
+        QCOMPARE(plain->property("textFormat").toInt(), int(Qt::PlainText));
+        auto *selection = visibleItem(content, "quotePlainText-" + selectedId);
+        QVERIFY(selection);
+        QCOMPARE(selection->property("text").toString(), QString("Monday"));
+        QVERIFY(!visibleItem(content, "quoteBodyHtml-" + quotedId));
+        auto *bubble = visibleItem(content, "message-" + id);
+        QVERIFY(bubble);
+        QTest::mouseMove(scene.window, QPoint(5, 5));
+        bubble->forceActiveFocus(Qt::TabFocusReason);
+        const auto replyButton = [&] { return visibleItem(content, "quickReply-" + id); };
+        QTRY_VERIFY(replyButton());
+        for (int i = 0; i < 20 && replyButton() && !replyButton()->hasActiveFocus(); ++i)
+            QTest::keyClick(scene.window, Qt::Key_Tab);
+        QVERIFY(replyButton() && replyButton()->hasActiveFocus());
+        QTest::keyClick(scene.window, Qt::Key_Space);
+        QTRY_COMPARE(scene.controller.replyMessageId(), id);
+        QCOMPARE(pollItemText(content, "replyExcerptText"), expected.simplified());
+        QVERIFY(scene.controller.replyMediaUrn().isEmpty());
+    }
+
     void pollBubbleCardGeometryAndStructure()
     {
         PollBubbleScene scene;
@@ -31777,14 +31828,16 @@ private slots:
         QTRY_VERIFY(qml("forwardTopicCombo")->property("enabled").toBool());
     }
 
-    // Review round 1, finding 4 (cid 4586012837): the reference keeps every
-    // server message selectable and rejects the whole batch with a visible
-    // reason when a source cannot build a snapshot (workspace_ui 75bd21f37
-    // workspace-message-list.ui.tsx:503 + workspace-forward-message.lib.ts:78-84).
-    // A mixed markdown+poll selection therefore confirms into an alert, not
-    // into a silently-truncated forward.
-    void forwardModalRejectsMixedBatchWithUnsupportedSources()
+    void forwardModalHandlesMixedPollAndUnsupportedSources_data()
     {
+        QTest::addColumn<bool>("supported");
+        QTest::newRow("text-and-poll") << true;
+        QTest::newRow("text-and-encrypted") << false;
+    }
+
+    void forwardModalHandlesMixedPollAndUnsupportedSources()
+    {
+        QFETCH(bool, supported);
         QTest::failOnWarning();
         ForwardWindowFixture fixture;
         const QString pollMessageId = QStringLiteral("9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e");
@@ -31805,9 +31858,16 @@ private slots:
                 {"voter_count", 0}, {"option_counts", QJsonObject{{optionOne, 0}, {optionTwo, 0}}}}}},
             {"my_votes", QJsonArray{}}};
         const auto inner = fixture.base.server.handler;
-        fixture.base.server.handler = [inner, &fixture, pollNote](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+        fixture.base.server.handler = [inner, &fixture, pollNote, supported](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                if (!supported && QUrlQuery(request.target).hasQueryItem("uuid")) {
+                    auto encrypted = pollNote;
+                    encrypted["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", pollNote["uuid"]}, {"content", "opaque"}};
+                    encrypted.remove("poll_state");
+                    return {QJsonArray{fixture.firstNote, encrypted}};
+                }
                 return {QJsonArray{fixture.firstNote, pollNote}};
+            }
             return inner(request);
         };
         QTemporaryDir directory;
@@ -31872,6 +31932,15 @@ private slots:
         QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
         click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
 
+        if (supported) {
+            QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("opened").toBool(), 5000);
+            QCOMPARE(fixture.posts, 1);
+            const auto body = fixture.postedBody["payload"].toObject()["content"].toString();
+            QVERIFY(body.contains("urn:forward:" + messageId));
+            QVERIFY(body.contains("urn:forward:" + pollMessageId));
+            QVERIFY(body.contains("&format=plain"));
+            return;
+        }
         // The mixed batch is rejected with a visible reason and never posts a
         // silently-truncated snapshot; the dialog stays open for a retry.
         QTRY_VERIFY_WITH_TIMEOUT(qml("forwardErrorAlert")->property("visible").toBool(), 5000);

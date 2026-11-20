@@ -233,6 +233,8 @@ std::optional<Message> parseMessage(const QJsonObject &json, const QString &proj
 QVector<Message> mergeMessages(const QVector<Message> &existing,
                               const QVector<Message> &incoming);
 
+QString pollTextSnapshot(const Message &message);
+
 // Issue #214 store merge (message.model.ts snapshot rule): a lower poll_state
 // revision never overwrites - the incoming row keeps the previous payload and
 // state and the call returns true so the caller can also skip cache payload

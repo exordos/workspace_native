@@ -14634,8 +14634,9 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
     return entries;
 }
 
-QString normalizedReplySelection(const QString &content, const QString &selectedText)
+QString normalizedReplySelection(const Message &message, const QString &selectedText)
 {
+    if (message.poll) return pollTextSnapshot(message);
     // chat-page-workspace.ui.tsx:2747-2751 (workspace_ui 230e02b8): a
     // whitespace-only selection or a body carrying encrypted fragments
     // (revealed text must never leave as a quote line, bubble-presentation
@@ -14647,7 +14648,7 @@ QString normalizedReplySelection(const QString &content, const QString &selected
     selection.replace(QChar(0x2029), QLatin1Char('\n'));
     selection.replace(QChar(0x2028), QLatin1Char('\n'));
     if (selection.trimmed().isEmpty()) return {};
-    if (content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
+    if (message.content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
     return selection;
 }
 } // namespace
@@ -14773,6 +14774,7 @@ QVariantList NativeController::messages() const
         // store fed by GET /messages/?uuid=, mirroring messenger-quote-resolver
         // .hook.ts:17-58 (store hit -> ready, fetch -> loading, miss -> unavailable).
         QString quoteId, quoteLabel, quoteSelection, quoteStatus, quoteAuthorName, quoteContent;
+        bool quoteIsPoll = false;
         auto displayContent = content;
         if (const auto quote = leadingQuoteReference(content)) {
             quoteId = quote->id;
@@ -14781,10 +14783,11 @@ QVariantList NativeController::messages() const
             displayContent = quote->rest;
             const auto fallback = quoteLabel.isEmpty() ? tr("Quote") : quoteLabel;
             const auto *origin = findMessage(quoteId);
-            if (origin && origin->kind == QLatin1String("markdown")) {
+            if (origin && (origin->kind == QLatin1String("markdown") || origin->poll)) {
                 quoteStatus = QStringLiteral("ready");
                 quoteAuthorName = userDisplayName(origin->author, fallback);
-                quoteContent = origin->content;
+                quoteIsPoll = origin->poll.has_value();
+                quoteContent = quoteIsPoll ? pollTextSnapshot(*origin) : origin->content;
             } else if (origin && origin->kind == QLatin1String("e2ee")) {
                 // Issue #222 (docs/NATIVE_DESKTOP_QUOTE_E2EE_STATES.md): an encrypted
                 // origin projects the chat-prepared decryption state, mirroring the
@@ -14830,7 +14833,8 @@ QVariantList NativeController::messages() const
                 } else {
                     quoteStatus = QStringLiteral("ready");
                     quoteAuthorName = userDisplayName(record->authorId, fallback);
-                    quoteContent = record->content;
+                    quoteIsPoll = record->origin && record->origin->poll;
+                    quoteContent = quoteIsPoll ? pollTextSnapshot(*record->origin) : record->content;
                 }
             } else {
                 quoteStatus = QStringLiteral("loading");
@@ -14869,7 +14873,7 @@ QVariantList NativeController::messages() const
             {"authorPresence", avatarsOwned ? m_names.value(message.author).presence : QString{}},
             {"content", content}, {"displayContent", displayContent},
             {"quoteId", quoteId}, {"quoteLabel", quoteLabel}, {"quoteText", quoteSelection},
-            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent},
+            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent}, {"quoteIsPoll", quoteIsPoll},
             {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},
@@ -18235,7 +18239,8 @@ const Message *NativeController::replyTarget(const QString &id) const
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
     if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown" || message->stream != m_stream || message->topic != m_topic)
+        || (message->kind != "markdown" && !message->poll)
+        || message->stream != m_stream || message->topic != m_topic)
         return nullptr;
     return message;
 }
@@ -18247,6 +18252,8 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
         report(tr("This message can no longer be replied to."));
         return false;
     }
+    const auto selection = normalizedReplySelection(*message, selectedText);
+    if (message->poll && selection.trimmed().isEmpty()) return false;
     if (!m_editingMessage.isEmpty()) closeEditSession();
     // replyToWorkspaceReply (workspace-reply.lib.ts:26-57): an empty session gets a
     // first tab that inherits the composer text; otherwise only the active tab's
@@ -18255,7 +18262,7 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
         ReplyTab tab;
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
-        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tab.selectedText = selection;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         tab.answer = draft();
         m_replyTabs.append(tab);
@@ -18266,7 +18273,6 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
     }
     for (auto &tab : m_replyTabs) {
         if (tab.id != m_replyActiveTab) continue;
-        const auto selection = normalizedReplySelection(message->content, selectedText);
         if (tab.message != id || tab.selectedText != selection) {
             tab.message = id;
             tab.selectedText = selection;
@@ -18303,7 +18309,8 @@ bool NativeController::appendReplyTabs(const QStringList &ids, const QString &se
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tab.selectedText = normalizedReplySelection(*message, selectedText);
+        if (message->poll && tab.selectedText.trimmed().isEmpty()) return false;
         tabs.append(std::move(tab));
     }
 
@@ -18477,9 +18484,13 @@ std::optional<QString> NativeController::replyPlainFor(const QString &id) const
     // the resolved cache content counts as "in memory" here.
     if (id.isEmpty()) return std::nullopt;
     const QString *content = nullptr;
-    if (const auto *message = findMessage(id); message) content = &message->content;
-    else if (const auto record = m_quotes.constFind(id);
-             record != m_quotes.cend() && !record->missing) content = &record->content;
+    if (const auto *message = findMessage(id)) {
+        if (message->poll) return pollTextSnapshot(*message).simplified();
+        content = &message->content;
+    } else if (const auto record = m_quotes.constFind(id); record != m_quotes.cend() && !record->missing) {
+        if (record->origin && record->origin->poll) return pollTextSnapshot(*record->origin).simplified();
+        content = &record->content;
+    }
     if (!content) return std::nullopt;
     static NativeMarkdown previewCache;
     return previewCache.renderPreview(*content).value("plain").toString().simplified();
@@ -18686,7 +18697,8 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
             const auto parsed = rows.isEmpty() ? std::optional<Message>{}
                 : parseMessage(rows.first().toObject(), project);
-            if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
+            if (parsed && parsed->uuid == id && (parsed->kind == "markdown" || parsed->poll)) {
+                if (parsed->poll) record.origin = *parsed;
                 record.authorId = parsed->author;
                 record.content = parsed->content;
             } else if (parsed && parsed->uuid == id && parsed->kind == "e2ee" && parsed->crypto) {
@@ -19649,11 +19661,11 @@ void NativeController::fetchForwardSources(quint64 ticket)
             // (workspace_ui 75bd21f37 workspace-forward-message.lib.ts:78-84
             // + ui.tsx:449-451). Mirror that instead of silently dropping the
             // unsupported source and posting a truncated snapshot.
-            if (parsed->kind != QLatin1String("markdown")) { unsupported = true; continue; }
+            if (parsed->kind != QLatin1String("markdown") && !parsed->poll) { unsupported = true; continue; }
             found.insert(parsed->uuid, *parsed);
         }
         if (unsupported) {
-            failForward(tr("Only text messages can be forwarded."));
+            failForward(tr("Only text messages and polls can be forwarded."));
             return;
         }
         m_forwardIntent.wire = buildForwardSnapshot(m_forwardIntent.sources, found);
@@ -19702,8 +19714,10 @@ QString NativeController::buildForwardSnapshot(const QStringList &sources,
                 .toString(Qt::ISODateWithMs);
         else
             options.sourceLabel.reset();
+        options.plainSnapshot = message.poll.has_value();
+        const auto snapshot = message.poll ? pollTextSnapshot(message) : message.content;
         const auto block = workspace::buildWorkspaceForwardReference(
-            userDisplayName(message.author, message.author), message.uuid, message.content, options);
+            userDisplayName(message.author, message.author), message.uuid, snapshot, options);
         if (block.isEmpty()) return QString();
         blocks << block;
     }
