@@ -8825,7 +8825,7 @@ void NativeController::useCache(NativeCacheService *cache)
 
 void NativeController::cachedCollection(const NativeCache::Key &key, const QString &path,
     const QUrlQuery &query, std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork,
-    std::function<void()> failed)
+    std::function<void()> failed, quint64 selectedTopicRequest)
 {
     const auto revision = m_cacheRevision;
     const auto generation = m_api->generation();
@@ -8841,10 +8841,11 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
             && guard->m_cacheLease.owner == lease.owner && guard->m_cacheLease.generation == lease.generation;
     };
     const auto network = [this, guard, cache, lease, key, revision, path, query, done, failed,
-                          networkStarted, authoritativeDelivered, generation, catalog, selection] {
+                          networkStarted, authoritativeDelivered, generation, catalog, selection, selectedTopicRequest] {
         if (!guard || *networkStarted) return;
-        if (generation != m_api->generation() || catalog != m_catalog
-            || (key.kind == NativeCache::Kind::Topics && selection != m_selection)) {
+        const bool staleTopics = key.kind == NativeCache::Kind::Topics
+            && (selectedTopicRequest ? selectedTopicRequest != m_topicRequest : selection != m_selection);
+        if (generation != m_api->generation() || catalog != m_catalog || staleTopics) {
             // The captured epoch is gone and nothing will ever be dispatched:
             // deliver the terminal failure instead of dropping the request (#64).
             if (failed) failed();
@@ -15262,6 +15263,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     m_topicChanging = false;
     ++m_topicMutation;
     ++m_selection;
+    ++m_topicRequest;
     m_stream = id;
     if (openingFavorites) {
         m_favoritesVisible = true;
@@ -15318,14 +15320,16 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
 
 void NativeController::loadTopics()
 {
-    const auto selection = m_selection;
     const auto topicRequest = ++m_topicRequest;
+    const auto current = [this, topicRequest, catalog = m_catalog, generation = m_api->generation()] {
+        return topicRequest == m_topicRequest && catalog == m_catalog && generation == m_api->generation();
+    };
     const auto revision = m_topicRevision;
     QUrlQuery query;
     query.addQueryItem("stream_uuid", m_stream);
     cachedCollection({NativeCache::Kind::Topics, m_stream, {}, {}}, messenger + "/stream_topics/", query,
-        [this, selection, topicRequest, revision](const QJsonArray &rows, bool authoritative) {
-        if (selection != m_selection || topicRequest != m_topicRequest) return false;
+        [this, current, revision](const QJsonArray &rows, bool authoritative) {
+        if (!current()) return false;
         if (!authoritative && !m_topics.isEmpty()) return true;
         if (revision != m_topicRevision) {
             loadTopics();
@@ -15338,7 +15342,7 @@ void NativeController::loadTopics()
             if (!topic || ids.contains(topic->uuid)) {
                 const QPointer<NativeController> guard(this);
                 report(tr("The server returned an invalid topic list."));
-                if (guard && authoritative && selection == m_selection && topicRequest == m_topicRequest)
+                if (guard && authoritative && current())
                     settleFavoritesTopics(false);
                 return false;
             }
@@ -15366,7 +15370,7 @@ void NativeController::loadTopics()
         if (authoritative) finishSnapshotPart(4);
         // Issue #134: the profile Message action can park a default-topic
         // open while this page is loading; resolve it against the verified
-        // page only (the selection/topicRequest guards above apply).
+        // page only (the channel request guards above apply).
         if (authoritative && m_profileDirectActive && m_stream == m_profileDirectStream) {
             auto target = m_profileDirectTopic;
             const bool present = ids.contains(target);
@@ -15383,18 +15387,17 @@ void NativeController::loadTopics()
         if (authoritative) resolveDeepLinkTopic();
         if (!guard) return true;
         notifyTrustChanged();
-        if (guard && authoritative && selection == m_selection && topicRequest == m_topicRequest)
+        if (guard && authoritative && current())
             settleFavoritesTopics(true);
         return true;
-    }, m_topicSeedUnverified, [this, selection, topicRequest] {
-        if (selection != m_selection || topicRequest != m_topicRequest) return;
+    }, m_topicSeedUnverified, [this, current] {
+        if (!current()) return;
         const QPointer<NativeController> guard(this);
         settleFavoritesTopics(false);
-        if (!guard || selection != m_selection || topicRequest != m_topicRequest
-            || !m_profileDirectActive || m_stream != m_profileDirectStream) return;
+        if (!guard || !current() || !m_profileDirectActive || m_stream != m_profileDirectStream) return;
         m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
         emit stateChanged();
-    });
+    }, topicRequest);
 }
 
 void NativeController::interruptTopicOpening()
@@ -15680,8 +15683,8 @@ void NativeController::selectTopic(const QString &id)
     emit stateChanged();
     if (!guard || selection != m_selection) return;
     emit draftChanged();
-    // Selecting a cached topic invalidates the prior selection's catalog response.
-    if (guard && selection == m_selection && !m_stream.isEmpty() && !m_topicsVerified) loadTopics();
+    // A regular topic switch shares its channel's in-flight catalog request.
+    if (guard && selection == m_selection && m_topicSeedUnverified) loadTopics();
     if (guard && selection == m_selection && hasConversation()) loadMessages();
     // Issue #164: topic selection changes the viewed conversation identity.
     if (guard && selection == m_selection) {

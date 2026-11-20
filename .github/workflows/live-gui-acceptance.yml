@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           build="$RUNNER_TEMP/live-native-build"
-          output="$RUNNER_TEMP/live-native-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          output="$GITHUB_WORKSPACE/dist/live-native"
           cmake -S packages/native -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
           cmake --build "$build" --target workspace-native --parallel 2
           version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$build/CMakeCache.txt")
@@ -67,8 +67,8 @@ jobs:
         with:
           name: live-package-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/live-native-package-*/*.tar.gz
-            ${{ runner.temp }}/live-native-package-*/SHA256SUMS
+            dist/live-native/*.tar.gz
+            dist/live-native/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
@@ -77,14 +77,14 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          output="$GITHUB_WORKSPACE/live-report"
           mkdir -p "$output"
           echo '{"status":"BLOCKED","blocked":["linux-package"]}' > "$output/report.json"
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: live-wayland-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+          path: live-report/report.json
           if-no-files-found: error
           retention-days: 14
 
@@ -121,14 +121,12 @@ jobs:
         with:
           artifact-ids: ${{ needs.package-linux.outputs.package_id }}
           path: live-package
+          merge-multiple: true
       - name: Verify and unpack the package
         shell: bash
         run: |
           set -euo pipefail
           cd live-package
-          # Artifact roots may include the versioned packaging directory.
-          manifest=$(find . -name SHA256SUMS -print -quit)
-          cd "$(dirname "$manifest")"
           sha256sum -c SHA256SUMS
           tar -xzf Exordos-Workspace-Native-*-linux-x86_64.tar.gz
           packages=(workspace-native-*-linux-x86_64)
@@ -142,7 +140,7 @@ jobs:
           FIXTURE_LEASE: ${{ secrets[format('LIVE_LEASE_{0}_{1}', github.run_id, github.run_attempt)] }}
         run: |
           set -euo pipefail
-          output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          output="$GITHUB_WORKSPACE/live-report"
           install -d -m 0755 -o live-wayland "$output"
           # Only the harness receives the fixture. It passes credentials to the client through a pipe.
           python3 packages/native/scripts/run-hosted-acceptance.py --package "$LIVE_PACKAGE" --output "$output"
@@ -150,7 +148,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          output="$GITHUB_WORKSPACE/live-report"
           mkdir -p "$output"
           if [[ ! -s "$output/report.json" ]]; then
             echo '{"status":"BLOCKED","blocked":["hosted-preflight"]}' > "$output/report.json"
@@ -160,7 +158,7 @@ jobs:
         with:
           name: live-wayland-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
-            ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/timeline.jsonl
-            ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/frames.gif
+            live-report/report.json
+            live-report/timeline.jsonl
+            live-report/frames.gif
           retention-days: 14
