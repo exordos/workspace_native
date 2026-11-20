@@ -18,6 +18,11 @@ find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
 qt_standard_project_setup(REQUIRES 6.8)
 
+add_library(workspace-native-support STATIC src/support/support-report.cpp src/support/support-report.h)
+target_include_directories(workspace-native-support PUBLIC src)
+target_compile_definitions(workspace-native-support PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
+target_link_libraries(workspace-native-support PUBLIC Qt6::Core PRIVATE Qt6::Concurrent)
+
 add_library(workspace-native-core STATIC
     src/api-client.cpp src/api-client.h
     src/domain.cpp src/domain.h
@@ -89,7 +94,7 @@ qt_add_resources(workspace-native-core native_emoji PREFIX /workspace/data BASE 
 add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
     src/avatar-images.cpp src/avatar-images.h src/native-image-input.h
     src/message-images.cpp src/message-images.h)
-target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
+target_link_libraries(workspace-native-ui PUBLIC workspace-native-support workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
 option(WORKSPACE_NATIVE_CALLS_NAV "Show Calls in the main window section bar" OFF)
 target_compile_definitions(workspace-native-ui PRIVATE WORKSPACE_NATIVE_CALLS_NAV=$<BOOL:${WORKSPACE_NATIVE_CALLS_NAV}>)
 
@@ -160,6 +165,7 @@ set(native_qml_files
 qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml qml/NativeAccountPreferences.qml
+qml/NativeSupportReport.qml
 qml/NativeDownloadCenter.qml
 qml/NativeUserSearch.qml
 qml/NativeJitsiCard.qml
@@ -331,6 +337,11 @@ if(BUILD_TESTING)
     add_test(NAME native-updater-launcher-entry COMMAND native-updater-test
         downloadProgressReachesTheLauncherEntryChannel)
     set_tests_properties(native-updater-launcher-entry PROPERTIES TIMEOUT 180)
+
+    add_executable(native-support-report-test tests/native-support-report-test.cpp)
+    target_link_libraries(native-support-report-test PRIVATE workspace-native-support Qt6::Test)
+    add_test(NAME native-support-report COMMAND native-support-report-test)
+    set_tests_properties(native-support-report PROPERTIES LABELS unit TIMEOUT 30)
 
     # Real About leaf policy with public QObject adapters; no network/window.
     add_executable(native-about-policy-test tests/native-about-policy-test.cpp)
