@@ -36800,8 +36800,15 @@ private slots:
     // event and no forceActiveFocus anywhere before the chip gains focus,
     // so the focus chain itself must carry the user to the chip. Enter then
     // activates it and opens the profile drawer.
+    void mentionChipsReachedByTabWithoutPointer_data()
+    {
+        QTest::addColumn<bool>("inTopic");
+        QTest::newRow("aggregate") << false;
+        QTest::newRow("topic") << true;
+    }
     void mentionChipsReachedByTabWithoutPointer()
     {
+        QFETCH(bool, inTopic);
         WindowMentionFixture fixture;
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -36822,6 +36829,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
         controller.setRealtimeMode(true);
         controller.selectStream(streamId);
+        if (inTopic) {
+            QTRY_VERIFY(!controller.topics().isEmpty());
+            controller.selectTopic(topicId);
+        }
         QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
         const QString alice = WindowMentionFixture::aliceUuid();
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
@@ -36846,6 +36857,18 @@ private slots:
         }
         QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip; visited: ") + chain.join(QStringLiteral(" -> "))));
         // Shift+Tab leaves the chip and Tab walks straight back onto it.
+        QCOMPARE(chain.contains("quickReply-" + messageId), inTopic);
+        if (inTopic) {
+            const auto firstMention = focusedName();
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(focusedName(), "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(focusedName(), "quick-reactions-" + messageId);
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_COMPARE(focusedName(), "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_COMPARE(focusedName(), firstMention);
+        }
         QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
         QTest::qWait(25);
         QVERIFY2(!chipFocused(), qPrintable(QStringLiteral("Shift+Tab did not move focus off the chip: ") + focusedName()));
