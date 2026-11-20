@@ -13163,6 +13163,58 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void firstEncryptedBatchReservesAnAccessibleMessageViewport()
+    {
+        WindowChannelFixture fixture;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy() && controller.messages().isEmpty());
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QVariantMap first{{"id", messageId}, {"kind", "e2ee"}, {"encryptionState", "ready"},
+            {"authorId", userId}, {"author", "Cassi"}, {"content", "First"}, {"displayContent", "First"},
+            {"createdAt", "2026-01-02T10:00:00Z"}, {"time", "10:00"}, {"decrypted", true}, {"read", true}};
+        auto second = first;
+        second["id"] = returnedId;
+        second["encryptionState"] = "preparing";
+        second["decrypted"] = false;
+        const auto project = [&](const QVariantMap &row) {
+            return QMetaObject::invokeMethod(list, "replaceMessages", Q_ARG(QVariant, QVariant(QVariantList{first, row})),
+                Q_ARG(QVariant, QVariant(false)));
+        };
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 0);
+        auto *surface = item(window->contentItem(), "messagePreparationSurface");
+        QVERIFY(surface && surface->isVisible());
+        QCOMPARE(surface->height(), list->height());
+        auto *accessible = QAccessible::queryAccessibleInterface(surface);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::ProgressBar);
+        second["encryptionState"] = "ready";
+        second["decrypted"] = true;
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 2);
+        QVERIFY(!surface->isVisible());
+        second["encryptionState"] = "preparing";
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 1);
+        QVERIFY(!surface->isVisible());
+    }
+
     void realQuickWindowSignsInNavigatesAndSends()
     {
         QTemporaryDir preferencesDirectory;
@@ -15195,6 +15247,14 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             return anchor;
         };
+        if (prepend) {
+            // A general notification with the same outgoing presentation must
+            // preserve the settled layout before the user's first wheel event.
+            const auto ticket = list->property("layoutTicket");
+            QVERIFY(ticket.isValid());
+            emit controller.stateChanged();
+            QCOMPARE(list->property("layoutTicket"), ticket);
+        }
         if (behavior != "incoming-bottom") {
             const auto before = list->property("contentY").toReal();
             const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
