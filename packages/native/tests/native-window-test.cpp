@@ -949,6 +949,143 @@ public:
     }
 };
 
+// Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): one body carrying a
+// regular mention urn, a silent mention urn and a plain-text mention with
+// no uuid (the reference degradation case).
+class WindowMentionFixture : public WindowChannelFixture {
+public:
+    static QString aliceUuid() { return QStringLiteral("a11ece11-1111-4111-8111-111111111111"); }
+    static QString silentUuid() { return QStringLiteral("511e5111-2222-4222-8222-222222222222"); }
+    WindowMentionFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto body = QStringLiteral("Hi [Alice](urn:user:%1) and @Ghost and @Ghost2 and [Note](urn:user:%2 \"silent\")")
+                    .arg(aliceUuid(), silentUuid());
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+// Issue #109 review F4 (cid 4639284127): two mentions on one line alternating
+// with plain text, plus a second line whose glyphs must stay uncovered.
+class WindowTwoMentionLineFixture : public WindowChannelFixture {
+public:
+    static QString annUuid() { return QStringLiteral("b1111111-1111-4111-8111-111111111111"); }
+    static QString bobUuid() { return QStringLiteral("b2222222-2222-4222-8222-222222222222"); }
+    WindowTwoMentionLineFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto body = QStringLiteral("One [Ann](urn:user:%1) two [Bob](urn:user:%2) end\nsecond line of text")
+                    .arg(annUuid(), bobUuid());
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+// Issue #109 review F6 (cid 4639284139): a near-limit body carrying a single
+// mention; the hit-target locator must not sample the whole body area.
+class WindowLongMentionFixture : public WindowChannelFixture {
+public:
+    static QString annUuid() { return QStringLiteral("c3333333-3333-4333-8333-333333333333"); }
+    WindowLongMentionFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                QString filler;
+                while (filler.size() < 5200)
+                    filler += QStringLiteral("lorem ipsum dolor sit amet ");
+                const auto body = filler + QStringLiteral(" tail [Ann](urn:user:") + annUuid() + QStringLiteral(")");
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+// Issue #109 review F2 (cid 4639284117): mentions in a body that renders
+// through the inline-image path (mediaMessageBody per-text-part items).
+class WindowMentionImageFixture : public WindowChannelFixture {
+public:
+    static QString annUuid() { return QStringLiteral("d4444444-4444-4444-8444-444444444444"); }
+    static QString bobUuid() { return QStringLiteral("e5555555-5555-4555-8555-555555555555"); }
+    WindowMentionImageFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto body = QStringLiteral("Before @Ann then [Ann](urn:user:%1) mid\n"
+                    "![shot](urn:image:%2?name=s.png&content_type=image%2Fpng&w=8&h=8)\n"
+                    "tail @Bob then [Bob](urn:user:%3)")
+                    .arg(annUuid(), messageId, bobUuid());
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+// Issue #109 round-4 review N4 (cid 4641051847): a plain-text copy of the
+// mention label appears BEFORE the real urn-backed mention, so a locator
+// that searches visible text can put the chip on the plain copy.
+class WindowMentionShadowFixture : public WindowChannelFixture {
+public:
+    static QString annUuid() { return QStringLiteral("f6666666-6666-4666-8666-666666666666"); }
+    WindowMentionShadowFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto body = QStringLiteral("Ask @Ann first, then [Ann](urn:user:%1) confirms.")
+                    .arg(annUuid());
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+// Issue #109 round-4 review N3 (cid 4641051840): a mention label wide enough
+// to wrap onto a second line in the narrowed window; the hit rectangles must
+// cover the painted text of every line, not only its first pixels.
+class WindowWideLabelMentionFixture : public WindowChannelFixture {
+public:
+    static QString annUuid() { return QStringLiteral("f7777777-7777-4777-8777-777777777777"); }
+    static QString label() { return QStringLiteral(
+        "@Annabell Anastasia Velourington-Magnusson Constantinople "
+        "Hieronymus Abernathy-Tennyshire Vanderbrook Maximilian "
+        "Bartholomew Fitzwilliam Chatsworth"); }
+    WindowWideLabelMentionFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                auto shown = label();
+                const auto body = QStringLiteral("Ask [")
+                    + shown.mid(1) + QStringLiteral("](urn:user:%1) now.").arg(annUuid());
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
+static QRectF rectAt(QQuickItem *text, int position)
+{
+    QRectF rect;
+    QMetaObject::invokeMethod(text, "positionToRectangle", Q_RETURN_ARG(QRectF, rect),
+        Q_ARG(int, position));
+    return rect;
+}
+
 // Query the displayed text's actual anchor geometry, then send mouse input.
 // The public linkActivated signal is the witness that the real link received it.
 static QPointF topicLinkPoint(QQuickItem *text, const QString &expected)
@@ -34719,6 +34856,598 @@ private slots:
         for (auto &send : *readGate) send();
         readGate->clear();
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): a body containing a
+    // mention urn renders a clickable message-mention-<urn-suffix> chip; a
+    // silent mention renders without the "@" prefix; a plain-text mention
+    // without a uuid stays unstyled; clicking the chip raises the existing
+    // profile-open path.
+    void mentionChipsRenderAndOpenProfile()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString alice = WindowMentionFixture::aliceUuid();
+        const QString note = WindowMentionFixture::silentUuid();
+        // The regular mention gets a chip sized over the painted anchor.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
+        auto *chip = visibleItem("message-mention-" + alice);
+        QVERIFY(chip->isVisible());
+        QVERIFY2(chip->width() > 8 && chip->height() > 4,
+            qPrintable(QString("chip %1x%2").arg(chip->width()).arg(chip->height())));
+        // The silent mention gets a chip too.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + note), 3000);
+        // Painted text: "@Alice" inside the anchor, "Note" without the prefix,
+        // and the uuid-less "@Ghost" as plain text only.
+        auto *body = visibleItem("message-content-" + messageId);
+        QVERIFY(body);
+        const QString html = body->property("text").toString();
+        QVERIFY2(html.contains(QStringLiteral(">@Alice<")), qPrintable(html));
+        // Reference chip style: accent colour + medium weight, no underline.
+        QVERIFY2(html.contains(QStringLiteral("#7087ff")), qPrintable(html));
+        QVERIFY2(html.contains(QStringLiteral("font-weight:500")), qPrintable(html));
+        QVERIFY2(!html.contains(QStringLiteral("underline")), qPrintable(html));
+        QVERIFY2(html.contains(QStringLiteral(">Note<")), qPrintable(html));
+        QVERIFY(!html.contains(QStringLiteral(">@Note<")));
+        QVERIFY(html.contains(QStringLiteral("@Ghost")));
+        // Only the two urn-backed mentions are anchors; @Ghost stayed plain.
+        const QStringList markers{QStringLiteral("<a href=\"urn:user:")};
+        QCOMPARE(html.count(markers.first()), 2);
+        // Clicking the chip opens the workspace profile drawer for that user.
+        click(window, chip);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        QVERIFY(visibleItem("profileLayer")->property("isSelf").toBool() == false);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("mention chip scene teardown");
+    }
+
+    // Issue #109 review F4 (cid 4639284127): two mentions alternating with
+    // plain text on one line must produce exactly one hit rectangle per
+    // occurrence, inside the fixed 20 px line box, mutually disjoint, each
+    // centered over its own anchor.
+    void mentionRunsOnOneLineStaySeparated()
+    {
+        WindowTwoMentionLineFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f4.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString ann = WindowTwoMentionLineFixture::annUuid();
+        const QString bob = WindowTwoMentionLineFixture::bobUuid();
+        auto *body = visibleItem("message-content-" + messageId); QVERIFY(body);
+        auto *overlay = visibleItem("message-mentions-" + messageId); QVERIFY(overlay);
+        const auto evaluate = [&]() {
+            QStringList problems;
+            QList<QQuickItem*> chips;
+            const auto children = overlay->childItems();
+            for (auto *child : children)
+                if (child->objectName().startsWith(QStringLiteral("message-mention-")))
+                    chips.append(child);
+            if (chips.size() != 2)
+                problems << QStringLiteral("chip count %1, expected one rect per mention occurrence").arg(chips.size());
+            for (auto *chip : chips) {
+                if (chip->height() > 26)
+                    problems << QStringLiteral("%1 height %2 crosses the fixed 20px line box")
+                        .arg(chip->objectName()).arg(chip->height());
+                const QString expected = chip->objectName() == "message-mention-" + ann
+                    ? "urn:user:" + ann : chip->objectName() == "message-mention-" + bob
+                    ? "urn:user:" + bob : QString();
+                if (expected.isNull())
+                    problems << QStringLiteral("unexpected chip %1").arg(chip->objectName());
+                else {
+                    const auto center = body->mapFromItem(chip, QPointF(chip->width() / 2, chip->height() / 2));
+                    QString href;
+                    QMetaObject::invokeMethod(body, "linkAt", Q_RETURN_ARG(QString, href),
+                        Q_ARG(qreal, center.x()), Q_ARG(qreal, center.y()));
+                    if (href != expected)
+                        problems << QStringLiteral("%1 center hits link %2").arg(chip->objectName(), href.isEmpty() ? "<none>" : href);
+                }
+            }
+            for (int i = 0; i < chips.size(); ++i)
+                for (int j = i + 1; j < chips.size(); ++j) {
+                    const QRectF a(chips[i]->mapToItem(overlay, QPointF(0, 0)), chips[i]->size());
+                    const QRectF b(chips[j]->mapToItem(overlay, QPointF(0, 0)), chips[j]->size());
+                    if (a.intersects(b)) {
+                        const auto fmt = [](const QRectF &r) {
+                            return QStringLiteral("[%1,%2 %3x%4]").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+                        };
+                        problems << QStringLiteral("rects %1/%2 overlap at %3 vs %4")
+                            .arg(chips[i]->objectName(), chips[j]->objectName(), fmt(a), fmt(b));
+                    }
+                }
+            return problems;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(overlay->childItems().size() >= 1, 3000);
+        QTest::qWait(400);
+        const auto problems = evaluate();
+        QCOMPARE(problems, QStringList{});
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("two-mention line scene teardown");
+    }
+
+    // Issue #109 review F6 (cid 4639284139): a long body with a single mention
+    // must not make the hit-target locator sample the whole body area. The
+    // locator reports its linkAt probe count on the body item (test seam).
+    void mentionLongBodyLocatorWorkStaysBounded()
+    {
+        WindowLongMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f6.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + WindowLongMentionFixture::annUuid()), 8000);
+        auto *body = visibleItem("message-content-" + messageId);
+        QVERIFY(body);
+        const auto probes = body->property("linkAtProbes");
+        QVERIFY2(probes.isValid(), "mention locator exposes no linkAt probe instrumentation (whole-area sampling)");
+        QVERIFY2(probes.toInt() <= 500,
+            qPrintable(QStringLiteral("locator sampled %1 coordinates for one mention").arg(probes.toInt())));
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("long mention body scene teardown");
+    }
+
+    // Issue #109 review F2 (cid 4639284117): mentions in an inline-image body
+    // render through mediaMessageBody; each visible text part must carry the
+    // chip hit targets for its own mention occurrences.
+    void mentionInlineImagePartsGainChipTargets()
+    {
+        WindowMentionImageFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f2.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString ann = WindowMentionImageFixture::annUuid();
+        const QString bob = WindowMentionImageFixture::bobUuid();
+        // The body renders through the media column, not the plain TextEdit.
+        QVERIFY(visibleItem("message-content-" + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + ann), 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + bob), 4000);
+        std::function<int(QQuickItem *, const QString &)> countVisibleNamed;
+        countVisibleNamed = [&countVisibleNamed](QQuickItem *root, const QString &name) {
+            int total = 0;
+            if (root->isVisible() && root->objectName() == name)
+                ++total;
+            const auto children = root->childItems();
+            for (auto *child : children)
+                total += countVisibleNamed(child, name);
+            return total;
+        };
+        // Exactly one visible chip per mention occurrence (guards against the
+        // body and media overlays both emitting).
+        QCOMPARE(countVisibleNamed(window->contentItem(), "message-mention-" + ann), 1);
+        QCOMPARE(countVisibleNamed(window->contentItem(), "message-mention-" + bob), 1);
+        auto *annChip = visibleItem("message-mention-" + ann);
+        QVERIFY2(annChip->width() > 4 && annChip->height() > 4,
+            qPrintable(QStringLiteral("ann chip %1x%2").arg(annChip->width()).arg(annChip->height())));
+        for (const auto &target : {qMakePair(ann, 0), qMakePair(bob, 2)}) {
+            auto *chip = visibleItem("message-mention-" + target.first);
+            auto *part = visibleItem("mediaTextRun-" + messageId + "-" + QString::number(target.second));
+            QVERIFY(part && chip);
+            const auto point = part->mapFromItem(chip, QPointF(chip->width() / 2, chip->height() / 2));
+            QString href;
+            QVERIFY(QMetaObject::invokeMethod(part, "linkAt", Q_RETURN_ARG(QString, href),
+                Q_ARG(qreal, point.x()), Q_ARG(qreal, point.y())));
+            QCOMPARE(href, QStringLiteral("urn:user:") + target.first);
+        }
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("inline-image mention scene teardown");
+    }
+
+    // Issue #109 review F3 (cid 4639284120): a mention chip must expose an
+    // accessible name and activate with the keyboard. Round 5 re-check: the
+    // chip must ALSO be a tab stop, otherwise keyboard users cannot reach it
+    // without a pointer; the focus-chain walk itself is witnessed by
+    // mentionChipsReachedByTabWithoutPointer.
+    void mentionChipsActivateByKeyboardAndExposeName()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f3.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + WindowMentionFixture::aliceUuid()), 3000);
+        auto *chip = visibleItem("message-mention-" + WindowMentionFixture::aliceUuid());
+        auto *iface = QAccessible::queryAccessibleInterface(chip);
+        QStringList problems;
+        if (!iface)
+            problems << QStringLiteral("chip has no accessible interface");
+        else if (iface->text(QAccessible::Name).isEmpty())
+            problems << QStringLiteral("chip exposes no accessible name");
+        if (!chip->property("activeFocusOnTab").toBool())
+            problems << QStringLiteral("chip is not a tab stop");
+        QCOMPARE(problems, QStringList{});
+        chip->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(chip->hasActiveFocus(), 2000);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("keyboard mention chip teardown");
+    }
+
+    // Issue #109 round-5 review (thread discussion_r4639284120): keyboard
+    // users cannot reach mention chips without first using a pointer. This
+    // case drives the window with Tab and Shift+Tab ONLY: no QTest mouse
+    // event and no forceActiveFocus anywhere before the chip gains focus,
+    // so the focus chain itself must carry the user to the chip. Enter then
+    // activates it and opens the profile drawer.
+    void mentionChipsReachedByTabWithoutPointer()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f5-tab.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString alice = WindowMentionFixture::aliceUuid();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
+        auto chipFocused = [window]() {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName().startsWith(QStringLiteral("message-mention-"));
+        };
+        auto focusedName = [window]() {
+            auto *focus = window->activeFocusItem();
+            if (!focus)
+                return QStringLiteral("<none>");
+            return focus->objectName().isEmpty()
+                ? QString::fromLatin1(focus->metaObject()->className())
+                : focus->objectName();
+        };
+        QVERIFY2(!chipFocused(), "case must start without any pre-focused chip");
+        QStringList chain;
+        for (int i = 0; i < 150 && !chipFocused(); ++i) {
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::qWait(25);
+            chain << focusedName();
+        }
+        QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip; visited: ") + chain.join(QStringLiteral(" -> "))));
+        // Shift+Tab leaves the chip and Tab walks straight back onto it.
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QTest::qWait(25);
+        QVERIFY2(!chipFocused(), qPrintable(QStringLiteral("Shift+Tab did not move focus off the chip: ") + focusedName()));
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::qWait(25);
+        QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab did not return to the chip: ") + focusedName()));
+        // Enter activates the focused chip and opens the profile drawer.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("tab-reachable mention chip teardown");
+    }
+
+    // Issue #109 round-5 review (thread discussion_r4639284120), Space half:
+    // the reference keyboard path activates the mention from Enter AND Space
+    // (workspace-message-body-interactions.hook.ts:490-496). Reached purely
+    // through the Tab chain, Space must open the profile drawer too.
+    void mentionChipsSpaceActivationFromTabFocus()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-f5-space.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString alice = WindowMentionFixture::aliceUuid();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
+        auto chipFocused = [window]() {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName().startsWith(QStringLiteral("message-mention-"));
+        };
+        QStringList chain;
+        for (int i = 0; i < 150 && !chipFocused(); ++i) {
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::qWait(25);
+            chain << QStringLiteral("<tab>");
+        }
+        QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip after %1 stops").arg(chain.size())));
+        // Space activates the focused chip and opens the profile drawer.
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("space-activated mention chip teardown");
+    }
+
+    // Issue #109 round-4 review N4 (cid 4641051847): the body carries a
+    // plain-text "@Ann" BEFORE the real [Ann](urn:user:...) mention. The
+    // chip must sit on the urn-backed anchor, a click on the plain copy
+    // must do nothing, and a click on the chip must open the profile.
+    void mentionPlainLabelCopyKeepsChipOnRealAnchor()
+    {
+        WindowMentionShadowFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-n4.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString urn = QStringLiteral("urn:user:") + WindowMentionShadowFixture::annUuid();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + WindowMentionShadowFixture::annUuid()), 3000);
+        auto *chip = visibleItem("message-mention-" + WindowMentionShadowFixture::annUuid());
+        auto *body = visibleItem("message-content-" + messageId); QVERIFY(body);
+        QStringList problems;
+        // The painted point of the real anchor (linkAt scan).
+        const auto anchorPoint = topicLinkPoint(body, urn);
+        if (anchorPoint.x() < 0)
+            problems << QStringLiteral("no painted anchor pixels found in the body");
+        // Where the plain copy renders: the first plain-text occurrence.
+        QString plain;
+        QMetaObject::invokeMethod(body, "getText", Q_RETURN_ARG(QString, plain),
+            Q_ARG(int, 0), Q_ARG(int, 65536));
+        const int copyIndex = plain.indexOf(QStringLiteral("@Ann"));
+        QRectF copyRect;
+        QMetaObject::invokeMethod(body, "positionToRectangle", Q_RETURN_ARG(QRectF, copyRect),
+            Q_ARG(int, copyIndex));
+        if (copyIndex < 0 || copyRect.width() <= 0)
+            problems << QStringLiteral("plain copy not laid out (index %1 rect width %2)")
+                .arg(copyIndex).arg(copyRect.width());
+        // The chip center must resolve to the mention anchor, not plain text.
+        const auto chipCenterInBody = body->mapFromItem(chip, QPointF(chip->width() / 2, chip->height() / 2));
+        QString hrefAtChip;
+        QMetaObject::invokeMethod(body, "linkAt", Q_RETURN_ARG(QString, hrefAtChip),
+            Q_ARG(qreal, chipCenterInBody.x()), Q_ARG(qreal, chipCenterInBody.y()));
+        if (hrefAtChip != urn)
+            problems << QStringLiteral("chip center resolves to %1 instead of the anchor")
+                .arg(hrefAtChip.isEmpty() ? QStringLiteral("plain text") : hrefAtChip);
+        // Clicking the plain copy opens nothing.
+        if (copyRect.isValid() && copyRect.width() > 0) {
+            const auto copyScene = body->mapToScene(copyRect.center());
+            QVERIFY(QRectF(0, 0, window->width(), window->height()).contains(copyScene));
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, copyScene.toPoint());
+            QTest::qWait(400);
+            if (visibleItem("profileLayer"))
+                problems << QStringLiteral("clicking the plain-text copy opened the profile");
+        }
+        for (const auto &problem : problems)
+            qWarning().noquote() << "N4 witness:" << problem;
+        QCOMPARE(problems, QStringList{});
+        // The chip click opens the profile drawer.
+        click(window, chip);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("shadowed mention chip teardown");
+    }
+
+    // Issue #109 round-4 review N3 (cid 4641051840): a mention label that
+    // wraps onto a second line must produce a hit rectangle per rendered
+    // line whose right edge reaches the painted text end of that line, so
+    // clicking near the end of line 1 and line 2 opens the profile.
+    void mentionWrappedLabelCoversEndOfEachLine()
+    {
+        WindowWideLabelMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions-n3.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString ann = WindowWideLabelMentionFixture::annUuid();
+        const QString urn = QStringLiteral("urn:user:") + ann;
+        const QString label = WindowWideLabelMentionFixture::label();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + ann), 4000);
+        QTest::qWait(400);
+        auto *body = visibleItem("message-content-" + messageId); QVERIFY(body);
+        auto *overlay = visibleItem("message-mentions-" + messageId); QVERIFY(overlay);
+        // Group the label's characters by the physical line their layout
+        // rectangles fall on (independent of the code under test).
+        QString plain;
+        QMetaObject::invokeMethod(body, "getText", Q_RETURN_ARG(QString, plain),
+            Q_ARG(int, 0), Q_ARG(int, 65536));
+        const int found = plain.indexOf(label);
+        QStringList problems;
+        if (found < 0) {
+            problems << QStringLiteral("painted mention label text not found in the body");
+        } else {
+            const int end = found + label.size();
+            struct Line { qreal top; qreal height; qreal left; qreal right; };
+            QVector<Line> lines;
+            int i = found;
+            while (i < end) {
+                const QRectF first = rectAt(body, i);
+                int j = i;
+                while (j + 1 < end && qAbs(rectAt(body, j + 1).y() - first.y()) < 0.5)
+                    ++j;
+                const QRectF after = rectAt(body, j + 1);
+                const QRectF lastChar = rectAt(body, j);
+                Line line;
+                line.top = first.y();
+                line.height = first.height();
+                line.left = first.x();
+                line.right = qAbs(after.y() - first.y()) < 0.5 ? after.x() : lastChar.x() + lastChar.width();
+                lines.append(line);
+                i = j + 1;
+            }
+            if (lines.size() < 2)
+                problems << QStringLiteral("label did not wrap onto two lines (%1 line(s), first line %2px wide)")
+                    .arg(lines.size()).arg(lines.isEmpty() ? 0.0 : lines.first().right - lines.first().left);
+            QList<QQuickItem*> chips;
+            const auto children = overlay->childItems();
+            for (auto *child : children)
+                if (child->objectName().startsWith(QStringLiteral("message-mention-")))
+                    chips.append(child);
+            if (chips.size() < lines.size())
+                problems << QStringLiteral("chip count %1, expected one rect per rendered line (%2)")
+                    .arg(chips.size()).arg(lines.size());
+            const int measuredLines = qMin(lines.size(), 2);
+            QVector<QPoint> clickPoints;
+            for (int k = 0; k < measuredLines; ++k) {
+                const Line &line = lines.at(k);
+                const qreal midY = line.top + line.height / 2;
+                // Painted end of the anchor on this line: the rightmost x
+                // whose linkAt still resolves to the mention urn.
+                qreal paintedEnd = -1;
+                for (qreal x = line.left; x <= line.right + 2; x += 2) {
+                    QString href;
+                    QMetaObject::invokeMethod(body, "linkAt", Q_RETURN_ARG(QString, href),
+                        Q_ARG(qreal, x), Q_ARG(qreal, midY));
+                    if (href == urn)
+                        paintedEnd = x;
+                }
+                if (paintedEnd < 0) {
+                    problems << QStringLiteral("line %1 anchor pixels not found between x=%2 and x=%3")
+                        .arg(k + 1).arg(line.left).arg(line.right);
+                    continue;
+                }
+                clickPoints.append(QPointF(paintedEnd - 1, midY).toPoint());
+                const qreal extent = line.right - line.left;
+                bool covered = false;
+                for (auto *chip : chips) {
+                    const QRectF rect(chip->mapToItem(overlay, QPointF(0, 0)), chip->size());
+                    const auto probeInOverlay = overlay->mapFromItem(body, QPointF(paintedEnd - 1, midY));
+                    if (rect.contains(probeInOverlay)) {
+                        covered = true;
+                        if (chip->width() < extent * 0.6)
+                            problems << QStringLiteral("line %1 rect %2px wide covers only the start of its %3px painted extent")
+                                .arg(k + 1).arg(chip->width()).arg(extent);
+                        break;
+                    }
+                }
+                if (!covered)
+                    problems << QStringLiteral("line %1 has no hit rect over its painted text end (x=%2 y=%3)")
+                        .arg(k + 1).arg(paintedEnd).arg(midY);
+            }
+            // Real clicks at the end of each rendered line open the profile.
+            if (problems.isEmpty()) {
+                for (const auto &point : clickPoints) {
+                    QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                        body->mapToScene(QPointF(point)).toPoint());
+                    QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+                }
+            }
+        }
+        for (const auto &problem : problems)
+            qWarning().noquote() << "N3 witness:" << problem;
+        QCOMPARE(problems, QStringList{});
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("wrapped mention chip teardown");
     }
 };
 

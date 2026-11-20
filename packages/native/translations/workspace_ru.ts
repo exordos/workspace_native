@@ -89,6 +89,9 @@
         <message><source>Typing</source><translation>Печатает</translation></message>
         <message><source>last seen %1</source><translation>был(а) %1</translation></message>
         <message><source>Open profile: %1</source><translation>Открыть профиль: %1</translation></message>
+        <!-- Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): mention chip accessible
+             name, same a11y.openUserProfile reference wording as above. -->
+        <message><source>Open profile for %1</source><translation>Открыть профиль: %1</translation></message>
         <message><source>Select</source><translation>Выбрать</translation></message>
         <message><source>Deselect</source><translation>Снять выделение</translation></message>
         <message><source>Selected: %1</source><translation>Выбрано: %1</translation></message>

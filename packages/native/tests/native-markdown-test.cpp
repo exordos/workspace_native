@@ -2,6 +2,7 @@
 #include "mock-server.h"
 
 #include <QTest>
+#include <QElapsedTimer>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextOption>
@@ -585,6 +586,118 @@ private slots:
             QVERIFY2(refs.isEmpty(),
                 "References inside a body too large to render must not enter the gallery");
         }
+    }
+
+    // Issue #109 review F1 (cid 4639284110): a mention link whose label carries
+    // formatting (MD4C emits <a href="urn:user:.."><strong>Na</strong>me</a>)
+    // must still gain the mention treatment: urn recorded, "@" prefix, while a
+    // silent formatted anchor keeps no prefix.
+    void mentionFormatedLabelsGainChipTreatment()
+    {
+        NativeMarkdown renderer;
+        const QString uuid = QStringLiteral("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+        const auto out = renderer.render(
+            "Lead [**Na**me](urn:user:" + uuid + ") tail [**Qui**et](urn:user:" + uuid + " \"silent\")");
+        const auto html = out.value("html").toString();
+        const auto plain = out.value("plain").toString();
+        const auto mentions = out.value("mentions").toStringList();
+        QStringList problems;
+        // Both anchors (the regular and the silent one) are recorded, matching
+        // the unformatted-label behavior the renderer already had.
+        if (mentions.size() != 2 || mentions.at(0) != QStringLiteral("urn:user:") + uuid
+            || mentions.at(1) != QStringLiteral("urn:user:") + uuid)
+            problems << QStringLiteral("mentions=%1").arg(mentions.join(","));
+        if (!plain.contains("@Name"))
+            problems << QStringLiteral("plain=%1").arg(plain);
+        if (html.contains("@Quiet") || html.contains(">@Qui"))
+            problems << QStringLiteral("silent got prefix: %1").arg(html);
+        if (!plain.contains("Quiet"))
+            problems << QStringLiteral("silent label missing: %1").arg(plain);
+        for (const auto &problem : problems)
+            qWarning().noquote() << "F1 witness:" << problem;
+        QCOMPARE(problems, QStringList{});
+    }
+
+    // Issue #109 review F5 (cid 4639284135): repeated entities inside a
+    // mention label made the escaping regex backtrack exponentially
+    // (repeated-entity + nested-tag labels produced 2^n failed match paths
+    // on the render path). Parsing must stay bounded: the old regex needs
+    // multiple minutes for this 27-entity adversarial label, so a generous
+    // 1 s ceiling cannot be reached by any linear-time implementation.
+    void mentionEscapingParsesWithoutBacktracking()
+    {
+        NativeMarkdown renderer;
+        const QString uuid = QStringLiteral("99999999-8888-4777-9666-555555555555");
+        QString label;
+        for (int i = 0; i < 20; ++i)
+            label += QStringLiteral("& ");
+        label += QStringLiteral("**x**");
+        QString markdown;
+        for (int i = 0; i < 60; ++i)
+            markdown += QStringLiteral(" a [") + label + QStringLiteral("](urn:user:") + uuid + QStringLiteral(")");
+        QElapsedTimer clock;
+        clock.start();
+        const auto out = renderer.render(markdown);
+        const auto elapsed = clock.elapsed();
+        QVERIFY2(elapsed < 250,
+            qPrintable(QStringLiteral("render took %1 ms; backtracking regex suspected").arg(elapsed)));
+        QCOMPARE(out.value("mentions").toStringList().size(), 60);
+    }
+
+    // Issue #109 round-4 review N1 (cid 4640681088): the plainLabel decoder
+    // turns escaped angle brackets back into literal characters, so the
+    // anchor rewrite must re-escape the label before importing it into the
+    // rendered HTML. A label containing literal "<b>" / "&" sequences must
+    // keep its visible text and the urn link, while the plain-text label
+    // exposed to the view stays decoded (the locator searches plain text).
+    void mentionLabelHtmlStaysLiteralText()
+    {
+        NativeMarkdown renderer;
+        const QString uuid = QStringLiteral("8f14e45f-ceea-467f-a9d1-3f8f2c1a9b7d");
+        const auto out = renderer.render("Hi [A<b>B</b>&C](urn:user:" + uuid + ")");
+        const auto html = out.value("html").toString();
+        const auto plain = out.value("plain").toString();
+        QStringList problems;
+        if (out.value("mentions").toStringList() != QStringList{QStringLiteral("urn:user:") + uuid})
+            problems << QStringLiteral("mentions=%1").arg(out.value("mentions").toStringList().join(","));
+        // The painted text keeps the literal characters instead of importing
+        // the label as markup (a lost "A<b>" read as "@ABC" bolding "B").
+        if (!plain.contains(QStringLiteral("@A<b>B</b>&C")))
+            problems << QStringLiteral("plain=%1").arg(plain);
+        // The exported anchor span carries the escaped label text.
+        if (!html.contains(QStringLiteral("A&lt;b&gt;B&lt;/b&gt;&amp;C")))
+            problems << QStringLiteral("html=%1").arg(html);
+        if (!html.contains(QStringLiteral("urn:user:") + uuid))
+            problems << QStringLiteral("link lost: %1").arg(html);
+        // The decoded plain label stays intact for the view-side locator.
+        const auto labels = out.value("mentionLabels").toStringList();
+        if (labels.size() != 1 || labels.first() != QStringLiteral("@A<b>B</b>&C"))
+            problems << QStringLiteral("labels=%1").arg(labels.join(","));
+        for (const auto &problem : problems)
+            qWarning().noquote() << "N1 witness:" << problem;
+        QCOMPARE(problems, QStringList{});
+    }
+
+    // Issue #109 round-4 review N2 (cid 4640681111): the entity decoder
+    // searched the remaining label for a semicolon for every ampersand, so a
+    // long label without semicolons rescanned its suffix quadratically on the
+    // UI render path. Measured at the renderer's 40000 code point body cap:
+    // one 39000-ampersand label costs ~30 ms in that loop alone (render total
+    // ~39 ms), while the single-pass decoder adds well under 1 ms to a ~9 ms
+    // baseline render. The 20 ms budget sits between: the quadratic loop
+    // cannot reach it, the linear decoder clears it with wide margin.
+    void mentionLabelEntityDecodeStaysLinear()
+    {
+        NativeMarkdown renderer;
+        const QString uuid = QStringLiteral("7c9e6679-7425-40de-944b-e07fc1f90ae7");
+        const QString label(39000, QLatin1Char('&'));
+        QElapsedTimer clock;
+        clock.start();
+        const auto out = renderer.render("[" + label + "](urn:user:" + uuid + ")");
+        const auto elapsed = clock.elapsed();
+        QVERIFY2(elapsed < 20,
+            qPrintable(QStringLiteral("render took %1 ms; quadratic semicolon rescan suspected").arg(elapsed)));
+        QCOMPARE(out.value("mentions").toStringList().size(), 1);
     }
 };
 
