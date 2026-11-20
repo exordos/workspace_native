@@ -2393,7 +2393,13 @@ component NativeMentionChip: Item {
                             Layout.fillWidth: true
                             spacing: 6
                             Layout.bottomMargin: 6
-                            LoginFieldLabel { text: qsTr("Password") }
+                            LoginFieldLabel {
+                                id: passwordLabel
+                                text: qsTr("Password")
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
+                                Accessible.labelFor: passwordInput
+                            }
                             LoginInput {
                                 id: passwordInput
                                 objectName: "passwordInput"
@@ -2401,7 +2407,7 @@ component NativeMentionChip: Item {
                                 placeholderText: "••••••••"
                                 echoMode: TextInput.Password
                                 inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                Accessible.name: qsTr("Password")
+                                Accessible.name: passwordLabel.text
                                 onAccepted: if (signInButton.enabled) signInButton.clicked()
                             }
                         }
@@ -7043,6 +7049,7 @@ component NativeMentionChip: Item {
                 clip: true
                 // Keep delegates stable when a verified QVariantList snapshot
                 // changes, then restore the visible UUID after layout.
+                cacheBuffer: Math.ceil(height)
                 model: renderedMessages
                 property string preparedScope: ""
                 property bool preparedWindowOpened: false
@@ -9191,6 +9198,7 @@ component NativeMentionChip: Item {
                                 sourceComponent: NativePollCard {
                                     colors: root.colors
                                     controller: root.controller
+                                    previewStore: pollVoterPreviews
                                     readOnly: !root.pollInteractiveStream
                                     messageUuid: String(messageRow.modelData.id || "")
                                     poll: messageRow.modelData.poll
@@ -14814,6 +14822,7 @@ component NativeMentionChip: Item {
     }
 
     // Issue #215 create-poll dialog (docs/NATIVE_DESKTOP_POLL_CREATION.md).
+    NativePollVoterPreviews { id: pollVoterPreviews; controller: root.controller }
     NativePollManagementDialog {
         id: pollManagement
         parent: Overlay.overlay
