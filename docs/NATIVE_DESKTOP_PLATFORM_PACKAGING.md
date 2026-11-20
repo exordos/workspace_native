@@ -33,7 +33,7 @@ Each platform test minimizes the existing window and launches the unpacked execu
 | Sign in, quit, restore the rotated account in a second process and sign out | PASS, including Windows Credential Manager entry creation and removal | PASS, including macOS Keychain entry creation and removal |
 | Check for updates in App version | The Windows preview reports that updates are unavailable | The macOS preview reports that updates are unavailable |
 | OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
-| Embedded meeting loads and asks for microphone and camera | Hosted Windows reported zero capture endpoints and the meeting returned `NotFoundError` for both devices | Hosted macOS supplied a live audio track. The video request returned `NotFoundError` |
+| Embedded meeting loads and asks for microphone and camera | Hosted Windows reported zero capture endpoints and the meeting returned `NotFoundError` for both devices | AVFoundation identified two audio endpoints and no video endpoint. The meeting supplied a live audio track and returned `NotFoundError` for video |
 | Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
 | Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
 
