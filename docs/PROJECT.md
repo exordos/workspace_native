@@ -14,7 +14,8 @@ Use the [module and dependency map](standards/architecture.md) to find the
 owner of a change. The [testing guide](standards/testing.md) lists focused
 verification levels. The [documentation guide](standards/documentation.md)
 covers feature contracts and decisions. For diagnostic data and support
-reports, see the [diagnostics standard](standards/diagnostics.md).
+reports, see the [diagnostics standard](standards/diagnostics.md) and the
+[local support report guide](NATIVE_DESKTOP_SUPPORT_REPORT.md).
 
 ## Repository layout
 

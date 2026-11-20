@@ -1,4 +1,5 @@
 #include "native-diagnostics.h"
+#include "support/support-report.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -274,13 +275,16 @@ SessionLogSummary SessionLogBuffer::summary(qint64 nowMs) const
 
 QVariantMap SessionLogBuffer::supportEventCounts() const
 {
-    QVariantMap counts{{"debug", 0}, {"info", 0}, {"warn", 0}, {"error", 0}};
+    QVariantMap levels{{"debug", 0}, {"info", 0}, {"warn", 0}, {"error", 0}};
+    QVariantMap classes;
     for (qsizetype index = 0; index < m_scopeEntries; ++index) {
-        const auto level = m_entries.at(index).level;
-        auto found = counts.find(level);
-        if (found != counts.end()) found.value() = found.value().toInt() + 1;
+        const auto &entry = m_entries.at(index);
+        auto level = levels.find(entry.level);
+        if (level != levels.end()) level.value() = level.value().toInt() + 1;
+        const QString scope = supportEventClasses().contains(entry.scope) ? entry.scope : QStringLiteral("other");
+        classes[scope] = classes.value(scope).toInt() + 1;
     }
-    return counts;
+    return {{"levels", levels}, {"classes", classes}};
 }
 
 void SessionLogBuffer::clear()

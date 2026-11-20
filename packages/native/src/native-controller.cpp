@@ -7234,8 +7234,11 @@ QVariantMap NativeController::diagnosticsSupportMeasurements() const
     for (qsizetype i = m_apiLatencySamples.size() - m_supportLatencyCount; i < m_apiLatencySamples.size(); ++i)
         durations.append(m_apiLatencySamples.at(i).second);
     const auto latency = diagnostics::summarizeLatency(durations);
-    return {{"levels", m_sessionLog.supportEventCounts()}, {"requests", latency.sampleCount},
-            {"medianMs", latency.medianMs}, {"p95Ms", latency.p95Ms}};
+    auto summary = m_sessionLog.supportEventCounts();
+    summary.insert("requests", latency.sampleCount);
+    summary.insert("medianMs", latency.medianMs);
+    summary.insert("p95Ms", latency.p95Ms);
+    return summary;
 }
 
 QVariantList NativeController::diagnosticsSessionLogEntries() const
@@ -20391,8 +20394,7 @@ void NativeController::callFromProfile(const QString &userUuid)
     const auto navigation = resolveProfileDirect(peer);
     if (navigation.status == ProfileDirectNavigation::Status::MissingDefaultTopic) {
         // :481-489: logged and returned before the pending queue is touched.
-        qInfo().noquote() << "Default topic missing for existing direct stream before call"
-                          << navigation.streamUuid;
+        qInfo("Default topic missing for existing direct stream before call");
         return;
     }
     if (navigation.status == ProfileDirectNavigation::Status::StreamMissing && !canStartDirectChatWith(peer)) {
