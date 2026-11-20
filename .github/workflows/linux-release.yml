@@ -12,7 +12,6 @@ on:
     tags:
       - "[0-9]*"
   pull_request:
-    branches: [master]
 
 # Superseded PR runs are cancelled; push/tag runs always finish.
 concurrency:
@@ -24,6 +23,7 @@ permissions:
 
 jobs:
   package-linux:
+    if: github.event_name != 'pull_request' || github.base_ref == 'master'
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
     timeout-minutes: 90
