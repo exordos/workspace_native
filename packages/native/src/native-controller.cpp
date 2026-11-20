@@ -18105,8 +18105,11 @@ void NativeController::finishReadRequest(bool success)
     m_readBoundary.reset();
     const auto selection = m_selection;
     const QPointer<NativeController> guard(this);
-    emit readRequestBoundariesChanged();
-    if (!guard || selection != m_selection) return;
+    // A queued anchor may have been deleted before dispatch. Publish the
+    // remaining boundaries after the queue has skipped or started it.
+    const auto notifyBoundaries = qScopeGuard([guard] {
+        if (guard) emit guard->readRequestBoundariesChanged();
+    });
     emit stateChanged();
     if (!guard || selection != m_selection) return;
     while (!m_readTopics.isEmpty() && !m_readPending) {
