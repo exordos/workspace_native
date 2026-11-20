@@ -7936,11 +7936,13 @@ ApplicationWindow {
                         // Issue #113 read-request pulse (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md):
                         // native port of workspace-message-read-request-pulse::before
                         // (app.styles.css:128-156) - an accent wash between the bubble
-                        // fill and its content (z: -1 mirrors z-index: -1 with
-                        // isolation: isolate, so text stays fully opaque), radii
-                        // mirrored from the bubble (border-radius: inherit), opacity
-                        // 0 -> 0.2 -> 0 per 1.6 s ease-in-out cycle while the bubble
-                        // awaits its read receipt. root.active is the Window.active
+                        // fill and its content. z: 0 keeps the wash above the parent
+                        // Rectangle's fill (a negative z paints behind it and the fill
+                        // hides the pulse - exordy review finding 4639122138) while the
+                        // later bubbleContent sibling still paints fully opaque on top.
+                        // Radii mirrored from the bubble (border-radius: inherit),
+                        // opacity 0 -> 0.2 -> 0 per 1.6 s ease-in-out cycle while the
+                        // bubble awaits its read receipt. root.active is the Window.active
                         // stand-in for the reference activity gate, and reduced motion
                         // freezes the wash at the full 0.2 (app.styles.css:269-286).
                         // No visible text: the reference overlay is purely visual.
@@ -7949,7 +7951,7 @@ ApplicationWindow {
                             objectName: "message-read-pulse-" + String(messageRow.modelData.id)
                             anchors.fill: parent
                             visible: messageRow.readRequestPending
-                            z: -1
+                            z: 0
                             color: root.colors.accent
                             opacity: root.prefersReducedMotion ? 0.2 : 0
                             topLeftRadius: bubble.topLeftRadius
