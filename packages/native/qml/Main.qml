@@ -1752,11 +1752,71 @@ component NativeMentionChip: Item {
     }
 
     component LoginFieldLabel: Text {
+        Layout.preferredHeight: 20
+        verticalAlignment: Text.AlignVCenter
         color: root.colors["text-primary"]
         font.pixelSize: 14
         font.weight: Font.Medium
         textFormat: Text.PlainText
         Layout.fillWidth: true
+    }
+
+    component LoginInput: NativeField {
+        id: loginInput
+        colors: root.colors
+        Layout.fillWidth: true
+        implicitHeight: 46
+        leftPadding: 13
+        rightPadding: 13
+        font.pixelSize: 16
+        property color fillColor: root.colors["bg-elevated"]
+        background: Rectangle {
+            radius: 8
+            color: loginInput.fillColor
+            border.width: loginInput.activeFocus ? 2 : 1
+            border.color: loginInput.activeFocus ? root.colors.accent : root.colors["border-subtle"]
+        }
+    }
+
+    component LoginAction: NativeButton {
+        id: actionButton
+        colors: root.colors
+        primary: true
+        Layout.fillWidth: true
+        implicitHeight: 36
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        background: Rectangle {
+            radius: 8
+            color: root.colors.accent
+            opacity: actionButton.enabled ? (actionButton.down ? 0.8 : 1) : 0.5
+            border.width: actionButton.visualFocus ? 2 : 0
+            border.color: root.colors.accent
+        }
+    }
+
+    component LoginBackAction: NativeButton {
+        id: backAction
+        colors: root.colors
+        Layout.fillWidth: true
+        implicitHeight: 36
+        text: qsTr("Back")
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        contentItem: Text {
+            text: backAction.text
+            color: root.colors["text-muted"]
+            font: backAction.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            opacity: backAction.enabled ? 1 : 0.5
+        }
+        background: Rectangle {
+            radius: 8
+            color: backAction.hovered ? root.colors["bg-elevated"] : "transparent"
+            border.width: backAction.visualFocus ? 1 : 0
+            border.color: root.colors.accent
+        }
     }
 
     Item {
@@ -1787,8 +1847,14 @@ component NativeMentionChip: Item {
                         || root.controller.savedAccounts.length > 0)
                     enabled: !root.controller.busy
                     Layout.alignment: Qt.AlignLeft
+                    implicitHeight: 20
                     padding: 0
                     spacing: 8
+                    background: Rectangle {
+                        color: "transparent"
+                        border.width: wizardBack.visualFocus ? 1 : 0
+                        border.color: root.colors.accent
+                    }
                     font.pixelSize: 14
                     text: root.controller.loginStep === "organization" ? qsTr("Back") : qsTr("Organization")
                     contentItem: RowLayout {
@@ -1818,6 +1884,8 @@ component NativeMentionChip: Item {
                     spacing: 4
                     Text {
                         objectName: "loginTitle"
+                        Layout.preferredHeight: 28
+                        verticalAlignment: Text.AlignVCenter
                         text: root.controller.savedAccounts.length ? qsTr("Add server") : qsTr("Connect to server")
                         textFormat: Text.PlainText
                         color: root.colors["text-primary"]
@@ -1828,6 +1896,8 @@ component NativeMentionChip: Item {
                     }
                     Text {
                         objectName: "loginDescription"
+                        Layout.preferredHeight: Math.max(20, lineCount * 20)
+                        verticalAlignment: Text.AlignVCenter
                         text: root.controller.loginStep === "organization"
                                 ? qsTr("Enter your organization address first.")
                                 : root.controller.loginStep === "otp"
@@ -1959,12 +2029,12 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            Layout.bottomMargin: 6
                             LoginFieldLabel { text: qsTr("Server address") }
-                            NativeField {
+                            LoginInput {
                                 id: serverInput
                                 objectName: "serverInput"
-                                colors: root.colors
-                                Layout.fillWidth: true
+                                fillColor: root.colors["text-field-bg"]
                                 implicitHeight: 40
                                 rightPadding: 40
                                 enabled: !root.controller.busy
@@ -2014,7 +2084,9 @@ component NativeMentionChip: Item {
                                     height: 24
                                     colors: root.colors
                                     asset: "chevron-down.svg"
-                                    glyphSize: 16
+                                    glyphWidth: 16
+                                    glyphHeight: 8
+                                    iconColor: root.colors["text-muted"]
                                     help: qsTr("Show options")
                                     focusPolicy: Qt.NoFocus
                                     onClicked: {
@@ -2113,11 +2185,8 @@ component NativeMentionChip: Item {
                             }
                         }
                         LoginErrorBanner { objectName: "organizationErrorBanner" }
-                        NativeButton {
+                        LoginAction {
                             objectName: "organizationNextButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
                             text: root.controller.organizationLoading ? qsTr("Loading organization settings…") : qsTr("Next")
                             // Pressing Continue while a blur-triggered check is
                             // in flight merges with it instead of waiting.
@@ -2138,17 +2207,15 @@ component NativeMentionChip: Item {
                         radius: 8
                         color: root.colors["bg-elevated"]
                         border.color: root.colors["border-subtle"]
-                        implicitHeight: realmPreviewContent.implicitHeight + 24
+                        implicitHeight: realmPreviewContent.implicitHeight + 26
                         ColumnLayout {
                             id: realmPreviewContent
                             x: 16
-                            y: 12
+                            y: 13
                             width: parent.width - 32
                             spacing: 8
                             Item {
                                 Layout.alignment: Qt.AlignHCenter
-                                Layout.topMargin: 4
-                                Layout.bottomMargin: 4
                                 width: 48
                                 height: 48
                                 Image {
@@ -2166,6 +2233,8 @@ component NativeMentionChip: Item {
                             }
                             Text {
                                 objectName: "realmPreviewName"
+                                Layout.preferredHeight: Math.max(20, lineCount * 20)
+                                verticalAlignment: Text.AlignVCenter
                                 Layout.alignment: Qt.AlignHCenter
                                 text: root.controller.organizationSettings.realmName || ""
                                 visible: text.trim().length > 0
@@ -2187,16 +2256,15 @@ component NativeMentionChip: Item {
                         && (root.controller.loginStep === "credentials" || root.controller.loginStep === "otp")
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
-                        spacing: 12
+                        spacing: 16
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            Layout.bottomMargin: 6
                             LoginFieldLabel { text: qsTr("Email or login") }
-                            NativeField {
+                            LoginInput {
                                 id: userInput
                                 objectName: "userInput"
-                                colors: root.colors
-                                Layout.fillWidth: true
                                 enabled: !root.controller.busy
                                 placeholderText: qsTr("email@example.com or login")
                                 Component.onCompleted: text = root.controller.loginUsername
@@ -2207,12 +2275,11 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            Layout.bottomMargin: 6
                             LoginFieldLabel { text: qsTr("Password") }
-                            NativeField {
+                            LoginInput {
                                 id: passwordInput
                                 objectName: "passwordInput"
-                                colors: root.colors
-                                Layout.fillWidth: true
                                 enabled: !root.controller.busy
                                 placeholderText: "••••••••"
                                 echoMode: TextInput.Password
@@ -2222,12 +2289,9 @@ component NativeMentionChip: Item {
                             }
                         }
                         LoginErrorBanner {}
-                        NativeButton {
+                        LoginAction {
                             id: signInButton
                             objectName: "signInButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Next")
                             enabled: !root.controller.busy
                             onClicked: {
@@ -2245,6 +2309,7 @@ component NativeMentionChip: Item {
                         Loader {
                             Layout.fillWidth: true
                             active: (root.controller.organizationSettings.registrationUrl || "").length > 0
+                            visible: active
                             sourceComponent: ColumnLayout {
                                 objectName: "registrationBlock"
                                 spacing: 8
@@ -2303,22 +2368,25 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
-                            Text {
-                                text: qsTr("Authentication code")
-                                color: root.colors["text-primary"]
-                                font.pixelSize: 14
-                                font.weight: Font.Medium
-                                Layout.fillWidth: true
-                            }
+                            Layout.bottomMargin: 6
+                            LoginFieldLabel { text: qsTr("Authentication code") }
                             NativeField {
                                 id: otpInput
                                 objectName: "otpInput"
                                 colors: root.colors
                                 Layout.fillWidth: true
-                                implicitHeight: 50
+                                implicitHeight: 47
                                 padding: 12
                                 enabled: !root.controller.busy
                                 placeholderText: "000000"
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: otpInput.activeFocus && !otpInput.text.length
+                                    text: otpInput.placeholderText
+                                    font: otpInput.font
+                                    color: otpInput.placeholderTextColor
+                                    Accessible.ignored: true
+                                }
                                 background: Rectangle {
                                     radius: 8
                                     color: root.colors["bg-elevated"]
@@ -2367,47 +2435,19 @@ component NativeMentionChip: Item {
                                 Accessible.role: Accessible.AlertMessage
                             }
                         }
-                        NativeButton {
+                        LoginAction {
                             id: otpConfirmButton
                             objectName: "otpConfirmButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
-                            implicitHeight: 36
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Confirm code")
-                            background: Rectangle {
-                                radius: 8
-                                color: root.colors.accent
-                                opacity: otpConfirmButton.enabled ? (otpConfirmButton.down ? 0.8 : 1) : 0.5
-                                border.width: otpConfirmButton.visualFocus ? 2 : 0
-                                border.color: root.colors.accent
-                            }
                             enabled: !root.controller.busy && otpInput.text.length === 6
                             onClicked: {
                                 if (!enabled) return
                                 root.controller.submitOtp(otpInput.text)
                             }
                         }
-                        NativeButton {
-                            id: otpBackButton
+                        LoginBackAction {
                             objectName: "otpBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            implicitHeight: 36
-                            text: qsTr("Back")
                             enabled: !root.controller.busy
-                            contentItem: Text {
-                                text: otpBackButton.text
-                                color: root.colors["text-muted"]
-                                font: otpBackButton.font
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                                opacity: otpBackButton.enabled ? 1 : 0.5
-                            }
-                            background: Rectangle {
-                                radius: 8
-                                color: otpBackButton.hovered ? root.colors["bg-elevated"] : "transparent"
-                            }
                             onClicked: root.controller.backToCredentials()
                         }
                     }
@@ -2427,14 +2467,10 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
-                            Text {
+                            Layout.bottomMargin: 6
+                            LoginFieldLabel {
                                 objectName: "projectStepLabel"
                                 text: qsTr("Project")
-                                textFormat: Text.PlainText
-                                color: root.colors["text-primary"]
-                                font.pixelSize: 14
-                                font.weight: Font.Medium
-                                Layout.fillWidth: true
                             }
                             NativeSelect {
                                 id: projectSelect
@@ -2481,22 +2517,11 @@ component NativeMentionChip: Item {
                                 Accessible.role: Accessible.AlertMessage
                             }
                         }
-                        NativeButton {
+                        LoginAction {
                             id: projectLoginButton
                             objectName: "projectLoginButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
-                            implicitHeight: 36
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Login")
                             enabled: !root.controller.busy && projectSelect.currentIndex >= 0
-                            background: Rectangle {
-                                radius: 8
-                                color: root.colors.accent
-                                opacity: projectLoginButton.enabled ? (projectLoginButton.down ? 0.8 : 1) : 0.5
-                                border.width: projectLoginButton.visualFocus ? 2 : 0
-                                border.color: root.colors.accent
-                            }
                             onClicked: {
                                 if (!enabled) return
                                 root.controller.openProject(projectSelect.currentValue)
@@ -2562,12 +2587,11 @@ component NativeMentionChip: Item {
                         }
                     }
                 }
-                NativeButton {
+                LoginBackAction {
                     objectName: "projectCredentialsBackButton"
                     visible: root.controller.loginStep === "project"
-                    colors: root.colors
-                    Layout.fillWidth: true
-                    text: qsTr("Back")
+                    // The project footer follows its form with a 16 px gap.
+                    Layout.topMargin: 16 - loginContent.spacing
                     enabled: !root.controller.busy
                     onClicked: root.controller.backToCredentials()
                 }
