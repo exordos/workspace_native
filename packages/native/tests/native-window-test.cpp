@@ -23297,6 +23297,8 @@ private:
         QVERIFY(list->property("contentY").toReal() < beforeBoundary - 100);
         QCOMPARE(olderMarkers.size(), 2);
         QTRY_COMPARE(controller.messages().size(), 120);
+        QTRY_VERIFY(list->property("count").toInt() == 120 && !list->property("positioning").toBool());
+        QVERIFY(settleWheel());
         QVERIFY(!controller.canLoadOlder());
         // Direction reversal at the exhausted history end: no new requests,
         // no loop, and scrolling stays responsive.
@@ -32983,23 +32985,30 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(controller.projects().size(),1,2000);
         controller.openProject(projectId);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("folder-all") && visibleItem("folder-"+folderFocus), 5000);
-        const auto rightClick=[&](const QString &objectName){
-            auto *cell=visibleItem(objectName); QVERIFY(cell);
-            const auto point=cell->mapToScene(QPointF(cell->width()/2,cell->height()/2));
-            QTest::mouseClick(window,Qt::RightButton,Qt::NoModifier,point.toPoint());
+        auto *menu = window->findChild<QObject *>("folderContextMenu"); QVERIFY(menu);
+        const auto openMenu = [&](const QString &key) {
+            if (menu->property("visible").toBool()) {
+                QTest::keyClick(window, Qt::Key_Escape);
+                QTRY_VERIFY(!menu->property("visible").toBool());
+            }
+            auto *cell = visibleItem("folder-" + key); QVERIFY(cell);
+            const auto point = cell->mapToScene(QPointF(cell->width() / 2, cell->height() / 2));
+            QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, point.toPoint());
+            QTRY_VERIFY(menu->property("visible").toBool());
+            QCOMPARE(window->property("folderMenuTargetKey").toString(), key);
         };
         // All (pinned slot) and Personal (system slot): both actions disabled.
-        rightClick("folder-all");
+        openMenu("all");
         auto *renameAction=visibleItem("folderMenuRename"); QVERIFY(renameAction);
         auto *deleteAction=visibleItem("folderMenuDelete"); QVERIFY(deleteAction);
         QTRY_VERIFY_WITH_TIMEOUT(renameAction->property("visible").toBool(),3000);
         QVERIFY(!renameAction->property("enabled").toBool());
         QVERIFY(!deleteAction->property("enabled").toBool());
-        rightClick("folder-personal");
+        openMenu("personal");
         QVERIFY(!renameAction->property("enabled").toBool());
         QVERIFY(!deleteAction->property("enabled").toBool());
         // A created folder gets both actions enabled.
-        rightClick("folder-"+folderFocus);
+        openMenu(folderFocus);
         QVERIFY(renameAction->property("enabled").toBool());
         QVERIFY(deleteAction->property("enabled").toBool());
         QTest::keyClick(window,Qt::Key_Escape);
