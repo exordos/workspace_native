@@ -251,6 +251,11 @@ foreach(default_login_org IN ITEMS URL NAME)
     endif()
 endforeach()
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
+if(APPLE)
+    # QML loads the SVG image reader at runtime. macdeployqt discovers that
+    # plugin from the app's QtSvg framework dependency.
+    target_link_libraries(workspace-native PRIVATE "$<LINK_LIBRARY:NEEDED_FRAMEWORK,Qt6::Svg>")
+endif()
 qt_add_qml_module(workspace-native
     URI Exordos.Workspace.Native
     RESOURCE_PREFIX /workspace/qml

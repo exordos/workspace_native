@@ -20,3 +20,5 @@ Both archives carry the Qt SQLite driver used by the cache, diagnostics and key 
 CMake installs the application using Qt's QML deployment script. The package jobs build the pinned Markdown and keychain libraries against the same Qt kit. OpenSSL supplies the existing native TLS and HPKE APIs. The Windows and macOS smoke checks run independently so a failure on either platform remains visible.
 
 The package targets follow the [Qt QML deployment documentation](https://doc.qt.io/qt-6/qt-generate-deploy-qml-app-script.html).
+
+The Mac bundle links QtSvg so macdeployqt includes the SVG image reader used by QML. The clean launch checks that the extracted application loads that reader from its own bundle and reports any embedded startup icon that failed to decode. [Qt macOS plugin deployment](https://doc.qt.io/qt-6/macos-deployment.html)
