@@ -167,7 +167,8 @@ flag -> sibling page that hides the conversation column -> controller-enriched
 6. `activityStarredScrollPaginationFollowsMarkerAndRearm` covers an overflowing
    first page. Opening or resizing it can briefly give the list unfinished
    dimensions. The page keeps its marker until the settled view scrolls within
-   64 px of the bottom and rearms beyond 96 px.
+   64 px of the bottom and rearms beyond 96 px. Closing the view cancels
+   its pending pagination check.
 7. `activityStarredShortFirstPageAutoLoadsNextMarker` covers a first page that
    fits after layout. The list follows its marker automatically.
 8. `activityStarredErrorAndEmptyStates` checks the English and Russian strings.

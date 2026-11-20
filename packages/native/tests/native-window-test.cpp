@@ -5968,8 +5968,16 @@ mv -Tf "$root/.current-new" "$root/current"
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
+    void activityStarredScrollPaginationFollowsMarkerAndRearm_data()
+    {
+        QTest::addColumn<bool>("closeBeforeNextFrame");
+        QTest::newRow("scroll") << false;
+        QTest::newRow("leave-page") << true;
+    }
+
     void activityStarredScrollPaginationFollowsMarkerAndRearm()
     {
+        QFETCH(bool, closeBeforeNextFrame);
         class WindowStarredPageFixture final : public WindowChannelFixture {
         public:
             int starredPages = 0;
@@ -6058,6 +6066,18 @@ mv -Tf "$root/.current-new" "$root/current"
         // the exact marker, and it does not re-fire while still down there.
         const auto travel = list->property("contentHeight").toReal() - list->height();
         list->setProperty("contentY", travel - 50.0);
+        if (closeBeforeNextFrame) {
+            controller.closeStarred();
+            QVERIFY(!list->isVisible());
+            // Let the queued pagination check return before inspecting the
+            // controller. An HTTP request may still be travelling to the fixture.
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+            const auto closedPage = controller.starredPage();
+            QCOMPARE(closedPage.value("rows").toList().size(), 12);
+            QVERIFY(closedPage.value("canLoadMore").toBool());
+            QCOMPARE(fixture.starredPages, 1);
+            return;
+        }
         QTRY_VERIFY_WITH_TIMEOUT(fixture.starredPages == 2, 3000);
         QCOMPARE(fixture.lastMarker, QStringLiteral("page2"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 14, 5000);
