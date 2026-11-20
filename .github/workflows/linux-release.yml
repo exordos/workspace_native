@@ -128,6 +128,7 @@ jobs:
           python3 packages/native/tests/release-notes-test.py -v
           python3 packages/native/tests/matched-screenshot-acceptance-test.py -v
           python3 packages/native/tests/warm-navigation-benchmark-test.py -v
+          python3 packages/native/tests/live-workspace-acceptance-test.py -v
 
       - name: Configure Release and installed runtime probe
         shell: bash
@@ -137,14 +138,14 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test native-about-policy-test native-updater-http2-recovery-driver native-updater-http2-controls-driver api-client-test domain-test native-draft-store-test native-draft-service-test native-drafts-test native-draft-sync-test --parallel "$(nproc)"
+        run: cmake --build build/linux-release --target workspace-native native-runtime-probe native-updater-test native-about-policy-test native-updater-http2-recovery-driver native-updater-http2-controls-driver api-client-test realtime-client-test domain-test native-draft-store-test native-draft-service-test native-drafts-test native-draft-sync-test --parallel "$(nproc)"
 
-      - name: Check draft, HTTP metadata, update transport and About contracts
+      - name: Check drafts, realtime events, HTTP metadata, update transport and About contracts
         env:
           QT_QPA_PLATFORM: offscreen
         run: >-
           dbus-run-session -- ctest --test-dir build/linux-release --parallel "$(nproc)"
-          -R '^native-(api-client|domain|native-draft-(store|service|sync)|native-drafts|updater|updater-http2-.*|about-policy)$'
+          -R '^native-(api-client|realtime-client|domain|native-draft-(store|service|sync)|native-drafts|updater|updater-http2-.*|about-policy)$'
           --output-on-failure --no-tests=error
 
       - name: Run the full release gate on Xvnc and Openbox

@@ -67,6 +67,84 @@ class NativeCacheServiceTest final : public QObject
         QTRY_VERIFY(state->returned); QVERIFY(!state->body);
     }
 
+    void queuedSnapshotCannotReplaceSurvivorsAfterAConfirmedDeletion()
+    {
+        QTemporaryDir directory;
+        QSemaphore release;
+        std::atomic_bool hold{false}, entered{false};
+        NativeCacheService service(directory.path(), {}, false, [&] {
+            if (hold.exchange(false)) { entered = true; release.acquire(); }
+            return qint64(10000);
+        });
+        const auto unblock = qScopeGuard([&] { release.release(); });
+        QVERIFY(service.open(Server, Project, User));
+        QTRY_VERIFY(service.available());
+        const auto lease = service.lease();
+        const NativeCache::Key topic{NativeCache::Kind::History, Stream, Topic, {}};
+        const NativeCache::Key aggregate{NativeCache::Kind::History, Stream, {}, {}};
+        const auto deleted = rows().first().toObject();
+        auto retained = deleted;
+        retained["uuid"] = "77777777-7777-4777-8777-777777777777";
+        bool flushed = false;
+        for (const auto &key : {topic, aggregate}) QVERIFY(service.put(lease, key, {retained, deleted}));
+        service.flush(this, [&](bool okay) { flushed = okay; });
+        QTRY_VERIFY(flushed);
+        hold = true;
+        service.get(lease, topic, this, [](auto) {});
+        QTRY_VERIFY(entered.load());
+        for (const auto &key : {topic, aggregate}) QVERIFY(service.put(lease, key, {}));
+        bool completed = false;
+        QVERIFY(service.removeDeletedMessage(lease, Stream, Topic, deleted["uuid"].toString(), this,
+            [&](bool okay) { completed = okay; }));
+        release.release();
+        QTRY_VERIFY(completed);
+        flushed = false;
+        service.flush(this, [&](bool okay) { flushed = okay; });
+        QTRY_VERIFY(flushed);
+        NativeCache inspect(directory.path());
+        QVERIFY(inspect.open(Server, Project, User));
+        for (const auto &key : {topic, aggregate}) {
+            const auto page = inspect.get(inspect.lease(), key);
+            QVERIFY(page);
+            QCOMPARE(page->rows, QJsonArray{retained});
+        }
+    }
+
+    void failedSelectiveDeletionCannotReappearWhenTheCacheReopens()
+    {
+        QTemporaryDir directory;
+        NativeCacheService service(directory.path());
+        QVERIFY(service.open(Server, Project, User));
+        QTRY_VERIFY(service.available());
+        const auto lease = service.lease();
+        const NativeCache::Key topic{NativeCache::Kind::History, Stream, Topic, {}};
+        const auto deleted = rows().first().toObject();
+        auto retained = deleted;
+        retained["uuid"] = "77777777-7777-4777-8777-777777777777";
+        bool saved = false;
+        QVERIFY(service.put(lease, topic, {retained, deleted}, {}, this, [&](bool ok) { saved = ok; }));
+        QTRY_VERIFY(saved);
+        const auto connection = QUuid::createUuid().toString();
+        {
+            auto database = QSqlDatabase::addDatabase("QSQLITE", connection);
+            database.setDatabaseName(directory.filePath("cache.sqlite3"));
+            QVERIFY(database.open());
+            QSqlQuery query(database);
+            QVERIFY(query.exec("CREATE TRIGGER stop_page_rewrite BEFORE UPDATE OF payload ON entries "
+                               "BEGIN SELECT RAISE(ABORT,'test rejected page update'); END"));
+        }
+        QSqlDatabase::removeDatabase(connection);
+        const auto id = deleted["uuid"].toString();
+        bool finished = false;
+        QVERIFY(service.removeDeletedMessage(lease, Stream, Topic, id, this, [&](bool okay) { finished = okay; }));
+        service.close();
+        QTRY_VERIFY(finished);
+        NativeCache inspect(directory.path());
+        QVERIFY(inspect.open(Server, Project, User));
+        const auto page = inspect.get(inspect.lease(), topic);
+        QVERIFY(!page || !page->rows.contains(deleted));
+    }
+
     void authoritativeBodyOmissionSurvivesFullOrdinaryQueuesAndDominatesOldWrites()
     {
         struct State {
