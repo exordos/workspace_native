@@ -2338,6 +2338,7 @@ private:
     // Issue #165: inactivity guard and the preference scope it is bound to.
     NativeAuthGuard *m_authGuard = nullptr;
     QPointer<NativePreferences> m_authPrefsBound;
+    QMetaObject::Connection m_sidebarSortBinding, m_sidebarLocaleBinding;
     bool m_organizationLoading = false;
     quint64 m_organizationAttempt = 0;
     QString m_syncState;

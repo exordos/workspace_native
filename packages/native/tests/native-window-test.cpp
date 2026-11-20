@@ -22365,6 +22365,85 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!scene.controller.authenticated());
     }
 
+    void accountPreferencePanelsApplyAndPersist_data()
+    {
+        QTest::addColumn<bool>("appearance");
+        QTest::newRow("settings-light-en") << false;
+        QTest::newRow("appearance-dark-ru") << true;
+    }
+
+    void accountPreferencePanelsApplyAndPersist()
+    {
+        QFETCH(bool, appearance);
+        ChannelInfoWindowScene scene;
+        scene.controller.setPreferences(&scene.preferences);
+        scene.preferences.setMode(appearance ? "dark" : "light");
+        scene.preferences.setLocale(appearance ? "ru" : "en");
+        if (appearance) {
+            auto second = scene.fixture.secondStreamRow;
+            second["name"] = "Aardvark";
+            second["kind"] = "stream.updated";
+            QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId},
+                {"project_id", projectId}, {"user_uuid", userId}, {"payload", second}}));
+            QTRY_COMPARE(scene.controller.sidebarStreams().first().toMap().value("id").toString(), streamId);
+        }
+        click(scene.window, visibleItem("accountMenuButton"));
+        const QString entry = appearance ? "accountAppearanceAction" : "accountSettingsAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(scene.window, visibleItem(entry));
+        const auto choose = [&](const QString &key, const QString &value) {
+            const auto trigger = "accountSetting-" + key;
+            const auto option = "accountOption-" + key + "-" + value;
+            QTRY_VERIFY(visibleItem(trigger));
+            click(scene.window, visibleItem(trigger));
+            QTRY_VERIFY(visibleItem(option));
+            click(scene.window, visibleItem(option));
+            QTRY_VERIFY(visibleItem(option)->property("checked").toBool());
+            click(scene.window, visibleItem(trigger));
+            QTRY_VERIFY(!visibleItem(option));
+        };
+        if (appearance) {
+            auto *summary = visibleItem("accountSettingValue-theme");
+            QVERIFY(summary);
+            QCOMPARE(summary->property("text").toString(),
+                QCoreApplication::translate("NativeAccountPreferences", "Dark"));
+            click(scene.window, visibleItem("accountSetting-theme"));
+            QTRY_VERIFY(visibleItem("accountOption-mode-light"));
+            click(scene.window, visibleItem("accountOption-mode-light"));
+            click(scene.window, visibleItem("accountSetting-theme"));
+            QTRY_VERIFY(!visibleItem("accountOption-mode-light"));
+            QCOMPARE(summary->property("text").toString(),
+                QCoreApplication::translate("NativeAccountPreferences", "Light"));
+            choose("sidebarSortMode", "alphabetical");
+            QCOMPARE(scene.preferences.property("sidebarSortMode").toString(), QString("alphabetical"));
+            QTRY_COMPARE(scene.controller.sidebarStreams().first().toMap().value("id").toString(), scene.fixture.secondStreamRow.value("uuid").toString());
+            auto *first = visibleItem("stream-" + scene.fixture.secondStreamRow.value("uuid").toString());
+            auto *other = visibleItem("stream-" + streamId);
+            QVERIFY(first && other);
+            QTRY_VERIFY(first->mapToScene(QPointF{}).y() < other->mapToScene(QPointF{}).y());
+            choose("folderRailLayout", "horizontal");
+            QCOMPARE(scene.preferences.folderRailLayout(), QString("horizontal"));
+            choose("chatListDensity", "compact");
+            QCOMPARE(scene.preferences.chatListDensity(), QString("compact"));
+        } else {
+            choose("chatClickAction", "latestTopic");
+            QCOMPARE(scene.preferences.chatClickAction(), QString("latestTopic"));
+            QSignalSpy preview(&scene.preferences, SIGNAL(notificationSoundRequested(QString)));
+            QVERIFY(preview.isValid());
+            choose("notificationSound", "glass");
+            QCOMPARE(preview.size(), 1);
+            QCOMPARE(preview.first().first().toString(), QString("glass"));
+            choose("notificationSound", "none");
+            QCOMPARE(preview.size(), 1);
+            choose("authIdleTimeout", "12h");
+            QCOMPARE(scene.preferences.authIdleTimeout(), QString("12h"));
+            NativePreferences restored(scene.directory.filePath("channel-info.ini"));
+            restored.setOwner(scene.controller.ownerKey());
+            QCOMPARE(restored.authIdleTimeout(), QString("12h"));
+            QCOMPARE(restored.property("notificationSound").toString(), QString("none"));
+        }
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;
@@ -32597,7 +32676,6 @@ private slots:
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("chat-click-latest.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
-        preferences.setChatClickAction("latestTopic");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
@@ -32612,6 +32690,14 @@ private slots:
         QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
         QTRY_VERIFY(visibleItem("stream-"+streamId));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(window, visibleItem("accountSettingsAction"));
+        QTRY_VERIFY(visibleItem("accountSetting-chatClickAction"));
+        click(window, visibleItem("accountSetting-chatClickAction"));
+        click(window, visibleItem("accountOption-chatClickAction-latestTopic"));
+        QTRY_COMPARE(preferences.chatClickAction(), QString("latestTopic"));
+        click(window, visibleItem("nativeRightDrawerClose"));
         // Reference sidebar-workspace.ui.tsx:446-462: the latestTopic body link is
         // `stream.preview?.route ?? stream.route`. While the last message is unknown the
         // body click falls back to the stream itself.

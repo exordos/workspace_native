@@ -122,6 +122,17 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
 # precedent). tests/licenses-dataset-test.py guards shape and determinism as a
 # direct python check; it is not a CTest group so the group count stays stable.
 find_program(WORKSPACE_NATIVE_PYTHON3 NAMES python3 REQUIRED)
+set(native_sound_dir "${CMAKE_CURRENT_BINARY_DIR}/notification-sounds")
+set(native_sounds)
+foreach(preset default subtle digital glass pulse)
+    list(APPEND native_sounds "${native_sound_dir}/${preset}.wav")
+endforeach()
+add_custom_command(OUTPUT ${native_sounds}
+    COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-notification-sounds.py" "${native_sound_dir}"
+    DEPENDS scripts/generate-notification-sounds.py VERBATIM)
+set_source_files_properties(${native_sounds} PROPERTIES GENERATED TRUE)
+qt_add_resources(workspace-native-ui native_sounds PREFIX /workspace/sounds
+    BASE "${native_sound_dir}" FILES ${native_sounds})
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(native_md4c QUIET md4c)
@@ -149,7 +160,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
-qml/NativeSelect.qml
+qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeDownloadCenter.qml
 qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
@@ -178,6 +189,7 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
     grid dashboard_customize
+    wb_sunny bedtime desktop_windows
     # Sidebar pinned-chat meta glyph (issue #96, docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md).
     pin
     # Sidebar topic notification-mode indicator glyph (issue #97,
