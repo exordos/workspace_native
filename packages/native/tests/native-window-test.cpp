@@ -11,6 +11,7 @@
 #include "file-client.h"
 #include "avatar-images.h"
 #include "message-images.h"
+#include "workspace-reference.h"
 
 #include <functional>
 #include <algorithm>
@@ -21046,6 +21047,158 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
         }
+    }
+
+    void composerPreviewShowsTheBodyItSends_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("inlineFile");
+        QTest::addColumn<bool>("reply");
+        QTest::newRow("en-light-missing") << QString("en") << QString("light") << false << false;
+        QTest::newRow("en-dark-inline") << QString("en") << QString("dark") << true << false;
+        QTest::newRow("ru-light-inline") << QString("ru") << QString("light") << true << false;
+        QTest::newRow("ru-dark-missing") << QString("ru") << QString("dark") << false << false;
+        QTest::newRow("en-quoted-missing") << QString("en") << QString("light") << false << true;
+        QTest::newRow("ru-quoted-inline") << QString("ru") << QString("dark") << true << true;
+    }
+
+    void composerPreviewShowsTheBodyItSends()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        QFETCH(bool, inlineFile);
+        QFETCH(bool, reply);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QFile file(directory.filePath("fixture.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("fixture"), 7);
+        file.close();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QJsonObject canonical;
+        auto editable = message("Reply source", messageId);
+        QString posted, saved;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{editable}};
+            if (path.endsWith("/messages/" + messageId)) {
+                if (request.method == "PUT") {
+                    editable["payload"] = request.body.value("payload");
+                    saved = editable.value("payload").toObject().value("content").toString();
+                }
+                if (request.method == "GET" || request.method == "PUT")
+                    return {editable};
+            }
+            if (request.method == "POST" && path.endsWith("/files/")) {
+                return {QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "fixture.txt"},
+                    {"size_bytes", 7}, {"content_type", "text/plain"},
+                    {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}, 201};
+            }
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                canonical = message(posted, request.body.value("uuid").toString());
+                return {canonical, 201};
+            }
+            if (request.method == "GET" && !canonical.isEmpty() && path.endsWith("/messages/" + canonical.value("uuid").toString()))
+                return {canonical};
+            return fallback(request);
+        };
+        NativePreferences preferences(directory.filePath("preview.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api);
+        FileClient files(&api); NativeController controller(&api, &session); controller.useFiles(&files);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guarded = QPointer<QQuickWindow>(window)] {
+            if (guarded) closeIncubatedTestWindow(engine, guarded.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *expand = view("composerToolbarExpand"); QVERIFY(expand);
+        QVERIFY(!view("composerPreviewToggle"));
+        click(window, expand);
+        auto *toggle = view("composerPreviewToggle");
+        QVERIFY2(toggle, "The expanded composer toolbar must expose Preview");
+        auto *collapse = view("composerToolbarCollapse"); QVERIFY(collapse);
+        auto *accessible = QAccessible::queryAccessibleInterface(toggle);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru" ? QString("Предпросмотр") : QString("Preview"));
+        QVERIFY(accessible->state().checkable && !accessible->state().checked);
+        click(window, toggle);
+        QTRY_VERIFY(view("composerPreviewEmpty"));
+        QCOMPARE(view("composerPreviewEmpty")->property("text").toString(),
+            locale == "ru" ? QString("Пока нечего предпросматривать") : QString("Nothing to preview yet"));
+        auto *preview = view("composerPreviewRegion");
+        QVERIFY(preview);
+        QTRY_COMPARE(preview->height(), 40.0);
+        const auto longBody = QStringLiteral("## Heading\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+            "```cpp\nconst int a = 1;\n```\n\n||inside||\n\n") + QString("line\n\n").repeated(45);
+        controller.setDraft(longBody);
+        auto *markdown = view("composerPreviewMarkdown");
+        QTRY_VERIFY(markdown = view("composerPreviewMarkdown"));
+        QTRY_COMPARE(preview->height(), 128.0);
+        QVERIFY(markdown->height() > preview->height());
+        const auto viewport = qobject_cast<QQuickItem *>(preview->property("contentItem").value<QObject *>());
+        QVERIFY(viewport);
+        const auto center = preview->mapToScene({preview->width() / 2, preview->height() / 2});
+        QTest::wheelEvent(window, center, QPoint(0, -720));
+        QTRY_VERIFY(viewport->property("contentY").toReal() > 0);
+        controller.setDraft(QString(40001, 'x'));
+        NativeMarkdown renderer;
+        QTRY_COMPARE(markdown->property("text").toString(), renderer.render(controller.draft()).value("html").toString());
+        controller.setDraft({});
+        QTRY_VERIFY(view("composerPreviewEmpty"));
+        QVERIFY(!collapse->isEnabled() && !view("messageComposer") && !view("composerAiButton"));
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru" ? QString("Написание") : QString("Write"));
+        QVERIFY(accessible->state().checked);
+        click(window, toggle);
+        QTRY_VERIFY(view("messageComposer") && collapse->isEnabled() && view("composerAiButton"));
+        QString quote;
+        if (reply) {
+            QVERIFY(controller.beginReply(messageId));
+            quote = workspace::buildWorkspaceQuoteReference(controller.replyAuthor(), messageId);
+            QVERIFY(quote.contains("urn:quote:" + messageId));
+        }
+        controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!controller.uploadEntries().isEmpty()
+                    && controller.uploadEntries().first().toMap().value("status").toString() == "ready");
+        const auto link = controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        const QString body = inlineFile ? "**before** " + link + " after" : QString("**before** and after");
+        controller.setDraft(body);
+        click(window, toggle);
+        auto *rendered = view("composerPreviewMarkdown");
+        QTRY_VERIFY(rendered = view("composerPreviewMarkdown"));
+        const auto plain = inlineFile ? body : link + '\n' + body;
+        const auto outgoing = reply ? quote + "\n\n" + (inlineFile ? body : link + "\n\n" + body) : plain;
+        QCOMPARE(rendered->property("sourceMarkdown").toString(), outgoing);
+        QCOMPARE(rendered->property("sourceMarkdown").toString().count(link), 1);
+        QCOMPARE(rendered->property("text").toString(), renderer.render(outgoing).value("html").toString());
+        QCOMPARE(controller.draft(), body);
+        QVERIFY(posted.isEmpty());
+        auto *send = view("sendButton"); QVERIFY(send && send->isEnabled());
+        click(window, send);
+        QTRY_COMPARE(posted, outgoing);
+        QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
+        QTRY_VERIFY(controller.draft().isEmpty());
+
+        QVERIFY(controller.beginEditMessage(messageId));
+        const QString revision = "Edited **reply source**";
+        controller.setDraft(revision);
+        click(window, toggle);
+        QTRY_VERIFY(rendered = view("composerPreviewMarkdown"));
+        QCOMPARE(rendered->property("sourceMarkdown").toString(), revision);
+        auto *save = view("saveEditButton"); QVERIFY(save && save->isEnabled());
+        click(window, save);
+        QTRY_COMPARE(saved, revision);
+        QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
+        QTRY_VERIFY(controller.editingMessageId().isEmpty());
     }
 
     void composerAiNoticeTracksItsTriggerAndOtherPickers_data()

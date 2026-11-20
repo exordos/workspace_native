@@ -16228,6 +16228,45 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
     });
 }
 
+QString NativeController::composerPreviewBody() const
+{
+    const auto *stream = currentStream();
+    if (!stream) return {};
+    if (stream->encrypted) return canCompose() ? draft() : QString{};
+    return (m_editingMessage.isEmpty() ? composeSendBody() : composeEditBody()).value_or(QString{});
+}
+
+std::optional<QString> NativeController::composeSendBody() const
+{
+    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
+    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
+    // mention serialization happens before the reply quote prefix join) and
+    // apply to every tab's answer, not just the active draft.
+    const auto mentionEntries = composerMentionEntries();
+    auto wire = replaceImageAliases(serializeComposerMentions(draft(), mentionEntries), true);
+    const auto attachments = readyUploadLinks(0);
+    if (!m_replyTabs.isEmpty()) {
+        QStringList blocks;
+        for (const auto &tab : std::as_const(m_replyTabs)) {
+            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
+                replyTabAuthor(tab), tab.message, tab.selectedText);
+            if (quoteLine.isEmpty()) {
+                return std::nullopt;
+            }
+            // The active tab answers with the live composer text; the others
+            // carry the answer captured while they were active - both get the
+            // same mention serialization.
+            auto answer = (tab.id == m_replyActiveTab ? wire
+                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
+            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
+        }
+        auto body = blocks.join(QStringLiteral("\n\n"));
+        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
+        wire = body;
+    }
+    return prependUploadedLinks(wire, attachments);
+}
+
 void NativeController::send()
 {
     if (!m_editingMessage.isEmpty()) return;
@@ -16245,38 +16284,16 @@ void NativeController::send()
     QJsonArray replySnapshot;
     for (const auto &tab : std::as_const(m_replyTabs))
         replySnapshot.append(QJsonArray{tab.id, tab.message, tab.answer});
-    // Visible "@DisplayName" texts convert to canonical mention URNs on the wire
-    // only (message-composer-body.lib.ts buildOutgoingMessageBody order:
-    // mention serialization happens before the reply quote prefix join) and
-    // apply to every tab's answer, not just the active draft.
-    const auto mentionEntries = composerMentionEntries();
-    auto wire = replaceImageAliases(serializeComposerMentions(text, mentionEntries), true);
-    const auto attachments = readyUploadLinks(0);
+    const auto composed = composeSendBody();
+    if (!composed) {
+        report(tr("This message can no longer be replied to."));
+        return;
+    }
+    const auto &wire = *composed;
     QList<quint64> transferredUploads;
     for (const auto &entry : std::as_const(m_uploadEntries))
         if (entry.task.editSession == 0 && entry.task.conversation == conversationKey()
             && entry.owner == creationOwnerKey() && entry.status == "ready") transferredUploads.append(entry.task.intent);
-    if (!m_replyTabs.isEmpty()) {
-        QStringList blocks;
-        for (const auto &tab : std::as_const(m_replyTabs)) {
-            const auto quoteLine = workspace::buildWorkspaceQuoteReference(
-                replyTabAuthor(tab), tab.message, tab.selectedText);
-            if (quoteLine.isEmpty()) {
-                report(tr("This message can no longer be replied to."));
-                return;
-            }
-            // The active tab answers with the live composer text; the others
-            // carry the answer captured while they were active - both get the
-            // same mention serialization.
-            auto answer = (tab.id == m_replyActiveTab ? wire
-                : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
-            blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
-        }
-        auto body = blocks.join(QStringLiteral("\n\n"));
-        while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
-        wire = body;
-    }
-    wire = prependUploadedLinks(wire, attachments);
     if (!boundedText(wire, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;
@@ -18654,11 +18671,8 @@ void NativeController::cancelEditMessage()
     closeEditSession();
 }
 
-void NativeController::submitEditMessage()
+std::optional<QString> NativeController::composeEditBody() const
 {
-    if (m_editingMessage.isEmpty()) return;
-    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
-    const auto id = m_editingMessage;
     auto text = editAnswer(m_editBuffer, m_editRestoresReply ? m_replyActiveTab : QString());
     // Issue #202: a restored edit re-serializes every quote block the same way a
     // reply send does - quote line + blank line + answer per tab, joined by blank
@@ -18672,8 +18686,7 @@ void NativeController::submitEditMessage()
                 : workspace::buildWorkspaceQuoteReference(replyAuthorFor(tab.message),
                     tab.message, tab.selectedText);
             if (quoteLine.isEmpty()) {
-                report(tr("This message can no longer be replied to."));
-                return;
+                return std::nullopt;
             }
             const auto answer = (tab.id == m_replyActiveTab ? text : editAnswer(tab.answer, tab.id)).trimmed();
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
@@ -18684,7 +18697,20 @@ void NativeController::submitEditMessage()
     text = replaceImageAliases(text, true);
     if (m_editRestoresReply && !m_replyTabs.isEmpty())
         text = NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(QString()));
-    text = prependUploadedLinks(text, readyUploadLinks(m_editSession));
+    return prependUploadedLinks(text, readyUploadLinks(m_editSession));
+}
+
+void NativeController::submitEditMessage()
+{
+    if (m_editingMessage.isEmpty()) return;
+    if (!canSaveEdit()) return;   // the disabled save control also means "do not submit"
+    const auto id = m_editingMessage;
+    const auto composed = composeEditBody();
+    if (!composed) {
+        report(tr("This message can no longer be replied to."));
+        return;
+    }
+    const auto &text = *composed;
     if (text.size() > 40000 || !boundedText(text, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;

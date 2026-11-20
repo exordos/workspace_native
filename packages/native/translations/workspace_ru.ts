@@ -61,7 +61,22 @@
         </message>
     </context>
     <context>
+        <name>ComposerMode</name>
+        <message>
+            <source>Preview</source>
+            <translation>Предпросмотр</translation>
+        </message>
+        <message>
+            <source>Write</source>
+            <translation>Написание</translation>
+        </message>
+    </context>
+    <context>
         <name>Main</name>
+        <message>
+            <source>Nothing to preview yet</source>
+            <translation>Пока нечего предпросматривать</translation>
+        </message>
         <message>
             <source>AI assistant</source>
             <translation>AI assistant</translation>
