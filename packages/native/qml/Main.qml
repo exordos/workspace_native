@@ -4893,6 +4893,7 @@ component NativeMentionChip: Item {
                 x: 0
                 width: parent.width
                 y: (root.normalizedSidebarQuery.length ? 60 : 104) + sidebar.folderRailInset
+                    + sidebarActivityPanel.expandedDelta
                 height: Math.max(sidebarLoadingCard.visible ? sidebarLoadingCard.y + sidebarLoadingCard.height + 16 : 0,
                     sidebarErrorCard.visible ? sidebarErrorCard.y + sidebarErrorCard.height + 16 : 0,
                     sidebarEmptyCard.visible ? sidebarEmptyCard.y + sidebarEmptyCard.height + 16 : 0,
