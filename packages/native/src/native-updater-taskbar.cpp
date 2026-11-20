@@ -1,4 +1,5 @@
 #include "native-updater-taskbar.h"
+#include "native-platform-shell.h"
 
 #include "native-updater.h"
 
@@ -166,8 +167,10 @@ void UpdaterTaskbarProgress::publish(qreal hint)
     // Fire-and-forget: without a listening launcher the daemon simply drops the
     // signal (harmless on bare WMs), so no delivery state exists to track.
     QDBusConnection::sessionBus().send(update);
+#elif defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    setPlatformTaskbarProgress(m_window, hint);
 #else
-    Q_UNUSED(hint); // macOS DockTile / Windows ITaskbarList3: out of scope (see docs).
+    Q_UNUSED(hint);
 #endif
 }
 
