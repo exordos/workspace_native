@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include "native-hotkeys.h"
 #include <QSettings>
 #include <QPointer>
 #include <QRect>
@@ -19,6 +20,7 @@ namespace workspace {
 
 class NativePreferences final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(workspace::NativeHotkeys *hotkeys READ hotkeys CONSTANT)
     Q_PROPERTY(QString paletteId READ paletteId WRITE setPaletteId NOTIFY paletteIdChanged)
     Q_PROPERTY(QString mode READ mode WRITE setMode NOTIFY modeChanged)
     Q_PROPERTY(QString locale READ locale WRITE setLocale NOTIFY localeChanged)
@@ -51,6 +53,7 @@ class NativePreferences final : public QObject {
     Q_PROPERTY(QString folderRailLayout READ folderRailLayout WRITE setFolderRailLayout NOTIFY folderRailLayoutChanged)
     Q_PROPERTY(bool showSystemFolders READ showSystemFolders WRITE setShowSystemFolders NOTIFY showSystemFoldersChanged)
 public:
+    NativeHotkeys *hotkeys() { return &m_hotkeys; }
     explicit NativePreferences(QString settingsFile = {}, QObject *parent = nullptr,
                                std::function<QDate()> utcToday = {});
     ~NativePreferences() override;
@@ -204,6 +207,7 @@ private:
     void saveWindow();
     void saveLastConversation();
     QSettings m_settings;
+    NativeHotkeys m_hotkeys;
     QString m_owner;
     QString m_palette = QStringLiteral("blue-cold");
     QString m_mode = QStringLiteral("system");

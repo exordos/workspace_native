@@ -96,11 +96,12 @@ QString normalizeOrganizationOrigin(const QString &value)
 } // namespace
 
 NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std::function<QDate()> utcToday)
-    : QObject(parent), m_settings(preferencesPath(settingsFile), QSettings::IniFormat),
+    : QObject(parent), m_settings(preferencesPath(settingsFile), QSettings::IniFormat), m_hotkeys(m_settings, this),
       m_utcToday(std::move(utcToday))
 {
     if (!m_utcToday) m_utcToday = [] { return QDateTime::currentDateTimeUtc().date(); };
     m_settings.setFallbacksEnabled(false);
+    m_hotkeys.load(settingsGroup());
     {
         // Persisted organization suggestions (login wizard). Entries that no
         // longer normalize to an origin are dropped instead of offered.
@@ -354,6 +355,7 @@ void NativePreferences::setOwner(const QString &owner)
     const auto next = valid ? owner : QString{};
     if (m_owner != next) {
         m_owner = next;
+        m_hotkeys.load(settingsGroup());
         // Appearance emits synchronously. Every observer must already see this
         // owner's history, including while the language/theme is changing.
         loadReactionHistory();

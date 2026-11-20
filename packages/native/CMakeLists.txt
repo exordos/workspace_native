@@ -56,6 +56,7 @@ add_library(workspace-native-core STATIC
     src/power-watcher.cpp src/power-watcher.h
     src/native-call-awareness.cpp src/native-call-awareness.h
     src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp
+    src/native-hotkeys.cpp src/native-hotkeys.h
     src/composer-references.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
@@ -160,7 +161,7 @@ qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
-qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml
+qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml qml/NativeHotkeysDialog.qml qml/NativeShortcutsHelp.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
     qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
@@ -339,7 +340,7 @@ if(BUILD_TESTING)
     endif()
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-preferences native-hotkeys native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-controller native-window native-desktop native-call)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
         if(test STREQUAL "file-client" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -454,6 +455,7 @@ if(BUILD_TESTING)
     endforeach()
     # The markdown renderer has a 20 ms wall-clock guard for quadratic entity decoding.
     set_tests_properties(native-native-markdown PROPERTIES RUN_SERIAL TRUE)
+    add_test(NAME native-hotkeys-ui COMMAND native-window-test shortcutSettingsSearchRecordingAndHelp)
     add_test(NAME native-native-draft-workload COMMAND native-window-test)
     set_tests_properties(native-native-draft-workload PROPERTIES TIMEOUT 180
         ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")
