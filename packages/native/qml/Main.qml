@@ -695,7 +695,10 @@ ApplicationWindow {
         && (root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed)
     readonly property string messageSelectionConversation:
         root.controller.selectedStream + "/" + root.controller.selectedTopic
-    onMessageSelectionConversationChanged: root.clearMessageSelection()
+    onMessageSelectionConversationChanged: {
+        root.clearMessageSelection();
+        if (composerAiNotice) composerAiNotice.close();
+    }
     function isMessageSelected(id) {
         return root.messageSelectionIds.indexOf(String(id)) >= 0
     }
@@ -11300,6 +11303,37 @@ component NativeMentionChip: Item {
                                 glyphSize: 21
                                 onClicked: root.preferences.composerToolbarExpanded = false
                             }
+                            NativeIconButton {
+                                id: composerAiButton
+                                objectName: "composerAiButton"
+                                colors: root.colors
+                                help: qsTr("AI assistant")
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                enabled: root.composerAvailable && composerText.enabled
+                                focusPolicy: Qt.StrongFocus
+                                Accessible.checkable: true
+                                Accessible.checked: composerAiNotice.visible
+                                contentItem: Text {
+                                    text: "AI"
+                                    font.pixelSize: 20
+                                    font.letterSpacing: -0.4
+                                    color: composerAiNotice.visible ? root.colors["icon-active"] : root.colors["icon-base"]
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    Accessible.ignored: true
+                                }
+                                onClicked: {
+                                    if (composerAiNotice.visible) {
+                                        composerAiNotice.close();
+                                    } else {
+                                        composerEmojiPicker.close();
+                                        composerMentionPopup.close();
+                                        composerAiNotice.open();
+                                    }
+                                }
+                                onVisibleChanged: if (!visible && composerAiNotice) composerAiNotice.close()
+                            }
                             // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
                             Rectangle {
                                 objectName: "composerToolbarSeparator"
@@ -11672,6 +11706,58 @@ component NativeMentionChip: Item {
         contentItem: Rectangle {
             implicitHeight: 1
             color: root.colors["border-subtle"]
+        }
+    }
+
+    Popup {
+        id: composerAiNotice
+        objectName: "composerAiUnavailablePopover"
+        property string openingRoute: ""
+        onAboutToShow: openingRoute = root.messageSelectionConversation
+        onClosed: {
+            if (root.active && openingRoute === root.messageSelectionConversation
+                    && composerAiButton.visible && composerAiButton.enabled)
+                composerAiButton.forceActiveFocus(Qt.PopupFocusReason);
+        }
+        parent: composerAiButton
+        width: Math.min(320, root.width - 16)
+        x: (parent.width - width) / 2
+        // The web composer reserves an 88 px box plus an 8 px gap above its anchor.
+        y: -96
+        margins: 8
+        padding: 13 // 12 px padding inside the 1 px border
+        contentHeight: composerAiNoticeText.lineCount * 16
+        modal: true
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle {
+            radius: 12
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+            layer.enabled: composerAiNotice.visible && GraphicsInfo.api !== GraphicsInfo.Software
+                && GraphicsInfo.api !== GraphicsInfo.OpenVG && GraphicsInfo.api !== GraphicsInfo.Unknown
+                && GraphicsInfo.api !== GraphicsInfo.Null
+            layer.effect: MultiEffect {
+                shadowEnabled: true
+                shadowColor: "black"
+                shadowBlur: 0.5
+                shadowOpacity: 0.15
+                shadowVerticalOffset: 8
+            }
+        }
+        contentItem: Label {
+            id: composerAiNoticeText
+            objectName: "composerAiNoticeText"
+            text: qsTr("AI features are temporarily unavailable in your organization.")
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.colors["text-primary"]
+            font.pixelSize: 12
+            lineHeight: 16
+            lineHeightMode: Text.FixedHeight
+            Accessible.role: Accessible.Dialog
+            Accessible.name: text
         }
     }
 
