@@ -94,15 +94,15 @@ packages/native/build/workspace-native
 ```
 
 On Windows or macOS, select the installed Qt kit with `CMAKE_PREFIX_PATH` when
-CMake cannot locate it. Use a compiler matching that kit. Native builds, signing,
-installation, and packaging acceptance on those operating systems remain open;
-a Linux build does not establish them.
+CMake cannot locate it. Use a compiler matching that kit. The repository
+packages Windows x64 and macOS arm64 portable previews and launches the
+relocated archives on fresh native runners. The clean-runner checks cover
+the first visible window, second-launch activation and plain-text clipboard
+input. The Intel macOS package also launched on a clean Intel runner after
+verification of its Mach-O architecture and ad hoc signature. [Windows and macOS packaging](NATIVE_DESKTOP_PLATFORM_PACKAGING.md)
 
-The current Linux development build has exercised synthetic transport/domain,
-credential-backend and visible Quick-window checks. Packaged installation,
-live-service behavior, full visual acceptance and actual secure-store acceptance
-remain open on Linux, Windows and macOS. See the
-[platform matrix](NATIVE_DESKTOP_PARITY.md#acceptance-plan) for acceptance criteria.
+The [platform matrix](NATIVE_DESKTOP_PARITY.md#acceptance-plan) records the
+desktop, installation and live-service checks separately.
 
 ## Stage and inspect the runtime
 
