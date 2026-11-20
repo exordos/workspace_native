@@ -222,3 +222,7 @@ Before publishing 0.3.0, complete and verify:
 7. Repeat resource/load acceptance with the installed primary-account package.
    Clean-residency and synthetic Main.qml workload checks cover the local path;
    the cache limits alone do not prove a general process-memory bound.
+
+The conflict-action window test publishes another saved draft while opening
+the resolved card. It clicks the current button for the original UUID and
+checks the editor text and conditional mutation revisions after navigation.
