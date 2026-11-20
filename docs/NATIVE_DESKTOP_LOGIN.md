@@ -126,8 +126,10 @@ before the user types an address. The desktop wizard compares the link's
 organization ID with the configured default and remembered session origins.
 A single matching origin triggers discovery. Multiple matching origins or an
 unknown organization leave the address field open for manual entry. The wizard
-enters the credentials step after discovery succeeds. Replacing a pending link
-discards its earlier automatic discovery result.
+enters the credentials step after discovery succeeds. An edit to the address
+or a replacement link cancels the pending advance. A manually entered address
+for a different organization shows the wrong-account message before any request.
+Address history supplies suggestions. Automatic discovery uses saved sessions.
 
 The realm preview appears when discovery supplies a name or a usable icon URL.
 Only an advertised name appears alongside the icon.

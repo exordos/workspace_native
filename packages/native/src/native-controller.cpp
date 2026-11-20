@@ -11104,7 +11104,7 @@ void NativeController::organizationInputChanged(const QString &text)
     // one invalidates the check, the pending advance and the error slot.
     const auto origin = organizationOriginFor(text);
     const auto originKey = origin.isEmpty() ? QString{} : origin.toString();
-    if (originKey == m_checkedOrganizationOrigin)
+    if (!originKey.isEmpty() && originKey == m_checkedOrganizationOrigin)
         return;
     ++m_organizationAttempt;
     m_organizationLoading = false;
@@ -11115,6 +11115,21 @@ void NativeController::organizationInputChanged(const QString &text)
     if (m_loginStep != QLatin1String("organization"))
         m_loginStep = QStringLiteral("organization");
     emit stateChanged();
+}
+
+bool NativeController::rejectMismatchedLoginOrganization(const QUrl &origin)
+{
+    QString org, project;
+    if (!linkedMessageTarget(&org, &project) || org == workspace::orgRouteIdFromOrigin(origin))
+        return false;
+    ++m_organizationAttempt;
+    m_organizationLoading = false;
+    m_pendingOrganizationOrigin.clear();
+    m_checkedOrganizationOrigin.clear();
+    m_organizationSettings.clear();
+    m_error = tr("Sign in to an account for the organization and project in this link.");
+    emit stateChanged();
+    return true;
 }
 
 void NativeController::discoverOrganization(const QString &text)
@@ -11140,6 +11155,8 @@ void NativeController::discoverLoginOrganization(const QString &text, quint64 li
         }
         return;
     }
+    if (rejectMismatchedLoginOrganization(origin))
+        return;
     const auto originKey = origin.toString();
     const auto attempt = ++m_organizationAttempt;
     m_organizationLoading = true;
@@ -11201,6 +11218,8 @@ void NativeController::continueFromOrganization(const QString &text)
         emit stateChanged();
         return;
     }
+    if (rejectMismatchedLoginOrganization(origin))
+        return;
     const auto originKey = origin.toString();
     if (originKey == m_checkedOrganizationOrigin) {
         // Reference: a completed check either reveals credentials or repeats

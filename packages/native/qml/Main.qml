@@ -1869,7 +1869,7 @@ component NativeMentionChip: Item {
                                 Layout.fillWidth: true
                                 implicitHeight: 40
                                 rightPadding: 40
-                                enabled: !root.controller.busy && !root.controller.organizationLoading
+                                enabled: !root.controller.busy
                                 text: root.controller.organizationRealm
                                 onTextChanged: {
                                     if (text !== root.controller.organizationRealm)

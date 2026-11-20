@@ -2229,6 +2229,7 @@ private:
     // lowercased project uuid (reference messageTarget). Returns false when
     // no parked message link exists.
     bool linkedMessageTarget(QString *org, QString *project) const;
+    bool rejectMismatchedLoginOrganization(const QUrl &origin);
     void discoverInitialLinkedOrganization();
     void discoverLoginOrganization(const QString &text, quint64 linkSerial);
     QString m_pendingDeepLink;
