@@ -18,6 +18,7 @@ class PackageConversation:
         self.topic_name = "Cassi installed desktop checks"
         self.meeting_url = origin + "/hosted-desktop-call"
         self.timestamp = datetime.now(timezone.utc).isoformat()
+        self.generation = str(uuid4())
         self.target_gets = 0
         self.history_gets = 0
         self.probe_results = {}
@@ -63,6 +64,10 @@ class PackageConversation:
                 self.probe_results[kind] = result
             request.reply(200, {})
             return True
+        if parsed.path == "/api/workspace/v1/epoch/":
+            request.reply(200, {"epoch_generation": self.generation, "epoch_version": 1,
+                                "current_epoch_version": 1, "minimum_epoch_version": 1})
+            return True
         if path == "server_settings":
             request.server.settings_count += 1
             request.reply(200, {"realm_name": "Cassi package fixture", "meet_url": self.origin})
@@ -73,7 +78,8 @@ class PackageConversation:
                   "updated_at": self.timestamp, "notification_mode": "default", "unread_count": 0,
                   "active_unread_count": 0, "passive_unread_count": 0, "last_message_uuid": self.message}
         stream = dict(shared, uuid=self.stream, name=self.stream_name, owner=self.user, role="owner",
-                      description="", source_name="native", invite_only=False, announce=False, private=False,
+                      description="", source_name="native", notification_mode="all_messages", invite_only=False, announce=False, private=False,
+                      current_encryption_key_uuid=None, direct_user_uuid=None, provider_uuid=None, provider_identity=None,
                       is_archived=False, encryption=False, default_topic_uuid=self.topic)
         topic = dict(shared, uuid=self.topic, stream_uuid=self.stream, name=self.topic_name, is_default=True, is_done=False)
         target = self.row(self.message, self.target_content)
