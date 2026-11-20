@@ -57,6 +57,8 @@
 #include <atomic>
 #ifdef Q_OS_LINUX
 #include <unistd.h>
+#include <csignal>
+#include <sys/resource.h>
 #endif
 #include <QTemporaryDir>
 #include <QMap>
@@ -28318,40 +28320,43 @@ private slots:
     }
 
 #ifdef Q_OS_LINUX
-    void diagnosticsMemoryProviderCpuPercentMatchesProcMath()
+    void diagnosticsMemoryCpuUsesOnlyPanelPolls()
     {
         QTemporaryDir proc;
         QVERIFY(proc.isValid());
         QVERIFY(seedMemoryProcFixture(proc.path(), 8192, 9216));
-        QVERIFY(writeMemoryProcFile(proc.path() + QStringLiteral("/uptime"),
-            QByteArrayLiteral("100.00 400.00\n")));
-        // Fields after the last ')': state ppid pgrp session tty_nr tpgid flags
-        // minflt cminflt majflt cmajflt utime stime cutime cstime priority nice
-        // num_threads itrealvalue starttime -- so utime=100, stime=50,
-        // starttime=0 against a 100 s uptime. The comm keeps a space to pin
-        // the last-')' parsing rule.
-        QVERIFY(writeMemoryProcFile(proc.path() + QStringLiteral("/self/stat"),
-            QByteArrayLiteral("42 (workspace native) S 1 42 42 42 42 42 0 0 0 0 100 50 "
-                              "0 0 20 0 1 0 0\n")));
-        workspace::diagnostics::NativeMemoryDiagnostics provider;
-        provider.setProcRoot(proc.path());
-        const QVariantList processes = provider.snapshot().value(QStringLiteral("processes")).toList();
-        QCOMPARE(processes.size(), 1);
-        const QVariantMap self = processes.first().toMap();
-        QVERIFY(!self.value(QStringLiteral("cpuPercent")).isNull());
-        const long clkTck = []{ const long v = sysconf(_SC_CLK_TCK); return v > 0 ? v : 100L; }();
-        const double expected = 100.0 * 150.0 / double(clkTck) / 100.0;
-        QVERIFY2(qAbs(self.value(QStringLiteral("cpuPercent")).toDouble() - expected) < 0.001,
-                 qPrintable(QStringLiteral("cpuPercent %1 expected %2")
-                     .arg(self.value(QStringLiteral("cpuPercent")).toDouble())
-                     .arg(expected)));
-        // A malformed stat document keeps the row but nulls the CPU reading.
-        QVERIFY(writeMemoryProcFile(proc.path() + QStringLiteral("/self/stat"),
-            QByteArrayLiteral("broken (unterminated\n")));
-        const QVariantMap degraded = provider.snapshot().value(QStringLiteral("processes"))
-                                         .toList().first().toMap();
-        QVERIFY(degraded.value(QStringLiteral("cpuPercent")).isNull());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.setDiagnosticsMemoryProcRoot(proc.path());
+        const long hz = sysconf(_SC_CLK_TCK);
+        QVERIFY(hz > 0);
+        const auto sample = [&](int uptime, long ticks) {
+            return writeMemoryProcFile(proc.filePath("uptime"), QByteArray::number(uptime) + " 0\n")
+                && writeMemoryProcFile(proc.filePath("self/stat"),
+                    "42 (workspace native) S 1 42 42 42 42 42 0 0 0 0 " + QByteArray::number(ticks)
+                    + " 0 0 0 20 0 1 0 0\n");
+        };
+        const auto cpu = [&] {
+            return controller.diagnosticsMemorySnapshot().value("processes").toList().first()
+                .toMap().value("cpuPercent");
+        };
+        QVERIFY(sample(10000, hz));
+        QVERIFY(cpu().isNull());
+        QVERIFY(sample(10002, hz));
+        controller.diagnosticsSnapshotJson(); // a report must not restart the interval
+        QVERIFY(sample(10003, 4 * hz));
+        QCOMPARE(cpu().toDouble(), 100.0);
+        QVERIFY(sample(10006, 4 * hz));
+        QCOMPARE(cpu(), QVariant(0.0));
+        QVERIFY(sample(10009, 0));
+        QVERIFY(cpu().isNull()); // counter reset
+        QVERIFY(writeMemoryProcFile(proc.filePath("self/stat"), "broken\n"));
+        QVERIFY(cpu().isNull());
+        QVERIFY(sample(10012, 10 * hz));
+        QVERIFY(cpu().isNull()); // restart after a missing sample
     }
+
 #endif
 
     void diagnosticsSnapshotMemoryKeyUsesProviderWithoutLogging()
@@ -28362,7 +28367,7 @@ private slots:
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
-        // No useLogging(): the memory key must still be filled by the panel
+        // The memory key must be filled by the panel
         // provider (the reference cards never wait on the log writer).
         controller.setDiagnosticsMemoryProcRoot(proc.path());
         const QVariantMap memory =
@@ -30940,34 +30945,24 @@ private slots:
     {
         using namespace workspace::diagnostics;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const auto stamp = [now](qint64 offsetMs) {
-            // toString(ISODateWithMs) already carries the 'Z' UTC suffix for
-            // a UTC-spec QDateTime; appending another would corrupt the stamp.
-            return QDateTime::fromMSecsSinceEpoch(now - offsetMs, Qt::UTC).toString(Qt::ISODateWithMs);
-        };
-        QStringList text;
-        text << (stamp(1000) + QStringLiteral(" info: hello"));
-        text << (stamp(2000) + QStringLiteral(" debug: d1"));
-        text << (stamp(3000) + QStringLiteral(" warning: w1"));
-        text << (stamp(16 * 60 * 1000) + QStringLiteral(" fatal: old fatal outside the window"));
-        text << QStringLiteral("garbage without a timestamp");
-        text << QString();
-        // Ten fatal lines inside the window in file order (oldest line
-        // first, like a real log): recentErrorCount stays uncapped while the
-        // collected list is newest-first and capped at 8.
+        SessionLogBuffer buffer;
+        buffer.append("info", "app", "hello", {}, now);
+        buffer.append("debug", "app", "d1", {}, now);
+        buffer.append("warn", "app", "w1", {}, now);
+        buffer.append("error", "api", "outside window", {}, now - 16 * 60 * 1000);
         for (int index = 10; index >= 1; --index)
-            text << (stamp(qint64(index) * 60 * 1000)
-                + QStringLiteral(" fatal: recent %1").arg(index));
-        const auto summary = parseSessionLog(text.join(QLatin1Char('\n')), now);
+            buffer.append("error", "api", QStringLiteral("recent %1").arg(index), {},
+                now - qint64(index) * 60 * 1000);
+        const auto summary = buffer.summary(now);
         QCOMPARE(summary.infoCount, 1);
         QCOMPARE(summary.debugCount, 1);
         QCOMPARE(summary.warnCount, 1);
-        QCOMPARE(summary.errorCount, 11); // 10 recent + 1 old, critical/fatal bucket
+        QCOMPARE(summary.errorCount, 11); // 10 recent + 1 old
         QCOMPARE(summary.recentErrorCount, 10);
         QCOMPARE(summary.recentErrors.size(), RecentErrorLimit);
         QCOMPARE(summary.recentErrors.first().message, QStringLiteral("recent 1")); // newest first
         QCOMPARE(summary.recentErrors.last().message, QStringLiteral("recent 8")); // oldest two trimmed by the cap
-        QCOMPARE(summary.recentErrors.first().level, QStringLiteral("fatal"));
+        QCOMPARE(summary.recentErrors.first().level, QStringLiteral("error"));
     }
 
     // Review 4611502317 on #404: the parser stripped the 'Z' suffix before
@@ -30984,9 +30979,9 @@ private slots:
         const qint64 base = QDateTime::fromString(
             QStringLiteral("2026-01-02T12:00:00.000Z"), Qt::ISODateWithMs).toMSecsSinceEpoch();
         const qint64 now = base + 30 * 1000; // "recent-a" is 30 s old, "outside-b" is 16 min old
-        const QString text = QStringLiteral(
-            "2026-01-02T11:44:00.000Z critical: outside-b\n"
-            "2026-01-02T12:00:00.000Z fatal: recent-a");
+        SessionLogBuffer buffer;
+        buffer.append("error", "api", "outside-b", {}, base - 16 * 60 * 1000);
+        buffer.append("error", "api", "recent-a", {}, base);
         for (const auto *zone : { "Etc/GMT+5", "Etc/GMT-5" }) {
             qputenv("TZ", zone);
             tzset();
@@ -30996,7 +30991,7 @@ private slots:
                 QStringLiteral("2026-01-02T12:00:00.000"), Qt::ISODateWithMs).toMSecsSinceEpoch() - base;
             QVERIFY2(shift == qint64(5) * 3600 * 1000 || shift == -qint64(5) * 3600 * 1000,
                 QByteArray(zone) + ": the pinned zone did not take effect for Qt");
-            const auto summary = parseSessionLog(text, now);
+            const auto summary = buffer.summary(now);
             QCOMPARE(summary.errorCount, 2);
             QCOMPARE(summary.recentErrorCount, 1); // only "recent-a" sits in the 15 min window
             QCOMPARE(summary.recentErrors.size(), 1);
@@ -31463,6 +31458,66 @@ private slots:
         }
         QVERIFY(sawApiError);
     }
+
+    void diagnosticsReportAndViewerShareHttpErrors()
+    {
+        Fixture f;
+        QVERIFY(f.start());
+        f.controller.clearSessionLog();
+        f.streams = [](const Request &) -> Response { return Response{QJsonArray{}, 500}; };
+        QSignalSpy finished(&f.controller, &NativeController::pingFinished);
+        f.controller.pingServer();
+        QVERIFY(finished.wait(5000));
+        QVERIFY(finished.first().at(0).toBool()); // HTTP 500 still proves reachability
+        const auto errors = f.controller.diagnosticsSessionLogsFiltered("error", "api", "all", "all", "");
+        QVERIFY(!errors.isEmpty());
+        const auto report = QJsonDocument::fromJson(f.controller.diagnosticsConnectionReportJson().toUtf8()).object();
+        QCOMPARE(report.value("overallStatus").toString(), QStringLiteral("degraded"));
+        const auto recent = report.value("recentErrors").toArray();
+        QVERIFY(!recent.isEmpty());
+        QCOMPARE(recent.first().toObject().value("message").toString(), errors.first().toMap().value("message").toString());
+        f.controller.clearSessionLog();
+        const auto logs = f.controller.diagnosticsSnapshot().value("logs").toMap();
+        QCOMPARE(logs.value("total").toInt(), 0);
+        QVERIFY(logs.value("recentErrors").toList().isEmpty());
+    }
+
+#ifdef Q_OS_LINUX
+    void sessionLogExportPreservesReportOnFailedWrite()
+    {
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.appendSessionLog("info", "app", QString(2048, QLatin1Char('x')));
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QFile report(dir.filePath("report.json"));
+        QVERIFY(report.open(QIODevice::WriteOnly));
+        const QByteArray previous = "previous report";
+        QCOMPARE(report.write(previous), previous.size());
+        report.close();
+        struct rlimit limits;
+        QVERIFY(getrlimit(RLIMIT_FSIZE, &limits) == 0);
+        auto capped = limits;
+        capped.rlim_cur = 64;
+        struct sigaction ignore{}, original{};
+        ignore.sa_handler = SIG_IGN;
+        sigemptyset(&ignore.sa_mask);
+        QVERIFY(sigaction(SIGXFSZ, &ignore, &original) == 0);
+        const auto restoreSignal = qScopeGuard([&] { sigaction(SIGXFSZ, &original, nullptr); });
+        QVERIFY(setrlimit(RLIMIT_FSIZE, &capped) == 0);
+        const bool success = controller.exportSessionLog(report.fileName());
+        const int restored = setrlimit(RLIMIT_FSIZE, &limits);
+        QVERIFY(restored == 0);
+        QVERIFY(!success);
+        QVERIFY(report.open(QIODevice::ReadOnly));
+        QCOMPARE(report.readAll(), previous);
+        report.close();
+        QVERIFY(controller.exportSessionLog(report.fileName()));
+        QVERIFY(report.open(QIODevice::ReadOnly));
+        QCOMPARE(report.readAll(), controller.diagnosticsLogsExportJson().toUtf8());
+    }
+#endif
 
     // Review 4616699148 on #411: transport failures never answer an HTTP
     // status, so the status-gated session log branch skipped them and only
