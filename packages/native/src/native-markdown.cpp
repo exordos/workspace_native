@@ -432,25 +432,49 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
             text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
             text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
             text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
-            int amp = 0;
-            while ((amp = text.indexOf(QLatin1Char('&'), amp)) >= 0) {
-                const int semi = text.indexOf(QLatin1Char(';'), amp + 1);
-                const auto body = semi >= 0 ? text.mid(amp + 1, semi - amp - 1) : QString();
-                bool decoded = false;
-                if (body.startsWith(QLatin1Char('#')) && body.size() > 1) {
-                    const auto digits = body.mid(1);
-                    const bool hex = digits.startsWith(QLatin1Char('x')) || digits.startsWith(QLatin1Char('X'));
-                    bool ok = false;
-                    const uint code = (hex ? digits.mid(1).toUInt(&ok, 16) : digits.toUInt(&ok, 10));
-                    if (ok && code > 0 && code <= 0x10FFFF) {
-                        const char32_t plain = static_cast<char32_t>(code);
-                        text.replace(amp, semi - amp + 1, QString::fromUcs4(&plain, 1));
-                        decoded = true;
+            // Round-4 review N2 (cid 4640681111): the previous loop searched
+            // the remaining label for a semicolon for every ampersand, so a
+            // long label without semicolons rescanned its suffix O(n^2) on
+            // the UI render path. One pass now copies every non-entity byte
+            // once and decodes in place. A numeric reference is accepted only
+            // when its digits are immediately terminated by a semicolon, with
+            // the same full-body validation and (0, 0x10FFFF] range as before.
+            QString decoded;
+            decoded.reserve(text.size());
+            qsizetype at = 0;
+            while (at < text.size()) {
+                bool handled = false;
+                if (text.at(at) == QLatin1Char('&') && at + 2 < text.size()
+                    && text.at(at + 1) == QLatin1Char('#')) {
+                    qsizetype scan = at + 2;
+                    const bool hex = text.at(scan) == QLatin1Char('x') || text.at(scan) == QLatin1Char('X');
+                    if (hex) ++scan;
+                    const qsizetype first = scan;
+                    while (scan < text.size()) {
+                        const QChar digit = text.at(scan);
+                        const bool within = (digit >= QLatin1Char('0') && digit <= QLatin1Char('9'))
+                            || (hex && ((digit >= QLatin1Char('a') && digit <= QLatin1Char('f'))
+                                || (digit >= QLatin1Char('A') && digit <= QLatin1Char('F'))));
+                        if (!within) break;
+                        ++scan;
+                    }
+                    if (scan > first && scan < text.size() && text.at(scan) == QLatin1Char(';')) {
+                        bool ok = false;
+                        const uint value = text.mid(at + 2 + (hex ? 1 : 0), scan - first).toUInt(&ok, hex ? 16 : 10);
+                        if (ok && value > 0 && value <= 0x10FFFF) {
+                            const char32_t plain = static_cast<char32_t>(value);
+                            decoded += QString::fromUcs4(&plain, 1);
+                            at = scan + 1;
+                            handled = true;
+                        }
                     }
                 }
-                amp += decoded ? 1 : 1;
+                if (!handled) {
+                    decoded += text.at(at);
+                    ++at;
+                }
             }
-            return text;
+            return decoded;
         };
         QString html = QString::fromUtf8(generated);
         struct Anchor { int start; int length; QString uuid; QString label; };
@@ -499,9 +523,13 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
             from = closeEnd;
         }
         // Rewriting from the back keeps the earlier anchors' offsets valid.
+        // Round-4 review N1 (cid 4640681088): the label is plain text after
+        // the decoder above (escaped markup is literal again), so it must be
+        // re-escaped here or literal "<b>" / "&" text would import as markup
+        // and alter the visible chip text.
         for (auto it = anchors.crbegin(); it != anchors.crend(); ++it)
             html.replace(it->start, it->length,
-                QStringLiteral("<a href=\"urn:user:%1\">%2</a>").arg(it->uuid, it->label));
+                QStringLiteral("<a href=\"urn:user:%1\">%2</a>").arg(it->uuid, it->label.toHtmlEscaped()));
         generated = html.toUtf8();
     }
     document.setDefaultStyleSheet("pre { margin-top: 0px; margin-bottom: 0px; } "
