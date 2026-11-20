@@ -16,8 +16,7 @@ $query = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property
 $query.Execute()
 $productCode = $query.Fetch().StringData(1)
 $query.Close()
-$registration = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$productCode"
-if ((Test-Path $directory) -or (Test-Path $registration) -or (Test-Path $shortcut)) {
+if ((Test-Path $directory) -or $windowsInstaller.ProductState($productCode) -ne -1 -or (Test-Path $shortcut)) {
     throw 'The installer test requires a fresh user profile.'
 }
 $arguments = @(('"' + $installerFile.FullName + '"'), '/qn', '/norestart')
@@ -25,9 +24,12 @@ $sentinel = Join-Path $directory ('unowned-' + [guid]::NewGuid() + '.txt')
 try {
     $setup = Start-Process msiexec.exe -ArgumentList (@('/i') + $arguments) -PassThru -Wait
     if ($setup.ExitCode -ne 0) { throw "Setup returned $($setup.ExitCode)." }
-    $product = Get-ItemProperty -LiteralPath $registration
-    if ($product.DisplayName -notlike 'Workspace Native Preview*' -or !$product.DisplayVersion) {
-        throw 'Missing preview identity in the current user installation record.'
+    $name = $windowsInstaller.ProductInfo($productCode, 'ProductName')
+    $version = $windowsInstaller.ProductInfo($productCode, 'VersionString')
+    $assignment = $windowsInstaller.ProductInfo($productCode, 'AssignmentType')
+    if ($windowsInstaller.ProductState($productCode) -ne 5 -or $assignment -ne '0' -or
+        $name -notlike 'Workspace Native Preview*' -or !$version) {
+        throw "Unexpected MSI product registration for $name $version, assignment $assignment."
     }
     $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
     if ($link.TargetPath -ne $executable) { throw 'The Start menu shortcut has an unexpected target.' }
@@ -38,14 +40,14 @@ try {
     }
     Set-Content -LiteralPath $sentinel -Value 'keep'
     & "$PSScriptRoot/windows-window.ps1" -Executable $link.TargetPath
-    Write-Output "Verified per-user installation of $($product.DisplayName) $($product.DisplayVersion)."
+    Write-Output "Verified per-user installation of $name $version."
 } finally {
-    if (Test-Path $registration) {
+    if ($windowsInstaller.ProductState($productCode) -eq 5) {
         $removal = Start-Process msiexec.exe -ArgumentList (@('/x') + $arguments) -PassThru -Wait
         if ($removal.ExitCode -ne 0) { throw "Uninstall returned $($removal.ExitCode)." }
     }
 }
-if ((Test-Path $executable) -or (Test-Path $registration) -or (Test-Path $shortcut) -or
+if ((Test-Path $executable) -or ($windowsInstaller.ProductState($productCode) -ne -1) -or (Test-Path $shortcut) -or
     !(Test-Path -LiteralPath $sentinel) -or @(Get-ChildItem -LiteralPath $directory -Force).Count -ne 1) {
     throw 'Uninstall did not remove exactly the installed files, registration and shortcut.'
 }
