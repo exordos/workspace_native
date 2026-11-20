@@ -20439,7 +20439,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!pendingDownloads.isEmpty());
         if (!video) QTRY_VERIFY(!pendingThirdMetadata.isEmpty());
         failuresReleased = true;
-        for (const auto &send : std::exchange(pendingThirdMetadata, {})) send();
         for (const auto &send : std::exchange(pendingDownloads, {}))
             send();
         const QString expected = video
@@ -20452,6 +20451,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(accessible->text(QAccessible::Name), expected);
         QTRY_VERIFY(announcements.contains(qMakePair(expected, Politeness::Assertive)));
         if (!video) {
+            // Deliver third-image metadata only after the selected image has
+            // announced its failure, so its download starts in the later phase.
+            QVERIFY(!pendingThirdMetadata.isEmpty());
+            for (const auto &send : std::exchange(pendingThirdMetadata, {})) send();
             QTRY_COMPARE(viewer->items().last().toMap()["state"].toString(), QStringLiteral("load-error"));
             const auto before = announcements.count(qMakePair(expected, Politeness::Assertive));
             click(window, visibleItem(content, "mediaViewer-next"));
