@@ -254,6 +254,7 @@ QNetworkReply *ApiClient::startUserAvatarUpload(const QString &userUuid, const Q
     request.setRawHeader("Accept-Encoding", "identity");
     request.setRawHeader("Authorization", "Bearer " + m_accessToken);
     auto *reply = m_network->post(request, body);
+    emit requestDispatched(reply);
     body->setParent(reply);
     m_transfers.insert(reply);
     connect(reply, &QNetworkReply::finished, this, [this, reply] { m_transfers.remove(reply); });
@@ -282,6 +283,7 @@ QNetworkReply *ApiClient::startFileRequest(const QString &uuid, QHttpMultiPart *
     request.setRawHeader("Accept-Encoding", "identity");
     request.setRawHeader("Authorization", "Bearer " + m_accessToken);
     auto *reply = body ? m_network->post(request, body) : m_network->get(request);
+    emit requestDispatched(reply);
     if (body)
         body->setParent(reply);
     m_transfers.insert(reply);
@@ -402,6 +404,7 @@ ApiClient::RequestId ApiClient::request(const QByteArray &method, const QString 
     }
 
     auto *reply = m_network->sendCustomRequest(networkRequest, method, payload);
+    emit requestDispatched(reply);
     reply->setReadBufferSize(MaxResponseBytes + 1);
     auto *pending = new Pending;
     pending->callback = std::move(callback);

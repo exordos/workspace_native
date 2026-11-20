@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQml
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQuick.Effects
 import QtQuick.Dialogs as NativeDialogs
@@ -457,6 +458,45 @@ ApplicationWindow {
             Accessible.ignored: true
         }
     }
+
+    component ChatPickerRowBody: Row {
+        id: picker
+        required property var user
+        required property string prefix
+        readonly property string secondary: user.statusText || user.email || ""
+        spacing: 8
+        PresenceBadge {
+            objectName: picker.prefix + "-presence-" + picker.user.id
+            presence: picker.user.presence || "offline"
+            anchors.verticalCenter: parent.verticalCenter
+        }
+        Column {
+            width: Math.max(0, picker.width - 20)
+            anchors.verticalCenter: parent.verticalCenter
+            Text {
+                objectName: picker.prefix + "-name-" + picker.user.id
+                width: parent.width
+                height: 20
+                text: picker.user.displayName
+                textFormat: Text.PlainText
+                color: root.colors["text-primary"]
+                font.pixelSize: 14
+                font.weight: Font.Medium
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: picker.prefix + "-email-" + picker.user.id
+                width: parent.width
+                height: 15.6875
+                visible: picker.secondary.length > 0
+                text: picker.secondary
+                textFormat: Text.PlainText
+                color: root.colors["text-secondary"]
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+        }
+    }
     component InlineKeyRequestAction: NativeButton {
         id: serviceAction
         colors: root.colors
@@ -833,7 +873,7 @@ ApplicationWindow {
         // directory on every startup state notification (issue #157).
         if (!createChatDialog.visible || chatTabs.currentIndex !== 0) return [];
         const query = chatUserQuery.trim().toLowerCase();
-        return root.controller.directChatChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
+        return root.controller.chatPickerChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => String(a.displayName).localeCompare(String(b.displayName)));
     }
     function setChatQuery(query) {
         chatUserQuery = query;
@@ -891,7 +931,7 @@ ApplicationWindow {
     readonly property var channelVisibleMembers: {
         if (!createChatDialog.visible || chatTabs.currentIndex !== 1) return [];
         const query = chatUserQuery.trim().toLowerCase();
-        return root.controller.channelMemberChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => {
+        return root.controller.chatPickerChoices.filter(user => [user.displayName, user.username, user.email].join("\n").toLowerCase().indexOf(query) >= 0).sort((a, b) => {
             const selected = Number(root.channelSelectedMembers.indexOf(b.id) >= 0) - Number(root.channelSelectedMembers.indexOf(a.id) >= 0);
             return selected || String(a.displayName).localeCompare(String(b.displayName));
         });
@@ -989,7 +1029,7 @@ ApplicationWindow {
             root.controller.checkChannelCreation();
         else if ((action === "add" || action === "retry") && root.controller.canRetryChannelMembers)
             root.controller.retryChannelMembers();
-        else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && channelNameInput.text.trim().length) {
+        else if (action === "create" && ["idle", "failed", "ready"].indexOf(channelPhase) >= 0 && root.controller.canCreateChannel && (!root.channelSelectedMembers.length || root.controller.channelMembersVerified) && channelNameInput.text.trim().length) {
             channelViewAttempt = "";
             root.controller.createChannel(channelNameInput.text, channelDescriptionInput.text, channelInviteOnly.checked, channelAnnounce.checked, channelSelectedMembers, root.channelEncryptionChecked);
         }
@@ -1751,11 +1791,71 @@ component NativeMentionChip: Item {
     }
 
     component LoginFieldLabel: Text {
+        Layout.preferredHeight: 20
+        verticalAlignment: Text.AlignVCenter
         color: root.colors["text-primary"]
         font.pixelSize: 14
         font.weight: Font.Medium
         textFormat: Text.PlainText
         Layout.fillWidth: true
+    }
+
+    component LoginInput: NativeField {
+        id: loginInput
+        colors: root.colors
+        Layout.fillWidth: true
+        implicitHeight: 46
+        leftPadding: 13
+        rightPadding: 13
+        font.pixelSize: 16
+        property color fillColor: root.colors["bg-elevated"]
+        background: Rectangle {
+            radius: 8
+            color: loginInput.fillColor
+            border.width: loginInput.activeFocus ? 2 : 1
+            border.color: loginInput.activeFocus ? root.colors.accent : root.colors["border-subtle"]
+        }
+    }
+
+    component LoginAction: NativeButton {
+        id: actionButton
+        colors: root.colors
+        primary: true
+        Layout.fillWidth: true
+        implicitHeight: 36
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        background: Rectangle {
+            radius: 8
+            color: root.colors.accent
+            opacity: actionButton.enabled ? (actionButton.down ? 0.8 : 1) : 0.5
+            border.width: actionButton.visualFocus ? 2 : 0
+            border.color: root.colors.accent
+        }
+    }
+
+    component LoginBackAction: NativeButton {
+        id: backAction
+        colors: root.colors
+        Layout.fillWidth: true
+        implicitHeight: 36
+        text: qsTr("Back")
+        font.pixelSize: 14
+        font.weight: Font.Medium
+        contentItem: Text {
+            text: backAction.text
+            color: root.colors["text-muted"]
+            font: backAction.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            opacity: backAction.enabled ? 1 : 0.5
+        }
+        background: Rectangle {
+            radius: 8
+            color: backAction.hovered ? root.colors["bg-elevated"] : "transparent"
+            border.width: backAction.visualFocus ? 1 : 0
+            border.color: root.colors.accent
+        }
     }
 
     Item {
@@ -1786,8 +1886,14 @@ component NativeMentionChip: Item {
                         || root.controller.savedAccounts.length > 0)
                     enabled: !root.controller.busy
                     Layout.alignment: Qt.AlignLeft
+                    implicitHeight: 20
                     padding: 0
                     spacing: 8
+                    background: Rectangle {
+                        color: "transparent"
+                        border.width: wizardBack.visualFocus ? 1 : 0
+                        border.color: root.colors.accent
+                    }
                     font.pixelSize: 14
                     text: root.controller.loginStep === "organization" ? qsTr("Back") : qsTr("Organization")
                     contentItem: RowLayout {
@@ -1817,6 +1923,8 @@ component NativeMentionChip: Item {
                     spacing: 4
                     Text {
                         objectName: "loginTitle"
+                        Layout.preferredHeight: 28
+                        verticalAlignment: Text.AlignVCenter
                         text: root.controller.savedAccounts.length ? qsTr("Add server") : qsTr("Connect to server")
                         textFormat: Text.PlainText
                         color: root.colors["text-primary"]
@@ -1827,6 +1935,8 @@ component NativeMentionChip: Item {
                     }
                     Text {
                         objectName: "loginDescription"
+                        Layout.preferredHeight: Math.max(20, lineCount * 20)
+                        verticalAlignment: Text.AlignVCenter
                         text: root.controller.loginStep === "organization"
                                 ? qsTr("Enter your organization address first.")
                                 : root.controller.loginStep === "otp"
@@ -1958,15 +2068,15 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            Layout.bottomMargin: 6
                             LoginFieldLabel { text: qsTr("Server address") }
-                            NativeField {
+                            LoginInput {
                                 id: serverInput
                                 objectName: "serverInput"
-                                colors: root.colors
-                                Layout.fillWidth: true
+                                fillColor: root.colors["text-field-bg"]
                                 implicitHeight: 40
                                 rightPadding: 40
-                                enabled: !root.controller.busy && !root.controller.organizationLoading
+                                enabled: !root.controller.busy
                                 text: root.controller.organizationRealm
                                 onTextChanged: {
                                     if (text !== root.controller.organizationRealm)
@@ -2013,7 +2123,9 @@ component NativeMentionChip: Item {
                                     height: 24
                                     colors: root.colors
                                     asset: "chevron-down.svg"
-                                    glyphSize: 16
+                                    glyphWidth: 16
+                                    glyphHeight: 8
+                                    iconColor: root.colors["text-muted"]
                                     help: qsTr("Show options")
                                     focusPolicy: Qt.NoFocus
                                     onClicked: {
@@ -2112,11 +2224,8 @@ component NativeMentionChip: Item {
                             }
                         }
                         LoginErrorBanner { objectName: "organizationErrorBanner" }
-                        NativeButton {
+                        LoginAction {
                             objectName: "organizationNextButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
                             text: root.controller.organizationLoading ? qsTr("Loading organization settings…") : qsTr("Next")
                             // Pressing Continue while a blur-triggered check is
                             // in flight merges with it instead of waiting.
@@ -2129,25 +2238,23 @@ component NativeMentionChip: Item {
                 Loader {
                     objectName: "realmPreviewLoader"
                     visible: active && !loginCard.savedAccountsOnly
-                    active: root.controller.projects.length === 0
-                        && Object.keys(root.controller.organizationSettings).length > 0
+                    active: Boolean((root.controller.organizationSettings.realmName || "").trim()
+                        || root.controller.organizationSettings.realmIconUrl)
                     Layout.fillWidth: true
                     sourceComponent: Rectangle {
                         objectName: "realmPreviewCard"
                         radius: 8
                         color: root.colors["bg-elevated"]
                         border.color: root.colors["border-subtle"]
-                        implicitHeight: realmPreviewContent.implicitHeight + 24
+                        implicitHeight: realmPreviewContent.implicitHeight + 26
                         ColumnLayout {
                             id: realmPreviewContent
                             x: 16
-                            y: 12
+                            y: 13
                             width: parent.width - 32
                             spacing: 8
                             Item {
                                 Layout.alignment: Qt.AlignHCenter
-                                Layout.topMargin: 4
-                                Layout.bottomMargin: 4
                                 width: 48
                                 height: 48
                                 Image {
@@ -2165,13 +2272,14 @@ component NativeMentionChip: Item {
                             }
                             Text {
                                 objectName: "realmPreviewName"
+                                Layout.preferredHeight: Math.max(20, lineCount * 20)
+                                verticalAlignment: Text.AlignVCenter
                                 Layout.alignment: Qt.AlignHCenter
-                                text: root.controller.organizationSettings.realmName
-                                    || root.controller.organizationSettings.organizationOrigin
-                                    || ""
+                                text: root.controller.organizationSettings.realmName || ""
+                                visible: text.trim().length > 0
                                 textFormat: Text.PlainText
                                 color: root.colors["text-primary"]
-                                font.pixelSize: 16
+                                font.pixelSize: 14
                                 font.weight: Font.Medium
                                 wrapMode: Text.Wrap
                                 horizontalAlignment: Text.AlignHCenter
@@ -2187,16 +2295,15 @@ component NativeMentionChip: Item {
                         && (root.controller.loginStep === "credentials" || root.controller.loginStep === "otp")
                     Layout.fillWidth: true
                     sourceComponent: ColumnLayout {
-                        spacing: 12
+                        spacing: 16
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            Layout.bottomMargin: 6
                             LoginFieldLabel { text: qsTr("Email or login") }
-                            NativeField {
+                            LoginInput {
                                 id: userInput
                                 objectName: "userInput"
-                                colors: root.colors
-                                Layout.fillWidth: true
                                 enabled: !root.controller.busy
                                 placeholderText: qsTr("email@example.com or login")
                                 Component.onCompleted: text = root.controller.loginUsername
@@ -2207,12 +2314,11 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
+                            Layout.bottomMargin: 6
                             LoginFieldLabel { text: qsTr("Password") }
-                            NativeField {
+                            LoginInput {
                                 id: passwordInput
                                 objectName: "passwordInput"
-                                colors: root.colors
-                                Layout.fillWidth: true
                                 enabled: !root.controller.busy
                                 placeholderText: "••••••••"
                                 echoMode: TextInput.Password
@@ -2222,12 +2328,9 @@ component NativeMentionChip: Item {
                             }
                         }
                         LoginErrorBanner {}
-                        NativeButton {
+                        LoginAction {
                             id: signInButton
                             objectName: "signInButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Next")
                             enabled: !root.controller.busy
                             onClicked: {
@@ -2245,6 +2348,7 @@ component NativeMentionChip: Item {
                         Loader {
                             Layout.fillWidth: true
                             active: (root.controller.organizationSettings.registrationUrl || "").length > 0
+                            visible: active
                             sourceComponent: ColumnLayout {
                                 objectName: "registrationBlock"
                                 spacing: 8
@@ -2303,22 +2407,25 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
-                            Text {
-                                text: qsTr("Authentication code")
-                                color: root.colors["text-primary"]
-                                font.pixelSize: 14
-                                font.weight: Font.Medium
-                                Layout.fillWidth: true
-                            }
+                            Layout.bottomMargin: 6
+                            LoginFieldLabel { text: qsTr("Authentication code") }
                             NativeField {
                                 id: otpInput
                                 objectName: "otpInput"
                                 colors: root.colors
                                 Layout.fillWidth: true
-                                implicitHeight: 50
+                                implicitHeight: 47
                                 padding: 12
                                 enabled: !root.controller.busy
                                 placeholderText: "000000"
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: otpInput.activeFocus && !otpInput.text.length
+                                    text: otpInput.placeholderText
+                                    font: otpInput.font
+                                    color: otpInput.placeholderTextColor
+                                    Accessible.ignored: true
+                                }
                                 background: Rectangle {
                                     radius: 8
                                     color: root.colors["bg-elevated"]
@@ -2367,47 +2474,19 @@ component NativeMentionChip: Item {
                                 Accessible.role: Accessible.AlertMessage
                             }
                         }
-                        NativeButton {
+                        LoginAction {
                             id: otpConfirmButton
                             objectName: "otpConfirmButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
-                            implicitHeight: 36
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Confirm code")
-                            background: Rectangle {
-                                radius: 8
-                                color: root.colors.accent
-                                opacity: otpConfirmButton.enabled ? (otpConfirmButton.down ? 0.8 : 1) : 0.5
-                                border.width: otpConfirmButton.visualFocus ? 2 : 0
-                                border.color: root.colors.accent
-                            }
                             enabled: !root.controller.busy && otpInput.text.length === 6
                             onClicked: {
                                 if (!enabled) return
                                 root.controller.submitOtp(otpInput.text)
                             }
                         }
-                        NativeButton {
-                            id: otpBackButton
+                        LoginBackAction {
                             objectName: "otpBackButton"
-                            colors: root.colors
-                            Layout.fillWidth: true
-                            implicitHeight: 36
-                            text: qsTr("Back")
                             enabled: !root.controller.busy
-                            contentItem: Text {
-                                text: otpBackButton.text
-                                color: root.colors["text-muted"]
-                                font: otpBackButton.font
-                                horizontalAlignment: Text.AlignHCenter
-                                verticalAlignment: Text.AlignVCenter
-                                opacity: otpBackButton.enabled ? 1 : 0.5
-                            }
-                            background: Rectangle {
-                                radius: 8
-                                color: otpBackButton.hovered ? root.colors["bg-elevated"] : "transparent"
-                            }
                             onClicked: root.controller.backToCredentials()
                         }
                     }
@@ -2427,14 +2506,10 @@ component NativeMentionChip: Item {
                         ColumnLayout {
                             spacing: 6
                             Layout.fillWidth: true
-                            Text {
+                            Layout.bottomMargin: 6
+                            LoginFieldLabel {
                                 objectName: "projectStepLabel"
                                 text: qsTr("Project")
-                                textFormat: Text.PlainText
-                                color: root.colors["text-primary"]
-                                font.pixelSize: 14
-                                font.weight: Font.Medium
-                                Layout.fillWidth: true
                             }
                             NativeSelect {
                                 id: projectSelect
@@ -2481,22 +2556,11 @@ component NativeMentionChip: Item {
                                 Accessible.role: Accessible.AlertMessage
                             }
                         }
-                        NativeButton {
+                        LoginAction {
                             id: projectLoginButton
                             objectName: "projectLoginButton"
-                            colors: root.colors
-                            primary: true
-                            Layout.fillWidth: true
-                            implicitHeight: 36
                             text: root.controller.busy ? qsTr("Logging in…") : qsTr("Login")
                             enabled: !root.controller.busy && projectSelect.currentIndex >= 0
-                            background: Rectangle {
-                                radius: 8
-                                color: root.colors.accent
-                                opacity: projectLoginButton.enabled ? (projectLoginButton.down ? 0.8 : 1) : 0.5
-                                border.width: projectLoginButton.visualFocus ? 2 : 0
-                                border.color: root.colors.accent
-                            }
                             onClicked: {
                                 if (!enabled) return
                                 root.controller.openProject(projectSelect.currentValue)
@@ -2562,12 +2626,11 @@ component NativeMentionChip: Item {
                         }
                     }
                 }
-                NativeButton {
+                LoginBackAction {
                     objectName: "projectCredentialsBackButton"
                     visible: root.controller.loginStep === "project"
-                    colors: root.colors
-                    Layout.fillWidth: true
-                    text: qsTr("Back")
+                    // The project footer follows its form with a 16 px gap.
+                    Layout.topMargin: 16 - loginContent.spacing
                     enabled: !root.controller.busy
                     onClicked: root.controller.backToCredentials()
                 }
@@ -2635,6 +2698,7 @@ component NativeMentionChip: Item {
 
     Rectangle {
         id: topBar
+        Keys.onEscapePressed: event => root.handleChatEscape(event)
         objectName: "topBar"
         visible: root.controller.authenticated
         anchors.top: profileLinkFailure.bottom
@@ -4312,8 +4376,24 @@ component NativeMentionChip: Item {
         }
     }
 
+    function chatNavigationHasInputFocus() {
+        for (let item = root.activeFocusItem; item; item = item.parent) {
+            if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox)
+                return true;
+        }
+        return false;
+    }
+
+    function handleChatEscape(event) {
+        event.accepted = conversation.visible && root.controller.hasConversation
+            && !root.controller.favoritesVisible && !aboutDrawer.visible
+            && !root.controller.mediaViewer.open && !root.chatNavigationHasInputFocus();
+        if (event.accepted) root.controller.showInbox();
+    }
+
     RowLayout {
         id: workspace
+        Keys.onEscapePressed: event => root.handleChatEscape(event)
         visible: root.controller.authenticated
         anchors.top: topBar.bottom
         anchors.topMargin: 4
@@ -4876,6 +4956,7 @@ component NativeMentionChip: Item {
                 x: 0
                 width: parent.width
                 y: (root.normalizedSidebarQuery.length ? 60 : 104) + sidebar.folderRailInset
+                    + sidebarActivityPanel.expandedDelta
                 height: Math.max(sidebarLoadingCard.visible ? sidebarLoadingCard.y + sidebarLoadingCard.height + 16 : 0,
                     sidebarErrorCard.visible ? sidebarErrorCard.y + sidebarErrorCard.height + 16 : 0,
                     sidebarEmptyCard.visible ? sidebarEmptyCard.y + sidebarEmptyCard.height + 16 : 0,
@@ -5388,10 +5469,12 @@ component NativeMentionChip: Item {
                                 Text {
                                     anchors.centerIn: parent
                                     visible: !Boolean(streamDelegate.modelData.encrypted) && !streamPhoto.replacesFallback
-                                    text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1).toUpperCase()
+                                    objectName: "streamInitial-" + streamDelegate.modelData.id
+                                    text: root.streamDisplayName(streamDelegate.modelData).slice(0, 1)
                                     textFormat: Text.PlainText
                                     color: root.colors["text-primary"]
-                                    font.pixelSize: 16
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
                                 }
                                 Rectangle {
                                     // Keyboard focus ring for the avatar action below, the
@@ -5662,7 +5745,8 @@ component NativeMentionChip: Item {
                                                 rotation: streamDelegate.expanded ? 180 : 0
                                                 help: streamDelegate.expanded ? qsTr("Collapse topics") : qsTr("Expand topics")
                                                 visible: !root.normalizedSidebarQuery.length && Boolean(streamDelegate.sidebarTopicState.known) && Number(streamDelegate.sidebarTopicState.count) > 0
-                                                    && (streamButton.hovered || streamButton.activeFocus || activeFocus || hovered)
+                                                    && (streamButton.hovered || hovered || streamButton.activeFocus
+                                                        || streamAvatarLink.activeFocus || activeFocus)
                                                 onClicked: {
                                                     if (streamDelegate.expanded) root.setSidebarTopicReveal(streamDelegate.modelData.id, "collapsed");
                                                     root.controller.toggleSidebarStream(streamDelegate.modelData.id);
@@ -6043,6 +6127,8 @@ component NativeMentionChip: Item {
                     y: 30
                     width: parent.width - 100
                     text: root.chatHeaderCountersText()
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
                     textFormat: Text.PlainText
                     font.pixelSize: 12
                     color: root.colors["text-muted"]
@@ -6222,6 +6308,8 @@ component NativeMentionChip: Item {
                                 anchors.right: parent.right
                                 height: 18
                                 text: root.chatHeaderCountersText()
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
                                 textFormat: Text.PlainText
                                 font.pixelSize: 12
                                 lineHeightMode: Text.FixedHeight; lineHeight: 18
@@ -6302,10 +6390,12 @@ component NativeMentionChip: Item {
                         Text {
                             visible: !directHeaderPhoto.replacesFallback
                             anchors.centerIn: parent
+                            objectName: "directHeaderInitial"
                             text: String(root.controller.directPeer.displayName || "").slice(0, 1).toUpperCase()
                             textFormat: Text.PlainText
                             color: root.colors["text-muted"]
-                            font.pixelSize: 16
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
                         }
                     }
                     ColumnLayout {
@@ -6528,7 +6618,9 @@ component NativeMentionChip: Item {
                 // of the boolean edge.
                 property int userScrollGeneration: 0
                 property bool anchorJumpPending: false
-                readonly property real distanceFromTop: contentY - originY + topMargin
+                // Read the current position inside the scroll signal. A dependent
+                // binding can still hold the previous Y during contentYChanged.
+                function distanceFromTop() { return contentY - originY + topMargin }
                 // Drag/fling is user scrolling too (handleTouchMove analogue).
                 onMovementStarted: { userScrollSeen = true; ++userScrollGeneration; takeOpeningControl() }
                 MouseArea {
@@ -6599,6 +6691,21 @@ component NativeMentionChip: Item {
                 // View-only preferences follow actual UUIDs through split/merge.
                 // Controller remains the sole canonical history collection.
                 property var messageSnapshot: []
+                readonly property var readRequestCoverage: {
+                    const boundaries = root.controller.readRequestBoundaryIds
+                    const covered = {}
+                    if (!boundaries.length) return covered
+                    const boundaryIds = {}, topics = {}
+                    for (const id of boundaries) boundaryIds[id] = true
+                    // The canonical snapshot is in Core order, including
+                    // microsecond timestamps and UUID tie breaks.
+                    for (let i = messageSnapshot.length - 1; i >= 0; --i) {
+                        const row = messageSnapshot[i]
+                        if (boundaryIds[row.id]) topics[row.topicId] = true
+                        if (topics[row.topicId]) covered[row.id] = true
+                    }
+                    return covered
+                }
                 property var serviceSession: ({ scope: "", ready: false, seen: {}, latest: null, preferences: {}, revision: 0, focusKey: "" })
                 property var serviceGroups: []
                 property var serviceAliases: ({})
@@ -6900,7 +7007,7 @@ component NativeMentionChip: Item {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && !anchorTransitionLayer.visible && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
@@ -7203,7 +7310,7 @@ component NativeMentionChip: Item {
                         // arm/coalescing/end-of-history guards inside
                         // noteScrollReserve keep this from ever duplicating or
                         // storming a request.
-                        root.controller.noteScrollReserve(distanceFromTop, height)
+                        root.controller.noteScrollReserve(distanceFromTop(), height)
                         finishServiceHistoryReady();
                         scheduleVisibleRead();
                         return;
@@ -7251,7 +7358,7 @@ component NativeMentionChip: Item {
                     // from the restored geometry - re-arm only; this call can
                     // never start a request, keeping programmatic movement
                     // unattributed as user scrolling.
-                    root.controller.noteScrollRearm(distanceFromTop, height)
+                    root.controller.noteScrollRearm(distanceFromTop(), height)
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
                     maybeAdvanceHiddenWindow();
@@ -7371,7 +7478,7 @@ component NativeMentionChip: Item {
                     // decision to the controller (reference gates preserved:
                     // userScrollSeen, positioning, anchorJumpPending).
                     if (userScrollSeen && !positioning && !anchorJumpPending)
-                        root.controller.noteScrollReserve(distanceFromTop, height)
+                        root.controller.noteScrollReserve(distanceFromTop(), height)
                     // Issue #253: same reference syncAtBottomFromElement analogue
                     // that keeps the resize-time tail intent current outside the
                     // programmatic capture/restore passes. Programmatic movement
@@ -7881,7 +7988,7 @@ component NativeMentionChip: Item {
                 }
                 component MessageContentRow: MessageBoundaryRow {
                     id: messageRow
-                    readonly property real quickReactionsLayer: quickReactions.expanded || quickReactions.hasFocus ? 3 : quickReactions.visible ? 2 : 1
+                    readonly property real quickReactionsLayer: quickReactions.expanded || quickReactions.hasFocus || quickReply.visualFocus ? 3 : quickReactions.visible || quickReply.hovered ? 2 : 1
                     required property var entry
                     required property int index
                     required property bool groupFirst
@@ -8127,10 +8234,10 @@ component NativeMentionChip: Item {
                     readId: String(modelData.id)
                     readonly property bool own: Boolean(modelData.own)
                     // Issue #113 read-request pulse (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md):
-                    // the reference marks the bubble pending exactly when the server
-                    // message is inbound and not yet read
-                    // (workspace-message-bubble-presentation.ui.tsx:531-532).
+                    // The list passes boundary coverage to each unread peer bubble
+                    // (workspace-message-list.ui.tsx:661).
                     readonly property bool readRequestPending: !own && !Boolean(modelData.read)
+                        && !!messageList.readRequestCoverage[modelData.id]
                     readonly property bool lastInOwnGroup: groupLast
                     width: messageList.width - 24
                     height: bubbleOffset + (externalAuthor ? 24 : 0) + bubble.height + (groupLast && !keyControl ? 4 : 0)
@@ -8220,7 +8327,7 @@ component NativeMentionChip: Item {
                             visible: !messagePhoto.replacesFallback
                             objectName: "message-avatar-initial-" + messageRow.modelData.id
                             anchors.centerIn: parent
-                            text: String(messageRow.modelData.author).slice(0, 1).toUpperCase()
+                            text: String(messageRow.modelData.author).slice(0, 1)
                             textFormat: Text.PlainText
                             color: root.colors["text-primary"]
                             font.pixelSize: 18
@@ -8312,6 +8419,7 @@ component NativeMentionChip: Item {
                         id: bubble
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
+                        KeyNavigation.tab: quickReply.visible ? quickReply : null
                         width: messageRow.keyControl ? messageRow.width : messageRow.hasPoll
                             ? Math.min(360, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
                             : Math.min(Math.max(messageRow.encryptedLocked ? Math.min(480, root.width * 0.6) : naturalText.implicitWidth, messageRow.hasInlineImages ? mediaMessageBody.imagePreferredWidth : 0, authorHeader.preferredWidth, messageRow.inlineMeta ? 0 : messageRow.footerPreferredWidth) + 24, Math.max(24, (messageRow.width - (messageRow.own ? 0 : 56)) * 0.88))
@@ -8370,6 +8478,7 @@ component NativeMentionChip: Item {
                             // place of the text body (issue #161, reference
                             // workspace-message-bubble-presentation.ui.tsx:543+906).
                             NativeJitsiCard {
+                                id: callCard
                                 objectName: "call-card-" + messageRow.modelData.id
                                 visible: messageRow.isCallCard && !messageRow.keyControl
                                 width: parent.width
@@ -8379,7 +8488,6 @@ component NativeMentionChip: Item {
                                 roomName: root.controller.callRoomName(messageRow.callUrl)
                                 locationName: ""
                                 authorName: String(messageRow.modelData.author || "")
-                                timeText: String(messageRow.modelData.time || "")
                                 onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
                             }
                             // Poll card (issue #216, docs/NATIVE_DESKTOP_POLLS_BUBBLE.md): the
@@ -9174,7 +9282,8 @@ component NativeMentionChip: Item {
                             }
                             Item {
                                 id: messageFooter
-                                visible: !messageRow.keyControl && !messageRow.inlineMeta && !messageRow.lockedInlineMeta
+                                visible: !messageRow.keyControl && (messageRow.isCallCard
+                                    ? reactionFlow.implicitHeight > 0 : !messageRow.inlineMeta && !messageRow.lockedInlineMeta)
                                 width: parent.width
                                 height: Math.max(reactionFlow.implicitHeight, messageTime.height)
                                 Flow {
@@ -9335,6 +9444,43 @@ component NativeMentionChip: Item {
                                     onClicked: root.checkReaction(messageRow.modelData.id)
                                 }
                             }
+                        }
+                        Button {
+                            id: quickReply
+                            objectName: "quickReply-" + messageRow.modelData.id
+                            x: messageRow.own ? 12 : parent.width - width - 12
+                            y: -12
+                            z: 3
+                            width: implicitWidth
+                            height: 24
+                            horizontalPadding: 10
+                            verticalPadding: 0
+                            text: qsTr("Reply")
+                            Accessible.name: text
+                            hoverEnabled: true
+                            visible: root.composerAvailable && !root.controller.topicClosed && !root.encryptedConversation
+                                && messageRow.modelData.kind === "markdown" && !root.controller.cacheStale
+                                && root.messageSelectionCount === 0 && !root.aggregateConversation
+                                && (messageHover.hovered || bubble.activeFocus || visualFocus || hovered
+                                    || quickReactions.hasFocus || messageBody.activeFocus)
+                            enabled: visible && !root.controller.busy
+                            KeyNavigation.backtab: bubble
+                            font.pixelSize: 12
+                            contentItem: Text {
+                                text: quickReply.text
+                                font: quickReply.font
+                                color: root.colors["text-primary"]
+                                textFormat: Text.PlainText
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                            background: Rectangle {
+                                radius: height / 2
+                                color: quickReply.hovered ? root.colors["card-bg-active"] : root.colors["card-bg"]
+                                border.color: quickReply.visualFocus ? root.colors.accent : root.colors["border-subtle"]
+                            }
+                            onClicked: root.controller.addReplyTab(messageRow.modelData.id,
+                                String(messageBody.selectedText || "").replace(/[\u2028\u2029]/g, "\n"))
                         }
                         NativeQuickReactions {
                             id: quickReactions
@@ -9504,8 +9650,10 @@ component NativeMentionChip: Item {
                             id: messageTime
                             visible: !messageRow.keyControl
                             objectName: "message-time-" + messageRow.modelData.id
-                            x: bubble.width - 12 - implicitWidth
-                            y: messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
+                            parent: messageRow.isCallCard ? callCard.metadataRow : bubble
+                            x: parent.width - (messageRow.isCallCard ? 0 : 12) - implicitWidth
+                            y: messageRow.isCallCard ? (parent.height - height) / 2
+                                : messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
                             height: 16
                             text: messageRow.modelData.time
                             textFormat: Text.PlainText
@@ -9988,7 +10136,7 @@ component NativeMentionChip: Item {
                     // Reference ChatPageSelectionBar: only visible with a
                     // non-empty selection; a danger notice marker (4 px, 10 px
                     // vertical inset, rounded right edge), "Selected: N" in
-                    // text-sm medium text-primary, then Cancel + Forward.
+                    // text-sm medium text-primary, then Cancel, Reply and Forward.
                     // The 52 px keeps the native 40 px button inside the strip
                     // with the reference's 6 px vertical padding.
                     width: parent.width
@@ -10036,8 +10184,35 @@ component NativeMentionChip: Item {
                             text: qsTr("Cancel")
                             onClicked: root.clearMessageSelection()
                         }
-                        NativeButton {
+                        component SelectionActionButton: NativeButton {
+                            id: action
+                            icon.width: 28
+                            icon.height: 28
+                            icon.color: root.colors["text-primary"]
+                            contentItem: ControlsImpl.IconLabel {
+                                icon: action.icon
+                                text: action.text
+                                font: action.font
+                                color: root.colors["text-primary"]
+                                spacing: 6
+                                opacity: action.enabled ? 1 : 0.5
+                            }
+                        }
+                        SelectionActionButton {
+                            objectName: "selectionReplyButton"
+                            colors: root.colors
+                            text: qsTr("Reply")
+                            icon.source: "qrc:/workspace/icons/reply.svg"
+                            enabled: root.messageSelectionCount > 0 && root.composerAvailable
+                                && !root.encryptedConversation && !root.controller.busy && !root.controller.cacheStale
+                            onClicked: {
+                                if (root.controller.replyToSelection(root.messageSelectionIds))
+                                    root.clearMessageSelection()
+                            }
+                        }
+                        SelectionActionButton {
                             objectName: "selectionForwardButton"
+                            icon.source: "qrc:/workspace/icons/forward.svg"
                             colors: root.colors
                             text: qsTr("Forward")
                             // reference forwardDisabled = selectedCount === 0
@@ -11412,7 +11587,7 @@ component NativeMentionChip: Item {
         // the open, else the messenger home (the native chat section).
         NativeLicensesPage {
             colors: root.colors
-            datasetJson: root.controller.licensesDatasetJson()
+            datasetJson: visible ? root.controller.licensesDatasetJson() : ""
             visible: root.controller.section === "licenses"
             canGoBack: root.controller.sectionBeforeLicenses !== "chat"
             Layout.fillWidth: true
@@ -12652,7 +12827,7 @@ component NativeMentionChip: Item {
                                 required property int index
                                 objectName: "direct-user-" + modelData.id
                                 width: directUserList.width
-                                height: modelData.email.length > 0 ? 51.6875 : 36
+                                height: contentItem.secondary.length > 0 ? 51.6875 : 36
                                 padding: 0
                                 topPadding: 8
                                 bottomPadding: 8
@@ -12663,32 +12838,12 @@ component NativeMentionChip: Item {
                                     const phase = root.controller.directChatPhase;
                                     return verified && !root.chatMutationBusy && root.controller.canStartDirectChatWith(modelData.id);
                                 }
-                                Accessible.name: String(modelData.displayName) + (modelData.email ? ", " + modelData.email : "")
+                                Accessible.name: String(modelData.displayName) + (contentItem.secondary ? ", " + contentItem.secondary : "")
                                 onClicked: root.startDirectPeer(modelData.id)
                                 onActiveFocusChanged: if (activeFocus) directUserList.positionViewAtIndex(index, ListView.Contain)
-                                contentItem: Column {
-                                    Text {
-                                        objectName: "direct-name-" + directUser.modelData.id
-                                        width: parent.width
-                                        height: 20
-                                        text: directUser.modelData.displayName
-                                        textFormat: Text.PlainText
-                                        color: root.colors["text-primary"]
-                                        font.pixelSize: 14
-                                        font.weight: Font.Medium
-                                        elide: Text.ElideRight
-                                    }
-                                    Text {
-                                        objectName: "direct-email-" + directUser.modelData.id
-                                        width: parent.width
-                                        height: 15.6875
-                                        visible: directUser.modelData.email.length > 0
-                                        text: directUser.modelData.email
-                                        textFormat: Text.PlainText
-                                        color: root.colors["text-secondary"]
-                                        font.pixelSize: 11
-                                        elide: Text.ElideRight
-                                    }
+                                contentItem: ChatPickerRowBody {
+                                    user: directUser.modelData
+                                    prefix: "direct"
                                 }
                                 background: Rectangle {
                                     color: directUser.hovered ? root.colors["sidebar-item-hover"] : "transparent"
@@ -12880,7 +13035,7 @@ component NativeMentionChip: Item {
                                     required property int index
                                     objectName: "channel-member-" + modelData.id
                                     width: channelMemberList.width
-                                    height: (modelData.email ? 35.6875 : 20) + 16
+                                    height: contentItem.secondary.length > 0 ? 51.6875 : 36
                                     padding: 0
                                     topPadding: 8
                                     bottomPadding: 8
@@ -12888,7 +13043,7 @@ component NativeMentionChip: Item {
                                     rightPadding: 12
                                     enabled: !root.channelFormFrozen && root.controller.channelMembersVerified
                                     checked: root.channelSelectedMembers.indexOf(modelData.id) >= 0
-                                    Accessible.name: String(modelData.displayName) + (modelData.email ? ", " + modelData.email : "")
+                                    Accessible.name: String(modelData.displayName) + (contentItem.secondary ? ", " + contentItem.secondary : "")
                                     onClicked: root.toggleChannelMember(modelData.id)
                                     onActiveFocusChanged: {
                                         if (activeFocus) {
@@ -12906,29 +13061,9 @@ component NativeMentionChip: Item {
                                         border.color: member.visualFocus ? root.colors.accent : member.checked ? "#0075ff" : "#767676"
                                         ChannelCheckMark { visible: member.checked }
                                     }
-                                    contentItem: Column {
-                                        Text {
-                                            objectName: "channel-name-" + member.modelData.id
-                                            width: parent.width
-                                            height: 20
-                                            text: member.modelData.displayName
-                                            textFormat: Text.PlainText
-                                            color: root.colors["text-primary"]
-                                            font.pixelSize: 14
-                                            font.weight: Font.Medium
-                                            elide: Text.ElideRight
-                                        }
-                                        Text {
-                                            objectName: "channel-email-" + member.modelData.id
-                                            width: parent.width
-                                            height: 15.6875
-                                            visible: member.modelData.email.length > 0
-                                            text: member.modelData.email
-                                            textFormat: Text.PlainText
-                                            color: root.colors["text-secondary"]
-                                            font.pixelSize: 11
-                                            elide: Text.ElideRight
-                                        }
+                                    contentItem: ChatPickerRowBody {
+                                        user: member.modelData
+                                        prefix: "channel"
                                     }
                                     background: Rectangle { color: member.hovered ? root.colors["sidebar-item-hover"] : "transparent" }
                                 }
@@ -12962,7 +13097,8 @@ component NativeMentionChip: Item {
                         objectName: "channelCreationError"
                         width: parent.width
                         visible: root.channelSubmitted && root.controller.channelCreationError.length > 0
-                        text: visible ? root.controller.channelCreationError : ""
+                        text: visible ? (root.controller.channelCreateRequestFailed
+                            ? qsTr("Could not create chat. Try again.") : root.controller.channelCreationError) : ""
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         color: root.colors.danger
@@ -12970,6 +13106,27 @@ component NativeMentionChip: Item {
                         lineHeightMode: Text.FixedHeight
                         lineHeight: 20
                         Accessible.role: Accessible.AlertMessage
+                    }
+                    Text {
+                        objectName: "channelCreationRecoveryDetail"
+                        width: parent.width
+                        visible: root.channelSubmitted && root.controller.channelCreateRequestFailed && root.channelPhase === "uncertain"
+                        text: visible ? root.controller.channelCreationError : ""
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: root.colors["text-secondary"]
+                        font.pixelSize: 14
+                    }
+                    Text {
+                        objectName: "channelProfileLoading"
+                        width: parent.width
+                        visible: root.channelPrimaryAction === "create" && !root.controller.channelMembersVerified
+                            && (!root.controller.canCreateChannel || root.channelSelectedMembers.length > 0)
+                        text: qsTr("Profile is still loading. Try again in a moment.")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        color: root.colors["text-muted"]
+                        font.pixelSize: 12
                     }
                     // Issue #234 (review finding 4576938732, R9): when an
                     // encrypted create is rejected because the durable create
@@ -13395,7 +13552,7 @@ component NativeMentionChip: Item {
                         id: channelPrimary
                         objectName: root.channelPrimaryAction === "check" ? "channelCheckButton" : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? "channelRetryMembersButton" : "channelCreateButton"
                         visible: chatTabs.currentIndex === 1 && root.channelPrimaryAction !== "none"
-                        enabled: !root.chatMutationBusy && (root.channelPrimaryAction === "check" ? root.controller.canCheckChannelCreation : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? root.controller.canRetryChannelMembers : root.controller.canCreateChannel && channelNameInput.text.trim().length > 0 && (!root.channelSelectedMembers.length || root.controller.channelMembersVerified))
+                        enabled: !root.chatMutationBusy && (root.channelPrimaryAction === "check" ? root.controller.canCheckChannelCreation : root.channelPrimaryAction === "add" || root.channelPrimaryAction === "retry" ? root.controller.canRetryChannelMembers : root.controller.canCreateChannel && (!root.channelSelectedMembers.length || root.controller.channelMembersVerified) && channelNameInput.text.trim().length > 0)
                         text: root.channelPrimaryAction === "check" ? qsTr("Check status") : root.channelPrimaryAction === "add" ? qsTr("Add members") : root.channelPrimaryAction === "retry" ? qsTr("Retry members") : qsTr("Create")
                         height: 32
                         width: contentItem.implicitWidth + 24

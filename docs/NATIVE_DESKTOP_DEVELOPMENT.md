@@ -482,6 +482,12 @@ cache-only revision change during a still-current warm lookup falls back to HTTP
 rather than leaving that collection empty. Ordinary usage notifications do not
 restart hydration or create request loops.
 
+If a user opens a cached topic before its channel catalog finishes loading, the
+topic selection shares the channel’s original request. When a request has
+already failed, navigating among cached topics does not retry it. The saved-data
+banner clears after the
+current catalog, users and message history have been confirmed.
+
 Controller and real-window regressions exercise warm navigation, delayed opening,
 failed messenger revalidation, worker replacement and two-process restoration.
 Standalone worker and production preferences-binding checks cover their separate

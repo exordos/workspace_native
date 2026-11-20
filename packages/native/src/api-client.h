@@ -13,6 +13,7 @@
 
 class QNetworkAccessManager;
 class QNetworkReply;
+Q_MOC_INCLUDE("QNetworkReply")
 class QWebSocket;
 class QHttpMultiPart;
 
@@ -88,6 +89,7 @@ public:
 
 signals:
     void sessionChanged(quint64 generation, bool sameOwnerRenewal);
+    void requestDispatched(QNetworkReply *reply);
 
 private:
     struct Pending;

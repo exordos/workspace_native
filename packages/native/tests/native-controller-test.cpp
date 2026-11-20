@@ -42,6 +42,7 @@
 #include <QSignalSpy>
 #include <ctime>
 #include <QDBusConnection>
+#include <QDBusMetaType>
 #include <QDBusAbstractAdaptor>
 #include <QProcess>
 #include <QStandardPaths>
@@ -573,6 +574,7 @@ public:
     Session session{&api};
     NativeController controller{&api, &session};
     std::function<Response(const Request &)> messages;
+    std::function<Response(const Request &)> mentions;
     std::function<Response(const Request &)> users;
     std::function<Response(const Request &)> topics;
     std::function<Response(const Request &)> topicActions;
@@ -631,6 +633,8 @@ public:
             }
             if (path.contains("/messages/")) {
                 if (request.method == "GET" && path.endsWith("/messages/")) {
+                    if (QUrlQuery(request.target).hasQueryItem("mentioned"))
+                        return mentions ? mentions(request) : Response{QJsonArray{}};
                     if (QUrlQuery(request.target).hasQueryItem("topic_uuid")) ++topicHistoryGets;
                     else ++aggregateHistoryGets;
                 }
@@ -1743,6 +1747,7 @@ class PortalRequestStub final : public QObject
 public:
     using QObject::QObject;
     QString path; // path the test registered this object at (#87 round 2)
+    int closeCalls = 0;
 };
 
 class PortalRequestAdaptor final : public QDBusAbstractAdaptor
@@ -1750,7 +1755,9 @@ class PortalRequestAdaptor final : public QDBusAbstractAdaptor
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Request")
 public:
-    explicit PortalRequestAdaptor(QObject *parent) : QDBusAbstractAdaptor(parent) {}
+    explicit PortalRequestAdaptor(PortalRequestStub *request) : QDBusAbstractAdaptor(request) {}
+public slots:
+    void Close() { ++static_cast<PortalRequestStub *>(parent())->closeCalls; }
 signals:
     void Response(quint32 code, const QVariantMap &results);
 };
@@ -1790,31 +1797,38 @@ QDBusObjectPath PortalScreenshotAdaptor::PictureUri(const QString &parentWindow,
     return QDBusObjectPath(m_stub->requestPath);
 }
 
-// #87 round 2 (finding 4): stand-in for org.freedesktop.portal.ScreenCast,
-// the portal's LIVE source-selection contract (the still-image Screenshot
-// interface above is what the finding rejects). Exchange per the portal
-// interface docs: CreateSession(a{sv}) answers a Request object path whose
-// Response carries "session_target"; SelectSources(s, o, a{sv}) lets the
-// user pick screen/window sources (the types option selects screens and
-// windows); PickStreams(s, o, a{sv}) Response carries "streams", an array
-// of stream-reference object paths - the live references a capture pipeline
-// consumes via OpenPipeWireRemote - plus a "name" member. Every step hands
-// back its own Request object and answers after responseDelayMs, like the
-// real portal does.
+// Stand-in for the public org.freedesktop.portal.ScreenCast interface.
+// Start returns the documented a(ua{sv}) stream tuples over the real bus.
+using FixturePortalStream = std::pair<quint32, QVariantMap>;
+
+class PortalSessionStub final : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Session")
+public:
+    int closeCalls = 0;
+public slots:
+    void Close() { ++closeCalls; }
+};
+
 class PortalScreenCastStub final : public QObject
 {
     Q_OBJECT
 public:
     using QObject::QObject;
+    std::function<void(const QString &)> sessionCreated;
     int createSessionCalls = 0;
     int selectSourcesCalls = 0;
-    int pickStreamsCalls = 0;
+    int startCalls = 0;
+    QString selectedSession;
+    QString startedSession;
+    quint32 types = 0;
+    bool validTokens = true;
     int responseDelayMs = 120;
-    quint32 responseCode = 0; // portal semantics: 1 is the user cancelling
+    quint32 startResponseCode = 0; // 1 is the user cancelling in the chooser
     QString sessionPath = QStringLiteral("/org/freedesktop/portal/desktop/session/87/session");
-    QStringList streamPaths {
-        QStringLiteral("/org/freedesktop/portal/desktop/session/87/stream_1") };
-    QString streamName = QStringLiteral("Monitor 1");
+    const quint32 nodeId = 73;
+    const quint64 streamSerial = 18023;
     // Each step gets its own Request object from the pool the test registered.
     QList<PortalRequestStub *> requestPool;
     int requestCursor = 0;
@@ -1836,66 +1850,58 @@ public:
 
 public slots:
     QDBusObjectPath CreateSession(const QVariantMap &options);
-    QDBusObjectPath SelectSources(const QString &parentWindow,
-        const QDBusObjectPath &session, const QVariantMap &options);
-    QDBusObjectPath PickStreams(const QString &parentWindow,
-        const QDBusObjectPath &session, const QVariantMap &options);
+    QDBusObjectPath SelectSources(const QDBusObjectPath &session, const QVariantMap &options);
+    QDBusObjectPath Start(const QDBusObjectPath &session, const QString &parentWindow, const QVariantMap &options);
 
 private:
-    QDBusObjectPath answerWith(const QVariantMap &results);
+    QDBusObjectPath answerWith(const QVariantMap &results, quint32 code = 0);
     PortalScreenCastStub *m_stub;
 };
 
-QDBusObjectPath PortalScreenCastAdaptor::answerWith(const QVariantMap &results)
+QDBusObjectPath PortalScreenCastAdaptor::answerWith(const QVariantMap &results, quint32 code)
 {
     auto *request = m_stub->takeRequest();
     auto *adaptor = request->findChild<PortalRequestAdaptor *>();
     const int delayMs = m_stub->responseDelayMs;
-    const quint32 code = m_stub->responseCode;
-    QTimer::singleShot(delayMs, request, [request, adaptor, code, results] {
+    if (delayMs < 0)
         adaptor->Response(code, results);
-    });
+    else
+        QTimer::singleShot(delayMs, request, [adaptor, code, results] { adaptor->Response(code, results); });
     return QDBusObjectPath(request->path);
 }
 
 QDBusObjectPath PortalScreenCastAdaptor::CreateSession(const QVariantMap &options)
 {
-    Q_UNUSED(options)
     ++m_stub->createSessionCalls;
-    const QVariantMap results {
-        {QStringLiteral("session_target"),
-            QVariant::fromValue(QDBusVariant(m_stub->sessionPath))}
-    };
-    return answerWith(results);
+    const QRegularExpression validToken(QStringLiteral("^[a-zA-Z0-9_]+$"));
+    m_stub->validTokens = validToken.match(options.value("handle_token").toString()).hasMatch()
+        && validToken.match(options.value("session_handle_token").toString()).hasMatch();
+    if (m_stub->sessionCreated)
+        m_stub->sessionCreated(options.value("session_handle_token").toString());
+    return answerWith({{"session_handle", m_stub->sessionPath}});
 }
 
-QDBusObjectPath PortalScreenCastAdaptor::SelectSources(const QString &parentWindow,
-    const QDBusObjectPath &session, const QVariantMap &options)
+QDBusObjectPath PortalScreenCastAdaptor::SelectSources(const QDBusObjectPath &session,
+    const QVariantMap &options)
 {
-    Q_UNUSED(parentWindow)
-    Q_UNUSED(session)
-    Q_UNUSED(options)
     ++m_stub->selectSourcesCalls;
+    m_stub->selectedSession = session.path();
+    m_stub->types = options.value("types").toUInt();
     return answerWith({});
 }
 
-QDBusObjectPath PortalScreenCastAdaptor::PickStreams(const QString &parentWindow,
-    const QDBusObjectPath &session, const QVariantMap &options)
+QDBusObjectPath PortalScreenCastAdaptor::Start(const QDBusObjectPath &session,
+    const QString &parentWindow, const QVariantMap &options)
 {
     Q_UNUSED(parentWindow)
-    Q_UNUSED(session)
     Q_UNUSED(options)
-    ++m_stub->pickStreamsCalls;
-    // "streams" travels as an array of stream-reference strings. The ao
-    // (array of object paths) wire form of a live portal cannot be re-shipped
-    // inside a signal-emitted a{sv} with a self-built QDBusArgument (Qt's
-    // re-marshalling path corrupts it), so the stub uses the QStringList-as
-    // form and the result-form case covers both shapes.
-    const QVariantMap results {
-        {QStringLiteral("streams"), QVariant::fromValue(QDBusVariant(QVariant(m_stub->streamPaths)))},
-        {QStringLiteral("name"), QVariant::fromValue(QDBusVariant(m_stub->streamName))}
-    };
-    return answerWith(results);
+    ++m_stub->startCalls;
+    m_stub->startedSession = session.path();
+    qDBusRegisterMetaType<FixturePortalStream>();
+    qDBusRegisterMetaType<QList<FixturePortalStream>>();
+    const QList<FixturePortalStream> streams{{m_stub->nodeId,
+        {{"source_type", 1u}, {"pipewire-serial", QVariant::fromValue(m_stub->streamSerial)}}}};
+    return answerWith({{"streams", QVariant::fromValue(streams)}}, m_stub->startResponseCode);
 }
 
 // Registers the per-step Request pool the ScreenCast stub hands out.
@@ -2697,6 +2703,43 @@ private slots:
         QCOMPARE(c.account().value("statusLabel").toString(),expected);
         QCOMPARE(c.account().value("presence").toString(),QString("active"));
         QCOMPARE(test.direct.usersGets,1); QCOMPARE(test.direct.posts,0);
+    }
+
+    void directSidebarObservesCustomStatusOnlyChanges_data()
+    {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QString>("emoji");
+        QTest::addColumn<QString>("expectedEmoji");
+        QTest::addColumn<bool>("changed");
+        QTest::newRow("text-only") << QString("On call") << QString("house") << QString("🏠") << true;
+        QTest::newRow("emoji-only") << QString("Focus") << QString("palm_tree") << QString("🌴") << true;
+        QTest::newRow("clear") << QString() << QString() << QString() << true;
+        QTest::newRow("same-display") << QString(" Focus ") << QString("🏠") << QString("🏠") << false;
+    }
+
+    void directSidebarObservesCustomStatusOnlyChanges()
+    {
+        QFETCH(QString, text);
+        QFETCH(QString, emoji);
+        QFETCH(QString, expectedEmoji);
+        QFETCH(bool, changed);
+        AvatarReferenceFixture test(avatarReferenceA);
+        auto peer = presencePerson(channelMemberA, "avatar-peer", "active",
+            "2026-01-02T10:00:00Z", "Focus", "house");
+        test.directory[1] = peer;
+        QVERIFY(test.start());
+        auto &controller = test.direct.fixture.controller;
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        auto shown = test.sidebar();
+        QCOMPARE(shown.value("statusText").toString(), QString("Focus"));
+        QSignalSpy updates(&controller, &NativeController::sidebarStreamsChanged);
+        connect(&controller, &NativeController::sidebarStreamsChanged, this, [&] { shown = test.sidebar(); });
+        peer["status_text"] = text;
+        peer["status_emoji"] = emoji;
+        QVERIFY(controller.applyRealtimeEvent(controllerEvent("user.updated", peer, 83)));
+        QCOMPARE(!updates.isEmpty(), changed);
+        QCOMPARE(shown.value("statusText").toString(), text.trimmed());
+        QCOMPARE(shown.value("statusEmoji").toString(), expectedEmoji);
     }
 
     void presenceOnlyRealtimeNotifiesExistingSurfacesWithoutChangingIdentity()
@@ -8054,7 +8097,14 @@ private slots:
         QTRY_VERIFY(test.fixture.api.findChildren<QNetworkReply *>().isEmpty());
         QVERIFY(controller.channelCreationForm().isEmpty()); QCOMPARE(controller.channelCreationPhase(), "idle");
         QCOMPARE(done.size(), 0); QCOMPARE(test.posts, 1);
-        test.fixture.server.handler = fallback;
+        std::function<void()> releaseDirectory;
+        test.fixture.server.handler = [fallback, &releaseDirectory](const Request &request) {
+            auto response = fallback(request);
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/users/") {
+                response.defer = [&releaseDirectory](auto send) { releaseDirectory = std::move(send); };
+            }
+            return response;
+        };
         controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
         QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
         QTRY_VERIFY(controller.authenticated()); QTRY_COMPARE(controller.streams().size(), 2);
@@ -8062,6 +8112,10 @@ private slots:
         QCOMPARE(controller.channelCreationForm().value("attemptId"), form.value("attemptId"));
         QCOMPARE(controller.channelCreationForm().value("memberUuids"), form.value("memberUuids"));
         test.postDelay = test.getDelay = test.topicDelay = test.addDelay = test.bindingDelay = test.catalogDelay = 0;
+        QTRY_VERIFY(static_cast<bool>(releaseDirectory));
+        QVERIFY(!controller.canCheckChannelCreation());
+        releaseDirectory();
+        QTRY_VERIFY(controller.canCheckChannelCreation());
         controller.checkChannelCreation(); QTRY_VERIFY(!controller.channelCreationBusy());
         QCOMPARE(test.posts, 1);
         if (stage == "members" || stage == "catalog") QCOMPARE(done.size(), 1);
@@ -8210,6 +8264,7 @@ private slots:
         QTRY_VERIFY(!controller.channelCreationBusy()); const auto id = test.created.value("uuid").toString();
         QCOMPARE(test.posts, 1); QCOMPARE(test.memberPosts, 0); QCOMPARE(test.gets, 0); QCOMPARE(done.size(), 0);
         QCOMPARE(controller.channelCreationForm().value("confirmedStreamId").toString(), QString{});
+        QVERIFY(controller.channelCreateRequestFailed());
         QCOMPARE(controller.canCreateChannel(), definite); QCOMPARE(controller.canCheckChannelCreation(), !definite);
         if (definite) {
             QCOMPARE(controller.channelCreationPhase(), "failed"); test.postStatus = 201;
@@ -8695,6 +8750,7 @@ private slots:
 
     void aggregateVisibleReadCoalescesSeparatelyForEachActualTopic()
     {
+        QStringList notified;
         Fixture fixture; fixture.aggregateMessages = true; fixture.extraTopic = true;
         QMap<QString, QJsonObject> rows;
         for (int n = 1; n <= 5; ++n) {
@@ -8726,6 +8782,21 @@ private slots:
         QVERIFY(modelMessage(fixture.controller, a1).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(4).value("uuid").toString()).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(5).value("uuid").toString()).value("read").toBool());
+
+        // A queued anchor deleted before dispatch must also disappear from
+        // the snapshot last delivered to the visual read-request indicator.
+        connect(&fixture.controller, &NativeController::readRequestBoundariesChanged, &fixture.controller,
+            [&] { notified = fixture.controller.readRequestBoundaryIds(); });
+        const auto a5 = historyMessage(5).value("uuid").toString();
+        const auto b4 = historyMessage(4).value("uuid").toString();
+        fixture.controller.markMessagesReadUpTo(a5);
+        fixture.controller.markMessagesReadUpTo(b4);
+        QCOMPARE(notified.size(), 2);
+        rows.remove(b4);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted",
+            QJsonObject{{"uuid", b4}, {"stream_uuid", streamId}, {"topic_uuid", secondTopicId}})));
+        QTRY_VERIFY(fixture.controller.readRequestBoundaryIds().isEmpty());
+        QVERIFY(notified.isEmpty());
     }
 
     void aggregateLoadsActualTopicsAndRealtimeWithoutADefaultComposer()
@@ -10438,6 +10509,50 @@ private slots:
         fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy()); QCOMPARE(history, 3);
     }
 
+    void deletedPeerMessageLeavesTheOtherRowsWhenReopeningOffline()
+    {
+        QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
+        Fixture fixture;
+        fixture.extraTopic = true;
+        fixture.controller.useCache(&cache);
+        auto first = historyMessage(1);
+        auto removed = historyMessage(2);
+        auto last = historyMessage(3);
+        removed["author_uuid"] = secondTopicId;
+        removed["is_own"] = false;
+        const auto deletedId = removed.value("uuid").toString();
+        bool offline = false;
+        int offlineRequests = 0;
+        fixture.messages = [&](const Request &request) {
+            if (offline) {
+                ++offlineRequests;
+                return Response{QJsonObject{}, 503};
+            }
+            if (QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{message("Second topic", returnedId, secondTopicId)}};
+            return Response{QJsonArray{last, removed, first}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.messages().size(), 3);
+        QVERIFY(flushCache(cache));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted", {
+            {"uuid", deletedId}, {"stream_uuid", streamId}, {"topic_uuid", topicId},
+            {"author_uuid", secondTopicId}})));
+        QTRY_COMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(flushCache(cache));
+        fixture.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(!modelMessage(fixture.controller, returnedId).isEmpty());
+        offline = true;
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(offlineRequests > 0 && !fixture.controller.busy());
+        QCOMPARE(fixture.controller.messages().size(), 2);
+        QVERIFY(!modelMessage(fixture.controller, first.value("uuid").toString()).isEmpty());
+        QVERIFY(!modelMessage(fixture.controller, last.value("uuid").toString()).isEmpty());
+        QVERIFY(modelMessage(fixture.controller, deletedId).isEmpty());
+        QVERIFY(!fixture.controller.messageHistoryReady());
+    }
+
     void warmCacheNavigationAvoidsRedundantRestRequests()
     {
         QTemporaryDir directory; NativeCacheService cache(directory.path(), {}, true);
@@ -11410,6 +11525,7 @@ private slots:
             const auto prefix = kind == "image" ? QString("!") : QString{};
             return prefix + '[' + name + "](<urn:" + kind + ':' + id + "?name=" + name
                 + "&content_type=" + QString::fromLatin1(QUrl::toPercentEncoding(mime))
+                + (kind == "image" ? QStringLiteral("&w=96&h=64") : QString{})
                 + "&size=" + QString::number(bytes.size()) + ">)";
         };
         Q_UNUSED(expectedPattern);
@@ -11691,9 +11807,11 @@ private slots:
         QCOMPARE(fixture.controller.draft(), QString("first answer"));
         QCOMPARE(fixture.controller.uploadEntries().size(), 1);
         fixture.controller.submitEditMessage(); QTRY_COMPARE(puts, 1);
-        QCOMPARE(saved, "[report.txt](<urn:file:" + returnedId + "?name=report.txt&content_type=text%2Fplain&size=7>)\n[First](urn:quote:" + messageId
-            + ")\n\nfirst answer\n\n[Second](urn:quote:"
-            + otherId + ")\n\nSecond answer typed while uploading");
+        const QString attachment = "[report.txt](<urn:file:" + returnedId
+            + "?name=report.txt&content_type=text%2Fplain&size=7>)";
+        QCOMPARE(saved, "[First](urn:quote:" + messageId + ")\n\n" + attachment
+            + "\n\nfirst answer\n\n[Second](urn:quote:" + otherId
+            + ")\n\nSecond answer typed while uploading");
         QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
         QCOMPARE(fixture.controller.draft(), QString("Unrelated draft"));
         QVERIFY(fixture.controller.beginEditMessage(returnedId));
@@ -11703,10 +11821,40 @@ private slots:
         QCOMPARE(fixture.controller.draft(), QString("first answer"));
         QVERIFY(fixture.controller.selectReplyTab(reopened[1].toMap().value("id").toString()));
         QCOMPARE(fixture.controller.draft(), QString("Second answer typed while uploading"));
-        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        QVERIFY(fixture.controller.editAttachments().isEmpty());
         const auto originalWire = saved;
         fixture.controller.submitEditMessage(); QTRY_COMPARE(puts, 2);
         QCOMPARE(saved, originalWire);
+    }
+
+    void inlineEditPreservesAnExistingAttachmentBeforeTheFirstQuote()
+    {
+        const QString attachment = "[existing.txt](<urn:file:" + secondTopicId + "?name=existing.txt>)";
+        const QString quote = "[First](urn:quote:" + messageId + ")";
+        const QString prefix = attachment + "\n" + quote + "\n\n";
+        auto reply = message(prefix + "Original answer", returnedId);
+        const auto origin = message("First origin", messageId);
+        Fixture fixture;
+        QString saved;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "PUT") {
+                saved = request.body["payload"].toObject()["content"].toString();
+                reply["payload"] = request.body["payload"];
+                return {reply};
+            }
+            if (request.target.path().endsWith("/messages/"))
+                return {QJsonArray{origin, reply}};
+            return {request.target.path().endsWith(messageId) ? origin : reply};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginEditMessage(returnedId));
+        QCOMPARE(fixture.controller.replyTabs().size(), 1);
+        QCOMPARE(fixture.controller.editAttachments().size(), 1);
+        QCOMPARE(fixture.controller.draft(), QString("Original answer"));
+        fixture.controller.setDraft("Edited answer");
+        fixture.controller.submitEditMessage();
+        QTRY_VERIFY(fixture.controller.editingMessageId().isEmpty());
+        QCOMPARE(saved, prefix + "Edited answer");
     }
 
     void inlineEditCancellationKeepsAnEarlierOrdinaryUpload()
@@ -14549,6 +14697,7 @@ private slots:
         fixture.controller.setDraft("Before ![diagram.png] after");
         QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(!wire.isEmpty());
         QCOMPARE(wire.count("urn:image:" + returnedId), 1); QVERIFY(wire.startsWith("Before ![diagram.png]("));
+        QVERIFY(wire.contains("&w=8&h=8&size="));
         QVERIFY(wire.endsWith(" after")); QCOMPARE(deletes, 0);
         const auto owner = drafts.owner(); bool flushed = false; drafts.flush(this, [&](bool ok) { flushed = ok; }); QTRY_VERIFY(flushed);
         storage.shutdown(); QTRY_VERIFY(storage.stopped()); NativeDraftStore store(directory.filePath("drafts"));
@@ -14559,23 +14708,45 @@ private slots:
 
     void removingFirstOfTwoSameNamedImagesKeepsSecondInline()
     {
-        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
-        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
-        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        QTemporaryDir directory;
+        const auto writeImage = [&](const QString &subdir, const QColor &color) {
+            const QString path = directory.filePath(subdir + "/diagram.png");
+            if (!QDir().mkpath(QFileInfo(path).absolutePath())) return QString{};
+            QImage image(8, 8, QImage::Format_ARGB32);
+            image.fill(color);
+            return image.save(path) ? path : QString{};
+        };
+        const QString firstPath = writeImage("first", Qt::red);
+        const QString secondPath = writeImage("second", Qt::blue);
+        QFile firstInput(firstPath), secondInput(secondPath);
+        QVERIFY(firstInput.open(QIODevice::ReadOnly));
+        QVERIFY(secondInput.open(QIODevice::ReadOnly));
+        const auto firstBytes = firstInput.readAll(), secondBytes = secondInput.readAll();
         Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
-        const QString secondId = "99999999-9999-4999-8999-999999999994"; int uploads = 0; QString wire;
+        const QString secondId = "99999999-9999-4999-8999-999999999994";
+        std::function<void()> completeFirst;
+        QString wire;
         fixture.files = [&](const Request &request) {
             if (request.method == "DELETE") return Response{QJsonObject{}, 204};
-            const auto id = ++uploads == 1 ? returnedId : secondId;
-            return Response{QJsonObject{{"uuid", id}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+            const bool first = request.rawBody.contains(firstBytes);
+            const auto &bytes = first ? firstBytes : secondBytes;
+            if (!request.rawBody.contains(bytes)) return Response{QJsonObject{}, 400};
+            Response response{QJsonObject{{"uuid", first ? returnedId : secondId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
                 {"content_type", "image/png"}, {"size_bytes", bytes.size()},
                 {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+            if (first) response.defer = [&](std::function<void()> reply) { completeFirst = std::move(reply); };
+            return response;
         };
         fixture.messages = [&](const Request &request) {
             if (request.method == "POST") { wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start()); fixture.controller.attachFiles({QUrl::fromLocalFile(path), QUrl::fromLocalFile(path)});
+        QVERIFY(fixture.start());
+        fixture.controller.attachFiles({QUrl::fromLocalFile(firstPath), QUrl::fromLocalFile(secondPath)});
+        QTRY_VERIFY(completeFirst && fixture.controller.uploadEntries().last().toMap().value("status") == "ready");
+        const auto aliasWhileFirstIsPending = fixture.controller.uploadEntries().last().toMap().value("alias").toString();
+        completeFirst();
+        QCOMPARE(aliasWhileFirstIsPending, QString("![diagram.png (2)]"));
         QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.uploadEntries().size(), 2);
         const auto first = fixture.controller.uploadEntries().first().toMap().value("id").toString();
         QCOMPARE(fixture.controller.uploadEntries().last().toMap().value("alias").toString(), QString("![diagram.png (2)]"));
@@ -14922,6 +15093,61 @@ private slots:
         fixture.controller.submitEditMessage(); QTest::qWait(100); QCOMPARE(puts, 0);
         fixture.controller.removeUpload(card); QTRY_COMPARE_WITH_TIMEOUT(deletes, 1, 2000);
         QCOMPARE(fixture.controller.draft().size(), 40000);
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody_data()
+    {
+        QTest::addColumn<QString>("body");
+        QTest::addColumn<QString>("expected");
+        const auto quote = QStringLiteral("[Sam](urn:quote:") + messageId + ")";
+        QTest::newRow("plain") << QStringLiteral("Caption") << QStringLiteral("LINK\nCaption");
+        QTest::newRow("existing") << QStringLiteral("Caption\nLINK") << QStringLiteral("Caption\nLINK");
+        QTest::newRow("linked-in-list") << QStringLiteral("- LINK") << QStringLiteral("- LINK");
+        QTest::newRow("code-span") << QStringLiteral("Example: `LINK`") << QStringLiteral("LINK\nExample: `LINK`");
+        QTest::newRow("escaped-markup") << QStringLiteral("Example: \\LINK") << QStringLiteral("LINK\nExample: \\LINK");
+        QTest::newRow("quote-and-answer") << quote + "\n\nCaption" << quote + "\n\nLINK\n\nCaption";
+        QTest::newRow("quote-only") << quote << quote + "\n\nLINK";
+        QTest::newRow("continued-paragraph") << quote + "\nanswer" << "LINK\n" + quote + "\nanswer";
+        QTest::newRow("list-starts-new-block") << quote + "\n- list item" << quote + "\n\nLINK\n\n- list item";
+        QTest::newRow("heading-starts-new-block") << quote + "\n# Heading" << quote + "\n\nLINK\n\n# Heading";
+        QTest::newRow("setext-title") << quote + "\n===" << "LINK\n" + quote + "\n===";
+        QTest::newRow("inline-quote") << quote + " text" << "LINK\n" + quote + " text";
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody()
+    {
+        QFETCH(QString, body);
+        QFETCH(QString, expected);
+        Fixture f;
+        FileClient files(&f.api);
+        f.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile file(directory.filePath("report.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("report"), 6);
+        file.close();
+        f.files = [](const Request &) { return Response{QJsonObject{
+            {"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+            {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        QString sent;
+        f.messages = [&](const Request &r) {
+            if (r.method == "POST") {
+                sent = r.body.value("payload").toObject().value("content").toString();
+                return Response{QJsonObject{}, 503};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(f.start());
+        f.controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!f.controller.fileBusy());
+        QCOMPARE(f.controller.uploadEntries().size(), 1);
+        const auto link = f.controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        f.controller.setDraft(body.replace("LINK", link));
+        f.controller.send();
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent, expected.replace("LINK", link));
     }
 
     void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
@@ -18003,7 +18229,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1, true)}, {2, mentionMessage(2)}, {3, mentionMessage(3)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18081,7 +18307,7 @@ private slots:
         for (int n = 1; n <= 60; ++n)
             rows->insert(n, mentionMessage(n, true)); // read=true keeps the index walk empty
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18108,6 +18334,74 @@ private slots:
         QVERIFY(!fixture.controller.mentionsPage().value("canLoadMore").toBool());
     }
 
+    void sidebarMentionBadgeUpdatesOnExactRemoval_data()
+    {
+        QTest::addColumn<bool>("deleted");
+        QTest::newRow("messages.read") << false;
+        QTest::newRow("message.deleted") << true;
+    }
+
+    void sidebarMentionBadgeUpdatesOnExactRemoval()
+    {
+        QFETCH(bool, deleted);
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        bool displayed = false;
+        // A sidebar delegate observes this notifier. Reading the projection only
+        // after the event would conceal a missing notification.
+        connect(&fixture.controller, &NativeController::sidebarStreamsChanged, this, [&] {
+            for (const auto &row : fixture.controller.sidebarStreams()) {
+                if (row.toMap().value("id").toString() == streamId)
+                    displayed = row.toMap().value("hasMention").toBool();
+            }
+        });
+        for (int n : {1, 2})
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", mentionMessage(n), n)));
+        QVERIFY(displayed);
+        for (int n : {1, 2}) {
+            const auto uuid = mentionMessage(n).value("uuid");
+            const auto kind = deleted ? QStringLiteral("message.deleted") : QStringLiteral("messages.read");
+            const QJsonObject payload = deleted
+                ? QJsonObject{{"kind", kind}, {"uuid", uuid}, {"stream_uuid", streamId}, {"topic_uuid", topicId}}
+                : QJsonObject{{"kind", kind}, {"project_id", projectId}, {"message_uuids", QJsonArray{uuid}}};
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent(kind, payload, 2 + n)));
+            QCOMPARE(displayed, n == 1);
+        }
+    }
+
+    void sidebarMentionBootstrapPreservesConcurrentReadAndDelete_data()
+    {
+        QTest::addColumn<bool>("firstPageUnavailable");
+        QTest::newRow("delayed-page") << false;
+        QTest::newRow("temporary-failure") << true;
+    }
+
+    void sidebarMentionBootstrapPreservesConcurrentReadAndDelete()
+    {
+        QFETCH(bool, firstPageUnavailable);
+        int attempts = 0;
+        Fixture fixture;
+        std::function<void()> release;
+        fixture.mentions = [&](const Request &) {
+            if (++attempts == 1 && firstPageUnavailable) return Response{QJsonObject{}, 503};
+            Response result{QJsonArray{mentionMessage(1), mentionMessage(2), mentionMessage(3)}};
+            result.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return result;
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(release);
+        const auto read = mentionMessage(1).value("uuid");
+        const auto deleted = mentionMessage(2).value("uuid");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("messages.read",
+            {{"project_id", projectId}, {"message_uuids", QJsonArray{read}}}, 13)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted",
+            {{"uuid", deleted}, {"stream_uuid", streamId}, {"topic_uuid", topicId}}, 14)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", mentionMessage(4), 15)));
+        release();
+        QTRY_COMPARE(fixture.controller.activityMentionsCount(), 2);
+        QVERIFY(!fixture.controller.mentionsVisible());
+    }
+
     void activityMentionRealtimeMergesWithoutRefetch()
     {
         Fixture fixture;
@@ -18115,7 +18409,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1)}, {2, mentionMessage(2, false, true)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18194,7 +18488,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1)}, {2, mentionMessage(2)}, {3, mentionMessage(3, true)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18246,7 +18540,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1)}, {2, mentionMessage(2)}, {3, mentionMessage(3, true)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18275,7 +18569,7 @@ private slots:
             {1, mentionMessage(1)}, {2, mentionMessage(2, true)}});
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto released = std::make_shared<bool>(false);
-        fixture.messages = [rows, gates, released](const Request &request) {
+        fixture.mentions = [rows, gates, released](const Request &request) {
             const QUrlQuery query(request.target);
             // Hold the first All collection page in flight, frozen at the
             // pre-deletion snapshot that includes row 2.
@@ -18319,7 +18613,7 @@ private slots:
             {1, mentionMessage(1, true)}, {2, mentionMessage(2)}, {3, mentionMessage(3)}});
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto released = std::make_shared<bool>(false);
-        fixture.messages = [rows, gates, released](const Request &request) {
+        fixture.mentions = [rows, gates, released](const Request &request) {
             const auto query = QUrlQuery(request.target);
             if (!*released && query.queryItemValue("page_limit") == "100") {
                 Response response{QJsonArray{}, 200, 0, {}}; // authoritative index: nobody is unread
@@ -18356,7 +18650,7 @@ private slots:
             {1, mentionMessage(1)}});
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto released = std::make_shared<bool>(false);
-        fixture.messages = [rows, gates, released](const Request &request) {
+        fixture.mentions = [rows, gates, released](const Request &request) {
             const QUrlQuery query(request.target);
             if (!*released && query.hasQueryItem("mentioned")) {
                 Response response{QJsonArray{}, 200, 0, {}};
@@ -20988,7 +21282,7 @@ private slots:
         fixture.aggregateMessages = true;
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(
             QMap<int, QJsonObject>{{1, mentionMessage(1, false)}});
-        fixture.messages = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
+        fixture.mentions = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
         fixture.controller.useDrafts(&drafts);
         QVERIFY(fixture.start());
         QTRY_VERIFY(drafts.ready(streamId, topicId));
@@ -22614,7 +22908,7 @@ private slots:
         // The unread-mention index walk (mentioned=true&read=false) finds one unread
         // mention in the channel; ordinary history pages stay empty.
         test.aggregateMessages = true;
-        test.messages = [](const Request &request) {
+        test.mentions = [](const Request &request) {
             if (QUrlQuery(request.target).queryItemValue("mentioned") == QLatin1String("true"))
                 return Response{QJsonArray{mentionMessage(1)}};
             return Response{QJsonArray{}};
@@ -22648,12 +22942,9 @@ private slots:
         QCOMPARE(channel.value("displayedUnread").toInt(), 5);
         QVERIFY(!channel.value("unreadPassive").toBool());
         QVERIFY(!channel.value("pinned").toBool());
-        // The native unread-mention index walks with the mentions surface (the existing
-        // contract the activity rail encodes: nothing walks at bootstrap); opening and
-        // closing it must light the row badge exactly like the rail badge.
-        test.controller.showMentions();
-        QTRY_VERIFY_WITH_TIMEOUT(([&] { return rowOf(streamId).value("hasMention").toBool(); })(), 3000);
-        test.controller.closeMentions();
+        QVERIFY(!test.controller.mentionsVisible());
+        QTRY_COMPARE_WITH_TIMEOUT(test.controller.activityMentionsCount(), 1, 3000);
+        QVERIFY(rowOf(streamId).value("hasMention").toBool());
         QCOMPARE(channel.value("statusEmoji").toString(), QString{});
         QCOMPARE(channel.value("statusText").toString(), QString{});
         const auto alice = rowOf(direct);
@@ -26534,12 +26825,7 @@ private slots:
         QCOMPARE(failed.at(0).at(0).toString(), QStringLiteral("bridge rejected the pick"));
     }
 
-    // #87 round 2 (finding 4): the default portal transport must drive the
-    // LIVE source-selection contract (org.freedesktop.portal.ScreenCast
-    // CreateSession -> SelectSources -> PickStreams) and publish the picked
-    // stream reference, never a still PictureUri screenshot file. Before the
-    // fix the shipped transport calls Screenshot.PictureUri instead, so every
-    // ScreenCast counter and stream assertion below fails.
+    // Exercise the public ScreenCast wire types and the portal-owned session lifetime.
     void shareSourcePickerDrivesThePortalScreenCastContract()
     {
         auto bus = QDBusConnection::sessionBus();
@@ -26553,6 +26839,8 @@ private slots:
         new PortalScreenshotAdaptor(&shot, &portal);
         shot.requestObject = &shotRequest;
         new PortalScreenCastAdaptor(&cast, &portal);
+        PortalSessionStub session;
+        QVERIFY(bus.registerObject(cast.sessionPath, &session, QDBusConnection::ExportAllSlots));
         PortalRequestPool pool;
         QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), &portal));
         QVERIFY(bus.registerObject(shotRequest.path = shot.requestPath, &shotRequest));
@@ -26563,6 +26851,7 @@ private slots:
         auto cleanup = qScopeGuard([&] {
             bus.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
             bus.unregisterObject(shot.requestPath);
+            bus.unregisterObject(cast.sessionPath);
             pool.unregisterFrom(bus);
             bus.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
         });
@@ -26575,48 +26864,97 @@ private slots:
         // The live contract ran end to end, and the still-image API was never used.
         QCOMPARE(cast.createSessionCalls, 1);
         QCOMPARE(cast.selectSourcesCalls, 1);
-        QCOMPARE(cast.pickStreamsCalls, 1);
+        QCOMPARE(cast.startCalls, 1);
+        QVERIFY(cast.validTokens);
+        QCOMPARE(cast.selectedSession, cast.sessionPath);
+        QCOMPARE(cast.startedSession, cast.sessionPath);
+        QCOMPARE(cast.types, 3u);
         QCOMPARE(shot.pictureUriCalls, 0);
         const auto source = selected.at(0).at(0).toMap();
         QCOMPARE(source.value(QStringLiteral("id")).toString(), QStringLiteral("portal-stream"));
-        QCOMPARE(source.value(QStringLiteral("uri")).toString(), cast.streamPaths.first());
-        QCOMPARE(source.value(QStringLiteral("name")).toString(), cast.streamName);
+        QCOMPARE(source.value("nodeId").toUInt(), cast.nodeId);
+        QCOMPARE(source.value("sessionHandle").toString(), cast.sessionPath);
+        QCOMPARE(source.value("properties").toMap().value("pipewire-serial").toULongLong(), cast.streamSerial);
         QVERIFY(source.value(QStringLiteral("fromPortal")).toBool());
         QVERIFY(source.value(QStringLiteral("live")).toBool());
 
-        // The portal cancel code must surface as a translated failure, not a
-        // hang and not a fallback source.
-        cast.responseCode = 1;
-        QSignalSpy failedAgain(&picker, &workspace::ScreenShareSourcePicker::sourceFailed);
+        QCOMPARE(session.closeCalls, 0);
+        picker.releaseSource();
+        QTRY_COMPARE(session.closeCalls, 1);
+
+        cast.startResponseCode = 1;
         picker.requestSource();
-        QTRY_VERIFY_WITH_TIMEOUT(failedAgain.count() == 1, 8000);
-        QCOMPARE(selected.count(), 1); // only the earlier real pick; the cancel adds no source
-        QCOMPARE(cast.createSessionCalls, 2);
-        QVERIFY(!failedAgain.at(0).at(0).toString().isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 8000);
+        QCOMPARE(selected.count(), 1);
+        QCOMPARE(cast.startCalls, 2);
+        QVERIFY(!failed.at(0).at(0).toString().isEmpty());
+        QTRY_COMPARE(session.closeCalls, 2);
     }
 
-    // Result forms of the live stream reader: the array and plain-string
-    // forms a reply variant demarshal produces (a live portal ships ao; the
-    // reader walks any QDBusArgument array - Qt refuses to read back a
-    // self-built QDBusArgument and corrupts a re-marshalled one inside a
-    // signal, so the array stream form is exercised through QStringList and
-    // the live ao form stays a real-portal verification item). Replaces the
-    // old PictureUri result-form case the finding retired.
-    void shareSourcePickerParsesThePortalStreamResultForm()
+    void shareSourcePickerHandlesPortalResponseTiming_data()
     {
-        QString error;
-        const QVariantMap stringListForm {
-            {QStringLiteral("streams"),
-                QVariant::fromValue(QDBusVariant(QVariant(QStringList { QStringLiteral("screen:0") })))}
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("immediate-alternate-request-path") << QString("immediate");
+        QTest::newRow("timeout-during-create") << QString("timeout");
+        QTest::newRow("release-during-start") << QString("release");
+        QTest::newRow("release-before-alternate-request-reply") << QString("releaseBeforePath");
+    }
+
+    void shareSourcePickerHandlesPortalResponseTiming()
+    {
+        QFETCH(QString, scenario);
+        auto bus = QDBusConnection::sessionBus();
+        if (!bus.isConnected() || !bus.registerService("org.freedesktop.portal.Desktop"))
+            QSKIP("the fixture needs a private session bus");
+        auto unown = qScopeGuard([&] { bus.unregisterService("org.freedesktop.portal.Desktop"); });
+        QObject portal;
+        PortalScreenCastStub cast;
+        new PortalScreenCastAdaptor(&cast, &portal);
+        const QString portalPath = "/org/freedesktop/portal/desktop";
+        QVERIFY(bus.registerObject(portalPath, &portal));
+        PortalRequestPool requests;
+        QVERIFY(requests.registerOn(bus, portalPath + "/request/fixture/alternative", 3, cast));
+        PortalSessionStub session;
+        cast.sessionCreated = [&](const QString &token) {
+            auto sender = bus.baseService().mid(1);
+            cast.sessionPath = portalPath + "/session/" + sender.replace('.', '_') + "/" + token;
+            QVERIFY(bus.registerObject(cast.sessionPath, &session, QDBusConnection::ExportAllSlots));
         };
-        QCOMPARE(workspace::ScreenShareSourcePicker::streamReferenceFromResult(stringListForm, error),
-            QStringLiteral("screen:0"));
-        const QVariantMap plainForm {{QStringLiteral("streams"), QStringLiteral("screen:1")}};
-        QCOMPARE(workspace::ScreenShareSourcePicker::streamReferenceFromResult(plainForm, error),
-            QStringLiteral("screen:1"));
-        const QVariantMap none;
-        QVERIFY(workspace::ScreenShareSourcePicker::streamReferenceFromResult(none, error).isEmpty());
-        QVERIFY(!error.isEmpty());
+        auto cleanup = qScopeGuard([&] {
+            requests.unregisterFrom(bus);
+            bus.unregisterObject(cast.sessionPath);
+            bus.unregisterObject(portalPath);
+        });
+        cast.responseDelayMs = scenario == "immediate" ? -1 : 120;
+        ScreenShareSourcePicker picker;
+        picker.setPortalTimeoutMs(scenario == "timeout" ? 60 : 1000);
+        QSignalSpy selected(&picker, &ScreenShareSourcePicker::sourceSelected);
+        QSignalSpy failed(&picker, &ScreenShareSourcePicker::sourceFailed);
+        picker.requestSource();
+        if (scenario == "immediate") {
+            QTRY_COMPARE_WITH_TIMEOUT(selected.size(), 1, 1800);
+            QCOMPARE(failed.size(), 0);
+            picker.releaseSource();
+        } else {
+            if (scenario.startsWith("release")) {
+                if (scenario == "release")
+                    QTRY_COMPARE_WITH_TIMEOUT(cast.startCalls, 1, 800);
+                picker.releaseSource();
+            }
+            QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 1800);
+            QTRY_VERIFY(cast.requestCursor > 0);
+            QTRY_COMPARE(cast.requestPool.at(cast.requestCursor - 1)->closeCalls, 1);
+            QTest::qWait(150);
+            QCOMPARE(selected.size(), 0);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(session.closeCalls, 1, 1000);
+    }
+
+    void shareSourcePickerRejectsMalformedOrMissingPortalStreams()
+    {
+        QVERIFY(ScreenShareSourcePicker::streamFromResult({}).isEmpty());
+        QVERIFY(ScreenShareSourcePicker::streamFromResult({{"streams", "/not/a/node"}}).isEmpty());
+        QVERIFY(ScreenShareSourcePicker::streamFromResult({{"streams", QStringList{"/not/a/node"}}}).isEmpty());
     }
 
     // #87 round 2 (finding 3): a completed exchange's timeout timer and
@@ -30969,10 +31307,8 @@ private slots:
         FolderRailFixture f;
         QCOMPARE(f.controller.activityMentionsCount(), -1);
         QVERIFY(f.start());
-        // The unread-mentions index has not been walked for this owner yet,
-        // so the reference count stays null (sidebar-workspace-activity
-        // .ui.tsx owner-key gate): no badge before the first mentions load.
-        QCOMPARE(f.controller.activityMentionsCount(), -1);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.activityMentionsCount(), 0, 3000);
+        QVERIFY(!f.controller.mentionsVisible());
     }
 
     void activityOpenStatePersistsPerWorkspaceSession()
@@ -31765,6 +32101,96 @@ private slots:
         QCOMPARE(tray->toolTip(), QString("Workspace"));
     }
 
+    void joinedCallUpdatesTrayAndKeepsOneInhibitorThroughPip()
+    {
+        PowerBusFixture bus("joined-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+
+        CallAwareness awareness;
+        awareness.start(*fixture.controller.callWindow(), bus.watcherBus);
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        connect(&awareness, &CallAwareness::callStateChanged, &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        const auto idleTip = tray->toolTip();
+        auto *shell = fixture.controller.callWindow();
+        auto *bridge = fixture.controller.embedBridge();
+        fixture.controller.joinCall("https://meet.example.com/cassi-room");
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Loading);
+        shell->apiLoadFailed();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::LoadFailed);
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(tray->toolTip(), idleTip);
+        QCOMPARE(saver.inhibits.size(), 0);
+
+        shell->retry();
+        shell->apiLoadSucceeded();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Ready);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room"));
+        bridge->reportParticipantCount(3);
+        bridge->handleParticipantsJoined();
+        QCOMPARE(shell->participantCount(), 3);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (3 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Minimized);
+        bridge->reportParticipantCount(2);
+        bridge->handleParticipantsLeft();
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (2 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Expanded);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QVERIFY(saver.uninhibits.isEmpty());
+        shell->readyToClose();
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+        QVERIFY(!awareness.callActive());
+
+        fixture.controller.joinCall("https://meet.example.com/cassi-next");
+        shell->apiLoadSucceeded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.inhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-next"));
+        fixture.controller.calls()->closeCall();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+    }
+
+    void attachingToAReadyCallReleasesTheInhibitorWhenItsWindowIsDestroyed()
+    {
+        PowerBusFixture bus("ready-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        {
+            JitsiCallWindowController shell;
+            shell.setParticipantCountProvider([] { return 4; });
+            shell.open({{"meetingUrl", "https://meet.jit.si/cassi-ready"}});
+            shell.apiLoadSucceeded();
+            QCOMPARE(shell.participantCount(), 4);
+            QSignalSpy changes(&awareness, &CallAwareness::callStateChanged);
+            awareness.start(shell, bus.watcherBus);
+            QCOMPARE(awareness.activeRoom(), QString("cassi-ready"));
+            QCOMPARE(changes.last().at(1).toInt(), 4);
+            QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        }
+        QVERIFY(!awareness.callActive());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+    }
+
     void displaySleepInhibitIsAcquiredExactlyOncePerCall()
     {
         PowerBusFixture bus("call-once");
@@ -32540,6 +32966,79 @@ private slots:
     // never fetch, and a page that completes after its selection was
     // replaced stays silent (the completion guard that keeps a late page
     // from resurrecting counts of a conversation the user already left).
+    void chatHeaderRetriesInitialMemberFailure_data()
+    {
+        QTest::addColumn<QString>("edge");
+        for (const char *edge : {"visibility", "stream", "topic"})
+            QTest::newRow(edge) << QString::fromLatin1(edge);
+    }
+
+    void chatHeaderRetriesInitialMemberFailure()
+    {
+        QFETCH(QString, edge);
+        Fixture f;
+        QVERIFY(f.start());
+        f.controller.selectStream({});
+        int reads = 0;
+        f.bindings = [&](const Request &) -> Response {
+            if (++reads == 1)
+                return Response{QJsonArray{}, 500};
+            auto binding = creationBinding(userId, 900);
+            binding["stream_uuid"] = streamId;
+            return Response{QJsonArray{binding}};
+        };
+        f.controller.setChatHeaderVisible(true);
+        f.controller.selectStream(streamId);
+        QTRY_COMPARE(reads, 1);
+        QTRY_VERIFY(!f.controller.busy());
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        const auto reactivate = [&] {
+            if (edge == "visibility") {
+                f.controller.setChatHeaderVisible(false);
+                f.controller.setChatHeaderVisible(true);
+            } else if (edge == "stream") {
+                f.controller.selectStream(streamId);
+            } else {
+                f.controller.selectTopic(topicId);
+            }
+        };
+        reactivate();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
+        QCOMPARE(reads, 2);
+        reactivate();
+        QTest::qWait(150);
+        QCOMPARE(reads, 2);
+    }
+
+    void chatHeaderRetriesRetiredInitialMemberRequest()
+    {
+        Fixture f;
+        QVERIFY(f.start());
+        f.controller.selectStream({});
+        int reads = 0;
+        std::function<void()> release;
+        f.bindings = [&](const Request &) -> Response {
+            ++reads;
+            auto binding = creationBinding(userId, 900);
+            binding["stream_uuid"] = streamId;
+            Response result{QJsonArray{binding}};
+            if (reads == 1)
+                result.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return result;
+        };
+        f.controller.setChatHeaderVisible(true);
+        f.controller.selectStream(streamId);
+        QTRY_VERIFY(release);
+        f.api.setAccessToken("rotated-test-token");
+        f.controller.selectStream(streamId);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.chatHeaderMemberCount(), 1, 2000);
+        QCOMPARE(reads, 2);
+        release();
+        QTest::qWait(150);
+        QCOMPARE(reads, 2);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 1);
+    }
+
     void chatHeaderCountersFetchFollowsVisibleSelectionEdges()
     {
         Fixture f;
@@ -32591,33 +33090,32 @@ private slots:
         QTest::qWait(250);
         QCOMPARE(bindingRequests, 0);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
-        // Mounting the header over a PRE-mount selection stays silent: the
-        // #434-pinned budgets (and the e2ee suites) mount windows on
-        // already-selected streams and refetch nothing on mount.
+        // Mounting a visible header over a restored selection loads its first page.
         held = QJsonArray{binding("61000000-0000-4000-8000-00000000000c", userId, streamId),
             binding("61000000-0000-4000-8000-00000000000d", channelMemberB, streamId)};
         f.controller.setChatHeaderVisible(true);
-        QTest::qWait(250);
-        QCOMPARE(bindingRequests, 0);
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        QCOMPARE(bindingRequests, 1);
         // A selection edge on the visible header loads exactly one page; the
         // page belongs to the stream that was selected, so bob (idle) is in
         // the member half but not the online half.
         f.controller.selectStream(otherStream);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
-        QCOMPARE(bindingRequests, 1);
+        QCOMPARE(bindingRequests, 2);
         f.controller.selectStream(streamId);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
         QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         // Re-activating the same stream (a topic switch) is not an edge and
         // never re-reads the page (#434 budget).
         f.controller.selectStream(streamId);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         // Direct chats clear the projection without a request.
         f.controller.selectStream(directStreamUuid);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         // Issue #438 review (finding 4633233517): after the header has been
         // mounted, a selection edge skipped while it is off screen records
@@ -32627,15 +33125,15 @@ private slots:
         f.controller.setChatHeaderVisible(false);
         f.controller.selectStream(streamId);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         f.controller.setChatHeaderVisible(true);
         QTRY_COMPARE_WITH_TIMEOUT(f.controller.chatHeaderMemberCount(), 2, 5000);
-        QCOMPARE(bindingRequests, 3);
+        QCOMPARE(bindingRequests, 4);
         f.controller.setChatHeaderVisible(false);
         f.controller.setChatHeaderVisible(true);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 3);
+        QCOMPARE(bindingRequests, 4);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 2);
         // A page that completes after its selection was replaced stays
         // silent: the late otherStream snapshot must not move the counts of
@@ -32643,7 +33141,7 @@ private slots:
         holdNext = true;
         f.controller.selectStream(otherStream);
         QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 5000);
-        QCOMPARE(bindingRequests, 4);
+        QCOMPARE(bindingRequests, 5);
         f.controller.selectStream(directStreamUuid); // leaves the loading stream
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         release(); // the superseded page arrives after the selection moved on

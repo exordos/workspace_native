@@ -10,6 +10,7 @@
 #include <QHttpMultiPart>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMediaPlayer>
 #include <QMimeDatabase>
 #include <QPointer>
 #include <QProcess>
@@ -92,6 +93,9 @@ class FileClientTest : public QObject {
     Q_OBJECT
 private slots:
     void multipartUpload();
+    void uploadDimensions_data();
+    void uploadDimensions();
+    void cancelDuringDimensionProbe();
     void imageUploadSignatureValidation_data();
     void imageUploadSignatureValidation();
     void imageUploadNameValidation_data();
@@ -200,6 +204,82 @@ void FileClientTest::imageUploadSignatureValidation()
     else QVERIFY(result.error.contains("image file type does not match"));
 }
 
+void FileClientTest::uploadDimensions_data()
+{
+    QTest::addColumn<QString>("name");
+    QTest::addColumn<QByteArray>("bytes");
+    QTest::addColumn<QString>("dimensions");
+    QTest::newRow("png") << QStringLiteral("image.png")
+        << QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")
+        << QStringLiteral("&w=1&h=1");
+    QTest::newRow("webm") << QStringLiteral("clip.webm") << read(QFINDTESTDATA("fixtures/upload-24x16.webm"))
+        << QStringLiteral("&w=24&h=16");
+    QTest::newRow("cold-video-backend") << QStringLiteral("clip.webm")
+        << read(QFINDTESTDATA("fixtures/upload-24x16.webm")) << QStringLiteral("&w=24&h=16");
+    QTest::newRow("file") << QStringLiteral("note.txt") << QByteArray("caption") << QString();
+    QTest::newRow("unreadable-image") << QStringLiteral("bad.png")
+        << QByteArray::fromHex("89504e470d0a1a0a") << QString();
+}
+
+void FileClientTest::uploadDimensions()
+{
+    QFETCH(QString, name); QFETCH(QByteArray, bytes); QFETCH(QString, dimensions);
+    QVERIFY(!bytes.isEmpty());
+    Server server;
+    const auto mime = QMimeDatabase().mimeTypeForData(bytes).name();
+    server.handler = [&](QTcpSocket *socket, const QByteArray &) {
+        auto object = QJsonDocument::fromJson(metadata(bytes)).object();
+        object["name"] = name; object["content_type"] = mime;
+        Server::reply(socket, QJsonDocument(object).toJson(QJsonDocument::Compact), 201);
+    };
+    ApiClient api(nullptr, true); authorize(api, server); FileClient client(&api);
+    QTemporaryDir dir;
+    const auto file = dir.filePath(name); write(file, bytes);
+    FileResult result; bool done = false;
+    // Delay local player construction before it receives any media. The metadata
+    // timeout starts when the player is asked to inspect the actual source.
+    struct SlowVideoSetup final : QObject {
+        bool delayed = false;
+        bool eventFilter(QObject *watched, QEvent *event) override
+        {
+            if (!delayed && event->type() == QEvent::ChildAdded && qobject_cast<QMediaPlayer *>(watched)) {
+                delayed = true;
+                QTest::qSleep(400);
+            }
+            return false;
+        }
+    } setup;
+    const bool coldVideo = QByteArray(QTest::currentDataTag()) == "cold-video-backend";
+    if (coldVideo) QCoreApplication::instance()->installEventFilter(&setup);
+    client.upload(file, StreamUuid, name, [&](const FileResult &r) { result = r; done = true; });
+    QTRY_VERIFY(done);
+    if (coldVideo) QVERIFY(setup.delayed);
+    QVERIFY2(result.ok(), qPrintable(result.error));
+    const auto urn = result.metadata.urn();
+    QCOMPARE(urn.contains("&w="), !dimensions.isEmpty());
+    QCOMPARE(urn.contains("&h="), !dimensions.isEmpty());
+    QVERIFY(urn.endsWith(dimensions + "&size=" + QString::number(bytes.size())));
+}
+
+void FileClientTest::cancelDuringDimensionProbe()
+{
+    Server server;
+    ApiClient api(nullptr, true); authorize(api, server); FileClient client(&api);
+    QTemporaryDir dir;
+    const auto path = dir.filePath("clip.webm");
+    write(path, read(QFINDTESTDATA("fixtures/upload-24x16.webm")));
+    int completions = 0;
+    const auto id = client.upload(path, StreamUuid, {}, [&](const FileResult &r) {
+        QVERIFY(!r.ok());
+        QCOMPARE(r.status, 0);
+        ++completions;
+    });
+    client.cancel(id);
+    QTest::qWait(350);
+    QCOMPARE(completions, 1);
+    QCOMPARE(server.requests.size(), 0);
+}
+
 void FileClientTest::imageUploadNameValidation_data()
 {
     QTest::addColumn<QString>("localName"); QTest::addColumn<QString>("uploadName");
@@ -301,8 +381,8 @@ void FileClientTest::imageUploadLifetime()
     const auto id = client->upload(path, StreamUuid, "attachment.png", [&](const FileResult &result) {
         QVERIFY(!result.ok()); ++completions;
     });
-    QPointer<QHttpMultiPart> multipart = api->findChild<QHttpMultiPart *>();
-    QVERIFY(multipart);
+    QPointer<QHttpMultiPart> multipart;
+    QTRY_VERIFY((multipart = api->findChild<QHttpMultiPart *>()));
     QTRY_VERIFY(held);
     if (scenario == "cancel") client->cancel(id);
     else if (scenario == "session") api->clearSession();

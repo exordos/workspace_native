@@ -471,6 +471,22 @@ private slots:
         QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(29));
     }
 
+    void laterSubscribersSeeTheEnvelopeAfterImmediateAcknowledgement()
+    {
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        const auto event = realtimeEvent(12);
+        fixture.events.insert(12, event);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &envelope) {
+            QVERIFY(fixture.client.acknowledge(envelope.value("uuid").toString()));
+        });
+        QSignalSpy observed(&fixture.client, &RealtimeClient::eventReceived);
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(observed.size(), 1);
+        QCOMPARE(observed.first().first().toJsonObject(), event);
+    }
+
     void reconnectResumesAcknowledgedCursor()
     {
         RealtimeFixture fixture;
@@ -870,8 +886,16 @@ private slots:
         resumed.stop();
     }
 
+    void signOutClearsPersistedCursorAndNextConnectStartsClean_data()
+    {
+        QTest::addColumn<bool>("rejectWrites");
+        QTest::newRow("healthy-store") << false;
+        QTest::newRow("temporarily-read-only-store") << true;
+    }
+
     void signOutClearsPersistedCursorAndNextConnectStartsClean()
     {
+        QFETCH(bool, rejectWrites);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         RealtimeCursorStore store(directory.path());
@@ -888,11 +912,11 @@ private slots:
         fixture.send(realtimeEvent(12));
         QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
         const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
-        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value() && store.read(key)->epoch == 12, 2000);
+        store.setFaultsForTest(rejectWrites, rejectWrites);
         fixture.events.clear();
         fixture.session.logout();
-        // The signed-out owner's position must not survive anywhere.
-        QVERIFY(!store.read(key).has_value());
+        QCOMPARE(store.read(key).has_value(), rejectWrites);
         // The next connect cannot resume it: fresh baseline plus snapshot,
         // and the socket carries the new baseline position, never 12.
         QVERIFY(fixture.login());
@@ -901,6 +925,8 @@ private slots:
         QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(10));
         const QUrlQuery cursor(fixture.sockets.last()->requestUrl());
         QCOMPARE(cursor.queryItemValue("last_epoch_version"), QString("10"));
+        store.setFaultsForTest(false, false);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value() && store.read(key)->epoch == 10, 2000);
     }
 
     void durableCursorStoreIsOwnerScopedMonotonicAndValidating()

@@ -120,12 +120,18 @@ the wizard therefore normalizes any valid input to its origin before discovery
 and sign-in, mirroring the reference `new URL(input).origin` behaviour. Test
 harnesses keep the established loopback-HTTP allowance of `ApiClient`.
 
-Initial auto-advance (`login-initial-organization.lib.ts`): in the desktop build
-there is no browser origin, so only a message-link organization resolves and
-auto-advances. The native client has no message-link login entry yet (deep links
-route inside an authenticated session), so the initial step is always the
-organization step with an empty field. When #73 (deep-link navigation) grows a
-pre-auth entry, the auto-advance belongs there.
+On a fresh organization step, a message link can identify a known origin
+before the user types an address. The desktop wizard compares the link's
+organization ID with the configured default and remembered session origins.
+A single matching origin triggers discovery. Multiple matching origins or an
+unknown organization leave the address field open for manual entry. The wizard
+enters the credentials step after discovery succeeds. An edit to the address
+or a replacement link cancels the pending advance. A manually entered address
+for a different organization shows the wrong-account message before any request.
+Address history supplies suggestions. Automatic discovery uses saved sessions.
+
+The realm preview appears when discovery supplies a name or a usable icon URL.
+Only an advertised name appears alongside the icon.
 
 ## Native design
 
@@ -219,7 +225,7 @@ field only on first step), 162 (persisted suggestions after remount), 180
 
 ## Geometry and color oracles
 
-All values in this document are measured from the reference sha above. Window
+The reference source above provides the original design measurements. Window
 tests assert structural facts (mounted/hidden, exact copy, token-resolved
 colors via the palette maps) and avoid host font-metric pixel oracles per the
 rule in issue #16.
@@ -243,3 +249,18 @@ and a Next action.
 The credentials form accepts Enter from the username or password field. An
 empty submission keeps the form open and asks the user to fill in all fields.
 Discovery and credential errors appear in the form above the submit button.
+
+## Paired Linux visual check
+
+A 1440 × 900 Wayland desktop and a 1440 × 900 Chromium viewport at scale 1
+show the same four steps on the deployed sign-in route. The reference check
+used English and Russian with the Blue Cold palette in both light and dark
+mode. Each session completed its real OTP challenge and selected the intended
+project. Password and OTP fields were empty in all captures of those steps.
+
+The reference column is 448 px wide. Its Organization link is 20 px high,
+the realm card with a logo and name is 102 px high, and the primary and Back
+actions are 36 px high. Credential inputs are 46 px high on the elevated
+surface and leave 22 px before the next field or action. The native login
+window tests exercise these measurements, centering when registration is
+unavailable, the visible empty OTP hint and the unfilled project Back action.

@@ -81,10 +81,11 @@ mockups were not consulted (same treatment as the #83 rail doc).
   (same reasoning as `loadFolders`, see FOLDERS_RAIL "Deviations").
 - A settled mutation updates the rail **incrementally**: create appends (or
   replaces, same UUID) a `created` row from the response DTO (color masked to
-  `0xRRGGBB` like the loader), rename updates title + color in place keeping
-  `streamIds` and selection, delete removes the row and lets
-  `selectedFolder()` fall back to All. No `GET /folders/` refetch happens on
-  any mutation path.
+  `0xRRGGBB` like the loader). Rename resolves the submitted UUID against the
+  current rail and updates its title and color, preserving membership and
+  selection across catalog reloads. If a reload already removed that UUID, a
+  fresh folder list reconciles the rail. Delete removes the row and lets
+  `selectedFolder()` fall back to All.
 - Gating: rename/delete resolve the row by UUID or rail key and reject
   anything that is not a server `created` row (system slots, synthesized
   slots, unknown ids) with the reference toast default, without sending a

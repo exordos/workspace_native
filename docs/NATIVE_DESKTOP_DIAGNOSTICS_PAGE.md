@@ -56,6 +56,9 @@ mockups not consulted; the reference code is the oracle.
   loading → `settings.diagnosticsPingServer`; success with ms →
   `settings.diagnosticsPingSuccess` "Reachable ({{ms}} ms)"; error →
   `settings.diagnosticsPingFailed` "Unreachable"; idle → Ping server.
+- Dashboard refreshes update the contents of the nine existing cards in place.
+  Opening the log viewer from the Log counts card remains available while
+  a refreshed snapshot arrives.
 - Card grid (`:66`): `grid gap-2 sm:grid-cols-2 xl:grid-cols-3` — 1 column
   below 640px, 2 columns from 640px, 3 columns from 1280px, 8px gaps.
 - `DiagnosticCard` (`:218-223`): `rounded-lg border border-border-subtle

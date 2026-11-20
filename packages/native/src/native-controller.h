@@ -86,6 +86,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap directPeer READ directPeer NOTIFY stateChanged)
     Q_PROPERTY(bool canCreateChannel READ canCreateChannel NOTIFY stateChanged)
     Q_PROPERTY(QVariantList channelMemberChoices READ channelMemberChoices NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList chatPickerChoices READ chatPickerChoices NOTIFY stateChanged)
     Q_PROPERTY(bool channelMembersVerified READ channelMembersVerified NOTIFY stateChanged)
     // Ownership/API/route/cache/trust lifetime only. Ordinary row counters and
     // directory display updates do not change this key or discard a form.
@@ -94,6 +95,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool channelCreationBusy READ channelCreationBusy NOTIFY stateChanged)
     Q_PROPERTY(bool channelCreationUncertain READ channelCreationUncertain NOTIFY stateChanged)
     Q_PROPERTY(QString channelCreationError READ channelCreationError NOTIFY stateChanged)
+    Q_PROPERTY(bool channelCreateRequestFailed READ channelCreateRequestFailed NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap channelCreationForm READ channelCreationForm NOTIFY stateChanged)
     Q_PROPERTY(bool canCheckChannelCreation READ canCheckChannelCreation NOTIFY stateChanged)
     Q_PROPERTY(bool canRetryChannelMembers READ canRetryChannelMembers NOTIFY stateChanged)
@@ -173,6 +175,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(qulonglong historyCommitRevision READ historyCommitRevision NOTIFY messagesChanged)
     Q_PROPERTY(bool messageHistoryReady READ messageHistoryReady NOTIFY stateChanged)
+    Q_PROPERTY(QStringList readRequestBoundaryIds READ readRequestBoundaryIds NOTIFY readRequestBoundariesChanged)
     Q_PROPERTY(QVariantList reactionChoices READ reactionChoices CONSTANT)
     Q_PROPERTY(QString conversationKind READ conversationKind NOTIFY stateChanged)
     Q_PROPERTY(bool hasConversation READ hasConversation NOTIFY stateChanged)
@@ -361,12 +364,14 @@ public:
     QVariantMap directPeer() const;
     bool canCreateChannel() const;
     QVariantList channelMemberChoices() const;
+    QVariantList chatPickerChoices() const;
     bool channelMembersVerified() const;
     QString channelCreationContextKey() const;
     QString channelCreationPhase() const;
     bool channelCreationBusy() const;
     bool channelCreationUncertain() const;
     QString channelCreationError() const;
+    bool channelCreateRequestFailed() const;
     QVariantMap channelCreationForm() const;
     bool canCheckChannelCreation() const;
     bool canRetryChannelMembers() const;
@@ -436,6 +441,7 @@ public:
     QVariantList messages() const;
     qulonglong historyCommitRevision() const { return m_historyCommitRevision; }
     bool messageHistoryReady() const;
+    QStringList readRequestBoundaryIds() const;
     QVariantList reactionChoices() const { return knownReactionEmojis(); }
     bool hasConversation() const { return !m_stream.isEmpty(); }
     QString conversationKind() const { return !hasConversation() ? QStringLiteral("none")
@@ -600,7 +606,7 @@ public:
     Q_INVOKABLE void showSection(const QString &name);
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
     // read from the build-time Qt resource as one JSON string.
-    Q_INVOKABLE QString licensesDatasetJson() const;
+    Q_INVOKABLE static QString licensesDatasetJson();
     // Issue #50: the Diagnostics page surface (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md):
     // the live dataset object, the pretty-printed snapshot JSON for the copy
     // action and the advanced block, the connection-report subset, the live
@@ -821,6 +827,7 @@ public:
     // like chat-page-workspace.ui.tsx:2747-2751 at workspace_ui 230e02b8.
     Q_INVOKABLE bool beginReply(const QString &id, const QString &selectedText = {});
     Q_INVOKABLE bool addReplyTab(const QString &id, const QString &selectedText = {});
+    Q_INVOKABLE bool replyToSelection(const QStringList &ids);
     Q_INVOKABLE bool selectReplyTab(const QString &tabId);
     Q_INVOKABLE void removeReplyTab(const QString &tabId);
     Q_INVOKABLE bool reorderReplyTab(const QString &tabId, int destinationIndex);
@@ -934,6 +941,7 @@ signals:
     void rotationStageResolved(const QString &streamUuid, const QString &keyUuid,
         const QString &outcome, const QString &message);
     void decryptRetryStateChanged();
+    void readRequestBoundariesChanged();
     void archivedChatsChanged();
     // Issue #50: one finished Diagnostics ping (ok + latency ms); the page
     // mirrors the reference ping reset timer (3 s, logs-page.ui.tsx:238-242).
@@ -1395,7 +1403,8 @@ private:
     void noteTopicOpeningStream(const Stream &stream);
     void activateStream(const QString &id, const QVector<Topic> *topics = nullptr,
                         const QString &directPublishingAttempt = {},
-                        const Topic *initialTopic = nullptr, quint64 openingTicket = 0);
+                        const Topic *initialTopic = nullptr, quint64 openingTicket = 0,
+                        bool openingFavorites = false);
     struct ArchiveOperation {
         QString owner, acl, error;
         quint64 generation = 0, catalog = 0, ticket = 0;
@@ -1484,7 +1493,7 @@ private:
     void staleReadConversation(const QString &stream, const QString &topic);
     void cachedCollection(const NativeCache::Key &key, const QString &path, const QUrlQuery &query,
                           std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork = false,
-                          std::function<void()> failed = {});
+                          std::function<void()> failed = {}, quint64 selectedTopicRequest = 0);
     struct UploadTask {
         quint64 intent = 0;
         QString path;
@@ -1526,6 +1535,7 @@ private:
     QString clipboardUploadName(const QString &extension, bool image) const;
     void validateQueuedUpload(quint64 intent, quint64 epoch);
     QStringList readyUploadLinks(quint64 session) const;
+    void reserveImageAlias(UploadEntry &entry, const QString &name);
     QString imageAlias(const UploadEntry &entry) const;
     QString replaceImageAliases(const QString &text, bool serialize) const;
     void cancelEditUploads();
@@ -1813,20 +1823,13 @@ private:
     void loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
                                    QStringList accepted, QSet<QString> seenUsers);
     void applyChatHeaderMembersBindingEvent(const QString &kind, const QJsonArray &rows);
-    // Issue #438: the automatic fetch trigger, scoped the same way #434 scoped
-    // the binding-event NOTIFY: only a selection edge on an on-screen header
-    // may load member pages; the same owner+stream never refetches on its own.
+    // Load missing membership on a visible channel, once per pending or successful snapshot.
     void ensureChatHeaderMembers();
+    void publishChatHeaderMembers(QStringList accepted);
     QString m_chatHeaderMembersStream;
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;
     bool m_chatHeaderVisible = false;
-    // Issue #438 review (finding 4633233517): has the header surface ever
-    // been on screen? Pre-mount selection skips arm nothing; only skips
-    // after the first mount record a deferred recovery obligation, cleared
-    // when the current selection claims its page (or is unselected).
-    bool m_chatHeaderVisibilityMounted = false;
-    bool m_chatHeaderDeferredEdge = false;
     quint64 m_chatHeaderMembersTicket = 0;
     // Issue #89 round 3 (PR #432 review finding 4628746243): a binding
     // membership event that lands while a member page load is in flight is
@@ -2012,6 +2015,8 @@ private:
     QList<ReplyTab> m_replyTabs;
     QString m_replyActiveTab, m_replyRoute;
     QHash<QString, ParkedReplySession> m_replySessions;
+    const Message *replyTarget(const QString &id) const;
+    bool appendReplyTabs(const QStringList &ids, const QString &selectedText, bool keepRestoredEdit);
     const ReplyTab *activeReplyTab() const;
     QString replyTabAuthor(const ReplyTab &tab) const;
     QString replyTabPlain(const ReplyTab &tab) const;
@@ -2058,6 +2063,7 @@ private:
     MentionCollection &mentionCollection(const QString &filter);
     void loadMentionCollection(const QString &filter, bool append);
     void loadMentionIndex();
+    void resetMentionIndex();
     QVariantList mentionRows(const QString &filter) const;
     bool mentionUnread(const Message &message) const;
     QString mentionPreview(const Message &message) const;
@@ -2100,12 +2106,16 @@ private:
     std::optional<Stream> findSelfStream() const;
     void runFavoritesFlow();
     void ensureSelfStream();
-    void openSelfStream(const QString &streamUuid, const QString &preferredTopic);
+    void openSelfStream(const QString &streamUuid);
+    void settleFavoritesTopics(bool success);
     void leaveFavorites();
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
     // stream/topic/created_at are needed for the read-boundary and scope clears
     // of activity-realtime-applier.lib.ts:55-105.
     struct MentionIndexEntry { QString stream, topic; qint64 createdMicros = 0; };
+    using MentionIndex = QHash<QString, MentionIndexEntry>;
+    using MentionMutation = std::function<bool(MentionIndex &)>;
+    bool mutateMentionIndex(MentionMutation mutation);
     bool mentionIndexRemove(const QString &uuid);
     bool mentionIndexUpsert(const Message &message);
     bool mentionIndexBoundary(const Message &message);
@@ -2120,12 +2130,16 @@ private:
     bool m_mentionsVisible = false;
     QString m_mentionsFilter = QStringLiteral("all");
     QHash<QString, MentionCollection> m_mentionsCollections;
-    QHash<QString, MentionIndexEntry> m_unreadMentions;
+    MentionIndex m_unreadMentions;
+    MentionIndex m_fetchedMentions;
+    QList<MentionMutation> m_mentionWalkMutations;
     QVector<Message> m_liveMentions;
     QSet<QString> m_deletedMentionIds;
     QStringList m_deletedMentionOrder;
     bool m_mentionIndexReady = false;
     bool m_mentionIndexWalking = false;
+    QTimer m_mentionIndexRetry;
+    int m_mentionRetryCount = 0;
     QByteArray m_mentionIndexMarker;
     QSet<QByteArray> m_mentionIndexMarkers;
     // Inbox page (#44, docs/NATIVE_DESKTOP_INBOX.md): the catalog already
@@ -2159,7 +2173,6 @@ private:
     QString m_favoritesStatus, m_favoritesError;
     QHash<QString, quint64> m_selfStreamEnsures;
     quint64 m_favoritesEnsureSeq = 0;
-    quint64 m_favoritesWatch = 0;
     QString m_section = QStringLiteral("chat");
     QString m_sectionBeforeLicenses = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;
@@ -2235,6 +2248,9 @@ private:
     // lowercased project uuid (reference messageTarget). Returns false when
     // no parked message link exists.
     bool linkedMessageTarget(QString *org, QString *project) const;
+    bool rejectMismatchedLoginOrganization(const QUrl &origin);
+    void discoverInitialLinkedOrganization();
+    void discoverLoginOrganization(const QString &text, quint64 linkSerial);
     QString m_pendingDeepLink;
     QMetaObject::Connection m_profileLinkCacheDestroyed;
     std::weak_ptr<quint64> m_profileLinkSelection;
@@ -2254,6 +2270,7 @@ private:
     bool m_anchorLinkPending = false;
     QString m_anchorNavigationError;
     QString m_failedAnchorLinkTarget;
+    QString m_failedAnchorConversation;
     std::optional<Message> m_pendingAnchorParsed;
     QString m_pendingAnchorStream;
     QString m_pendingAnchorTopic;

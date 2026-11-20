@@ -531,7 +531,53 @@ bool NativeCache::putMessageBody(const Lease &lease, const QJsonObject &canonica
         canonical.value("topic_uuid").toString(), canonical.value("uuid").toString().toLower().toUtf8()}, {canonical});
 }
 
-bool NativeCache::removeMessageBodyAndHistory(const Lease &lease, const QString &uuid)
+bool NativeCache::removeDeletedHistoryRow(const QByteArray &hash, const QString &id)
+{
+    if (!m_database.transaction()) return false;
+    QSqlQuery page(m_database);
+    page.prepare("SELECT CASE WHEN length(payload)<=? THEN payload END FROM entries WHERE owner=? AND key=? AND kind=4");
+    page.addBindValue(m_policy.maxEntryBytes);
+    page.addBindValue(m_owner);
+    page.addBindValue(hash);
+    if (!page.exec()) { m_database.rollback(); return false; }
+    const auto bytes = page.next() ? page.value(0).toByteArray() : QByteArray{};
+    page.finish();
+    const auto document = QJsonDocument::fromJson(bytes);
+    const auto original = document.array();
+    QJsonArray rows;
+    for (const auto &row : original)
+        if (row.toObject().value("uuid").toString().compare(id, Qt::CaseInsensitive) != 0)
+            rows.append(row);
+    if (rows.isEmpty() || rows.size() == original.size()) {
+        // Empty, malformed or inconsistent pages cannot supply offline history.
+        m_database.rollback();
+        return eraseMatching("owner=? AND key=?", {m_owner, hash});
+    }
+
+    // Preserve the age, LRU position and cursor of the original server page.
+    const auto payload = QJsonDocument(rows).toJson(QJsonDocument::Compact);
+    const auto delta = payload.size() - bytes.size();
+    QSqlQuery update(m_database);
+    update.prepare("UPDATE entries SET payload=?,size=size+? WHERE owner=? AND key=?");
+    update.addBindValue(payload);
+    update.addBindValue(delta);
+    update.addBindValue(m_owner);
+    update.addBindValue(hash);
+    QSqlQuery index(m_database);
+    index.prepare("DELETE FROM history_rows WHERE owner=? AND key=? AND message_uuid=?");
+    index.addBindValue(m_owner);
+    index.addBindValue(hash);
+    index.addBindValue(id);
+    if (!update.exec() || update.numRowsAffected() != 1 || !index.exec() || shouldCancel() || !m_database.commit()) {
+        m_database.rollback();
+        return false;
+    }
+    m_totalBytes += delta;
+    m_fresh.remove(hash);
+    return checkpoint();
+}
+
+bool NativeCache::removeMessageBodyAndHistory(const Lease &lease, const QString &uuid, Removal reason)
 {
     if (!accepts(lease) || !isUuid(uuid)) return false;
     const auto hash = keyHash({Kind::MessageBody, {}, {}, uuid.toLower().toUtf8()});
@@ -548,8 +594,12 @@ bool NativeCache::removeMessageBodyAndHistory(const Lease &lease, const QString 
             while (query.next()) keys.append(query.value(0).toByteArray());
         }
         if (keys.isEmpty()) return true;
-        for (const auto &key : keys)
-            if (!eraseMatching("owner=? AND key=?", {m_owner, key})) return fail();
+        for (const auto &key : keys) {
+            const bool okay = reason == Removal::Deletion
+                ? removeDeletedHistoryRow(key, uuid.toLower())
+                : eraseMatching("owner=? AND key=?", {m_owner, key});
+            if (!okay) return fail();
+        }
     }
 }
 

@@ -123,7 +123,9 @@ uses exact GET to reconcile an uncertain prior create without replaying plaintex
 The Drafts activity page shows at most 100 previews ordered by local update time
 and UUID, with Previous/Next navigation. Each preview contains at most 160 UTF-16
 units plus an ellipsis; full bodies are read on the worker only when needed.
-Cards open their exact UUID through verified topic resolution. Conflicts offer
+Cards open their exact UUID through verified topic resolution. While the composer
+remains in that conversation, a refresh updates the opened card and its siblings
+without switching the editor to a newer sibling. Conflicts offer
 server/local/delete choices; a failed consumed deletion offers retry. Actions
 are owner/snapshot fenced and cannot overwrite input typed after the click.
 Only the Drafts activity is enabled by this feature. Native quotes remain part

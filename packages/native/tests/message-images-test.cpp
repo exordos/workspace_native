@@ -189,6 +189,7 @@ private slots:
     void invalidSvgAndPixelOverflow_data();
     void invalidSvgAndPixelOverflow();
     void entryLeasePipelineAndExactCancellation();
+    void repeatedDelegateReplacementRenewsTheTransferHandoff();
     void byteLruAndPinnedAdmissionRecover();
     void newMountAndExplicitRetryAreActions();
     void projectAndRetiredDecodeFence();
@@ -271,6 +272,31 @@ void MessageImagesTest::invalidSvgAndPixelOverflow()
     QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,1); QCOMPARE(f.images.stats().previews,0);
     for(int i=0;i<1000;++i) { QVERIFY(f.images.failed(urn())); QVERIFY(f.images.info(urn()).isEmpty()); }
     QCOMPARE(f.metadataGets,1); f.images.release(lease);
+}
+
+void MessageImagesTest::repeatedDelegateReplacementRenewsTheTransferHandoff()
+{
+    Fixture f;
+    QVERIFY(f.start());
+    f.holdMetadata = true;
+    auto lease = f.images.acquire(urn());
+    QTRY_COMPARE(f.metadataGets, 1);
+    f.images.release(lease);
+
+    lease = f.images.acquire(urn());
+    QVERIFY(lease);
+    QTest::qWait(65);
+    f.images.release(lease);
+    QTest::qWait(55);
+
+    const auto finalLease = f.images.acquire(urn());
+    QVERIFY(finalLease);
+    f.holdMetadata = false;
+    for (const auto &send : std::as_const(f.releases)) send();
+    QTRY_VERIFY(!f.images.imageUrl(urn()).isEmpty());
+    QCOMPARE(f.metadataGets, 1);
+    QCOMPARE(f.binaryGets, 1);
+    f.images.release(finalLease);
 }
 
 void MessageImagesTest::entryLeasePipelineAndExactCancellation()

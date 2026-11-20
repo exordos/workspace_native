@@ -1,5 +1,8 @@
 # Warm-navigation and aggregate performance baselines (issue #13)
 
+The [live Wayland acceptance suite](NATIVE_DESKTOP_LIVE_ACCEPTANCE.md) exercises the packaged client against a deployed Workspace.
+
+
 `docs/NATIVE_DESKTOP_CACHE_BENCHMARK.md` records cache-component workload
 baselines with RSS sampling, and its Window226 paragraph reported a single
 warm-navigation observation: four topic selections needed two topic-history
@@ -104,3 +107,7 @@ live-network savings, not cold physical-disk reads, and not Electron
 comparisons. They exist to make the redundant-request contract enforceable
 and to catch order-of-magnitude navigation or memory regressions between
 releases - the same role the cache-component baselines play for the worker.
+
+### Reopening a cached topic after a realtime deletion
+
+When another member deletes a message, the desktop removes its body and its indexed copies from saved topic and aggregate history. A page with other messages retains its cursor and original age, and the client revalidates it on the next visit. If the connection is unavailable, those remaining messages can still be displayed. The controller regression opens a three-message topic, receives the deletion, changes topics and returns while the history request fails.

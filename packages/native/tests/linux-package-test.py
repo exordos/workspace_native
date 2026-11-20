@@ -1,5 +1,6 @@
 """A source version bump must never relabel an older configured binary build."""
 import os
+import runpy
 from pathlib import Path
 import subprocess
 import sys
@@ -8,6 +9,18 @@ import unittest
 
 
 class LinuxPackageTest(unittest.TestCase):
+    def test_displayed_transitive_source_versions_match_the_installed_inventory(self):
+        verify = runpy.run_path(str(Path(__file__).with_name("verify-installed-runtime.py")))["verify_license_catalog"]
+        packages = {"openssl": {"sourcePackage": "openssl", "sourceVersion": "3.5.5-1"},
+                    "aom": {"sourcePackage": "aom", "sourceVersion": "3.13.1-2"},
+                    "aom-older": {"sourcePackage": "aom", "sourceVersion": "3.13.1-1"}}
+        rows = [{"name": "OpenSSL", "version": "3.5.5-1"}, {"name": "aom", "version": "3.13.1-2"},
+                {"name": "aom", "version": "3.13.1-1"}]
+        verify(rows, packages)
+        rows[1]["version"] = "wrong"
+        with self.assertRaisesRegex(AssertionError, "License catalog drift"):
+            verify(rows, packages)
+
     def test_configured_build_version_is_checked_before_install(self):
         script = Path(os.environ.get('NATIVE_PACKAGE_SCRIPT_UNDER_TEST',
             Path(__file__).resolve().parents[1]/'scripts/package-linux.py'))

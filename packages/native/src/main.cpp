@@ -1,4 +1,8 @@
 #include "api-client.h"
+#ifdef Q_OS_LINUX
+#include "live-acceptance-trace.h"
+#include <QQuickWindow>
+#endif
 #include "avatar-images.h"
 #include "message-images.h"
 #include "file-client.h"
@@ -95,6 +99,9 @@ int main(int argc, char **argv)
     }
     Q_INIT_RESOURCE(native_app_icon);
     QGuiApplication::setWindowIcon(QIcon(":/workspace/brand/icon.png"));
+#ifdef Q_OS_LINUX
+    workspace::configureLiveAcceptanceNetwork();
+#endif
     workspace::ApiClient api;
     workspace::SessionVault vault;
     workspace::Session session(&api);
@@ -132,13 +139,8 @@ int main(int argc, char **argv)
     workspace::PowerWatcher powerWatcher;
     controller.setPowerWatcher(&powerWatcher);
     powerWatcher.start();
-    // Issue #86: shell call awareness - dormant until the native call UI
-    // lands (docs/NATIVE_DESKTOP_CALL_AWARENESS.md), but fully wired: a call
-    // inhibits display sleep on the session bus and paints the room into the
-    // tray tooltip. The future call surface reaches it through the QML
-    // context property below.
     workspace::CallAwareness callAwareness;
-    callAwareness.start();
+    callAwareness.start(*controller.callWindow());
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("callAwareness", &callAwareness);
     workspace::NativeUpdater updater;
@@ -146,6 +148,9 @@ int main(int argc, char **argv)
     if (engine.rootObjects().isEmpty())
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
+#ifdef Q_OS_LINUX
+    workspace::observeLiveAcceptance(qobject_cast<QQuickWindow *>(window), api, controller, cache, realtime);
+#endif
     workspace::NativeDesktop desktop(window);
     // The tray tooltip follows the call state (issue #86): the room with an
     // optional participant count while active, the bare app name when idle.

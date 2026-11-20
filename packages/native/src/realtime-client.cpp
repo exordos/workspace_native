@@ -89,8 +89,7 @@ RealtimeClient::RealtimeClient(ApiClient *api, Session *session, QObject *parent
         suspend();
         // A signed-out owner's stream position must not survive anywhere:
         // the next connect re-baselines instead of resuming it.
-        if (m_cursorStore && !m_durableKey.isEmpty())
-            m_cursorStore->clear(m_durableKey);
+        clearDurableCursor(m_durableKey);
         m_durableKey.clear();
         m_cursors.clear();
         m_hydratedOwners.clear();
@@ -438,7 +437,10 @@ void RealtimeClient::dispatch()
         return;
     if (!m_events.isEmpty()) {
         m_pending = m_events.dequeue();
-        emit eventReceived(m_pending);
+        // A synchronous consumer may acknowledge and clear m_pending before the next
+        // subscriber sees this signal. Keep this delivery stable for all subscribers.
+        const auto envelope = m_pending;
+        emit eventReceived(envelope);
         return;
     }
     if (!m_nextMarker.isEmpty()) {
