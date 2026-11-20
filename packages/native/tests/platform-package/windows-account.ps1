@@ -24,10 +24,14 @@ function Control([string]$Name, $Type) {
     do {
         $results = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition) |
             Where-Object { $_.Current.IsEnabled -and !$_.Current.IsOffscreen })
-        if ($Mode -eq 'close-call' -and $results.Count -gt 0) {
-            $locations = @($results | ForEach-Object { $_.Current.BoundingRectangle.ToString() } | Select-Object -Unique)
-            Write-Host "Matched close controls $($results.Count), distinct rectangles $($locations.Count)."
-            if ($locations.Count -eq 1) { return $results[0] }
+        if ($env:CASSI_CAPTURE_FIXTURE -eq '1' -and $results.Count -gt 1) {
+            $presentations = @($results | ForEach-Object {
+                "$($_.Current.ProcessId)/$($_.Current.AutomationId)/$($_.Current.BoundingRectangle)"
+            } | Select-Object -Unique)
+            if ($presentations.Count -eq 1) {
+                Write-Host "Coalesced $($results.Count) UI Automation providers for the same $Name control."
+                return $results[0]
+            }
         }
         if ($results.Count -eq 1) {
             if ($Name -eq 'Password') {
