@@ -79,9 +79,10 @@ class PackageConversation:
         elif path == "streams/" + self.stream: payload = stream
         elif path == "stream_topics/": payload = [topic]
         elif path == "stream_topics/" + self.topic: payload = topic
-        elif path == "messages/" + self.message:
+        elif path == "messages/" and parse_qs(parsed.query).get("uuid") == [self.message]:
             self.target_gets += 1
-            payload = target
+            payload = [target]
+        elif path == "messages/" + self.message: payload = target
         elif path == "messages/" + self.meeting_message: payload = call
         elif path == "messages/" and ("stream_uuid" in parse_qs(parsed.query) or "topic_uuid" in parse_qs(parsed.query)):
             self.history_gets += 1
