@@ -2393,7 +2393,13 @@ component NativeMentionChip: Item {
                             Layout.fillWidth: true
                             spacing: 6
                             Layout.bottomMargin: 6
-                            LoginFieldLabel { text: qsTr("Password") }
+                            LoginFieldLabel {
+                                id: passwordLabel
+                                text: qsTr("Password")
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
+                                Accessible.labelFor: passwordInput
+                            }
                             LoginInput {
                                 id: passwordInput
                                 objectName: "passwordInput"
@@ -2401,7 +2407,7 @@ component NativeMentionChip: Item {
                                 placeholderText: "••••••••"
                                 echoMode: TextInput.Password
                                 inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
-                                Accessible.name: qsTr("Password")
+                                Accessible.name: passwordLabel.text
                                 onAccepted: if (signInButton.enabled) signInButton.clicked()
                             }
                         }
