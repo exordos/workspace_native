@@ -50,13 +50,23 @@ print("Hosted desktop accessibility=\(AXIsProcessTrusted()) key events=\(CGPrefl
 guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else {
     throw fail("The test runner lacks Accessibility or PostEvent permission for window and clipboard input.")
 }
-var rawWindows: CFTypeRef?
-guard AXUIElementCopyAttributeValue(a11y, kAXWindowsAttribute as CFString, &rawWindows) == .success,
-      let windows = rawWindows as? [AXUIElement], let primary = windows.first,
-      AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success,
-      waitFor(5, { windowBounds(pid) == nil }) else {
-    throw fail("The primary window did not minimize.")
+// WindowServer can expose the new surface before Qt publishes its AX window.
+var primaryWindow: AXUIElement?
+guard waitFor(15, {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(a11y, kAXWindowsAttribute as CFString, &value) == .success,
+          let windows = value as? [AXUIElement] else { return false }
+    primaryWindow = windows.first { window in
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(window, kAXMinimizedAttribute as CFString, &settable) == .success && settable.boolValue
+    }
+    return primaryWindow != nil
+}), let primary = primaryWindow else {
+    throw fail("Qt did not expose a minimizable accessible window.")
 }
+let minimized = AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+guard minimized == .success else { throw fail("The primary window refused to minimize: " + String(minimized.rawValue)) }
+guard waitFor(10, { windowBounds(pid) == nil }) else { throw fail("The minimized primary window remained on the desktop.") }
 let secondary = Process()
 secondary.executableURL = executable
 try secondary.run()
