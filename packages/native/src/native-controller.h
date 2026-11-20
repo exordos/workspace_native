@@ -613,7 +613,7 @@ public:
     // this while the section is visible). Same provider dataset that fills
     // the snapshot's memory key (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md,
     // "Memory panel" section).
-    Q_INVOKABLE QVariantMap diagnosticsMemorySnapshot() const;
+    Q_INVOKABLE QVariantMap diagnosticsMemorySnapshot(bool resetCpu = false) const;
     // Test seam: points the memory provider at a fixture proc root so window
     // tests drive exact values (mirrors NativeLogging::setProcRoot).
     void setDiagnosticsMemoryProcRoot(const QString &procRoot);
@@ -633,9 +633,6 @@ public:
     Q_INVOKABLE QString diagnosticsLogsExportFilename() const;
     Q_INVOKABLE QString diagnosticsLogsExportJson() const;
     Q_INVOKABLE bool exportSessionLog(const QString &target) const;
-    // The rotating diagnostics log provider (issue #77) feeding the Log counts
-    // card and the recent-error status rule; owned by main.cpp.
-    void useLogging(class NativeLogging *logging);
     Q_INVOKABLE void closeInbox();
     Q_INVOKABLE void openInboxRow(const QString &stream, const QString &topic);
     Q_INVOKABLE void showReactions();
@@ -2084,7 +2081,6 @@ private:
     enum class ContentPage { Drafts, Mentions, Inbox, Feed, Starred, Reactions, Mail, Calendar, Calls, Services, Licenses, Diagnostics, Favorites };
 
     // Issue #50: diagnostics collector helpers (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
-    workspace::diagnostics::SessionLogSummary diagnosticsLogSummary() const;
     void recordApiLatency(const QString &label, qint64 elapsedMs);
 
     void resetChatSection();
@@ -2286,10 +2282,6 @@ private:
     // Issue #50: diagnostics collector state (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).
     // The counters mirror the reference diagnostics-realtime.lib.ts stats; the
     // latency ring is the "API latency from HTTP response timing" source.
-    // Stored as QPointer<QObject> so translation units that only forward-
-    // declare NativeLogging can include this header (QPointer needs the
-    // QObject base for its casts); every use casts back locally.
-    QPointer<QObject> m_logging;
     // Issue #52: memory panel provider (procfs-backed, capability flags).
     workspace::diagnostics::NativeMemoryDiagnostics m_memoryDiagnostics;
     // Issue #51: in-memory session log ring buffer (reference logger.ts),

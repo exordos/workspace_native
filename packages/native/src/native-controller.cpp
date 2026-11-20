@@ -3,7 +3,7 @@
 #include "media-viewer.h"
 #include "native-deeplink.h"
 #include "native-diagnostics.h"
-#include "native-logging.h"
+#include <QSaveFile>
 #include "workspace-reference.h"
 #include "native-preferences.h"
 #include "native-auth-guard.h"
@@ -6597,29 +6597,11 @@ QString prettyJsonTwoSpace(const QVariantMap &snapshot)
 
 } // namespace
 
-void NativeController::useLogging(NativeLogging *logging)
-{
-    m_logging = logging;
-}
-
-workspace::diagnostics::SessionLogSummary NativeController::diagnosticsLogSummary() const
-{
-    using namespace workspace::diagnostics;
-    SessionLogSummary summary;
-    auto *logging = qobject_cast<NativeLogging *>(m_logging.data());
-    if (!logging)
-        return summary;
-    QFile logFile(logging->filePath());
-    if (!logFile.open(QIODevice::ReadOnly))
-        return summary;
-    return parseSessionLog(QString::fromUtf8(logFile.readAll()), QDateTime::currentMSecsSinceEpoch());
-}
-
 QVariantMap NativeController::diagnosticsSnapshot() const
 {
     using namespace workspace::diagnostics;
     const auto now = QDateTime::currentMSecsSinceEpoch();
-    const auto logSummary = diagnosticsLogSummary();
+    const auto logSummary = m_sessionLog.summary(now);
     const auto phase = connectionPhase();
     const auto status = resolveOverallStatus(phase, !m_transportOffline, logSummary.recentErrorCount);
 
@@ -6713,8 +6695,7 @@ QVariantMap NativeController::diagnosticsSnapshot() const
 
     QVariantList recentErrors;
     for (const auto &error : logSummary.recentErrors)
-        recentErrors.append(QVariantMap{{QStringLiteral("timestamp"), error.timestamp},
-            {QStringLiteral("level"), error.level}, {QStringLiteral("message"), error.message}});
+        recentErrors.append(sessionLogEntryJson(error).toVariantMap());
     QVariantMap byLevel;
     byLevel.insert(QStringLiteral("debug"), logSummary.debugCount);
     byLevel.insert(QStringLiteral("info"), logSummary.infoCount);
@@ -6742,7 +6723,7 @@ QVariantMap NativeController::diagnosticsSnapshot() const
     // Issue #52: the memory key is filled by the panel provider regardless of
     // the file log writer - the reference cards never wait on the logger. The
     // provider falls back to the unavailable shape when its sources fail.
-    snapshot.insert(QStringLiteral("memory"), QVariant(m_memoryDiagnostics.snapshot()));
+    snapshot.insert(QStringLiteral("memory"), QVariant(m_memoryDiagnostics.snapshot(false)));
     snapshot.insert(QStringLiteral("performance"), performance);
     snapshot.insert(QStringLiteral("cache"), cache);
     snapshot.insert(QStringLiteral("stores"), stores);
@@ -6750,10 +6731,12 @@ QVariantMap NativeController::diagnosticsSnapshot() const
     return snapshot;
 }
 
-QVariantMap NativeController::diagnosticsMemorySnapshot() const
+QVariantMap NativeController::diagnosticsMemorySnapshot(bool resetCpu) const
 {
     // Memory panel poll surface (issue #52): the same NativeMemoryDiagnostics
     // dataset the snapshot's memory key carries.
+    if (resetCpu)
+        m_memoryDiagnostics.resetCpu();
     return m_memoryDiagnostics.snapshot();
 }
 
@@ -6788,7 +6771,7 @@ QString NativeController::diagnosticsConnectionReportJson() const
 QString NativeController::diagnosticsOverallStatus() const
 {
     return workspace::diagnostics::resolveOverallStatus(connectionPhase(), !m_transportOffline,
-        diagnosticsLogSummary().recentErrorCount);
+        m_sessionLog.summary(QDateTime::currentMSecsSinceEpoch()).recentErrorCount);
 }
 
 // ---- Issue #51: session log viewer modal (docs modal section) -------------
@@ -6865,10 +6848,11 @@ bool NativeController::exportSessionLog(const QString &target) const
     auto path = target;
     if (path.startsWith(QLatin1String("file://")))
         path = QUrl(path).toLocalFile();
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    const auto bytes = json.toUtf8();
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size())
         return false;
-    return file.write(json.toUtf8()) == json.toUtf8().size();
+    return file.commit();
 }
 
 void NativeController::pingServer()

@@ -8,6 +8,8 @@
 #include <QTimeZone>
 
 #include <optional>
+#include <cmath>
+#include <limits>
 #include <algorithm>
 
 #if defined(Q_OS_LINUX)
@@ -248,6 +250,27 @@ QList<SessionLogEntry> SessionLogBuffer::entries() const
     return m_entries;
 }
 
+SessionLogSummary SessionLogBuffer::summary(qint64 nowMs) const
+{
+    SessionLogSummary result;
+    result.totalLines = m_entries.size();
+    for (const auto &entry : m_entries) {
+        if (entry.level == QLatin1String("debug")) ++result.debugCount;
+        else if (entry.level == QLatin1String("info")) ++result.infoCount;
+        else if (entry.level == QLatin1String("warn")) ++result.warnCount;
+        else if (entry.level == QLatin1String("error")) {
+            ++result.errorCount;
+            const auto stamp = QDateTime::fromString(entry.timestamp, Qt::ISODateWithMs);
+            if (stamp.isValid() && stamp.toMSecsSinceEpoch() >= nowMs - RecentErrorWindowMs) {
+                ++result.recentErrorCount;
+                if (result.recentErrors.size() < RecentErrorLimit)
+                    result.recentErrors.append(entry);
+            }
+        }
+    }
+    return result;
+}
+
 void SessionLogBuffer::clear()
 {
     if (m_entries.isEmpty()) {
@@ -308,11 +331,13 @@ qint64 memoryProcKb(const QByteArray &contents, const QByteArray &key)
 }
 
 #if defined(Q_OS_LINUX)
-// Cumulative CPU percent since process start - the same semantics as
-// Chromium PercentCPUUsage, which is what the Electron IPC reports
-// (declared dataset deviation note in the design doc). Fields after the
-// last ')': utime is token 11, stime 12, starttime 19.
-std::optional<double> memoryCpuPercent(const QString &procRoot)
+struct CpuSample {
+    qint64 ticks;
+    qint64 start;
+    double uptime;
+};
+
+std::optional<CpuSample> readCpuSample(const QString &procRoot)
 {
     const QByteArray stat = memoryReadProc(procRoot + QStringLiteral("/self/stat"));
     const int close = stat.lastIndexOf(')');
@@ -331,16 +356,11 @@ std::optional<double> memoryCpuPercent(const QString &procRoot)
                                   .simplified().split(' ').first();
     bool okUptime = false;
     const double uptimeSeconds = uptime.toDouble(&okUptime);
-    const long clkRaw = sysconf(_SC_CLK_TCK);
-    const double clkTck = clkRaw > 0 ? double(clkRaw) : 100.0;
-    if (!okUser || !okSystem || !okStart || !okUptime || uptimeSeconds <= 0)
+    if (!okUser || !okSystem || !okStart || !okUptime
+        || !std::isfinite(uptimeSeconds) || uptimeSeconds <= 0 || startTicks < 0
+        || userTicks < 0 || systemTicks < 0 || userTicks > std::numeric_limits<qint64>::max() - systemTicks)
         return std::nullopt;
-    const double processUptimeSeconds = uptimeSeconds - double(startTicks) / clkTck;
-    if (processUptimeSeconds <= 0)
-        return std::nullopt;
-    const double percent = 100.0 * double(userTicks + systemTicks) / clkTck
-        / processUptimeSeconds;
-    return percent > 0 ? percent : 0.0;
+    return CpuSample{userTicks + systemTicks, startTicks, uptimeSeconds};
 }
 #endif
 
@@ -356,12 +376,21 @@ QString memoryIsoTimestampNow()
 
 void NativeMemoryDiagnostics::setProcRoot(QString procRoot)
 {
+    resetCpu();
     m_procRoot = std::move(procRoot);
     m_peakWorkingSetKb = 0; // a new root starts its own peak history
 }
 
-QVariantMap NativeMemoryDiagnostics::snapshot() const
+void NativeMemoryDiagnostics::resetCpu() const
 {
+    m_previousUptime = -1;
+    m_previousStart = -1;
+    m_cpuPercent.clear();
+}
+
+QVariantMap NativeMemoryDiagnostics::snapshot(bool sampleCpu) const
+{
+    Q_UNUSED(sampleCpu);
     qint64 rssKb = 0;
     qint64 totalKb = 0;
     qint64 freeKb = 0;
@@ -383,15 +412,33 @@ QVariantMap NativeMemoryDiagnostics::snapshot() const
     // Monotonic peak: kernel VmHWM plus the cross-poll clamp, so a regressing
     // fixture peak can never lower the reported value.
     m_peakWorkingSetKb = qMax(m_peakWorkingSetKb, qMax(peakKb, rssKb));
+    if (sampleCpu) {
+        const auto sample = readCpuSample(m_procRoot);
+        const long hz = sysconf(_SC_CLK_TCK);
+        if (rssKb <= 0 || !sample || hz <= 0) {
+            resetCpu();
+        } else {
+            const double elapsed = sample->uptime - m_previousUptime;
+            if (m_previousStart != sample->start || elapsed < 0 || sample->ticks < m_previousTicks) {
+                m_cpuPercent.clear();
+            } else if (elapsed > 0) {
+                m_cpuPercent = 100.0 * double(sample->ticks - m_previousTicks) / double(hz) / elapsed;
+            }
+            // Two calls in the same procfs clock tick do not start a new interval.
+            if (elapsed != 0 || m_previousStart != sample->start || sample->ticks < m_previousTicks) {
+                m_previousUptime = sample->uptime;
+                m_previousStart = sample->start;
+                m_previousTicks = sample->ticks;
+            }
+        }
+    }
     if (rssKb > 0) {
         QVariantMap self;
         self.insert(QStringLiteral("type"), QStringLiteral("Main"));
         self.insert(QStringLiteral("pid"), QCoreApplication::applicationPid());
         self.insert(QStringLiteral("workingSetKb"), rssKb);
         self.insert(QStringLiteral("peakWorkingSetKb"), m_peakWorkingSetKb);
-        const auto cpu = memoryCpuPercent(m_procRoot);
-        self.insert(QStringLiteral("cpuPercent"),
-            cpu.has_value() ? QVariant(*cpu) : QVariant());
+        self.insert(QStringLiteral("cpuPercent"), m_cpuPercent);
         processes.append(self);
     }
 #endif
