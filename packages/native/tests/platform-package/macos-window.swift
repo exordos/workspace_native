@@ -71,6 +71,12 @@ print("A second launch restored the original minimized window.")
 let bundleURL = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 let bundle = Bundle(url: bundleURL)
 let types = bundle?.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
+guard bundle?.object(forInfoDictionaryKey: "CFBundleDevelopmentRegion") as? String == "en",
+      bundle?.object(forInfoDictionaryKey: "CFBundleAllowMixedLocalizations") as? Bool == true,
+      bundle?.object(forInfoDictionaryKey: "NSPrincipalClass") as? String == "NSApplication",
+      bundle?.object(forInfoDictionaryKey: "NSSupportsAutomaticGraphicsSwitching") as? Bool == true,
+      let minimumSystem = bundle?.object(forInfoDictionaryKey: "LSMinimumSystemVersion") as? String,
+      !minimumSystem.isEmpty else { throw fail("The package lost its Qt macOS bundle metadata.") }
 let declaresWorkspaceLinks = types.contains { ($0["CFBundleURLSchemes"] as? [String])?.contains("ew") == true }
 guard declaresWorkspaceLinks, LSRegisterURL(bundleURL as CFURL, true) == noErr else {
     throw fail("The installed bundle did not register as a Workspace URL handler.")
