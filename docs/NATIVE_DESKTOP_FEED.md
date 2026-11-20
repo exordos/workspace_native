@@ -252,9 +252,10 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   `openInboxRow`, the row (and its open-in-chat button) closes the page and
   opens the message's stream/topic through the existing topic-opening
   machinery - the same route the reference row click uses (feed-page.ui.test:263).
-- Forward: no forward flow exists on master yet. Per the issue the button is
-  rendered (layout parity) but disabled, pending roadmap issue #7 (0.10.0
-  multiple forward). Its accessible name stays "Forward"/"Переслать".
+- The Forward arrow and its keyboard action open the shared forwarding dialog
+  for that feed row in the current project. The feed remains underneath.
+  Cancelling preserves its scroll position and the separate chat selection.
+  Only explicit confirmation can send a message (#375).
 
 ## Test groups (recorded for group accounting)
 

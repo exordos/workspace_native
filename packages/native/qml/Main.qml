@@ -679,10 +679,14 @@ ApplicationWindow {
     // switching conversations empties it (:1707). The bar carries the count
     // and the Forward action (chat-page-selection-bar.ui.tsx).
     property var messageSelectionIds: []
-    // Issue #41: the starred card forward flow opens the same forward modal
-    // with [uuid] without touching the chat selection (the reference forward
-    // store is independent, workspace-forward-message.model.ts:43-52).
-    property var starredForwardIds: []
+    // Feed and starred rows supply their own message independently of chat selection.
+    property var rowForwardSource: null
+    function openRowForward(messageUuid) {
+        if (!messageUuid || !root.controller.authenticated)
+            return
+        root.rowForwardSource = { id: messageUuid, owner: root.controller.ownerKey }
+        forwardDialog.open()
+    }
     readonly property int messageSelectionCount: root.messageSelectionIds.length
     // The composer shell (and with it the selection bar) is not present on
     // closed topics, aggregates or locked encrypted chats, so selection is
@@ -1700,6 +1704,8 @@ component NativeMentionChip: Item {
         function onStateChanged() {
             root.settleComposerEmojiUi();
             root.settleOwnStatusUi();
+            if (root.rowForwardSource && root.rowForwardSource.owner !== root.controller.ownerKey)
+                forwardDialog.close();
             root.validateStreamUi();
             root.validateChannelUi();
             root.validateGlobalTopicUi();
@@ -11474,10 +11480,7 @@ component NativeMentionChip: Item {
             loadActive: root.visible && root.controller.authenticated
             Layout.fillWidth: true
             Layout.fillHeight: true
-            onForwardRequested: function (messageUuid) {
-                root.starredForwardIds = [messageUuid]
-                forwardDialog.open()
-            }
+            onForwardRequested: messageUuid => root.openRowForward(messageUuid)
         }
         // Activity reactions unsupported state (#43): the reference has no
         // reactions activity collection, so the /activity/reactions route
@@ -11517,6 +11520,7 @@ component NativeMentionChip: Item {
             controller: root.controller
             colors: root.colors
             visible: root.controller.feedVisible
+            onForwardRequested: messageUuid => root.openRowForward(messageUuid)
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
@@ -12475,8 +12479,10 @@ component NativeMentionChip: Item {
         id: forwardDialog
         colors: root.colors
         controller: root.controller
-        sourceIds: root.starredForwardIds.length ? root.starredForwardIds : root.messageSelectionIds
-        onClosed: root.starredForwardIds = []
+        sourceIds: root.rowForwardSource
+            ? (root.rowForwardSource.owner === root.controller.ownerKey ? [root.rowForwardSource.id] : [])
+            : root.messageSelectionIds
+        onClosed: root.rowForwardSource = null
         onForwardSucceeded: function (submittedIds) {
             const submitted = (submittedIds || []).map(String)
             if (submitted.length === 0 || root.messageSelectionCount !== submitted.length)

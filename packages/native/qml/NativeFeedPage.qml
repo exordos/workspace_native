@@ -30,6 +30,7 @@ FocusScope {
     objectName: "nativeFeedPage"
     required property var controller
     required property var colors
+    signal forwardRequested(string messageUuid)
     readonly property var feedState: controller.feedPage
     readonly property var feedRows: feedState.rows || []
     readonly property bool loading: Boolean(feedState.loading)
@@ -308,6 +309,7 @@ FocusScope {
             color: Qt.alpha(page.colors["bg-elevated"], 0.6) // bg-bg-elevated/60
 
             Row {
+                z: 1 // Keep the action buttons above the full-row navigation target.
                 anchors.fill: parent
                 anchors.margins: 10 // p-2.5
                 spacing: 8 // gap-2
@@ -382,17 +384,14 @@ FocusScope {
                     }
                 }
 
-                // Row actions cluster: bg-bg/60 rounded-lg p-1 opacity 0.7 ->
-                // 1.0 on row hover (feed-page.ui.tsx:405-423). The forward flow
-                // does not exist on master yet, so the button stays gated
-                // pending roadmap issue #7 (0.10.0 multiple forward).
+                // Row actions cluster (feed-page.ui.tsx:405-423).
                 Rectangle {
                     id: actionsCluster
                     width: actionsRow.width + 8 // p-1
                     height: actionsRow.height + 8
                     radius: 8 // rounded-lg
                     color: Qt.alpha(page.colors["bg"], 0.6)
-                    opacity: rowHover.containsMouse ? 1.0 : 0.7
+                    opacity: cardHover.hovered ? 1.0 : 0.7
                     Row {
                         id: actionsRow
                         anchors.centerIn: parent
@@ -412,12 +411,13 @@ FocusScope {
                             asset: "send.svg"
                             glyphSize: 16
                             help: qsTr("Forward")
-                            enabled: false // gated until issue #7 ships the forward flow
+                            onClicked: page.forwardRequested(feedRow.rowId)
                         }
                     }
                 }
             }
 
+            HoverHandler { id: cardHover }
             MouseArea {
                 id: rowHover
                 anchors.fill: parent
