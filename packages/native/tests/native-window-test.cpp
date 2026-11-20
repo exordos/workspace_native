@@ -37350,17 +37350,22 @@ private slots:
             import QtQuick
             import "qrc:/workspace/qml/messages/time" as MessageTime
             Window {
-                width: 640
+                id: win
+                width: 800
                 height: 480
                 visible: true
-                Item { id: history; anchors.fill: parent }
+                Item {
+                    id: history
+                    x: 200; y: 35; width: 600; height: 430
+                    Item { id: chip; x: 120; y: 30; width: 44; height: 20 }
+                }
                 MessageTime.MessageTimeView {
                     historyViewport: history
-                    windowContent: history
+                    windowContent: win.contentItem
                     language: "en"
                     colors: ({"accent": "blue", "bg-elevated": "white", "border-subtle": "gray",
                               "text-primary": "black", "text-muted": "gray"})
-                    Component.onCompleted: showInstant("2026-01-02T10:02:03", null)
+                    Component.onCompleted: showInstant("2026-01-02T10:02:03", chip)
                 }
             }
         )", QUrl("qrc:/tests/isolated-message-time.qml"));
@@ -37372,6 +37377,9 @@ private slots:
         QVERIFY(panel);
         QTRY_VERIFY(panel->property("visible").toBool());
         QCOMPARE(panel->property("selectedDay").toInt(), 2);
+        const auto panelCenter = [&] { return panel->property("x").toReal() + panel->property("width").toReal() / 2; };
+        QTRY_VERIFY(qAbs(panelCenter() - 342.0) < 1.0);
+        QCOMPARE(panel->property("y").toReal(), 93.0);
         QVERIFY(QMetaObject::invokeMethod(panel, "close"));
         QTRY_VERIFY(!panel->property("visible").toBool());
     }
