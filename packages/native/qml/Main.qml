@@ -6042,6 +6042,8 @@ component NativeMentionChip: Item {
                     y: 30
                     width: parent.width - 100
                     text: root.chatHeaderCountersText()
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: text
                     textFormat: Text.PlainText
                     font.pixelSize: 12
                     color: root.colors["text-muted"]
@@ -6221,6 +6223,8 @@ component NativeMentionChip: Item {
                                 anchors.right: parent.right
                                 height: 18
                                 text: root.chatHeaderCountersText()
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: text
                                 textFormat: Text.PlainText
                                 font.pixelSize: 12
                                 lineHeightMode: Text.FixedHeight; lineHeight: 18

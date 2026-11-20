@@ -33522,6 +33522,40 @@ private slots:
             QStringLiteral("2 members, 2 online"), 5000);
     }
 
+    void chatHeaderCounterCaptionFollowsSelectionInAccessibleTree()
+    {
+        WindowChatHeaderCountersScene scene;
+        const auto accessibleCaptionCount = [&scene](const QString &expected) {
+            auto *root = QAccessible::queryAccessibleInterface(scene.window);
+            std::function<int(QAccessibleInterface *)> count = [&](QAccessibleInterface *item) {
+                if (!item || item->state().invisible)
+                    return 0;
+                int matches = item->role() == QAccessible::StaticText
+                    && item->text(QAccessible::Name) == expected;
+                for (int i = 0; i < item->childCount(); ++i)
+                    matches += count(item->child(i));
+                return matches;
+            };
+            return count(root);
+        };
+        scene.controller.selectStream(streamId);
+        const QString pair = QStringLiteral("2 members, 1 online");
+        const QString solo = QStringLiteral("1 member, 1 online");
+        QTRY_COMPARE(scene.text("chatHeaderCounters"), pair);
+        QTRY_COMPARE(accessibleCaptionCount(pair), 1);
+        auto *caption = visibleItem("chatHeaderCounters");
+        QVERIFY(caption && !caption->activeFocusOnTab());
+        auto *previous = caption->nextItemInFocusChain(false);
+        QVERIFY(previous && previous->nextItemInFocusChain(true) != caption);
+        scene.controller.selectStream(scene.fixture.soloStreamId);
+        QTRY_COMPARE(scene.text("chatHeaderCounters"), solo);
+        QTRY_COMPARE(accessibleCaptionCount(solo), 1);
+        QCOMPARE(accessibleCaptionCount(pair), 0);
+        scene.controller.selectStream(windowDirectId());
+        QTRY_VERIFY(scene.controller.isDirectConversation());
+        QTRY_COMPARE(accessibleCaptionCount(solo), 0);
+    }
+
     void chatHeaderCountersSingularAndHiddenForDirectChats()
     {
         WindowChatHeaderCountersScene scene;
