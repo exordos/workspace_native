@@ -21489,6 +21489,153 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerTimePickerPreservesBothFallBackInstants()
+    {
+        if (!qEnvironmentVariableIsSet("WORKSPACE_COMPOSER_TIME_FOLD")) {
+            QProcess child;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert("TZ", "America/New_York");
+            environment.insert("WORKSPACE_COMPOSER_TIME_FOLD", "1");
+            child.setProcessEnvironment(environment);
+            child.setProcessChannelMode(QProcess::MergedChannels);
+            child.start(QCoreApplication::applicationFilePath(),
+                        {"composerTimePickerPreservesBothFallBackInstants", "-o", "-,txt"});
+            QVERIFY(child.waitForFinished(30000));
+            const QByteArray output = child.readAll();
+            QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, output.constData());
+            return;
+        }
+        // The second 01:30 on the November transition is 06:30 UTC.
+        // Both UTC instants have the same local hour, minute and second.
+        const auto second = QDateTime::fromString("2026-11-01T06:30:00Z", Qt::ISODate);
+        QCOMPARE(second.toLocalTime().time(), QTime(1, 30));
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/workspace/qml/NativeComposerTimePicker.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        window.resize(640, 480);
+        const QVariantMap colors{{"bg-elevated", "white"}, {"border-subtle", "gray"},
+            {"text-primary", "black"}, {"text-muted", "gray"}};
+        std::unique_ptr<QObject> picker(component.createWithInitialProperties({
+            {"parent", QVariant::fromValue(window.contentItem())}, {"colors", colors}, {"localeName", "en"}}));
+        QVERIFY2(picker, qPrintable(component.errorString()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(QMetaObject::invokeMethod(picker.get(), "open"));
+        auto *hours = picker->findChild<QObject *>("composerTimeHours");
+        auto *minutes = picker->findChild<QObject *>("composerTimeMinutes");
+        auto *seconds = picker->findChild<QObject *>("composerTimeSeconds");
+        auto *insert = picker->findChild<QObject *>("composerTimeInsert");
+        QVERIFY(hours && minutes && seconds && insert);
+        for (const auto &expected : {second.addSecs(-3600), second}) {
+            picker->setProperty("openedAt", expected.addSecs(-60));
+            picker->setProperty("selectedDay", expected);
+            hours->setProperty("value", 1); minutes->setProperty("value", 30); seconds->setProperty("value", 0);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+            QVERIFY(insert->property("enabled").toBool());
+            picker->setProperty("month", expected);
+            QQuickItem *day = nullptr;
+            QTRY_VERIFY((day = visibleItem(window.contentItem(), "composerCalendarDay-1")));
+            click(&window, day);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+        }
+    }
+
+    void composerToolPopoversUseTheCurrentDraft_data()
+    {
+        QTest::addColumn<QString>("surface"); QTest::addColumn<QString>("locale");
+        for (const auto &surface : {QString("media"), QString("time"), QString("snippets")})
+            for (const auto &locale : {QString("en"), QString("ru")})
+                QTest::newRow(qPrintable(surface + '-' + locale)) << surface << locale;
+    }
+
+    void composerToolPopoversUseTheCurrentDraft()
+    {
+        QFETCH(QString, surface); QFETCH(QString, locale);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QString posted;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                return {message(posted, request.body.value("uuid").toString()), 201};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("tools.ini"));
+        preferences.setLocale(locale); preferences.setMode(locale == "ru" ? "dark" : "light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *editor = view("messageComposer"); QVERIFY(editor);
+        click(window, view("composerToolbarExpand"));
+        const QString original = "Meet old date here";
+        controller.setDraft(original);
+        if (surface == "media") {
+            click(window, view("composerEmojiButton"));
+            auto *tab = view("composerStickersTab"); QVERIFY(tab);
+            click(window, tab);
+            QTRY_VERIFY(view("composerStickerEmpty"));
+            auto *picker = window->findChild<QObject *>("composerEmojiPicker"); QVERIFY(picker);
+            QCOMPARE(picker->property("width").toInt(), 340);
+            auto *stickers = view("composerStickerPanel"); QVERIFY(stickers);
+            const auto url = fixture.server.origin().resolved(QUrl("/fixture/sticker.png")).toString();
+            const QVariantMap sticker{{"id", "wave"}, {"emoji", "hi"}, {"alt", "Wave"}, {"url", url},
+                                      {"thumbnailUrl", "qrc:/workspace/icons/smile.svg"}};
+            const QVariantMap pack{{"id", "greetings"}, {"title", "Greetings"}, {"stickers", QVariantList{sticker}}};
+            QVERIFY(stickers->setProperty("packs", QVariantList{pack}));
+            QTRY_VERIFY(view("composerSticker-greetings-wave"));
+            click(window, view("composerSticker-greetings-wave"));
+            QTRY_COMPARE(controller.draft(), original + "[sticker:greetings:wave](" + url + ")");
+            QTRY_VERIFY(!picker->property("visible").toBool());
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), controller.draft().size());
+        } else if (surface == "time") {
+            auto *button = view("composerTimeButton"); QVERIFY(button);
+            click(window, editor);
+            QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 5), Q_ARG(int, 13)));
+            click(window, button);
+            QTRY_VERIFY(view("composerTimeInsert"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(editor->hasActiveFocus()); QCOMPARE(controller.draft(), original);
+            QCOMPARE(editor->property("selectedText").toString(), QString("old date"));
+            const auto opened = QDateTime::currentDateTimeUtc();
+            click(window, button); QTRY_VERIFY(view("composerTimeInsert"));
+            click(window, view("composerTimeInsert"));
+            const auto text = controller.draft();
+            const auto match = QRegularExpression("^Meet urn:time:(.{19}Z) here$").match(text);
+            QVERIFY2(match.hasMatch(), qPrintable(text));
+            const auto selected = QDateTime::fromString(match.captured(1), Qt::ISODate);
+            QVERIFY(selected > opened && opened.secsTo(selected) <= 61);
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), text.size() - 5);
+            click(window, view("composerPreviewToggle")); QTRY_VERIFY(view("composerPreviewMarkdown"));
+            QCOMPARE(view("composerPreviewMarkdown")->property("sourceMarkdown").toString(), text);
+            click(window, view("sendButton")); QTRY_COMPARE(posted, text);
+        } else {
+            auto *button = view("composerSnippetsButton"); QVERIFY(button);
+            click(window, button);
+            QTRY_VERIFY(view("composerSnippetFilter"));
+            QTest::keyClick(window, Qt::Key_A);
+            QCOMPARE(view("composerSnippetFilter")->property("text").toString(), QString("a"));
+            QVERIFY(view("composerSnippetEmpty"));
+            click(window, view("composerSnippetCreate"));
+            QTRY_VERIFY(view("composerSnippetTitle"));
+            QTest::keyClick(window, Qt::Key_X);
+            click(window, view("composerSnippetSave"));
+            QTRY_VERIFY(view("composerSnippetUnsupported"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(!view("composerSnippetFilter") && !view("composerSnippetUnsupported"));
+            QCOMPARE(controller.draft(), original);
+            for (const auto &request : fixture.server.requests)
+                QVERIFY(!request.target.path().contains("snippet", Qt::CaseInsensitive));
+        }
+    }
+
     void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
     {
         QTest::addColumn<QString>("locale");

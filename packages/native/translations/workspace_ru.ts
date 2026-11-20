@@ -5171,6 +5171,43 @@
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
     </context>
+    <context>
+        <name>NativeComposerTimePicker</name>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Hours</source><translation>Часы</translation></message>
+        <message><source>Insert</source><translation>Вставить</translation></message>
+        <message><source>Insert date and time</source><translation>Вставить дату и время</translation></message>
+        <message><source>Minutes</source><translation>Минуты</translation></message>
+        <message><source>Next month</source><translation>Следующий месяц</translation></message>
+        <message><source>Previous month</source><translation>Предыдущий месяц</translation></message>
+        <message><source>Seconds</source><translation>Секунды</translation></message>
+    </context>
+    <context>
+        <name>NativeComposerSnippets</name>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Create new saved snippet</source><translation>Создать шаблон</translation></message>
+        <message><source>Filter</source><translation>Фильтр</translation></message>
+        <message><source>Filter snippets</source><translation>Фильтр шаблонов</translation></message>
+        <message><source>No saved snippets</source><translation>Нет сохранённых шаблонов</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
+        <message><source>Saved snippets</source><translation>Сохранённые шаблоны</translation></message>
+        <message><source>Saved snippets are not connected yet.</source><translation>Сохранённые шаблоны пока недоступны.</translation></message>
+        <message><source>Snippet content</source><translation>Содержимое шаблона</translation></message>
+        <message><source>Snippet title</source><translation>Название шаблона</translation></message>
+    </context>
+    <context>
+        <name>NativeComposerStickerPicker</name>
+        <message><source>No sticker packs installed yet.</source><translation>Наборы стикеров пока не установлены.</translation></message>
+        <message><source>No stickers found</source><translation>Стикеры не найдены</translation></message>
+        <message><source>Search stickers</source><translation>Найти стикер</translation></message>
+    </context>
+    <context>
+        <name>ComposerTools</name>
+        <message><source>Emoji</source><translation>Эмодзи</translation></message>
+        <message><source>Insert date and time</source><translation>Вставить дату и время</translation></message>
+        <message><source>Saved snippets</source><translation>Сохранённые шаблоны</translation></message>
+        <message><source>Stickers</source><translation>Стикеры</translation></message>
+    </context>
 <context>
     <name>NativeAccountPreferences</name>
         <message><source>Keyboard shortcuts</source><translation>Горячие клавиши</translation></message>
