@@ -221,9 +221,9 @@ def scenario(executable):
                         except Exception:
                             print(f"Server settings/login/refresh/introspection counts: {fixture.settings_count}/{fixture.login_count}/{fixture.refresh_count}/{fixture.introspect_count}", flush=True)
                             log.flush()
-                            for line in (folder / (mode + ".log")).read_text(encoding="utf-8", errors="replace").splitlines():
-                                if any(what in line.lower() for what in ("ssl", "tls", "certificate", "keychain", "credential store", "accessibility")):
-                                    print(line[:240], flush=True)
+                            diagnostics = (folder / (mode + ".log")).read_text(encoding="utf-8", errors="replace").lower()
+                            notes = {word: diagnostics.count(word) for word in ("ssl", "tls", "certificate", "keychain", "credential store")}
+                            print(f"Packaged diagnostics counts: {notes}", flush=True)
                             raise
                         finally:
                             if app.poll() is None:
