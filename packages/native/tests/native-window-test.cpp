@@ -30885,6 +30885,43 @@ private slots:
         QTRY_COMPARE(caption(),online);
     }
 
+    void channelHeaderOpensInfoOverSettingsAndRestoresTheLayer_data()
+    {
+        QTest::addColumn<QString>("control");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("theme");
+        QTest::newRow("title-en-light") << QString("channelHeaderInfoAction") << QString("en") << QString("light");
+        QTest::newRow("toolbar-en-dark") << QString("conversationInfoAction") << QString("en") << QString("dark");
+        QTest::newRow("title-ru-dark") << QString("channelHeaderInfoAction") << QString("ru") << QString("dark");
+        QTest::newRow("toolbar-ru-light") << QString("conversationInfoAction") << QString("ru") << QString("light");
+    }
+
+    void channelHeaderOpensInfoOverSettingsAndRestoresTheLayer()
+    {
+        QFETCH(QString, control);
+        QFETCH(QString, locale);
+        QFETCH(QString, theme);
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(theme);
+        scene.evaluate("rightDrawer.openSettings()");
+        QTRY_COMPARE(scene.evaluate("rightDrawer.currentAccountScreen").toString(), QString("settings"));
+        auto *action = visibleItem(control);
+        QVERIFY(action);
+        QVERIFY(action->isEnabled());
+        click(scene.window, action);
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+        QCOMPARE(scene.text("channelInfoTitle"), QString("Info channel"));
+        scene.evaluate("rightDrawer.openWorkspaceUserProfile('" + channelPeer + "')");
+        QTRY_COMPARE(scene.evaluate("rightDrawer.currentProfileOverride").toString(), "workspace-user-uuid:" + channelPeer);
+        click(scene.window, action);
+        QTRY_VERIFY(scene.evaluate("rightDrawer.currentProfileOverride").toString().isEmpty());
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+        click(scene.window, visibleItem("nativeRightDrawerClose"));
+        QTRY_COMPARE(scene.evaluate("rightDrawer.currentAccountScreen").toString(), QString("settings"));
+        QCOMPARE(scene.controller.selectedTopic(), topicId);
+    }
+
     // Issue #88 (reference chat-header-direct.ui.tsx:7-8,47-55): the whole
     // partner block is one click target opening the partner profile drawer
     // (#134), with the localized a11y.openUserProfile accessible name.

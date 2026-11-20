@@ -1357,7 +1357,9 @@
             <source>not in channel</source>
             <translation>не в канале</translation>
         </message>
-            <message>
+            <message><source>Partner info</source><translation>Информация о собеседнике</translation></message>
+        <message><source>Channel info</source><translation>Информация о канале</translation></message>
+        <message>
             <source>Information</source>
             <translation>Информация</translation>
         </message>

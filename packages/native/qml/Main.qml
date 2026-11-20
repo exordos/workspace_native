@@ -6292,6 +6292,18 @@ component NativeMentionChip: Item {
             Rectangle {
                 id: chatHeaderRoot
                 objectName: "conversationHeader"
+                readonly property bool infoAvailable: root.controller.authenticated && root.controller.hasConversation
+                    && !root.controller.favoritesVisible
+                readonly property string infoLabel: root.controller.isDirectConversation ? qsTr("Partner info") : qsTr("Channel info")
+                function openInformation() {
+                    if (!infoAvailable) return
+                    if (root.controller.isDirectConversation) {
+                        const peer = String(root.controller.directPeer.id || "")
+                        if (peer) rightDrawer.openWorkspaceUserProfile(peer)
+                    } else {
+                        rightDrawer.openInfo()
+                    }
+                }
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.controller.isDirectConversation ? 56 : root.encryptedConversation ? 62 : 54
                 radius: 6
@@ -6331,6 +6343,7 @@ component NativeMentionChip: Item {
                     elide: Text.ElideRight
                 }
                 RowLayout {
+                    id: channelHeaderTitleRow
                     visible: !root.controller.isDirectConversation && !root.encryptedConversation
                         && !root.controller.favoritesVisible
                     x: 20
@@ -6357,6 +6370,20 @@ component NativeMentionChip: Item {
                         font.pixelSize: 14
                         elide: Text.ElideRight
                     }
+                }
+                AbstractButton {
+                    id: channelHeaderInfoAction
+                    objectName: "channelHeaderInfoAction"
+                    anchors.fill: channelHeaderTitleRow
+                    visible: channelHeaderTitleRow.visible && chatHeaderRoot.infoAvailable
+                    focusPolicy: Qt.StrongFocus
+                    Accessible.name: chatHeaderRoot.infoLabel
+                    background: Rectangle {
+                        color: "transparent"; radius: 6
+                        border.width: channelHeaderInfoAction.visualFocus ? 2 : 0
+                        border.color: root.colors["accent-soft"]
+                    }
+                    onClicked: chatHeaderRoot.openInformation()
                 }
                 Text {
                     objectName: "chatHeaderCounters"
@@ -6745,19 +6772,12 @@ component NativeMentionChip: Item {
                     }
                     NativeIconButton {
                         colors: root.colors
+                        objectName: "conversationInfoAction"
                         asset: "side_panel.svg"
                         glyphSize: 20
-                        // Issue #134: on direct chats the affordance opens the
-                        // partner profile; ordinary channels keep the placeholder.
-                        enabled: String(root.controller.directPeer.id || "").length > 0
-                        help: String(root.controller.directPeer.id || "").length > 0
-                            ? qsTr("Information")
-                            : qsTr("Conversation information is not implemented yet")
-                        onClicked: {
-                            const peer = String(root.controller.directPeer.id || "")
-                            if (peer.length > 0)
-                                rightDrawer.openWorkspaceUserProfile(peer)
-                        }
+                        enabled: chatHeaderRoot.infoAvailable
+                        help: chatHeaderRoot.infoLabel
+                        onClicked: chatHeaderRoot.openInformation()
                     }
                 }
             }
