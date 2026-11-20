@@ -76,6 +76,8 @@ before the boundary is reached.
   scroll passes only (same gates as before: `userScrollSeen && !positioning &&
   !anchorJumpPending`). `distanceFromTopPx` is the reference `scrollTop`
   analogue; `viewportHeightPx` is the list height.
+  The scroll handler reads the live `contentY`, `originY` and `topMargin`
+  together so a single wheel jump to the loaded top requests the older page.
 - Policy: `reserve = max(100 px, viewportHeightPx)`. The 100 px floor is the
   measured reference `LOAD_MORE_THRESHOLD`; the one-viewport headroom is the
   chosen prefetch buffer. Below or at `reserve` and armed -> start the older

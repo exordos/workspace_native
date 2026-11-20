@@ -256,8 +256,14 @@ void NativePreferences::probePortalReducedMotion()
         QStringLiteral("Read"))
         << QStringLiteral("org.freedesktop.appearance") << QStringLiteral("reduced-motion");
     const auto reply = bus.call(read, QDBus::Block, 2000);
-    if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty())
-        updatePortalReducedMotion(reply.arguments().first().value<QDBusVariant>().variant().toUInt() == 1u);
+    if (reply.type() == QDBusMessage::ReplyMessage && !reply.arguments().isEmpty()) {
+        auto value = reply.arguments().first().value<QDBusVariant>().variant();
+        // Settings.Read wraps the setting in a second variant. Some older
+        // backends return the uint32 in a single variant.
+        if (value.metaType() == QMetaType::fromType<QDBusVariant>())
+            value = value.value<QDBusVariant>().variant();
+        updatePortalReducedMotion(value.metaType().id() == QMetaType::UInt && value.toUInt() == 1u);
+    }
     // Connect last and ignore failure: without a portal announcing the key the
     // default "no preference" already holds.
     bus.connect(QStringLiteral("org.freedesktop.portal.Desktop"),

@@ -24,6 +24,16 @@ protected:
     QVariant loadResource(int, const QUrl &) override { return {}; }
 };
 
+bool markdownHtml(const QString &markdown, QByteArray &html)
+{
+    const auto input = markdown.toUtf8();
+    const auto append = [](const MD_CHAR *text, MD_SIZE size, void *output) {
+        static_cast<QByteArray *>(output)->append(text, size);
+    };
+    return md_html(input.constData(), MD_SIZE(input.size()), append, &html,
+        MD_DIALECT_GITHUB | MD_FLAG_NOHTML | MD_FLAG_HARD_SOFT_BREAKS, 0) == 0;
+}
+
 QString resourceTarget(const QTextCharFormat &format)
 {
     return format.isImageFormat() ? format.toImageFormat().name() : format.anchorHref();
@@ -343,6 +353,33 @@ QString NativeMarkdown::prependEditAttachments(const QString &markdown, const QV
     return lines.join('\n') + '\n' + markdown;
 }
 
+QStringList NativeMarkdown::missingAttachmentLinks(const QString &markdown, const QStringList &links)
+{
+    QStringList missing;
+    QByteArray body;
+    for (const auto &link : links) {
+        if (markdown.contains(link)) {
+            if (body.isEmpty()) markdownHtml(markdown, body);
+            QByteArray fragment;
+            if (markdownHtml(link, fragment) && fragment.startsWith("<p>") && fragment.endsWith("</p>\n")) {
+                // Compare the rendered anchor or image, including inside lists and
+                // quotes. Code spans and escaped examples only render its text.
+                const auto element = QByteArrayView(fragment).sliced(3, fragment.size() - 8);
+                if (!element.isEmpty() && body.contains(element)) continue;
+            }
+        }
+        if (!missing.contains(link)) missing.append(link);
+    }
+    return missing;
+}
+
+bool NativeMarkdown::startsWithParagraph(const QString &markdown, const QString &paragraph)
+{
+    QByteArray first, full;
+    return markdownHtml(paragraph, first) && first.startsWith("<p>") &&
+        markdownHtml(markdown, full) && full.startsWith(first);
+}
+
 QVariantMap NativeMarkdown::reference(const QString &target) const
 {
     if (target.isEmpty() || target.size() > 65536 || target != target.trimmed()
@@ -396,12 +433,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
                 displayMarkdown.insert(first, QLatin1Char('\n'));
         }
     }
-    const auto input = displayMarkdown.toUtf8();
-    const auto append = [](const MD_CHAR *text, MD_SIZE size, void *output) {
-        static_cast<QByteArray *>(output)->append(text, size);
-    };
-    if (md_html(input.constData(), MD_SIZE(input.size()), append, &generated,
-                MD_DIALECT_GITHUB | MD_FLAG_NOHTML | MD_FLAG_HARD_SOFT_BREAKS, 0) != 0)
+    if (!markdownHtml(displayMarkdown, generated))
         return {{"html", tr("Could not display this message.")}, {"plain", tr("Could not display this message.")}};
     // Adapt only fixed renderer-generated tags. Raw user HTML was escaped by
     // NOHTML above; it cannot create one of these checkbox or code tags.

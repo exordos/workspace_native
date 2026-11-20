@@ -132,13 +132,8 @@ int main(int argc, char **argv)
     workspace::PowerWatcher powerWatcher;
     controller.setPowerWatcher(&powerWatcher);
     powerWatcher.start();
-    // Issue #86: shell call awareness - dormant until the native call UI
-    // lands (docs/NATIVE_DESKTOP_CALL_AWARENESS.md), but fully wired: a call
-    // inhibits display sleep on the session bus and paints the room into the
-    // tray tooltip. The future call surface reaches it through the QML
-    // context property below.
     workspace::CallAwareness callAwareness;
-    callAwareness.start();
+    callAwareness.start(*controller.callWindow());
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("callAwareness", &callAwareness);
     workspace::NativeUpdater updater;

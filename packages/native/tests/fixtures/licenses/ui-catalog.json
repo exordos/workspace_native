@@ -1,0 +1,114 @@
+[
+  {
+    "name": "Chromium (Qt WebEngine)",
+    "version": "122.0.6261.128",
+    "license": "BSD-3-Clause",
+    "repository": "https://github.com/chromium/chromium",
+    "publisher": "The Chromium Authors"
+  },
+  {
+    "name": "Expat",
+    "version": "2.6.4",
+    "license": "MIT",
+    "repository": "https://github.com/libexpat/libexpat",
+    "publisher": "libexpat contributors"
+  },
+  {
+    "name": "FreeType",
+    "version": "2.13.3",
+    "license": "FTL",
+    "repository": "https://git.savannah.gnu.org/cgit/freetype/freetype2.git",
+    "publisher": "FreeType Contributors"
+  },
+  {
+    "name": "HarfBuzz",
+    "version": "10.2.0",
+    "license": "MIT",
+    "repository": "https://github.com/harfbuzz/harfbuzz",
+    "publisher": "The HarfBuzz Project"
+  },
+  {
+    "name": "ICU (International Components for Unicode)",
+    "version": "75.1",
+    "license": "MIT",
+    "repository": "https://github.com/unicode-org/icu",
+    "publisher": "Unicode, Inc."
+  },
+  {
+    "name": "MD4C",
+    "version": "0.5.2",
+    "license": "MIT",
+    "repository": "https://github.com/mity/md4c",
+    "publisher": "Victor Zvegintcev"
+  },
+  {
+    "name": "OpenSSL",
+    "version": "3.0.13",
+    "license": "Apache-2.0",
+    "repository": "https://github.com/openssl/openssl",
+    "publisher": "OpenSSL Software Foundation"
+  },
+  {
+    "name": "PCRE2",
+    "version": "10.44",
+    "license": "BSD-3-Clause",
+    "repository": "https://github.com/PCRE2Project/pcre2",
+    "publisher": "Philip Hazel"
+  },
+  {
+    "name": "Qt 6 QtBase",
+    "version": "6.8.2",
+    "license": "LGPL-3.0-only",
+    "repository": "https://github.com/qt/qtbase",
+    "publisher": "The Qt Company"
+  },
+  {
+    "name": "Qt 6 QtDeclarative",
+    "version": "6.8.2",
+    "license": "LGPL-3.0-only",
+    "repository": "https://github.com/qt/qtdeclarative",
+    "publisher": "The Qt Company"
+  },
+  {
+    "name": "Qt 6 QtWebEngine",
+    "version": "6.8.2",
+    "license": "LGPL-3.0-only",
+    "repository": "https://github.com/qt/qtwebengine",
+    "publisher": "The Qt Company"
+  },
+  {
+    "name": "Qt6Keychain",
+    "version": "0.14.1",
+    "license": "LGPL-2.1-or-later",
+    "repository": "https://github.com/frankosterfeld/qtkeychain",
+    "publisher": "Frank Osterfeld"
+  },
+  {
+    "name": "SQLite",
+    "version": "3.46.1",
+    "license": "blessing",
+    "repository": "",
+    "publisher": "SQLite Development Team"
+  },
+  {
+    "name": "XCB Protocol Library",
+    "version": "1.17.0",
+    "license": "MIT",
+    "repository": "https://gitlab.freedesktop.org/xcb/libxcb",
+    "publisher": "The X.Org Foundation"
+  },
+  {
+    "name": "Zlib",
+    "version": "1.3.1",
+    "license": "Zlib",
+    "repository": "https://github.com/madler/zlib",
+    "publisher": "Jean-loup Gailly and Mark Adler"
+  },
+  {
+    "name": "libpng",
+    "version": "1.6.44",
+    "license": "libpng-2.0",
+    "repository": "https://github.com/glennrp/libpng",
+    "publisher": "Glenn Randers-Pehrson"
+  }
+]

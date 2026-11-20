@@ -219,12 +219,6 @@ class ControllerCallsTest final : public NativeControllerTestHarness {
 private slots:
     // ---- Issue #161 call launch (docs/NATIVE_DESKTOP_CALL_LAUNCH.md) ----
 
-    static Response callMeetSettings(const Request & = {})
-    {
-        return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
-            {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
-    }
-
     void headerCallGateFollowsWorkspaceMeetHost()
     {
         Fixture plain;

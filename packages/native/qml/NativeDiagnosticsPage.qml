@@ -1004,11 +1004,14 @@ FocusScope {
                 columns: page.gridColumns
                 spacing: page.gridSpacing
                 Repeater {
-                    model: page.cards
+                    // The nine overview cards keep their order. Refresh their
+                    // data in place so a focused or pressed action survives.
+                    model: page.cards.length
                     delegate: Rectangle {
                         id: card
-                        required property var modelData
-                        readonly property string cardKey: String(modelData.key)
+                        required property int index
+                        readonly property var entry: page.cards[index]
+                        readonly property string cardKey: String(entry.key)
                         objectName: "diagnosticsCard-" + cardKey
                         width: page.cellWidth
                         height: cardColumn.height + 24 // p-3
@@ -1031,7 +1034,7 @@ FocusScope {
                                 bottomPadding: 4 // mb-1.5 (6px total incl. body spacing)
                             }
                             Repeater {
-                                model: card.modelData.kind === "logcounts" ? [] : card.modelData.lines
+                                model: card.entry.kind === "logcounts" ? [] : card.entry.lines
                                 delegate: Text {
                                     required property var modelData
                                     required property int index
@@ -1048,11 +1051,11 @@ FocusScope {
                                 }
                             }
                             Row {
-                                visible: card.modelData.kind === "logcounts"
+                                visible: card.entry.kind === "logcounts"
                                 spacing: 6 // gap-1.5
                                 Repeater {
-                                    model: card.modelData.kind === "logcounts"
-                                        ? card.modelData.badges : []
+                                    model: card.entry.kind === "logcounts"
+                                        ? card.entry.badges : []
                                     delegate: Rectangle {
                                         required property var modelData
                                         objectName: "diagnosticsLogBadge-" + String(modelData.level)
@@ -1075,7 +1078,7 @@ FocusScope {
                                 // bg-bg px-2 text-[11px] opening the logs modal.
                                 Rectangle {
                                     objectName: "diagnosticsCardLogCountsViewButton"
-                                    visible: card.modelData.kind === "logcounts"
+                                    visible: card.entry.kind === "logcounts"
                                     anchors.verticalCenter: parent.verticalCenter
                                     width: cardViewLogsLabel.implicitWidth + 16 // px-2
                                     height: 28 // h-7

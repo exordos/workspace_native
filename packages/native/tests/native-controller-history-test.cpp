@@ -403,6 +403,7 @@ private slots:
 
     void aggregateVisibleReadCoalescesSeparatelyForEachActualTopic()
     {
+        QStringList notified;
         Fixture fixture; fixture.aggregateMessages = true; fixture.extraTopic = true;
         QMap<QString, QJsonObject> rows;
         for (int n = 1; n <= 5; ++n) {
@@ -434,6 +435,21 @@ private slots:
         QVERIFY(modelMessage(fixture.controller, a1).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(4).value("uuid").toString()).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(5).value("uuid").toString()).value("read").toBool());
+
+        // A queued anchor deleted before dispatch must also disappear from
+        // the snapshot last delivered to the visual read-request indicator.
+        connect(&fixture.controller, &NativeController::readRequestBoundariesChanged, &fixture.controller,
+            [&] { notified = fixture.controller.readRequestBoundaryIds(); });
+        const auto a5 = historyMessage(5).value("uuid").toString();
+        const auto b4 = historyMessage(4).value("uuid").toString();
+        fixture.controller.markMessagesReadUpTo(a5);
+        fixture.controller.markMessagesReadUpTo(b4);
+        QCOMPARE(notified.size(), 2);
+        rows.remove(b4);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted",
+            QJsonObject{{"uuid", b4}, {"stream_uuid", streamId}, {"topic_uuid", secondTopicId}})));
+        QTRY_VERIFY(fixture.controller.readRequestBoundaryIds().isEmpty());
+        QVERIFY(notified.isEmpty());
     }
 
     void aggregateLoadsActualTopicsAndRealtimeWithoutADefaultComposer()

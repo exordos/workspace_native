@@ -1225,6 +1225,96 @@ private slots:
         QCOMPARE(tray->toolTip(), QString("Workspace"));
     }
 
+    void joinedCallUpdatesTrayAndKeepsOneInhibitorThroughPip()
+    {
+        PowerBusFixture bus("joined-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+
+        CallAwareness awareness;
+        awareness.start(*fixture.controller.callWindow(), bus.watcherBus);
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        connect(&awareness, &CallAwareness::callStateChanged, &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        const auto idleTip = tray->toolTip();
+        auto *shell = fixture.controller.callWindow();
+        auto *bridge = fixture.controller.embedBridge();
+        fixture.controller.joinCall("https://meet.example.com/cassi-room");
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Loading);
+        shell->apiLoadFailed();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::LoadFailed);
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(tray->toolTip(), idleTip);
+        QCOMPARE(saver.inhibits.size(), 0);
+
+        shell->retry();
+        shell->apiLoadSucceeded();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Ready);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room"));
+        bridge->reportParticipantCount(3);
+        bridge->handleParticipantsJoined();
+        QCOMPARE(shell->participantCount(), 3);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (3 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Minimized);
+        bridge->reportParticipantCount(2);
+        bridge->handleParticipantsLeft();
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (2 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Expanded);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QVERIFY(saver.uninhibits.isEmpty());
+        shell->readyToClose();
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+        QVERIFY(!awareness.callActive());
+
+        fixture.controller.joinCall("https://meet.example.com/cassi-next");
+        shell->apiLoadSucceeded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.inhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-next"));
+        fixture.controller.calls()->closeCall();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+    }
+
+    void attachingToAReadyCallReleasesTheInhibitorWhenItsWindowIsDestroyed()
+    {
+        PowerBusFixture bus("ready-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        {
+            JitsiCallWindowController shell;
+            shell.setParticipantCountProvider([] { return 4; });
+            shell.open({{"meetingUrl", "https://meet.jit.si/cassi-ready"}});
+            shell.apiLoadSucceeded();
+            QCOMPARE(shell.participantCount(), 4);
+            QSignalSpy changes(&awareness, &CallAwareness::callStateChanged);
+            awareness.start(shell, bus.watcherBus);
+            QCOMPARE(awareness.activeRoom(), QString("cassi-ready"));
+            QCOMPARE(changes.last().at(1).toInt(), 4);
+            QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        }
+        QVERIFY(!awareness.callActive());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+    }
+
     void displaySleepInhibitIsAcquiredExactlyOncePerCall()
     {
         PowerBusFixture bus("call-once");

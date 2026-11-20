@@ -12,7 +12,7 @@ if(UNIX AND NOT APPLE)
     find_program(WORKSPACE_NATIVE_PATCHELF_EXECUTABLE patchelf REQUIRED)
     set(QT_DEPLOY_USE_PATCHELF ON)
 endif()
-find_package(Qt6 6.10 REQUIRED COMPONENTS Core Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus Multimedia)
+find_package(Qt6 6.10 REQUIRED COMPONENTS Core Concurrent Gui Widgets Network Qml Quick QuickControls2 QuickDialogs2 Svg WebSockets Sql DBus Multimedia)
 find_package(Qt6Keychain REQUIRED)
 find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
@@ -67,7 +67,7 @@ set(WORKSPACE_CALL_INCOMING_MODAL_VARIANT "large" CACHE STRING
 target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
-target_link_libraries(workspace-native-core PRIVATE Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+target_link_libraries(workspace-native-core PRIVATE Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
 endif()
@@ -115,10 +115,22 @@ qt_add_resources(workspace-native-ui native_translations PREFIX /workspace/i18n
 # precedent). tests/licenses-dataset-test.py guards shape and determinism as a
 # direct python check; it is not a CTest group so the group count stays stable.
 find_program(WORKSPACE_NATIVE_PYTHON3 NAMES python3 REQUIRED)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(native_md4c QUIET md4c)
+endif()
+set(native_md4c_license)
+if(native_md4c_VERSION)
+    set(native_md4c_license --component "md4c=${native_md4c_VERSION}")
+endif()
 set(native_licenses_json "${CMAKE_CURRENT_BINARY_DIR}/licenses/licenses.json")
 add_custom_command(OUTPUT "${native_licenses_json}"
     COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/collect-native-licenses.py"
-        --out "${native_licenses_json}"
+        --out "${native_licenses_json}" --qt-sqlite
+        --component "qt6-base=${Qt6Core_VERSION}" --component "qt6-declarative=${Qt6Qml_VERSION}"
+        --component "qt6-multimedia=${Qt6Multimedia_VERSION}" --component "qt6-svg=${Qt6Svg_VERSION}"
+        --component "qt6-websockets=${Qt6WebSockets_VERSION}" --component "qtkeychain=${Qt6Keychain_VERSION}"
+        --component "openssl=${OPENSSL_VERSION}" ${native_md4c_license}
     DEPENDS scripts/collect-native-licenses.py VERBATIM)
 set_source_files_properties("${native_licenses_json}" PROPERTIES GENERATED TRUE)
 qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
@@ -150,7 +162,7 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     composer-inline-code composer-visibility
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
-    reply copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
+    reply forward copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
     mail_activity home_filled marker drafts chevron-up
     at bell bell_off person_add

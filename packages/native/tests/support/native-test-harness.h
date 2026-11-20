@@ -305,6 +305,12 @@ public:
 class NativeControllerTestHarness : public QObject {
     Q_OBJECT
 public:
+    static Response callMeetSettings(const Request & = {})
+    {
+        return Response{QJsonObject{{QStringLiteral("result"), QStringLiteral("success")},
+            {QStringLiteral("meet_url"), QStringLiteral("https://meet.example.com/x/")}}};
+    }
+
     QTemporaryDir certificateDirectory;
     QSslConfiguration previousSsl{QSslConfiguration::defaultConfiguration()};
 private slots:

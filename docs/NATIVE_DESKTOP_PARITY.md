@@ -135,6 +135,14 @@ Its [palette object](../packages/native/qml/NativeTheme.qml) contains the four
 desktop palettes in both modes. Initial/name-based avatar fallbacks do not
 reproduce profile images. The organization button reuses the source fallback SVG;
 custom organization logos still require real metadata and an accepted load policy.
+
+The native client displays an animated GIF avatar as a still image on every
+surface. The avatar cache stores the first frame as one 128 × 128 circular
+thumbnail and shares it across visible rows. A conversation with many GIF
+avatars therefore has the same steady-state thumbnail memory budget as one
+with static photos. The web client plays the GIF in an image element. This
+difference is an accepted native design decision. [Avatar decision #179](https://github.com/exordos/workspace_native/issues/179)
+
 [Native preferences](../packages/native/src/native-preferences.cpp) persist the
 four palettes and light/dark/system mode per opaque account-owner hash, with
 anonymous preferences stored separately. Sidebar preferred width is global. System

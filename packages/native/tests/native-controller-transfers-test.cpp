@@ -222,6 +222,7 @@ private slots:
             const auto prefix = kind == "image" ? QString("!") : QString{};
             return prefix + '[' + name + "](<urn:" + kind + ':' + id + "?name=" + name
                 + "&content_type=" + QString::fromLatin1(QUrl::toPercentEncoding(mime))
+                + (kind == "image" ? QStringLiteral("&w=96&h=64") : QString{})
                 + "&size=" + QString::number(bytes.size()) + ">)";
         };
         Q_UNUSED(expectedPattern);
@@ -476,6 +477,7 @@ private slots:
         fixture.controller.setDraft("Before ![diagram.png] after");
         QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(!wire.isEmpty());
         QCOMPARE(wire.count("urn:image:" + returnedId), 1); QVERIFY(wire.startsWith("Before ![diagram.png]("));
+        QVERIFY(wire.contains("&w=8&h=8&size="));
         QVERIFY(wire.endsWith(" after")); QCOMPARE(deletes, 0);
         const auto owner = drafts.owner(); bool flushed = false; drafts.flush(this, [&](bool ok) { flushed = ok; }); QTRY_VERIFY(flushed);
         storage.shutdown(); QTRY_VERIFY(storage.stopped()); NativeDraftStore store(directory.filePath("drafts"));
@@ -486,23 +488,45 @@ private slots:
 
     void removingFirstOfTwoSameNamedImagesKeepsSecondInline()
     {
-        QTemporaryDir directory; const auto path = directory.filePath("diagram.png");
-        QImage image(8, 8, QImage::Format_ARGB32); image.fill(Qt::red); QVERIFY(image.save(path));
-        QFile input(path); QVERIFY(input.open(QIODevice::ReadOnly)); const auto bytes = input.readAll();
+        QTemporaryDir directory;
+        const auto writeImage = [&](const QString &subdir, const QColor &color) {
+            const QString path = directory.filePath(subdir + "/diagram.png");
+            if (!QDir().mkpath(QFileInfo(path).absolutePath())) return QString{};
+            QImage image(8, 8, QImage::Format_ARGB32);
+            image.fill(color);
+            return image.save(path) ? path : QString{};
+        };
+        const QString firstPath = writeImage("first", Qt::red);
+        const QString secondPath = writeImage("second", Qt::blue);
+        QFile firstInput(firstPath), secondInput(secondPath);
+        QVERIFY(firstInput.open(QIODevice::ReadOnly));
+        QVERIFY(secondInput.open(QIODevice::ReadOnly));
+        const auto firstBytes = firstInput.readAll(), secondBytes = secondInput.readAll();
         Fixture fixture; FileClient files(&fixture.api); fixture.controller.useFiles(&files);
-        const QString secondId = "99999999-9999-4999-8999-999999999994"; int uploads = 0; QString wire;
+        const QString secondId = "99999999-9999-4999-8999-999999999994";
+        std::function<void()> completeFirst;
+        QString wire;
         fixture.files = [&](const Request &request) {
             if (request.method == "DELETE") return Response{QJsonObject{}, 204};
-            const auto id = ++uploads == 1 ? returnedId : secondId;
-            return Response{QJsonObject{{"uuid", id}, {"stream_uuid", streamId}, {"name", "diagram.png"},
+            const bool first = request.rawBody.contains(firstBytes);
+            const auto &bytes = first ? firstBytes : secondBytes;
+            if (!request.rawBody.contains(bytes)) return Response{QJsonObject{}, 400};
+            Response response{QJsonObject{{"uuid", first ? returnedId : secondId}, {"stream_uuid", streamId}, {"name", "diagram.png"},
                 {"content_type", "image/png"}, {"size_bytes", bytes.size()},
                 {"hash", QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())}}, 201};
+            if (first) response.defer = [&](std::function<void()> reply) { completeFirst = std::move(reply); };
+            return response;
         };
         fixture.messages = [&](const Request &request) {
             if (request.method == "POST") { wire = request.body.value("payload").toObject().value("content").toString(); return Response{QJsonObject{}, 503}; }
             return Response{QJsonArray{}};
         };
-        QVERIFY(fixture.start()); fixture.controller.attachFiles({QUrl::fromLocalFile(path), QUrl::fromLocalFile(path)});
+        QVERIFY(fixture.start());
+        fixture.controller.attachFiles({QUrl::fromLocalFile(firstPath), QUrl::fromLocalFile(secondPath)});
+        QTRY_VERIFY(completeFirst && fixture.controller.uploadEntries().last().toMap().value("status") == "ready");
+        const auto aliasWhileFirstIsPending = fixture.controller.uploadEntries().last().toMap().value("alias").toString();
+        completeFirst();
+        QCOMPARE(aliasWhileFirstIsPending, QString("![diagram.png (2)]"));
         QTRY_VERIFY(!fixture.controller.fileBusy()); QCOMPARE(fixture.controller.uploadEntries().size(), 2);
         const auto first = fixture.controller.uploadEntries().first().toMap().value("id").toString();
         QCOMPARE(fixture.controller.uploadEntries().last().toMap().value("alias").toString(), QString("![diagram.png (2)]"));
@@ -849,6 +873,61 @@ private slots:
         fixture.controller.submitEditMessage(); QTest::qWait(100); QCOMPARE(puts, 0);
         fixture.controller.removeUpload(card); QTRY_COMPARE_WITH_TIMEOUT(deletes, 1, 2000);
         QCOMPARE(fixture.controller.draft().size(), 40000);
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody_data()
+    {
+        QTest::addColumn<QString>("body");
+        QTest::addColumn<QString>("expected");
+        const auto quote = QStringLiteral("[Sam](urn:quote:") + messageId + ")";
+        QTest::newRow("plain") << QStringLiteral("Caption") << QStringLiteral("LINK\nCaption");
+        QTest::newRow("existing") << QStringLiteral("Caption\nLINK") << QStringLiteral("Caption\nLINK");
+        QTest::newRow("linked-in-list") << QStringLiteral("- LINK") << QStringLiteral("- LINK");
+        QTest::newRow("code-span") << QStringLiteral("Example: `LINK`") << QStringLiteral("LINK\nExample: `LINK`");
+        QTest::newRow("escaped-markup") << QStringLiteral("Example: \\LINK") << QStringLiteral("LINK\nExample: \\LINK");
+        QTest::newRow("quote-and-answer") << quote + "\n\nCaption" << quote + "\n\nLINK\n\nCaption";
+        QTest::newRow("quote-only") << quote << quote + "\n\nLINK";
+        QTest::newRow("continued-paragraph") << quote + "\nanswer" << "LINK\n" + quote + "\nanswer";
+        QTest::newRow("list-starts-new-block") << quote + "\n- list item" << quote + "\n\nLINK\n\n- list item";
+        QTest::newRow("heading-starts-new-block") << quote + "\n# Heading" << quote + "\n\nLINK\n\n# Heading";
+        QTest::newRow("setext-title") << quote + "\n===" << "LINK\n" + quote + "\n===";
+        QTest::newRow("inline-quote") << quote + " text" << "LINK\n" + quote + " text";
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody()
+    {
+        QFETCH(QString, body);
+        QFETCH(QString, expected);
+        Fixture f;
+        FileClient files(&f.api);
+        f.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile file(directory.filePath("report.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("report"), 6);
+        file.close();
+        f.files = [](const Request &) { return Response{QJsonObject{
+            {"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+            {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        QString sent;
+        f.messages = [&](const Request &r) {
+            if (r.method == "POST") {
+                sent = r.body.value("payload").toObject().value("content").toString();
+                return Response{QJsonObject{}, 503};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(f.start());
+        f.controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!f.controller.fileBusy());
+        QCOMPARE(f.controller.uploadEntries().size(), 1);
+        const auto link = f.controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        f.controller.setDraft(body.replace("LINK", link));
+        f.controller.send();
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent, expected.replace("LINK", link));
     }
 
     void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
