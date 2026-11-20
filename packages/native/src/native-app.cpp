@@ -181,6 +181,7 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
                                    const QString &, const QString &) {
         preferences->recordQuickReactionUse(emoji, owner);
     });
+    engine.rootContext()->setContextProperty("nativeCallsNavigationEnabled", bool(WORKSPACE_NATIVE_CALLS_NAV));
     engine.rootContext()->setContextProperty("nativeController", controller);
     engine.rootContext()->setContextProperty("nativeMarkdown", new NativeMarkdown(&engine));
     engine.rootContext()->setContextProperty("nativePreferences", preferences);

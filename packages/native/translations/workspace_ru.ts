@@ -466,6 +466,10 @@
             <translation>Чаты и каналы</translation>
         </message>
         <message>
+            <source>Calls</source>
+            <translation>Звонки</translation>
+        </message>
+        <message>
             <source>Calendar</source>
             <translation>Календарь</translation>
         </message>

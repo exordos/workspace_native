@@ -88,6 +88,9 @@ add_library(workspace-native-ui STATIC src/native-app.cpp src/native-app.h
     src/avatar-images.cpp src/avatar-images.h src/native-image-input.h
     src/message-images.cpp src/message-images.h)
 target_link_libraries(workspace-native-ui PUBLIC workspace-native-core Qt6::Quick Qt6::QuickControls2 Qt6::QuickDialogs2 Qt6::Multimedia)
+option(WORKSPACE_NATIVE_CALLS_NAV "Show Calls in the main window section bar" OFF)
+target_compile_definitions(workspace-native-ui PRIVATE WORKSPACE_NATIVE_CALLS_NAV=$<BOOL:${WORKSPACE_NATIVE_CALLS_NAV}>)
+
 add_library(workspace-native-desktop STATIC src/native-desktop.cpp src/native-desktop.h)
 target_include_directories(workspace-native-desktop PUBLIC src)
 target_link_libraries(workspace-native-desktop PUBLIC Qt6::Widgets)

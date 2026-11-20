@@ -53,10 +53,10 @@ below was measured at `61dacef78dab2f5d0be76f283bebf49fe29b84af`.
   `closeOtherContentPages()` keeps exclusivity: opening a chat page or
   selecting a conversation returns the section to `chat`; mail, calendar and
   calls hold the same slot and each takes it from the others.
-- No top-bar Calls chip is added. The reference hides it behind the
-  `TOP_BAR_CALLS_NAV` build gate and the native build settings do not
-  introduce that gate, so the button "stays hidden" by not being rendered at
-  all - the strongest reading of the issue requirement.
+- The optional Calls chip follows Mail in the top bar. The native CMake
+  option `WORKSPACE_NATIVE_CALLS_NAV` defaults to OFF, matching the reference
+  build. Configure with `-DWORKSPACE_NATIVE_CALLS_NAV=ON` to show the phone
+  button and open the recent calls section. The route works in either build.
 - Deep link: the native whitelist in `src/native-deeplink.cpp` already
   accepts `/calls` (and `/org/<id>/calls`); `applyDeepLink` now maps it to
   `showSection("calls")`, mirroring how the routes of `/inbox` and `/feed`
