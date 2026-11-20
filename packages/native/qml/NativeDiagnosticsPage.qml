@@ -476,33 +476,25 @@ FocusScope {
     onMemoryPollIntervalMsChanged:
         if (memoryPoll.running) { memoryPoll.stop(); memoryPoll.start(); }
 
-    component HeaderButton: Rectangle {
+    component HeaderButton: NativeButton {
         id: headerButton
-        property string buttonLabel: ""
-        signal actioned()
-        property bool hovered: false
-        implicitWidth: headerButtonLabel.implicitWidth + 20 // px-2.5
-        implicitHeight: 32 // h-8
-        radius: 6 // rounded-md
-        color: hovered && enabled ? page.colors["bg-elevated"] : page.colors["card-bg"]
-        border.color: page.colors["border-subtle"]
-        border.width: 1
-        opacity: enabled ? 1.0 : 0.5 // disabled:opacity-50
-        Text {
-            id: headerButtonLabel
-            anchors.centerIn: parent
-            text: headerButton.buttonLabel
-            font.pixelSize: 12 // text-xs
-            color: page.colors["text-primary"]
-        }
-        MouseArea {
-            anchors.fill: parent
-            enabled: headerButton.enabled
-            hoverEnabled: true
-            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-            onEntered: headerButton.hovered = true
-            onExited: headerButton.hovered = false
-            onClicked: headerButton.actioned()
+        property alias buttonLabel: headerButton.text
+        colors: page.colors
+        implicitWidth: contentItem.implicitWidth + 20
+        implicitHeight: 32
+        horizontalPadding: 10
+        verticalPadding: 0
+        font.pixelSize: 12
+        focusPolicy: Qt.StrongFocus
+        Keys.onReturnPressed: event => { if (!event.isAutoRepeat) click() }
+        Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
+        HoverHandler { cursorShape: headerButton.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
+        background: Rectangle {
+            radius: 6
+            color: headerButton.hovered && headerButton.enabled ? page.colors["bg-elevated"] : page.colors["card-bg"]
+            border.color: headerButton.visualFocus ? page.colors.accent : page.colors["border-subtle"]
+            border.width: headerButton.visualFocus ? 2 : 1
+            opacity: headerButton.enabled ? 1.0 : 0.5
         }
     }
 
@@ -556,17 +548,17 @@ FocusScope {
                 HeaderButton {
                     objectName: "diagnosticsViewLogsButton"
                     buttonLabel: qsTr("View logs")
-                    onActioned: page.openLogsModal()
+                    onClicked: page.openLogsModal()
                 }
                 HeaderButton {
                     objectName: "diagnosticsRefreshButton"
                     buttonLabel: qsTr("Refresh")
-                    onActioned: page.refresh()
+                    onClicked: page.refresh()
                 }
                 HeaderButton {
                     objectName: "diagnosticsCopyReportButton"
                     buttonLabel: qsTr("Copy connection report")
-                    onActioned: {
+                    onClicked: {
                         page.controller.copyToClipboard(page.controller.diagnosticsConnectionReportJson());
                         page.copyState = "success";
                         copyReset.restart();
@@ -575,7 +567,7 @@ FocusScope {
                 HeaderButton {
                     objectName: "diagnosticsCopySnapshotButton"
                     buttonLabel: page.copySnapshotLabel
-                    onActioned: {
+                    onClicked: {
                         page.controller.copyToClipboard(page.snapshotJson);
                         page.copyState = "success";
                         copyReset.restart();
@@ -1212,6 +1204,7 @@ FocusScope {
     // recent-errors block and the entry rows measured in the docs).
     Popup {
         id: logsModal
+        focus: true
         objectName: "logsModal"
         parent: Overlay.overlay
         anchors.centerIn: Overlay.overlay
@@ -1235,6 +1228,7 @@ FocusScope {
             // error from the previous session of the modal.
             page.logsExportState = "idle"
             page.refreshLogs()
+            modalRefreshButton.forceActiveFocus(Qt.PopupFocusReason)
         }
 
         // Popup children live inside the popup's internal content item;
@@ -1290,21 +1284,22 @@ FocusScope {
                     id: logsModalActions
                     spacing: 4 // gap-1
                     HeaderButton {
+                        id: modalRefreshButton
                         objectName: "logsRefreshButton"
                         buttonLabel: qsTr("Refresh")
-                        onActioned: page.refreshLogs()
+                        onClicked: page.refreshLogs()
                     }
                     HeaderButton {
                         objectName: "logsClearButton"
                         buttonLabel: qsTr("Clear logs")
                         enabled: page.logEntries.length > 0
-                        onActioned: page.controller.clearSessionLog()
+                        onClicked: page.controller.clearSessionLog()
                     }
                     HeaderButton {
                         objectName: "logsExportButton"
                         buttonLabel: qsTr("Export logs")
                         enabled: page.logEntries.length > 0
-                        onActioned: {
+                        onClicked: {
                             // StandardPaths.writableLocation already yields
                             // a file:// url, so no manual scheme prefixing.
                             const base = StandardPaths.writableLocation(StandardPaths.DownloadLocation)
@@ -1488,7 +1483,7 @@ FocusScope {
             HeaderButton {
                 objectName: "logsResetFiltersButton"
                 buttonLabel: qsTr("Reset filters")
-                onActioned: page.resetLogFilters()
+                onClicked: page.resetLogFilters()
             }
             }
         }
