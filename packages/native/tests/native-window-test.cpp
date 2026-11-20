@@ -3445,6 +3445,9 @@ private slots:
         preferences.setMode(mode);
         preferences.setLocale(locale);
         preferences.setComposerToolbarExpanded(true);
+        auto *hotkeys = preferences.hotkeys();
+        QVERIFY(hotkeys->assign("composer.bold", "Ctrl+Shift+K").isEmpty());
+        QVERIFY(hotkeys->setEnabled(false).isEmpty());
         preferences.setChatClickAction("latestTopic");
         auto *root = window->contentItem();
         click(window, item(root, "accountMenuButton"));
@@ -3465,6 +3468,8 @@ private slots:
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!dialog->property("visible").toBool());
         QVERIFY(preferences.composerToolbarExpanded());
+        QVERIFY(!hotkeys->enabled());
+        QCOMPARE(hotkeys->binding("composer.bold"), QStringLiteral("Ctrl+Shift+K"));
         QVERIFY(cache.stats().entries > 1);
         const int catalog = fixture.catalogGets;
         holdBootstrap = true;
@@ -3477,6 +3482,8 @@ private slots:
         QTRY_COMPARE(cache.stats().entries, 0);
         QCOMPARE(preferences.chatClickAction(), QString("stream"));
         QVERIFY(!preferences.composerToolbarExpanded());
+        QVERIFY(hotkeys->enabled());
+        QCOMPARE(hotkeys->binding("composer.bold"), QStringLiteral("Mod+B"));
         QCOMPARE(preferences.mode(), QString("system"));
         QCOMPARE(preferences.organizationHistory(), organizations);
         QCOMPARE(session.loginName(), QString("example-member"));
