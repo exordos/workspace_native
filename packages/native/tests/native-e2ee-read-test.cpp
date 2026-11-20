@@ -3662,8 +3662,10 @@ private slots:
         const auto posts = c.f.posts, details = c.f.streamGets, bindings = c.f.bindingGets;
         QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.peer.requestDto)));
         QTRY_VERIFY(!c.row().isEmpty());
-        QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.grant)));
+        // A non-owner participant can still grant under holder sharing after
+        // demotion, but the earlier manager-only rejection loses authority.
         QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.reject)));
+        QVERIFY(c.f.controller.applyRealtimeEvent(cryptoEvent(c.grant)));
         QStringList trace{c.row().value("status").toString()};
         for (const auto &role : {QString("member"), QString("administrator")}) {
             const auto beforeDetail = c.f.streamGets, beforeBindings = c.f.bindingGets;
@@ -3679,7 +3681,7 @@ private slots:
             QTRY_VERIFY(!c.row().isEmpty() && c.row().value("canManageKeys").toBool());
             trace.append(c.row().value("status").toString());
         }
-        QCOMPARE(trace, (QStringList{"granted", "pending", "granted"}));
+        QCOMPARE(trace, (QStringList{"rejected", "granted", "rejected"}));
         QCOMPARE(c.f.posts, posts); QCOMPARE(c.f.streamGets, details + 2); QCOMPARE(c.f.bindingGets, bindings + 2);
     }
 
@@ -4638,14 +4640,20 @@ private slots:
     void nativeIssuerGrantsExactGenerationToIndependentSourceRecipient() {
         QFETCH(QString, role); QFETCH(QString, current); QFETCH(bool, actualOwner);
         Fixture f; f.stream = fullEncryptedStream(); f.stream["role"] = role; f.issuerRole = "administrator";
-        if (actualOwner) f.stream["owner"] = userId;
+        if (actualOwner) {
+            f.stream["owner"] = userId;
+            // The fixture first receives the generation from another holder.
+            f.stream["allow_key_sharing_by_holders"] = true;
+        }
         const auto bindingRoles = addSourceRecipientBinding(f); useCompleteSendEcho(f); QVERIFY(f.start());
         SourceRecipientPeer peer; QVERIFY(peer.prepare(f, true));
         QCOMPARE(bindingRoles->value(userId), f.stream.value("role").toString());
         QCOMPARE(bindingRoles->value(Issuer), f.issuerRole);
         QCOMPARE(bindingRoles->value(SourceRecipient), QString("member"));
-        if (current != "A") {
-            f.stream["current_encryption_key_uuid"] = current == "B" ? QJsonValue(OtherGeneration) : QJsonValue(QJsonValue::Null);
+        if (current != "A" || actualOwner) {
+            if (actualOwner) f.stream["allow_key_sharing_by_holders"] = false;
+            if (current != "A")
+                f.stream["current_encryption_key_uuid"] = current == "B" ? QJsonValue(OtherGeneration) : QJsonValue(QJsonValue::Null);
             auto event = cryptoEvent(f.stream); auto payload = event.value("payload").toObject();
             payload["kind"] = "stream.updated"; event["payload"] = payload;
             QVERIFY(f.controller.applyRealtimeEvent(event));

@@ -1840,6 +1840,7 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message><source>Retry</source><translation>Повторить</translation></message>
     <message>
         <source>Could not send the key. Requests to retry: %1.</source>
         <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
