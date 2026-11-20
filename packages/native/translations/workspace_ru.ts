@@ -755,6 +755,14 @@
             <translation>Ссылка на Workspace</translation>
         </message>
         <message>
+            <source>Date and time</source>
+            <translation>Дата и время</translation>
+        </message>
+        <message>
+            <source>Time</source>
+            <translation>Время</translation>
+        </message>
+        <message>
             <source>Profiles, referenced messages and attachment previews are still under development.</source>
             <translation>Профили, переход к сообщениям и предпросмотр вложений пока в разработке.</translation>
         </message>
