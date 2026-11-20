@@ -21209,6 +21209,8 @@ mv -Tf "$root/.current-new" "$root/current"
         std::unique_ptr<QObject> picker(component.createWithInitialProperties({
             {"parent", QVariant::fromValue(window.contentItem())}, {"colors", colors}, {"localeName", "en"}}));
         QVERIFY2(picker, qPrintable(component.errorString()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(QMetaObject::invokeMethod(picker.get(), "open"));
         auto *hours = picker->findChild<QObject *>("composerTimeHours");
         auto *minutes = picker->findChild<QObject *>("composerTimeMinutes");
         auto *seconds = picker->findChild<QObject *>("composerTimeSeconds");
@@ -21220,6 +21222,11 @@ mv -Tf "$root/.current-new" "$root/current"
             hours->setProperty("value", 1); minutes->setProperty("value", 30); seconds->setProperty("value", 0);
             QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
             QVERIFY(insert->property("enabled").toBool());
+            picker->setProperty("month", expected);
+            QQuickItem *day = nullptr;
+            QTRY_VERIFY((day = visibleItem(window.contentItem(), "composerCalendarDay-1")));
+            click(&window, day);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
         }
     }
 

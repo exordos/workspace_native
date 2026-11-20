@@ -9,11 +9,11 @@ Popup {
     property date openedAt: new Date()
     property date selectedDay: new Date()
     property date month: new Date(selectedDay.getFullYear(), selectedDay.getMonth(), 1)
-    readonly property date instant: {
-        const local = new Date(selectedDay.getFullYear(), selectedDay.getMonth(), selectedDay.getDate(),
-                               hours.value, minutes.value, seconds.value, 0);
+    readonly property date instant: localInstant(selectedDay.getFullYear(), selectedDay.getMonth(), selectedDay.getDate())
+    function localInstant(year, monthIndex, day) {
+        const local = new Date(year, monthIndex, day, hours.value, minutes.value, seconds.value, 0);
         // A repeated wall-clock hour has two instants. Preserve the offset of
-        // the selected day when both candidates have the requested local time.
+        // the previous selection when both candidates have the requested local time.
         const delta = (selectedDay.getTimezoneOffset() - local.getTimezoneOffset()) * 60000;
         const candidate = new Date(local.getTime() + delta);
         return candidate.getFullYear() === local.getFullYear() && candidate.getMonth() === local.getMonth()
@@ -66,13 +66,14 @@ Popup {
                     model: panel.cells
                     delegate: ToolButton {
                         required property int modelData
+                        objectName: modelData ? "composerCalendarDay-" + modelData : ""
                         Layout.fillWidth: true; implicitHeight: 30
                         text: modelData ? String(modelData) : ""
                         enabled: modelData > 0
                         Accessible.ignored: !enabled
                         checked: panel.selectedDay.getFullYear() === panel.month.getFullYear()
                             && panel.selectedDay.getMonth() === panel.month.getMonth() && panel.selectedDay.getDate() === modelData
-                        onClicked: panel.selectedDay = new Date(panel.month.getFullYear(), panel.month.getMonth(), modelData)
+                        onClicked: panel.selectedDay = panel.localInstant(panel.month.getFullYear(), panel.month.getMonth(), modelData)
                     }
                 }
             }
