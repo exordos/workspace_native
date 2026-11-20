@@ -22316,6 +22316,47 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!scene.controller.authenticated());
     }
 
+    void windowChannelInfoHeaderSummary()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QVERIFY(visibleItem("channelInfoHeader"));
+        auto *avatar = visibleItem("channelInfoAvatar");
+        QVERIFY(avatar);
+        QCOMPARE(avatar->width(), 48.0);   // avatar.tsx SIZE_CLASS.lg h-12 w-12
+        QCOMPARE(avatar->height(), 48.0);
+        // color oracle: resolveAvatarBackgroundColor(0x4b98e6) -> #4b98e6
+        QCOMPARE(avatar->property("color").value<QColor>(), QColor("#4b98e6"));
+        auto *title = visibleItem("channelInfoTitle");
+        QVERIFY(title);
+        QCOMPARE(title->property("text").toString(), QStringLiteral("Info channel"));
+        // subline is `${count} members, ${online} online`; counts wait on the
+        // members page (messenger-chat-header.lib.ts XChatOnlineCountPair).
+        QTRY_COMPARE_WITH_TIMEOUT(scene.text("channelInfoSubline"),
+            QStringLiteral("4 members, 2 online"), 5000);
+        auto *content = scene.window->contentItem();
+        QVERIFY(hasVisibleText(content, QStringLiteral("Notifications")));
+        QVERIFY(hasVisibleText(content, QStringLiteral(" (For entire chat)")));
+        QVERIFY(hasVisibleText(content, QStringLiteral("Description")));
+        QVERIFY(hasVisibleText(content, QStringLiteral("Synthetic purpose.")));
+        QVERIFY(hasVisibleText(content, QStringLiteral("Members")));
+        QVERIFY(visibleItem("channelInfoNotificationSwitch"));
+        QVERIFY(!visibleItem("channelInfoNotificationUnsupported"));
+        // block order follows the reference: notifications, description, members
+        const auto switchY = visibleItem("channelInfoNotificationSwitch")
+            ->mapToScene(QPointF(0, 0)).y();
+        const auto descY = visibleItem("channelInfoDescriptionHeading")
+            ->mapToScene(QPointF(0, 0)).y();
+        const auto membersY = visibleItem("channelInfoMembersHeading")
+            ->mapToScene(QPointF(0, 0)).y();
+        QVERIFY(switchY < descY);
+        QVERIFY(descY < membersY);
+        // title column starts after the 48px avatar plus the gap-4 (16px) gap
+        const auto avatarPos = avatar->mapToScene(QPointF(0, 0));
+        const auto titlePos = title->mapToScene(QPointF(0, 0));
+        QVERIFY(titlePos.x() >= avatarPos.x() + 48.0 + 16.0 - 1.0);
+    }
+
     void channelInfoTopicRowsNavigateAndCollapse()
     {
         ChannelInfoWindowScene scene;
@@ -22550,47 +22591,6 @@ mv -Tf "$root/.current-new" "$root/current"
         click(scene.window, save);
         QTRY_COMPARE(writes, 2);
         QTRY_VERIFY(!visibleItem("channelTopicSummarySave"));
-    }
-
-    void windowChannelInfoHeaderSummary()
-    {
-        ChannelInfoWindowScene scene;
-        scene.openChannelInfo();
-        QVERIFY(visibleItem("channelInfoHeader"));
-        auto *avatar = visibleItem("channelInfoAvatar");
-        QVERIFY(avatar);
-        QCOMPARE(avatar->width(), 48.0);   // avatar.tsx SIZE_CLASS.lg h-12 w-12
-        QCOMPARE(avatar->height(), 48.0);
-        // color oracle: resolveAvatarBackgroundColor(0x4b98e6) -> #4b98e6
-        QCOMPARE(avatar->property("color").value<QColor>(), QColor("#4b98e6"));
-        auto *title = visibleItem("channelInfoTitle");
-        QVERIFY(title);
-        QCOMPARE(title->property("text").toString(), QStringLiteral("Info channel"));
-        // subline is `${count} members, ${online} online`; counts wait on the
-        // members page (messenger-chat-header.lib.ts XChatOnlineCountPair).
-        QTRY_COMPARE_WITH_TIMEOUT(scene.text("channelInfoSubline"),
-            QStringLiteral("4 members, 2 online"), 5000);
-        auto *content = scene.window->contentItem();
-        QVERIFY(hasVisibleText(content, QStringLiteral("Notifications")));
-        QVERIFY(hasVisibleText(content, QStringLiteral(" (For entire chat)")));
-        QVERIFY(hasVisibleText(content, QStringLiteral("Description")));
-        QVERIFY(hasVisibleText(content, QStringLiteral("Synthetic purpose.")));
-        QVERIFY(hasVisibleText(content, QStringLiteral("Members")));
-        QVERIFY(visibleItem("channelInfoNotificationSwitch"));
-        QVERIFY(!visibleItem("channelInfoNotificationUnsupported"));
-        // block order follows the reference: notifications, description, members
-        const auto switchY = visibleItem("channelInfoNotificationSwitch")
-            ->mapToScene(QPointF(0, 0)).y();
-        const auto descY = visibleItem("channelInfoDescriptionHeading")
-            ->mapToScene(QPointF(0, 0)).y();
-        const auto membersY = visibleItem("channelInfoMembersHeading")
-            ->mapToScene(QPointF(0, 0)).y();
-        QVERIFY(switchY < descY);
-        QVERIFY(descY < membersY);
-        // title column starts after the 48px avatar plus the gap-4 (16px) gap
-        const auto avatarPos = avatar->mapToScene(QPointF(0, 0));
-        const auto titlePos = title->mapToScene(QPointF(0, 0));
-        QVERIFY(titlePos.x() >= avatarPos.x() + 48.0 + 16.0 - 1.0);
     }
 
     // Issue #132: the notification switch (notification-level-switch.lib.ts:
