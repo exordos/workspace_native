@@ -1,3 +1,23 @@
+# Workspace Native 0.40.0 - Linux development preview
+
+Calls put screen sharing behind a real permission gate with a native source
+picker, and protected chats carry their reference header identity:
+
+- The call window now routes every display-capture request through a named,
+  test-pinned permission gate and implements the native screen-source picker
+  contract over the XDG ScreenCast portal (session, source selection, per
+  request isolation). Because this Qt runtime exposes no trustworthy frame
+  identity for capture requests, the gate deliberately fails closed: screen
+  sharing stays denied - exactly as in the previous release - until the
+  runtime provides the missing signal, and no fabricated grant path exists.
+- The encrypted conversation header matches the reference: the lock avatar
+  paints the selected stream color as its background (invalid or absent
+  colors fall back to the theme surface), and the protected-chat tooltip
+  grew into the reference surface - title plus the five protection bullets
+  in both locales, reachable by keyboard.
+
+---
+
 # Workspace Native 0.39.0 - Linux development preview
 
 The sidebar rows grow their reference state badges, the chat header reports
