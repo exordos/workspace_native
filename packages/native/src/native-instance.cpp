@@ -5,6 +5,7 @@
 #include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
+#include <QFileOpenEvent>
 #include <QFileInfo>
 #include <QLocalSocket>
 #include <QStandardPaths>
@@ -23,6 +24,19 @@ NativeInstance::NativeInstance(QString directory, QObject *parent)
     m_server.setSocketOptions(QLocalServer::UserAccessOption);
     m_server.setMaxPendingConnections(8);
     connect(&m_server, &QLocalServer::newConnection, this, &NativeInstance::acceptConnections);
+}
+
+bool NativeInstance::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::FileOpen) {
+        const auto url = static_cast<QFileOpenEvent *>(event)->url().toString(QUrl::FullyEncoded);
+        if (parseExternalDeepLink(url)) {
+            m_activationPending = true;
+            emit activationRequested(url);
+            return true;
+        }
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 NativeInstance::Outcome NativeInstance::acquireOrActivate(const QString &deepLink)

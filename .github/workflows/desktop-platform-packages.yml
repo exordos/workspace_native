@@ -7,6 +7,9 @@ on:
     paths:
       - .github/workflows/desktop-platform-packages.yml
       - packages/native/CMakeLists.txt
+      - packages/native/resources/macos-info.plist.in
+      - packages/native/src/main.cpp
+      - packages/native/src/native-instance.*
       - packages/native/scripts/build-desktop-package.py
       - packages/native/tests/platform-package/**
       - packages/native/tests/platform-shell/**
