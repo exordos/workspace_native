@@ -184,9 +184,11 @@ request older history before a fast reader reaches the loaded edge. Two
 consecutive upward scroll samples project how far the reader will travel
 while the next page is in flight. Prefetch keeps that
 distance in addition to the normal viewport reserve, capped at four viewports
-in total. A pause, a layout jump, switching routes or restoring an anchor
-discards the velocity estimate. Programmatic restoration only rearms the next
-user scroll. The original request coalescing and end marker still apply.
+in total. A pause or a route change starts a fresh measurement. When layout
+restores an anchor during a burst, the next wheel step is measured from the
+restored position using the time since the last user scroll. Restoring the
+anchor only rearms prefetch. The original request coalescing and end marker
+still apply.
 
 The message list asks Qt Quick to cache delegates for one viewport outside
 its visible area. The buffer follows window resizes. This lets the view use

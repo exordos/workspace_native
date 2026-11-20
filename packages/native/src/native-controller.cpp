@@ -16400,7 +16400,9 @@ void NativeController::noteScrollRearm(qreal distanceFromTopPx, qreal viewportHe
 {
     if (!std::isfinite(distanceFromTopPx) || !std::isfinite(viewportHeightPx))
         return;
-    m_scrollSampleClock.invalidate();
+    // Layout moved the origin, not the wheel. Measure the next user step
+    // from the restored position with the time since the last real step.
+    m_previousTopDistance = distanceFromTopPx;
     if (distanceFromTopPx >= qMax<qreal>(100.0, viewportHeightPx))
         m_olderPrefetchArmed = true;
 }
