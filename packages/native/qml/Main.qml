@@ -7043,6 +7043,7 @@ component NativeMentionChip: Item {
                 clip: true
                 // Keep delegates stable when a verified QVariantList snapshot
                 // changes, then restore the visible UUID after layout.
+                cacheBuffer: Math.ceil(height)
                 model: renderedMessages
                 property string preparedScope: ""
                 property bool preparedWindowOpened: false
