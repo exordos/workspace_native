@@ -14972,7 +14972,7 @@ mv -Tf "$root/.current-new" "$root/current"
             return entry;
         };
         QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
-        std::function<void()> finishSourceHistory, finishLookup;
+        std::function<void()> finishMentionIndex, finishSourceHistory, finishLookup;
         bool pagedSourceForTarget = false;
         const auto streamDto = [&] {
             return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Service fixture"},
@@ -14997,6 +14997,14 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
+                if (query.queryItemValue("mentioned") == "true") {
+                    auto mention = ordinaryRow(42);
+                    mention["mentioned"] = true;
+                    mention["read"] = false;
+                    Response response{QJsonArray{mention}};
+                    response.defer = [&](auto finish) { finishMentionIndex = std::move(finish); };
+                    return response;
+                }
                 const auto wanted = query.queryItemValue("uuid");
                 if (!wanted.isEmpty()) {
                     if (anchor && wanted == uuidOf(60)) {
@@ -15062,14 +15070,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(finishMentionIndex);
+        // Complete the independent badge request during the sidebar click's readiness wait.
+        QTimer::singleShot(0, finishMentionIndex);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
         if (!anchor) {
-            click(window, item(window->contentItem(), "stream-" + streamId));
-            QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, item(window->contentItem(), "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_VERIFY(controller.messages().size() >= 4);
         } else {
-            click(window, item(window->contentItem(), "stream-" + streamId));
-            QTRY_COMPARE(controller.topics().size(), 1);
             QTRY_VERIFY(finishSourceHistory);
             controller.openMessageInChat(uuidOf(60));
             QTRY_VERIFY(finishLookup);

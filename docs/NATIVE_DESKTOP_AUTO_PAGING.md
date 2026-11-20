@@ -133,6 +133,10 @@ the older marker while keeping the newer boundary intact.
   newer pages available: the window opens with no rendered message rows and
   issues a newer-direction page request on its own (newer-first priority);
   when an ordinary row lands the auto-advance stops and the row renders.
+  Both variants deliver an unread-mention badge update during the first sidebar
+  click. The test resolves the channel or topic row by object name immediately
+  before clicking, so a sidebar refresh can recreate its delegate.
+
 - `native-native-controller`: `allFilteredServicePageStillAdvancesMarkers` - a
   fresh-history page made only of `key_announced` rows commits, advances
   `m_before` (older marker present) and keeps `canLoadOlder` true for the next
