@@ -79,6 +79,30 @@ the reference rules above.
 - Clicking the chip raises the profile-open path: the workspace profile layer
   (`profileLayer`) opens for the mentioned uuid.
 
+## Live verification
+
+Verdict: PASS (2026-11-20, display :31, reference sha 61dacef78dab2f5d0be76f283bebf49fe29b84af).
+
+- `live_qa.py native-login --display :31 --bin build/lane/workspace-native`
+  succeeded; `~/dev/qa/evidence/109/stage4_workspace.png` and
+  `~/dev/qa/evidence/109-rerun/stage4_workspace.png` show the sidebar and
+  stream list after sign-in (vision-checked, no "Sign-in was rejected").
+- Mention send through the service path:
+  `live_qa.py send --stream-uuid 59033cd5-64ba-4a00-a932-5dddb5c17b65`
+  with text `CASSI QA 2026-11-20T06:03:13Z [Alice QA](urn:user:2f2a2a2a-2a2a-4a2a-8a2a-2a2a2a2a2a2a) plain @Ghost mention`:
+  message_uuid b3477270-85cc-58e5-9a92-1054c8b755da, send_ms 120.3
+  (< 1500), visible_in_list_ms 47.5 (< 3000), read back OK.
+- Rendered chip screenshot (final binary):
+  `~/dev/qa/evidence/109/step-mention-final.png` (native qa room) -
+  vision check: "@Alice QA" paints in the accent token colour with no
+  underline; "plain @Ghost mention" is unstyled plain text (the uuid-less
+  degradation). An earlier `step-mention.png` captured an intermediate build
+  before the underline removal.
+- `live_qa.py health --repeat 10`: p50 7.8 ms, p95 13.7 ms (< 500 ms).
+- Plain-text send `CASSI QA <UTC>`: send_ms 69.9, visible_in_list_ms 41.6,
+  read back OK.
+- Cross-user check: SKIPPED (no second QA account in the vault).
+
 ## Out of scope
 
 - Profile cards themselves (#4/#72); until they land the drawer's existing
