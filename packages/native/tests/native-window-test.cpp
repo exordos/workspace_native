@@ -23523,8 +23523,116 @@ private:
         }
     }
 
+    void meetingCardsShowOneTimestampBesideParticipants_data()
+    {
+        QTest::addColumn<bool>("own");
+        QTest::addColumn<bool>("reacted");
+        QTest::newRow("incoming") << false << false;
+        QTest::newRow("incoming-reacted") << false << true;
+        QTest::newRow("own") << true << false;
+        QTest::newRow("own-reacted") << true << true;
+    }
+
+    void meetingCardsShowOneTimestampBesideParticipants()
+    {
+        QFETCH(bool, own);
+        QFETCH(bool, reacted);
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        auto meeting = message(fixture.meetingUrl, messageId);
+        const QString peer = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        meeting["author_uuid"] = own ? userId : peer;
+        meeting["user_uuid"] = own ? userId : peer;
+        meeting["is_own"] = own;
+        if (reacted)
+            meeting["reactions"] = QJsonObject{{"heart", 2}};
+        auto plain = message("Plain message", returnedId);
+        plain["created_at"] = "2026-01-02T10:05:00.000Z";
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{meeting, plain}};
+            return fallback(request);
+        };
+
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Meeting card teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        auto *root = window->contentItem();
+        QTRY_VERIFY(visibleItem(root, "call-card-" + messageId));
+        auto *card = visibleItem(root, "call-card-" + messageId);
+        QCOMPARE(card->property("own").toBool(), own);
+        auto *bubble = visibleItem(root, "message-" + messageId);
+        auto *plainBubble = visibleItem(root, "message-" + returnedId);
+        QVERIFY(bubble && plainBubble);
+        auto *time = visibleItem(bubble, "message-time-" + messageId);
+        auto *plainTime = visibleItem(plainBubble, "message-time-" + returnedId);
+        auto *avatar = visibleItem(card, "callCardAvatar");
+        QVERIFY(time && plainTime && avatar);
+        const auto paintedTimes = [](QQuickItem *scope, const QString &text) {
+            int count = 0;
+            const auto visit = [&](const auto &self, QQuickItem *entry) -> void {
+                if (!entry->isVisible() || entry->opacity() <= 0)
+                    return;
+                if (entry->width() > 0 && entry->height() > 0 && entry->property("text").toString() == text)
+                    ++count;
+                for (auto *child : entry->childItems())
+                    self(self, child);
+            };
+            visit(visit, scope);
+            return count;
+        };
+        const auto chip = "reaction-" + messageId + "-heart";
+        for (const QSize size : {QSize(1440, 900), QSize(2493, 1010), QSize(1440, 900)}) {
+            window->resize(size);
+            QTRY_COMPARE(window->size(), size);
+            QTRY_COMPARE(qRound(root->width()), size.width());
+            const auto timeText = time->property("text").toString();
+            QVERIFY(!timeText.isEmpty());
+            const auto plainTimeText = plainTime->property("text").toString();
+            QVERIFY(!plainTimeText.isEmpty() && plainTimeText != timeText);
+            QCOMPARE(paintedTimes(bubble, timeText), 1);
+            QCOMPARE(paintedTimes(plainBubble, plainTimeText), 1);
+            const auto timeRect = time->mapRectToItem(root, time->boundingRect());
+            const auto avatarRect = avatar->mapRectToItem(root, avatar->boundingRect());
+            QVERIFY(root->boundingRect().contains(timeRect));
+            QVERIFY(timeRect.left() >= avatarRect.right());
+            QVERIFY(timeRect.center().y() >= avatarRect.top() && timeRect.center().y() <= avatarRect.bottom());
+            QCOMPARE(card->height(), 60);
+            QCOMPARE(visibleItem(bubble, chip) != nullptr, reacted);
+        }
+        click(window, time);
+        QTRY_VERIFY(visibleItem(root, "messageTimePanelDate"));
+        QVERIFY(!controller.calls()->hasActiveCall());
+    }
+
+    void workspaceMeetingUrlMessageRendersCallCardAndJoins_data()
+    {
+        QTest::addColumn<int>("joinKey");
+        QTest::newRow("pointer") << 0;
+        QTest::newRow("return") << int(Qt::Key_Return);
+        QTest::newRow("space") << int(Qt::Key_Space);
+    }
+
     void workspaceMeetingUrlMessageRendersCallCardAndJoins()
     {
+        QFETCH(int, joinKey);
         QTemporaryDir directory; QVERIFY(directory.isValid());
         WindowCallFixture fixture; fixture.meetConfigured = true;
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
@@ -23549,7 +23657,13 @@ private:
         QVERIFY(name);
         QCOMPARE(name->property("text").toString(), QStringLiteral("workspace call room"));
         // Joining from the card opens the room in the single-active-call store.
-        click(window, cardItem);
+        if (joinKey) {
+            cardItem->forceActiveFocus(Qt::TabFocusReason);
+            QVERIFY(cardItem->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key(joinKey));
+        } else {
+            click(window, cardItem);
+        }
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.calls()->activeCall().value(QStringLiteral("meetingUrl")).toString(),
             fixture.meetingUrl);

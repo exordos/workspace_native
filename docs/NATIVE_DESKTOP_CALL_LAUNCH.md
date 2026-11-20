@@ -108,6 +108,11 @@ reference locale strings listed above; every new `tr()` source string ships
 with its reviewed Russian catalog entry in
 `packages/native/translations/workspace_ru.ts`.
 
+The 60 px call card places the interactive message timestamp beside the
+participant avatar. The same timestamp opens the calendar as on a plain message.
+Reactions remain below the card. Clicking the card or pressing Enter or Space
+on the focused Join action still opens the meeting.
+
 ## Deviations from the reference (recorded)
 
 - The call window itself (QtWebEngine embed) is the follow-up issue; here an
