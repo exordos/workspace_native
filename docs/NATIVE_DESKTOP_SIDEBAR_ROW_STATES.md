@@ -76,7 +76,8 @@ port of `sidebar-unread` used by the shipped unread badge), `notice-disable`,
 
 - `statusEmoji`, `statusText` - direct rows only, from `m_names` (partner `UserPresentation`,
   already parsed from `status_emoji` / `status_text`), trimmed and filtered through a port of
-  `resolveWorkspaceStatusEmojiDisplay` (`statusEmojiDisplay` helper).
+  `resolveWorkspaceStatusEmojiDisplay` (`statusEmojiDisplay` helper). A partner’s
+  status update refreshes the visible direct row whenever its displayed text or emoji changes.
 - `displayedUnread`, `unreadPassive` - the `resolveWorkspaceDisplayedUnread` port over the
   existing `activeUnread` / `passiveUnread` stream counters.
 - `hasMention` - stream present in `m_unreadMentions` (the native unread-mention index).

@@ -709,6 +709,43 @@ private slots:
         QCOMPARE(test.direct.usersGets,1); QCOMPARE(test.direct.posts,0);
     }
 
+    void directSidebarObservesCustomStatusOnlyChanges_data()
+    {
+        QTest::addColumn<QString>("text");
+        QTest::addColumn<QString>("emoji");
+        QTest::addColumn<QString>("expectedEmoji");
+        QTest::addColumn<bool>("changed");
+        QTest::newRow("text-only") << QString("On call") << QString("house") << QString("🏠") << true;
+        QTest::newRow("emoji-only") << QString("Focus") << QString("palm_tree") << QString("🌴") << true;
+        QTest::newRow("clear") << QString() << QString() << QString() << true;
+        QTest::newRow("same-display") << QString(" Focus ") << QString("🏠") << QString("🏠") << false;
+    }
+
+    void directSidebarObservesCustomStatusOnlyChanges()
+    {
+        QFETCH(QString, text);
+        QFETCH(QString, emoji);
+        QFETCH(QString, expectedEmoji);
+        QFETCH(bool, changed);
+        AvatarReferenceFixture test(avatarReferenceA);
+        auto peer = presencePerson(channelMemberA, "avatar-peer", "active",
+            "2026-01-02T10:00:00Z", "Focus", "house");
+        test.directory[1] = peer;
+        QVERIFY(test.start());
+        auto &controller = test.direct.fixture.controller;
+        QTRY_VERIFY(test.direct.fixture.api.findChildren<QNetworkReply *>().isEmpty());
+        auto shown = test.sidebar();
+        QCOMPARE(shown.value("statusText").toString(), QString("Focus"));
+        QSignalSpy updates(&controller, &NativeController::sidebarStreamsChanged);
+        connect(&controller, &NativeController::sidebarStreamsChanged, this, [&] { shown = test.sidebar(); });
+        peer["status_text"] = text;
+        peer["status_emoji"] = emoji;
+        QVERIFY(controller.applyRealtimeEvent(controllerEvent("user.updated", peer, 83)));
+        QCOMPARE(!updates.isEmpty(), changed);
+        QCOMPARE(shown.value("statusText").toString(), text.trimmed());
+        QCOMPARE(shown.value("statusEmoji").toString(), expectedEmoji);
+    }
+
     void presenceOnlyRealtimeNotifiesExistingSurfacesWithoutChangingIdentity()
     {
         AvatarReferenceFixture test(avatarReferenceA); auto &c = test.direct.fixture.controller;
