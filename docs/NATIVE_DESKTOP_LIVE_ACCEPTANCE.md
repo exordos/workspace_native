@@ -2,6 +2,8 @@
 
 The Linux acceptance runner launches the packaged desktop application twice against a disposable, deployed Workspace. The first launch starts with an empty profile. The second restores its real keyring session and populated cache. A private Sway compositor, session bus, keyring, user data directory and cache keep the run isolated from the operator's desktop. Every run needs a dedicated dataset and approved test identities. The runner deletes the synthetic messages it creates.
 
+For fixture-backed runs the report records whether the runner can fetch the public organization settings over verified HTTPS. The probe reports a short outcome (DNS, TLS, timeout, connection, HTTP status, invalid settings or ready). It runs independently of the application's traffic. Before proceeding to the credential screen the harness also checks that the visible server field contains the fixture origin.
+
 ## Run locally
 
 Use a Linux host with the release build dependencies, Python 3 with PyGObject/Atspi, Pillow and requests, D-Bus, gnome-keyring, Sway, wtype, wf-recorder, a C compiler, wayland-scanner, pkg-config and libwayland-client development files. The pointer driver uses the published wlroots virtual-pointer protocol, distributed with its upstream MIT notice in the protocol XML. The compositor runs a 1440 × 900 Wayland output at scale 1. A headless compositor uses the real Wayland input and screen-capture protocols. Physical touchpad acceleration, GPU drivers and presentation on a physical monitor need a separate run.
