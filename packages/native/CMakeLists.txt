@@ -197,6 +197,7 @@ qml/NativeUserSearch.qml
 qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
+qml/NativePollVoters.qml qml/NativePollVoterPreviews.qml qml/NativePollVoterAvatar.qml
 qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml qml/NativeHotkeysDialog.qml qml/NativeShortcutsHelp.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/NativePollManagementDialog.qml

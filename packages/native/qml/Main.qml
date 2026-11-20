@@ -9191,6 +9191,7 @@ component NativeMentionChip: Item {
                                 sourceComponent: NativePollCard {
                                     colors: root.colors
                                     controller: root.controller
+                                    previewStore: pollVoterPreviews
                                     readOnly: !root.pollInteractiveStream
                                     messageUuid: String(messageRow.modelData.id || "")
                                     poll: messageRow.modelData.poll
@@ -14814,6 +14815,7 @@ component NativeMentionChip: Item {
     }
 
     // Issue #215 create-poll dialog (docs/NATIVE_DESKTOP_POLL_CREATION.md).
+    NativePollVoterPreviews { id: pollVoterPreviews; controller: root.controller }
     NativePollManagementDialog {
         id: pollManagement
         parent: Overlay.overlay

@@ -27995,7 +27995,7 @@ private slots:
                 const QJsonObject row{{QStringLiteral("uuid"), voter}};
                 const QMap<QByteArray, QByteArray> headers{
                     {QByteArray("X-Pagination-Marker"), QByteArray("next-marker")}};
-                return Response{QJsonArray{row}, 200, 0, headers};
+                return Response{QJsonArray{row, row}, 200, 0, headers};
             }
             return Response{QJsonArray{pollMessageDto(id, 5, false)}, 200, 0, {}};
         };
