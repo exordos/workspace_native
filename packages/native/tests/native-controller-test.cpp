@@ -14549,6 +14549,7 @@ private slots:
         fixture.controller.setDraft("Before ![diagram.png] after");
         QTRY_VERIFY(fixture.controller.canSend()); fixture.controller.send(); QTRY_VERIFY(!wire.isEmpty());
         QCOMPARE(wire.count("urn:image:" + returnedId), 1); QVERIFY(wire.startsWith("Before ![diagram.png]("));
+        QVERIFY(wire.contains("&w=8&h=8&size="));
         QVERIFY(wire.endsWith(" after")); QCOMPARE(deletes, 0);
         const auto owner = drafts.owner(); bool flushed = false; drafts.flush(this, [&](bool ok) { flushed = ok; }); QTRY_VERIFY(flushed);
         storage.shutdown(); QTRY_VERIFY(storage.stopped()); NativeDraftStore store(directory.filePath("drafts"));
