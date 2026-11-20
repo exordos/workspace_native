@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "messages/time/message-time.h"
 #include "call/incoming-call.h"
 #include "media-viewer.h"
 #include "native-deeplink.h"
@@ -8071,10 +8072,12 @@ void NativeController::interruptFeedRequest()
 QVariantList NativeController::feedRows() const
 {
     QVariantList rows;
+    const auto today = QDate::currentDate();
+    const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
     for (const auto &message : m_feed.rows) {
         rows.append(QVariantMap{
             {"id", message.uuid}, {"stream", message.stream}, {"topic", message.topic},
-            {"time", feedRowTime(message.created)},
+            {"time", message_time::datedLabel(message.created, locale, today)},
             {"context", feedRowContext(message)},
             // Author names resolve from authorUuid only, falling back to the
             // uuid itself (feed-page.ui.tsx FeedSenderName, test line 251).
@@ -8083,23 +8086,6 @@ QVariantList NativeController::feedRows() const
         });
     }
     return rows;
-}
-
-QString NativeController::feedRowTime(const QDateTime &created) const
-{
-    // datetime.lib.ts:86-96 formatMessageTimeWithDate: the same local day is a
-    // manual 24 h HH:mm; anything older is the locale dated style (2-digit day,
-    // short month, numeric year) followed by a space and HH:mm.
-    if (!created.isValid())
-        return {};
-    const auto local = created.toLocalTime();
-    if (local.date() == QDate::currentDate())
-        return local.toString(QStringLiteral("HH:mm"));
-    const auto locale = m_preferences ? QLocale(m_preferences->locale()) : QLocale::system();
-    const auto datePart = locale.language() == QLocale::Russian
-        ? locale.toString(local.date(), QStringLiteral("dd MMM yyyy 'г.'"))
-        : locale.toString(local.date(), QStringLiteral("MMM dd, yyyy"));
-    return datePart + QLatin1Char(' ') + local.toString(QStringLiteral("HH:mm"));
 }
 
 QString NativeController::feedRowContext(const Message &message) const
@@ -17684,16 +17670,7 @@ QString NativeController::summarizeRowPreview(const QString &plainText)
 QString NativeController::formatRowTime(const QDateTime &created, const QLocale &locale,
     const QDate &today, const QString &yesterdayLabel)
 {
-    // workspace_ui 61dacef shared/lib/datetime.lib.ts:65-82 formatMessageTimeRelative:
-    // the same local calendar day is a manual 24 h HH:mm (never Intl), the previous local
-    // day is the chat.yesterday label with no clock time, anything older is the compact
-    // day + short month style, which carries no year at all.
-    if (!created.isValid()) return {};
-    const auto local = created.toLocalTime();
-    if (local.date() == today) return local.toString(QStringLiteral("HH:mm"));
-    if (local.date() == today.addDays(-1)) return yesterdayLabel;
-    return locale.toString(local.date(), locale.language() == QLocale::Russian
-        ? QStringLiteral("d MMM") : QStringLiteral("MMM d"));
+    return message_time::relativeLabel(created, locale, today, yesterdayLabel);
 }
 
 std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const Message &message) const

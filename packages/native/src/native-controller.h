@@ -2251,7 +2251,6 @@ private:
     void interruptFolderMutation();
     void resetFeed();
     QVariantList feedRows() const;
-    QString feedRowTime(const QDateTime &created) const;
     QString feedRowContext(const Message &message) const;
     QString feedRowPreview(const Message &message) const;
     QString summarizeFeedMarkdown(const QString &content) const;
