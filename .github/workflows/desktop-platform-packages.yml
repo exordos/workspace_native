@@ -15,7 +15,7 @@ on:
         description: Installed application scenario
         type: choice
         default: account
-        options: [account, update, labelled, media, window]
+        options: [account, update, labelled, media, finalcapture, window]
 permissions:
   contents: read
   actions: read
@@ -54,6 +54,8 @@ jobs:
             foreach ($attempt in 1..3) {
               ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
             }
+          } elseif ('${{ inputs.slice }}' -eq 'finalcapture') {
+            python packages/native/tests/platform-package/verified-capture/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-updater --check-capture
           } elseif ('${{ inputs.slice }}' -eq 'media') {
             powershell -NoProfile -File packages/native/tests/platform-package/windows-capture-inventory.ps1
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -82,6 +84,8 @@ jobs:
                 exit 1
               fi
             done
+          elif [ "${{ inputs.slice }}" = "finalcapture" ]; then
+            python3 packages/native/tests/platform-package/verified-capture/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater --check-capture
           elif [ "${{ inputs.slice }}" = "labelled" ]; then
             CASSI_LABELLED_CHECK=1 python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
           elif [ "${{ inputs.slice }}" = "update" ]; then
