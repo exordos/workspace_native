@@ -28969,18 +28969,42 @@ private slots:
         QVERIFY(root.isValid());
         NativeLogging logs(root.path());
         workspace::installNativeLogHandler(logs);
-        qWarning("native diagnostics wiring probe");
+        QMessageLogger(nullptr, 0, nullptr, "qt.qml").warning("native diagnostics wiring probe");
         qInfo("native diagnostics info probe");
         workspace::removeNativeLogHandler();
         const QString text = readDiagnosticsLog(logs.filePath());
-        QVERIFY2(text.contains(QStringLiteral("warning: native diagnostics wiring probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("warning: QML diagnostic\n")),
                  qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("info: native diagnostics info probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("info: Qt diagnostic\n")),
                  qPrintable(text));
     }
     // ------------------------------------------------------------------
     // exordy fix-round-1 regression cases (PR #289 review findings).
     // ------------------------------------------------------------------
+
+    void persistentQtDiagnosticsOmitPrivateMessageAndCategoryValues()
+    {
+        QTemporaryDir root;
+        NativeLogging logs(root.path());
+        QVERIFY(root.isValid());
+        workspace::installNativeLogHandler(logs);
+        const auto removeHandler = qScopeGuard([] { workspace::removeNativeLogHandler(); });
+        QMessageLogger(nullptr, 0, nullptr, "qt.network.private-category").warning(
+            "synthetic-body account@example.invalid /home/synthetic-user/file https://example.invalid/?private-value");
+        qInfo("Default topic missing for existing direct stream before call");
+        QVERIFY(QFile::resize(logs.filePath(), NativeLogging::MaxLogFileBytes));
+        QMessageLogger(nullptr, 0, nullptr, "qt.qpa.private-category").warning(
+            "{\"context\":{\"body\":\"private-body\"}}");
+        const auto previous = readDiagnosticsLog(logs.rotatedFilePath());
+        const auto current = readDiagnosticsLog(logs.filePath());
+        QVERIFY(previous.contains(QStringLiteral("warning: Network diagnostic\n")));
+        QVERIFY(previous.contains(QStringLiteral("info: Default topic missing for existing direct stream before call\n")));
+        QVERIFY(current.contains(QStringLiteral("warning: Platform diagnostic\n")));
+        for (const auto *value : {"synthetic", "example.invalid", "/home/", "private-"}) {
+            QVERIFY(!previous.contains(QString::fromLatin1(value)));
+            QVERIFY(!current.contains(QString::fromLatin1(value)));
+        }
+    }
 
     // Finding 1 (thread 4575150367): a stderr write failure must not gate
     // persistence — the line still has to reach the diagnostics file.
@@ -29010,7 +29034,7 @@ private slots:
         fflush(stderr);
         clearerr(stderr);
         const QString text = readDiagnosticsLog(logs.filePath());
-        QVERIFY2(text.contains(QStringLiteral("warning: stderr unavailable probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("warning: Qt diagnostic\n")),
                  qPrintable(text));
     }
 #endif // Q_OS_UNIX
@@ -29232,7 +29256,7 @@ private slots:
             nativeTestClearErr();
 
             std::thread worker([&]() {
-                qWarning().noquote() << QStringLiteral("worker in-flight line ")
+                QMessageLogger(nullptr, 0, nullptr, "qt.network").warning().noquote() << QStringLiteral("worker in-flight line ")
                                         + QString(32000, QLatin1Char('W'));
                 workerReturned.store(true);
             });
@@ -29270,10 +29294,10 @@ private slots:
         QVERIFY(releaserDrained >= 32000);
         const QString text = readDiagnosticsLog(
             root.path() + QStringLiteral("/workspace_logs/workspace.log"));
-        QVERIFY2(text.contains(QStringLiteral("warning: filler ")), qPrintable(text.left(120)));
-        QVERIFY2(text.contains(QStringLiteral("worker in-flight line")),
+        QVERIFY2(text.contains(QStringLiteral("warning: Qt diagnostic\n")), qPrintable(text.left(120)));
+        QVERIFY2(text.contains(QStringLiteral("warning: Network diagnostic\n")),
                  "drained in-flight lines must reach the file");
-        QVERIFY(!text.contains(QStringLiteral("post-removal diagnostics line")));
+        QVERIFY(!text.contains(QStringLiteral("info: Qt diagnostic\n")));
     }
 #endif // Q_OS_UNIX
 
@@ -30088,6 +30112,56 @@ private slots:
     }
 
     // ---- Issue #244: key management (docs/NATIVE_DESKTOP_E2EE_KEY_MANAGEMENT.md) ----
+
+    void keyDrawerBulkGrantKeepsOnlyTheFailedRequestIncoming()
+    {
+        const QString denied = "51000000-0000-4000-8000-000000000001";
+        const QString granted = "51000000-0000-4000-8000-000000000002";
+        QJsonObject saved;
+        QStringList posted;
+        KeyManagementFixture f;
+        QVERIFY(f.start());
+        f.seedKey(KeyManagementFixture::KeyCurrent);
+        const auto previous = f.server.handler;
+        f.server.handler = [&, previous](const Request &request) -> Response {
+            const auto payload = request.body.value("payload").toObject();
+            if (request.method == "POST" && payload.value("kind") == "key_grant") {
+                const auto id = payload.value("request_message_uuid").toString();
+                posted.append(id);
+                if (id == denied) return {QJsonObject{}, 403};
+                const auto topic = request.body.value("topic_uuid").toString();
+                const auto placed = QUuid::createUuidV5(QUuid(topic), request.body.value("uuid").toString().toUtf8());
+                saved = message({}, placed.toString(QUuid::WithoutBraces), topic);
+                saved["payload"] = payload;
+                return {saved, 201};
+            }
+            if (!saved.isEmpty() && request.method == "GET"
+                && request.target.path().endsWith('/' + saved.value("uuid").toString())) return {saved, 200};
+            return previous(request);
+        };
+        int epoch = 100;
+        for (const auto &id : {denied, granted}) {
+            auto row = message({}, id);
+            row["author_uuid"] = KeyManagementFixture::SecondMember;
+            row["is_own"] = false;
+            row["payload"] = QJsonObject{{"kind", "key_request"}, {"key_uuid", KeyManagementFixture::KeyCurrent},
+                {"device_id", "peer-device"}, {"device_name", "Peer device"},
+                {"public_key", QString::fromLatin1(QByteArray(32, 'p').toBase64())}};
+            QVERIFY(f.controller.applyRealtimeEvent(controllerEvent("message.created", row, ++epoch)));
+        }
+        const auto rows = [&](const char *group) { return f.controller.encryption().value(group).toList(); };
+        QTRY_COMPARE(rows("incomingKeyRequests").size(), 2);
+        QTRY_VERIFY(rows("incomingKeyRequests").first().toMap().value("canGrant").toBool());
+        f.controller.grantAllChatKeys();
+        QTRY_COMPARE(rows("grantedKeyRequests").size(), 1);
+        QTRY_VERIFY(!f.controller.encryption().value("grantAllBusy").toBool());
+        QCOMPARE(posted, (QStringList{denied, granted}));
+        QCOMPARE(rows("grantedKeyRequests").first().toMap().value("id").toString(), granted);
+        QCOMPARE(rows("incomingKeyRequests").size(), 1);
+        QCOMPARE(rows("incomingKeyRequests").first().toMap().value("id").toString(), denied);
+        QCOMPARE(f.controller.encryption().value("grantAllFailures").toInt(), 1);
+        QVERIFY(rows("rejectedKeyRequests").isEmpty());
+    }
 
     void chatLocalKeyInventoryEnumeratesVaultWithAnnouncementLabels()
     {

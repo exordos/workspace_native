@@ -498,6 +498,22 @@ class Desktop:
             time.sleep(0.04)
         raise Blocked(reason)
 
+    def wait_for_restored_session(self, seconds):
+        try:
+            self.until(lambda: self.authenticated, "saved-session-restore", seconds)
+        except Blocked as error:
+            if str(error) == "saved-session-restore":
+                with self.lock:
+                    for event in reversed(self.events):
+                        if event["event"] == "launch":
+                            break
+                        if event["event"] == "response" and event["category"] == "auth":
+                            status = event["status"]
+                            if 400 <= status < 600:
+                                raise Blocked(f"restore-auth-http-{status}") from error
+                            break
+            raise
+
     def login(self):
         self.fill("serverInput", self.config["origin"])
         field = self.lookup("serverInput").get_text_iface()
@@ -707,7 +723,7 @@ class Desktop:
         self.close_app(graceful=True)
         with self.action("warm-start", False):
             self.launch()
-            self.until(lambda: self.authenticated, "saved-session-restore", 30)
+            self.wait_for_restored_session(30)
             self.observe_pane()
             self.until(
                 lambda: self.latest("sample").get("count", 0) > 0,
@@ -1285,9 +1301,7 @@ def main():
                     desktop.wait_for_saved_session()
                     desktop.close_app(graceful=True)
                     desktop.launch()
-                    desktop.until(
-                        lambda: desktop.authenticated, "saved-session-restore", 25
-                    )
+                    desktop.wait_for_restored_session(25)
                     result = {
                         "status": "PREFLIGHT",
                         "authenticated": True,

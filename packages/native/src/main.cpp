@@ -1,5 +1,7 @@
 #include <QSoundEffect>
 #include "api-client.h"
+#include "support/support-report.h"
+#include <QFile>
 #ifdef Q_OS_LINUX
 #include "live-acceptance-trace.h"
 #include <QQuickWindow>
@@ -68,6 +70,13 @@ int main(int argc, char **argv)
     QCoreApplication::setOrganizationName("Exordos");
     QCoreApplication::setApplicationName("Workspace Native Preview");
     QCoreApplication::setApplicationVersion(WORKSPACE_NATIVE_VERSION);
+    if (argc == 2 && QByteArrayView(argv[1]) == "--support-report") {
+        QCoreApplication app(argc, argv);
+        QFile output;
+        const auto report = workspace::SupportReport::basicReport();
+        return !report.isEmpty() && output.open(stdout, QIODevice::WriteOnly)
+            && output.write(report) == report.size() && output.flush() ? 0 : 1;
+    }
     QGuiApplication::setDesktopFileName("com.exordos.workspace.native.preview");
     QApplication app(argc, argv);
     // Source parity: the last argument that validates as an external deep link

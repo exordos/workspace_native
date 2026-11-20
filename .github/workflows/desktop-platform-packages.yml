@@ -9,6 +9,8 @@ on:
       - packages/native/CMakeLists.txt
       - packages/native/scripts/build-desktop-package.py
       - packages/native/tests/platform-package/**
+      - packages/native/tests/platform-shell/**
+      - packages/native/src/native-platform-shell*
   push:
     tags: ['[0-9]*']
 

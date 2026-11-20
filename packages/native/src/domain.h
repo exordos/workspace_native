@@ -51,6 +51,7 @@ struct StreamCryptoMetadata {
     QString defaultTopic;
     QString provider;
     QString providerIdentity;
+    bool allowKeySharingByHolders = false;
 };
 
 // Encoded wire data is never ordinary visible Message.content. The existing

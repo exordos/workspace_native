@@ -5968,8 +5968,16 @@ mv -Tf "$root/.current-new" "$root/current"
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
+    void activityStarredScrollPaginationFollowsMarkerAndRearm_data()
+    {
+        QTest::addColumn<bool>("closeBeforeNextFrame");
+        QTest::newRow("scroll") << false;
+        QTest::newRow("leave-page") << true;
+    }
+
     void activityStarredScrollPaginationFollowsMarkerAndRearm()
     {
+        QFETCH(bool, closeBeforeNextFrame);
         class WindowStarredPageFixture final : public WindowChannelFixture {
         public:
             int starredPages = 0;
@@ -6044,10 +6052,32 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(list->property("contentHeight").toReal()
             > list->height() + 96.0, 5000);
         QCOMPARE(fixture.starredPages, 1);
+        // Opening or resizing the page can report an underfilled viewport
+        // before the final list geometry arrives in the same layout pass.
+        // The overflowing page must keep its marker until someone scrolls.
+        auto *page = view("nativeStarredPage"); QVERIFY(page);
+        const qreal settledHeight = page->height();
+        page->setHeight(settledHeight + list->property("contentHeight").toReal());
+        QVERIFY(list->height() > list->property("contentHeight").toReal());
+        page->setHeight(settledHeight);
+        QVERIFY(list->height() + 96 < list->property("contentHeight").toReal());
+        QVERIFY(controller.starredPage().value("canLoadMore").toBool());
         // Moving within 64 px of the bottom fires exactly one request with
         // the exact marker, and it does not re-fire while still down there.
         const auto travel = list->property("contentHeight").toReal() - list->height();
         list->setProperty("contentY", travel - 50.0);
+        if (closeBeforeNextFrame) {
+            controller.closeStarred();
+            QVERIFY(!list->isVisible());
+            // Let the queued pagination check return before inspecting the
+            // controller. An HTTP request may still be travelling to the fixture.
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+            const auto closedPage = controller.starredPage();
+            QCOMPARE(closedPage.value("rows").toList().size(), 12);
+            QVERIFY(closedPage.value("canLoadMore").toBool());
+            QCOMPARE(fixture.starredPages, 1);
+            return;
+        }
         QTRY_VERIFY_WITH_TIMEOUT(fixture.starredPages == 2, 3000);
         QCOMPARE(fixture.lastMarker, QStringLiteral("page2"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 14, 5000);
@@ -6911,6 +6941,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *page = view("nativeFeedPage"); QVERIFY(page);
         auto *list = view("feedList"); QVERIFY(list);
         // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
         const auto atBottom = [list] {
@@ -6918,7 +6949,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 - list->property("contentY").toReal()
                 - list->property("height").toReal() <= 1.0;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("anchorRunning").toBool() && atBottom(), 5000);
         QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
         // Reaching the top fires exactly one marker request; the gated response
         // stays in flight while the user scrolls away and back: the armed flag
@@ -6938,10 +6969,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
         // The prepend restore keeps the visual position: contentY moved down by
         // the merged height instead of jumping to the top.
-        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 10.0, 3000);
         QCOMPARE(fixture.feedMarkerPages, 1);
         // Clicking the button returns to the bottom.
-        click(window, view("feedScrollToBottom"));
+        auto *bottom = view("feedScrollToBottom"); QVERIFY(bottom);
+        clickReadyItem(window, bottom);
         QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
     }
 
@@ -21457,6 +21489,153 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerTimePickerPreservesBothFallBackInstants()
+    {
+        if (!qEnvironmentVariableIsSet("WORKSPACE_COMPOSER_TIME_FOLD")) {
+            QProcess child;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert("TZ", "America/New_York");
+            environment.insert("WORKSPACE_COMPOSER_TIME_FOLD", "1");
+            child.setProcessEnvironment(environment);
+            child.setProcessChannelMode(QProcess::MergedChannels);
+            child.start(QCoreApplication::applicationFilePath(),
+                        {"composerTimePickerPreservesBothFallBackInstants", "-o", "-,txt"});
+            QVERIFY(child.waitForFinished(30000));
+            const QByteArray output = child.readAll();
+            QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, output.constData());
+            return;
+        }
+        // The second 01:30 on the November transition is 06:30 UTC.
+        // Both UTC instants have the same local hour, minute and second.
+        const auto second = QDateTime::fromString("2026-11-01T06:30:00Z", Qt::ISODate);
+        QCOMPARE(second.toLocalTime().time(), QTime(1, 30));
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/workspace/qml/NativeComposerTimePicker.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        window.resize(640, 480);
+        const QVariantMap colors{{"bg-elevated", "white"}, {"border-subtle", "gray"},
+            {"text-primary", "black"}, {"text-muted", "gray"}};
+        std::unique_ptr<QObject> picker(component.createWithInitialProperties({
+            {"parent", QVariant::fromValue(window.contentItem())}, {"colors", colors}, {"localeName", "en"}}));
+        QVERIFY2(picker, qPrintable(component.errorString()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(QMetaObject::invokeMethod(picker.get(), "open"));
+        auto *hours = picker->findChild<QObject *>("composerTimeHours");
+        auto *minutes = picker->findChild<QObject *>("composerTimeMinutes");
+        auto *seconds = picker->findChild<QObject *>("composerTimeSeconds");
+        auto *insert = picker->findChild<QObject *>("composerTimeInsert");
+        QVERIFY(hours && minutes && seconds && insert);
+        for (const auto &expected : {second.addSecs(-3600), second}) {
+            picker->setProperty("openedAt", expected.addSecs(-60));
+            picker->setProperty("selectedDay", expected);
+            hours->setProperty("value", 1); minutes->setProperty("value", 30); seconds->setProperty("value", 0);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+            QVERIFY(insert->property("enabled").toBool());
+            picker->setProperty("month", expected);
+            QQuickItem *day = nullptr;
+            QTRY_VERIFY((day = visibleItem(window.contentItem(), "composerCalendarDay-1")));
+            click(&window, day);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+        }
+    }
+
+    void composerToolPopoversUseTheCurrentDraft_data()
+    {
+        QTest::addColumn<QString>("surface"); QTest::addColumn<QString>("locale");
+        for (const auto &surface : {QString("media"), QString("time"), QString("snippets")})
+            for (const auto &locale : {QString("en"), QString("ru")})
+                QTest::newRow(qPrintable(surface + '-' + locale)) << surface << locale;
+    }
+
+    void composerToolPopoversUseTheCurrentDraft()
+    {
+        QFETCH(QString, surface); QFETCH(QString, locale);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QString posted;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                return {message(posted, request.body.value("uuid").toString()), 201};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("tools.ini"));
+        preferences.setLocale(locale); preferences.setMode(locale == "ru" ? "dark" : "light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *editor = view("messageComposer"); QVERIFY(editor);
+        click(window, view("composerToolbarExpand"));
+        const QString original = "Meet old date here";
+        controller.setDraft(original);
+        if (surface == "media") {
+            click(window, view("composerEmojiButton"));
+            auto *tab = view("composerStickersTab"); QVERIFY(tab);
+            click(window, tab);
+            QTRY_VERIFY(view("composerStickerEmpty"));
+            auto *picker = window->findChild<QObject *>("composerEmojiPicker"); QVERIFY(picker);
+            QCOMPARE(picker->property("width").toInt(), 340);
+            auto *stickers = view("composerStickerPanel"); QVERIFY(stickers);
+            const auto url = fixture.server.origin().resolved(QUrl("/fixture/sticker.png")).toString();
+            const QVariantMap sticker{{"id", "wave"}, {"emoji", "hi"}, {"alt", "Wave"}, {"url", url},
+                                      {"thumbnailUrl", "qrc:/workspace/icons/smile.svg"}};
+            const QVariantMap pack{{"id", "greetings"}, {"title", "Greetings"}, {"stickers", QVariantList{sticker}}};
+            QVERIFY(stickers->setProperty("packs", QVariantList{pack}));
+            QTRY_VERIFY(view("composerSticker-greetings-wave"));
+            click(window, view("composerSticker-greetings-wave"));
+            QTRY_COMPARE(controller.draft(), original + "[sticker:greetings:wave](" + url + ")");
+            QTRY_VERIFY(!picker->property("visible").toBool());
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), controller.draft().size());
+        } else if (surface == "time") {
+            auto *button = view("composerTimeButton"); QVERIFY(button);
+            click(window, editor);
+            QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 5), Q_ARG(int, 13)));
+            click(window, button);
+            QTRY_VERIFY(view("composerTimeInsert"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(editor->hasActiveFocus()); QCOMPARE(controller.draft(), original);
+            QCOMPARE(editor->property("selectedText").toString(), QString("old date"));
+            const auto opened = QDateTime::currentDateTimeUtc();
+            click(window, button); QTRY_VERIFY(view("composerTimeInsert"));
+            click(window, view("composerTimeInsert"));
+            const auto text = controller.draft();
+            const auto match = QRegularExpression("^Meet urn:time:(.{19}Z) here$").match(text);
+            QVERIFY2(match.hasMatch(), qPrintable(text));
+            const auto selected = QDateTime::fromString(match.captured(1), Qt::ISODate);
+            QVERIFY(selected > opened && opened.secsTo(selected) <= 61);
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), text.size() - 5);
+            click(window, view("composerPreviewToggle")); QTRY_VERIFY(view("composerPreviewMarkdown"));
+            QCOMPARE(view("composerPreviewMarkdown")->property("sourceMarkdown").toString(), text);
+            click(window, view("sendButton")); QTRY_COMPARE(posted, text);
+        } else {
+            auto *button = view("composerSnippetsButton"); QVERIFY(button);
+            click(window, button);
+            QTRY_VERIFY(view("composerSnippetFilter"));
+            QTest::keyClick(window, Qt::Key_A);
+            QCOMPARE(view("composerSnippetFilter")->property("text").toString(), QString("a"));
+            QVERIFY(view("composerSnippetEmpty"));
+            click(window, view("composerSnippetCreate"));
+            QTRY_VERIFY(view("composerSnippetTitle"));
+            QTest::keyClick(window, Qt::Key_X);
+            click(window, view("composerSnippetSave"));
+            QTRY_VERIFY(view("composerSnippetUnsupported"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(!view("composerSnippetFilter") && !view("composerSnippetUnsupported"));
+            QCOMPARE(controller.draft(), original);
+            for (const auto &request : fixture.server.requests)
+                QVERIFY(!request.target.path().contains("snippet", Qt::CaseInsensitive));
+        }
+    }
+
     void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
     {
         QTest::addColumn<QString>("locale");
@@ -21588,6 +21767,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerPreviewShowsTheBodyItSends()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         QFETCH(bool, inlineFile);
@@ -21710,6 +21894,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(posted, outgoing);
         QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
         QTRY_VERIFY(controller.draft().isEmpty());
+        QVERIFY(!accessible->state().checked);
 
         QVERIFY(controller.beginEditMessage(messageId));
         const QString revision = "Edited **reply source**";
@@ -21735,6 +21920,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerAiNoticeTracksItsTriggerAndOtherPickers()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         WindowChannelFixture fixture;
@@ -21813,6 +22003,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(send && send->isEnabled());
         click(window, send);
         QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
         QCOMPARE(sent.size(), 0);
         click(window, ai);
         QTRY_VERIFY(open(notice));
@@ -27448,11 +27639,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
             QTRY_COMPARE(controller.streams().size(), 1);
             preferences.setOwner(controller.ownerKey());
-            click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+            // This fixture exercises invalidated poll submissions. A fresh
+            // sign-in can publish its catalogue before the new sidebar row
+            // replaces the previous owner's delegate.
+            controller.selectStream(streamId);
+            QTRY_COMPARE(controller.selectedStream(), streamId);
             QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+            controller.selectTopic(topicId);
+            QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            click(window, visibleItem(window->contentItem(), "pollButton"));
+            QQuickItem *pollButton = nullptr;
+            QTRY_VERIFY((pollButton = visibleItem(window->contentItem(), "pollButton"))
+                        && pollButton->isEnabled() && pollButton->width() > 0 && pollButton->height() > 0);
+            clickReadyItem(window, pollButton);
         };
         loginAndOpen();
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -35904,6 +36103,70 @@ private slots:
     // open, narrows through level/source/search filters with the reference
     // "x of y entries" label, resets, clears back to the empty state and
     // exports the snapshot JSON through the save dialog.
+    void supportReportBeforeLoginAndFromDiagnostics_data()
+    {
+        QTest::addColumn<bool>("authenticated");
+        QTest::newRow("sign-in") << false;
+        QTest::newRow("diagnostics") << true;
+    }
+
+    void supportReportBeforeLoginAndFromDiagnostics()
+    {
+        QFETCH(bool, authenticated);
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("report.ini"));
+        WindowOwnStatusFixture fixture;
+        for (int i = 0; i < 24; ++i)
+            controller.appendSessionLog("error", "app", "Synthetic pre-login failure");
+        if (authenticated) QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (authenticated) {
+            click(window, visibleItem("accountMenuButton"));
+            QTRY_VERIFY(visibleItem("diagnosticsAction"));
+            click(window, visibleItem("diagnosticsAction"));
+        }
+        const auto entry = authenticated ? "diagnosticsSupportAction" : "loginSupportAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(window, visibleItem(entry));
+        QTRY_VERIFY(visibleItem("supportPrepare"));
+        auto *save = visibleItem("supportSave");
+        QVERIFY(save && !save->isEnabled());
+        auto *description = visibleItem("supportDescription");
+        QVERIFY(description);
+        description->setProperty("text", QStringLiteral("private-test-description"));
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        auto *preview = visibleItem("supportPreview");
+        QVERIFY(preview);
+        const auto bytes = preview->property("text").toString().toUtf8();
+        QVERIFY(!bytes.contains("private-test-description"));
+        QVERIFY(QJsonDocument::fromJson(bytes).object()["eventCounts"].isNull());
+        click(window, visibleItem("supportIncludeCounts"));
+        QTRY_VERIFY(!save->isEnabled());
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        const auto report = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object();
+        const auto counts = report["eventCounts"].toObject();
+        const auto classes = report["eventClasses"].toObject();
+        if (authenticated) QVERIFY(classes["other"].toInt() < 24);
+        else QCOMPARE(classes["other"].toInt(), 24);
+        QVERIFY(counts.contains("error"));
+        if (authenticated) QVERIFY(counts["error"].toInt() < 24);
+        else QCOMPARE(counts["error"].toInt(), 24);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("supportPrepare"));
+    }
+
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
         QAccessible::setActive(true);
@@ -37443,6 +37706,49 @@ private:
     }
 
 private slots:
+    void messageTimeViewOpensWithoutApplicationServices()
+    {
+        QTest::failOnWarning();
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/workspace/qml/messages/time" as MessageTime
+            Window {
+                id: win
+                width: 800
+                height: 480
+                visible: true
+                Item {
+                    id: history
+                    x: 200; y: 35; width: 600; height: 430
+                    Item { id: chip; x: 120; y: 30; width: 44; height: 20 }
+                }
+                MessageTime.MessageTimeView {
+                    historyViewport: history
+                    windowContent: win.contentItem
+                    language: "en"
+                    colors: ({"accent": "blue", "bg-elevated": "white", "border-subtle": "gray",
+                              "text-primary": "black", "text-muted": "gray"})
+                    Component.onCompleted: showInstant("2026-01-02T10:02:03", chip)
+                }
+            }
+        )", QUrl("qrc:/tests/isolated-message-time.qml"));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 2000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        auto *panel = window->findChild<QObject *>("messageTimePanel");
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("selectedDay").toInt(), 2);
+        const auto panelCenter = [&] { return panel->property("x").toReal() + panel->property("width").toReal() / 2; };
+        QTRY_VERIFY(qAbs(panelCenter() - 342.0) < 1.0);
+        QCOMPARE(panel->property("y").toReal(), 93.0);
+        QVERIFY(QMetaObject::invokeMethod(panel, "close"));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeChipOpensReadOnlyTimestampPanel_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
