@@ -486,12 +486,15 @@ std::optional<Stream> parseStream(const QJsonObject &json, const QString &projec
     bool complete = true;
     for (const auto *field : {"owner", "user_uuid", "source_name", "current_encryption_key_uuid",
                              "default_topic_uuid", "provider_uuid", "provider_identity"}) complete = complete && json.contains(field);
+    if (json.contains("allow_key_sharing_by_holders") && !json.value("allow_key_sharing_by_holders").isBool()) return {};
     if (complete) stream.security = StreamCryptoMetadata{json.value("owner").toString(), json.value("user_uuid").toString(),
         json.value("source_name").toString(), json.value("current_encryption_key_uuid").toString(),
-        json.value("default_topic_uuid").toString(), json.value("provider_uuid").toString(), json.value("provider_identity").toString()};
+        json.value("default_topic_uuid").toString(), json.value("provider_uuid").toString(), json.value("provider_identity").toString(),
+        json.value("allow_key_sharing_by_holders").toBool()};
     const auto color = json.value("color").toDouble(-1);
     if (json.value("color").isDouble() && std::isfinite(color) && color >= 0 && color <= 0xffffff && std::floor(color) == color)
         stream.color = quint32(color);
+    stream.viewer = json.value("user_uuid").toString();
     if (json.value("default_topic_uuid").isString()) stream.defaultTopic = json.value("default_topic_uuid").toString();
     return stream;
 }
@@ -538,7 +541,9 @@ std::optional<Topic> parseTopic(const QJsonObject &json, const QString &project,
     return Topic{id, stream, json.value("name").toString(), *unread,
                  json.value("is_done").toBool(), json.value("is_default").toBool(),
                  *active, *passive, json.value("last_message_uuid").toString(),
-                 json.value("notification_mode").toString("default"), *updated};
+                 json.value("notification_mode").toString("default"), *updated,
+                 json.value("summary").toString(), json.value("summary_enabled").toBool(true),
+                 json.value("summary_has_new_messages").toBool()};
 }
 
 std::optional<Message> parseMessage(const QJsonObject &json, const QString &project)

@@ -1,4 +1,7 @@
+#include <QSoundEffect>
 #include "api-client.h"
+#include "support/support-report.h"
+#include <QFile>
 #ifdef Q_OS_LINUX
 #include "live-acceptance-trace.h"
 #include <QQuickWindow>
@@ -67,6 +70,13 @@ int main(int argc, char **argv)
     QCoreApplication::setOrganizationName("Exordos");
     QCoreApplication::setApplicationName("Workspace Native Preview");
     QCoreApplication::setApplicationVersion(WORKSPACE_NATIVE_VERSION);
+    if (argc == 2 && QByteArrayView(argv[1]) == "--support-report") {
+        QCoreApplication app(argc, argv);
+        QFile output;
+        const auto report = workspace::SupportReport::basicReport();
+        return !report.isEmpty() && output.open(stdout, QIODevice::WriteOnly)
+            && output.write(report) == report.size() && output.flush() ? 0 : 1;
+    }
     QGuiApplication::setDesktopFileName("com.exordos.workspace.native.preview");
     QApplication app(argc, argv);
     // Source parity: the last argument that validates as an external deep link
@@ -169,6 +179,18 @@ int main(int argc, char **argv)
     desktopNotifications->setClickCallback(
         [notifications](const QString &tag) { notifications->click(tag); });
     notifications->setTransport(desktopNotifications);
+    QObject::connect(notifications, &workspace::NotificationService::soundRequested,
+        &preferences, &workspace::NativePreferences::previewNotificationSound);
+    QHash<QString, QSoundEffect *> sounds;
+    QObject::connect(&preferences, &workspace::NativePreferences::notificationSoundRequested, &app,
+        [&sounds, &app](const QString &preset) {
+            auto *&sound = sounds[preset];
+            if (!sound) {
+                sound = new QSoundEffect(&app);
+                sound->setSource(QUrl(QStringLiteral("qrc:/workspace/sounds/") + preset + ".wav"));
+            }
+            sound->play();
+        });
     if (window) {
         auto *focusWatcher = new WindowFocusWatcher(&controller);
         window->installEventFilter(focusWatcher);
@@ -253,7 +275,7 @@ int main(int argc, char **argv)
         if (controller.authenticated()) {
             for (const auto &value : controller.streams()) {
                 const auto unread = qMax<qint64>(0, value.toMap().value("unread").toLongLong());
-                count += qMin(unread, std::numeric_limits<qint64>::max() - count);
+                count += qMin(unread, (std::numeric_limits<qint64>::max)() - count);
             }
         }
         desktop.setUnreadCount(count);
