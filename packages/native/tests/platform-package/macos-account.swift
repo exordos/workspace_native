@@ -41,7 +41,11 @@ func control(_ name: String, _ role: String) throws -> AXUIElement {
             .compactMap { attr(item, $0 as CFString) as? String }
         let fixed = ["Server address", "Email or login", "Password", "Next", "Login", "Profile", "Sign out",
                      "Could not load organization settings. Check the server address and try again."]
+        let subrole = attr(item, kAXSubroleAttribute as CFString) as? String ?? ""
         if let label = fixed.first(where: labels.contains) { print("Exposed \(role) \(label)") }
+        if role.contains("Text") || role.contains("Edit") || !subrole.isEmpty {
+            print("Field metadata role=\(role) subrole=\(subrole) id=\(attr(item, kAXIdentifierAttribute as CFString) as? String ?? "") enabled=\(attr(item, kAXEnabledAttribute as CFString) as? Bool ?? false)")
+        }
         for child in attr(item, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] { report(child, depth + 1) }
     }
     report(root, 0)
@@ -55,11 +59,20 @@ func command(_ key: CGKeyCode) {
     }
 }
 func fill(_ name: String, _ value: String) throws {
-    let field = try control(name, kAXTextFieldRole as String)
-    guard AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
-        throw fail("The \(name) field refused focus.")
-    }
     if name == "Password" {
+        // The previous field still holds actual keyboard focus after typing.
+        for down in [true, false] {
+            CGEvent(keyboardEventSource: nil, virtualKey: 48, keyDown: down)?.postToPid(pid)
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        if let raw = attr(root, kAXFocusedUIElementAttribute as CFString), CFGetTypeID(raw) == AXUIElementGetTypeID() {
+            let target = raw as! AXUIElement
+            let targetRole = attr(target, kAXRoleAttribute as CFString) as? String ?? ""
+            let subrole = attr(target, kAXSubroleAttribute as CFString) as? String ?? ""
+            let id = attr(target, kAXIdentifierAttribute as CFString) as? String ?? ""
+            print("After Tab role=\(targetRole) subrole=\(subrole) id=\(id)")
+        }
+
         // A secure text field can deliberately withhold its value. The server
         // accepts the sign-in only after the actual password arrives.
         for code: CGKeyCode in [35, 0, 8, 40, 0, 5, 14, 27, 2, 14, 46, 31] { // package-demo
@@ -68,6 +81,10 @@ func fill(_ name: String, _ value: String) throws {
             }
         }
         return
+    }
+    let field = try control(name, kAXTextFieldRole as String)
+    guard AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
+        throw fail("The \(name) field refused focus.")
     }
     let board = NSPasteboard.general
     board.clearContents()
