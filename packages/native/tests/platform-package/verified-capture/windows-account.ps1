@@ -45,7 +45,7 @@ function Control([string]$Name, $Type) {
     } while ((Get-Date) -lt $deadline)
     $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.Condition]::TrueCondition)
-    $allowed = @('Server address','Email or login','Password','Next','Login','Profile','Sign out',
+    $allowed = @('Server address','Email or login','Password','Next','Login','Profile','Sign out','Attach files','# Hosted call','General Chat: Cassi hosted channel',
         'Could not load organization settings. Check the server address and try again.')
     foreach ($item in $all) {
         $c = $item.Current
@@ -84,6 +84,8 @@ switch ($Mode) {
         Press 'Login'
     }
     'choose-file' {
+        Press 'General Chat: Cassi hosted channel'
+        Press '# Hosted call'
         Press 'Attach files'
         $type = [System.Windows.Automation.AutomationElement]
         $dialogFilter = [System.Windows.Automation.AndCondition]::new(
