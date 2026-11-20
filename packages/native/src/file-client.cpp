@@ -368,10 +368,13 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
         probe->deleteLater();
         client->startUpload(id, size);
     };
-    QTimer::singleShot(300, probe, [finish] { finish({}); });
+    const auto startTimeout = [probe, finish] {
+        QTimer::singleShot(300, Qt::PreciseTimer, probe, [finish] { finish({}); });
+    };
     if (operation->metadata.kind() == FileKind::Image) {
         auto *watcher = new QFutureWatcher<QSize>(probe);
         connect(watcher, &QFutureWatcher<QSize>::finished, probe, [watcher, finish] { finish(watcher->result()); });
+        startTimeout();
         watcher->setFuture(QtConcurrent::run(imageDimensions, snapshot->data()));
     } else {
         auto *player = new QMediaPlayer(probe);
@@ -390,6 +393,7 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
         connect(player, &QMediaPlayer::tracksChanged, probe, readSize);
         connect(player, &QMediaPlayer::metaDataChanged, probe, readSize);
         connect(player, &QMediaPlayer::errorOccurred, probe, [finish] { finish({}); });
+        startTimeout();
         player->setSourceDevice(buffer);
     }
     return id;
