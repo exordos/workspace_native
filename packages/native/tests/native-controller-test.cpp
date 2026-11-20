@@ -28969,13 +28969,13 @@ private slots:
         QVERIFY(root.isValid());
         NativeLogging logs(root.path());
         workspace::installNativeLogHandler(logs);
-        qWarning("native diagnostics wiring probe");
+        QMessageLogger(nullptr, 0, nullptr, "qt.qml").warning("native diagnostics wiring probe");
         qInfo("native diagnostics info probe");
         workspace::removeNativeLogHandler();
         const QString text = readDiagnosticsLog(logs.filePath());
-        QVERIFY2(text.contains(QStringLiteral("warning: native diagnostics wiring probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("warning: QML diagnostic\n")),
                  qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("info: native diagnostics info probe\n")),
+        QVERIFY2(text.contains(QStringLiteral("info: Qt diagnostic\n")),
                  qPrintable(text));
     }
     // ------------------------------------------------------------------
@@ -28992,11 +28992,18 @@ private slots:
         QMessageLogger(nullptr, 0, nullptr, "qt.network.private-category").warning(
             "synthetic-body account@example.invalid /home/synthetic-user/file https://example.invalid/?private-value");
         qInfo("Default topic missing for existing direct stream before call");
-        const auto text = readDiagnosticsLog(logs.filePath());
-        QVERIFY(text.contains(QStringLiteral("warning: Network diagnostic\n")));
-        QVERIFY(text.contains(QStringLiteral("info: Default topic missing for existing direct stream before call\n")));
-        for (const auto *value : {"synthetic", "example.invalid", "/home/", "private-"})
-            QVERIFY(!text.contains(QString::fromLatin1(value)));
+        QVERIFY(QFile::resize(logs.filePath(), NativeLogging::MaxLogFileBytes));
+        QMessageLogger(nullptr, 0, nullptr, "qt.qpa.private-category").warning(
+            "{\"context\":{\"body\":\"private-body\"}}");
+        const auto previous = readDiagnosticsLog(logs.rotatedFilePath());
+        const auto current = readDiagnosticsLog(logs.filePath());
+        QVERIFY(previous.contains(QStringLiteral("warning: Network diagnostic\n")));
+        QVERIFY(previous.contains(QStringLiteral("info: Default topic missing for existing direct stream before call\n")));
+        QVERIFY(current.contains(QStringLiteral("warning: Platform diagnostic\n")));
+        for (const auto *value : {"synthetic", "example.invalid", "/home/", "private-"}) {
+            QVERIFY(!previous.contains(QString::fromLatin1(value)));
+            QVERIFY(!current.contains(QString::fromLatin1(value)));
+        }
     }
 
     // Finding 1 (thread 4575150367): a stderr write failure must not gate
