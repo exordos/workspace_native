@@ -3,9 +3,40 @@
 import asyncio
 import contextlib
 import http.client
+import json
+import socket
 import ssl
 import threading
 from urllib.parse import urlsplit
+
+
+def probe_organization_settings(origin):
+    """Check the runner's unauthenticated path independently of the Qt proxy."""
+    parsed = urlsplit(origin)
+    connection = http.client.HTTPSConnection(
+        parsed.hostname, parsed.port or 443, timeout=8
+    )
+    try:
+        connection.request("GET", "/api/workspace/v1/messenger/server_settings")
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            return f"http-{response.status}"
+        body = response.read(65537)
+        if len(body) > 65536 or not isinstance(json.loads(body), dict):
+            return "invalid-settings"
+        return "ready"
+    except socket.gaierror:
+        return "dns"
+    except ssl.SSLError:
+        return "tls"
+    except TimeoutError:
+        return "timeout"
+    except (OSError, http.client.HTTPException):
+        return "connect"
+    except (ValueError, RecursionError):
+        return "invalid-settings"
+    finally:
+        connection.close()
 
 
 class NetworkConditions:
