@@ -1,4 +1,5 @@
 #include "native-markdown.h"
+#include "native-spoilers.h"
 
 #include "workspace-reference.h"
 
@@ -405,12 +406,36 @@ bool NativeMarkdown::openExternal(const QString &target) const
 
 QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
 {
+    return renderBody(markdown, hideMedia, {}, false);
+}
+
+bool NativeMarkdown::mayContainSpoilers(const QString &markdown)
+{
+    return markdown.contains(QStringLiteral("||"))
+        || ((markdown.contains(QStringLiteral("```")) || markdown.contains(QStringLiteral("~~~")))
+            && markdown.contains(QStringLiteral("spoiler"), Qt::CaseInsensitive));
+}
+
+QVariantMap NativeMarkdown::renderPreview(const QString &markdown, bool hideMedia)
+{
+    return renderBody(markdown, hideMedia, {}, true);
+}
+
+QVariantMap NativeMarkdown::renderMessage(const QString &markdown, bool hideMedia, const QStringList &opened)
+{
+    return renderBody(markdown, hideMedia, opened, false);
+}
+
+QVariantMap NativeMarkdown::renderBody(const QString &markdown, bool hideMedia, const QStringList &opened, bool expandAll)
+{
     // The message contract counts Unicode code points, while QString::size()
     // counts UTF-16 units. Bound the scan before accepting surrogate pairs.
     // The gallery collector shares this exact guard (withinMessageDisplayLimit).
     if (!withinMessageDisplayLimit(markdown))
         return {{"html", tr("Message is too large to display.")}, {"plain", tr("Message is too large to display.")}};
-    const auto cacheKey = QString::fromLatin1(QCryptographicHash::hash(markdown.toUtf8(), QCryptographicHash::Sha256).toHex())
+    const auto digest = QString::fromLatin1(QCryptographicHash::hash(markdown.toUtf8(), QCryptographicHash::Sha256).toHex());
+    const bool hasSpoilers = mayContainSpoilers(markdown);
+    const auto cacheKey = digest + (hasSpoilers ? QStringLiteral("|") + tr("Spoiler") + (expandAll ? QStringLiteral("*") : opened.join(',')) : QString())
         + (hideMedia ? QStringLiteral("|media-hidden") : QString());
     if (m_cache.contains(cacheKey))
         return m_cache.value(cacheKey);
@@ -443,6 +468,12 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     }
     if (!markdownHtml(displayMarkdown, generated))
         return {{"html", tr("Could not display this message.")}, {"plain", tr("Could not display this message.")}};
+    SpoilerLinks spoilers;
+    if (hasSpoilers) {
+        spoilers.prefix = QStringLiteral("workspace-spoiler:") + digest + QLatin1Char('/');
+        generated = renderSpoilers(displayMarkdown, generated, QSet<QString>(opened.begin(), opened.end()),
+            expandAll, tr("Spoiler"), spoilers);
+    }
     // Adapt only fixed renderer-generated tags. Raw user HTML was escaped by
     // NOHTML above; it cannot create one of these checkbox or code tags.
     generated.replace("<li class=\"task-list-item\"><input type=\"checkbox\" class=\"task-list-item-checkbox\" disabled checked>",
@@ -668,7 +699,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
                 }
             }
         }
-        if (format.isAnchor()) {
+        if (format.isAnchor() && !spoilers.ids.contains(format.anchorHref())) {
             const auto parsed = reference(format.anchorHref());
             if (parsed.isEmpty()) {
                 format.setAnchor(false);
@@ -755,7 +786,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     // in document order. When the ranges cannot be aligned 1:1 with the
     // ordered urn list (unusual crafted documents), the list stays empty
     // and the view keeps its text search as the fallback.
-    QVariantList mentionSpans;
+    QVariantList mentionSpans, spoilerSpans;
     {
         struct AnchorSpan { int start; int length; QString href; };
         QVector<AnchorSpan> spans;
@@ -768,6 +799,10 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
                 if (!format.isAnchor())
                     continue;
                 const auto href = format.anchorHref();
+                if (spoilers.ids.contains(href))
+                    spoilerSpans.append(QVariantMap{{"id", spoilers.ids.value(href)}, {"href", href},
+                        {"header", spoilers.headers.contains(href)}, {"label", fragment.text()},
+                        {"start", fragment.position()}, {"length", fragment.length()}});
                 if (!href.startsWith(QLatin1String("urn:user:")))
                     continue;
                 if (!spans.isEmpty() && spans.last().href == href
@@ -792,7 +827,7 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
                              {"parts", orderedImageParts(document, codeBlocks, codeBlockTails)},
                              {"codeBlocks", codeBlocks}, {"mentions", mentionUrns},
-                             {"mentionSpans", mentionSpans},
+                             {"mentionSpans", mentionSpans}, {"spoilers", spoilerSpans},
                              // Issue #109 reviews F4/F6: the visible plain text of every
                              // mention occurrence (with the same "@" prefix rules the
                              // anchor got), in document order, so the view can locate the

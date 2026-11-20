@@ -17,6 +17,9 @@ public:
     // (reference hiddenWorkspaceMediaFileUuids, issue #217): the body keeps its
     // text and loses the media label the renderer would otherwise print.
     Q_INVOKABLE QVariantMap render(const QString &markdown, bool hideMedia = false);
+    Q_INVOKABLE QVariantMap renderMessage(const QString &markdown, bool hideMedia, const QStringList &opened);
+    static bool mayContainSpoilers(const QString &markdown);
+    QVariantMap renderPreview(const QString &markdown, bool hideMedia = false);
     Q_INVOKABLE QVariantMap reference(const QString &target) const;
     Q_INVOKABLE bool openExternal(const QString &target) const;
     // Workspace image/video references found in a message body in document
@@ -31,6 +34,7 @@ public:
     static QString prependEditAttachments(const QString &markdown, const QVariantList &attachments);
 
 private:
+    QVariantMap renderBody(const QString &markdown, bool hideMedia, const QStringList &opened, bool expandAll);
     QHash<QString, QVariantMap> m_cache;
     QQueue<QString> m_order;
 };

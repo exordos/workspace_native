@@ -36692,6 +36692,88 @@ private slots:
     // silent mention renders without the "@" prefix; a plain-text mention
     // without a uuid stays unstyled; clicking the chip raises the existing
     // profile-open path.
+    void messageSpoilersOpenByPointerAndKeyboard_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto *locale : {"en", "ru"})
+            for (const auto *mode : {"light", "dark"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(locale, mode))) << QString(locale) << QString(mode);
+    }
+
+    void messageSpoilersOpenByPointerAndKeyboard()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/")) {
+                auto stream = windowChannel(streamId, "Product team");
+                stream["last_message_uuid"] = messageId;
+                return {QJsonArray{stream}};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && !QUrlQuery(request.target).hasQueryItem("mentioned")) {
+                return {QJsonArray{message("Before ||hidden word|| after\n\n```spoiler\nBlock answer\n```")}};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("spoilers.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("spoiler scene teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.channelMembersVerified());
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        const auto target = [](int n) {
+            return visibleItem("message-spoiler-" + messageId + "-" + QString::number(n));
+        };
+        const auto display = [] {
+            const auto *item = visibleItem("message-content-" + messageId);
+            return item ? item->property("text").toString() : QString();
+        };
+        QTRY_VERIFY(target(1) && target(2));
+        QVERIFY(!display().contains("hidden word"));
+        QVERIFY(!display().contains("Block answer"));
+        QVERIFY(display().contains(locale == "ru" ? QStringLiteral("Спойлер") : QStringLiteral("Spoiler")));
+        const auto summary = controller.streams().first().toMap().value("previewText").toString();
+        QVERIFY2(summary.contains("hidden word") && summary.contains("Block answer"), qPrintable(summary));
+        click(window, target(1));
+        QTRY_VERIFY(display().contains("hidden word"));
+        QVERIFY(!display().contains("Block answer"));
+        QTRY_VERIFY(target(2));
+        target(2)->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(display().contains("Block answer"));
+        QVERIFY(display().contains("hidden word"));
+        QTRY_VERIFY(target(2) && target(2)->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!display().contains("Block answer"));
+        QTRY_VERIFY(target(1));
+        click(window, target(1));
+        QTRY_VERIFY(!display().contains("hidden word"));
+    }
+
     void mentionChipsRenderAndOpenProfile()
     {
         WindowMentionFixture fixture;
