@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import Vision
 
 setbuf(stdout, nil)
 let pid = pid_t(CommandLine.arguments[1])!
@@ -121,7 +122,28 @@ case "update":
     try press("Profile")
     try press("App version")
     try press("Check for updates")
-    _ = try control("Updates are not available for this platform.", kAXStaticTextRole as String)
+    let action = try control("Check for updates", kAXButtonRole as String)
+    guard let location = attr(action, kAXPositionAttribute as CFString),
+          let sizeValue = attr(action, kAXSizeAttribute as CFString) else { throw fail("Missing updater button bounds.") }
+    var position = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(location as! AXValue, .cgPoint, &position),
+          AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { throw fail("Invalid updater button bounds.") }
+    let image = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString + ".png")
+    defer { try? FileManager.default.removeItem(at: image) }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+    let screenshot = Process()
+    screenshot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    screenshot.arguments = ["-x", "-R" + [Int(position.x), Int(position.y)-125, Int(size.width), 125].map(String.init).joined(separator: ","), image.path]
+    try screenshot.run()
+    screenshot.waitUntilExit()
+    guard screenshot.terminationStatus == 0 else { throw fail("No packaged updater pixels captured.") }
+    let recognition = VNRecognizeTextRequest()
+    recognition.recognitionLevel = .accurate
+    try VNImageRequestHandler(url: image).perform([recognition])
+    let recognized = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
+    guard recognized.contains("updates are not available for this platform") else { throw fail("The expected unavailable message was absent from the macOS screen.") }
+    print("Vision read the unavailable update status from the visible native About panel.")
     try press("Close")
 case "logout":
     try press("Profile")

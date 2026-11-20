@@ -76,6 +76,8 @@ jobs:
                 exit 1
               fi
             done
+          elif [ "${{ inputs.slice }}" = "update" ]; then
+            python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
           elif [ "${{ inputs.slice }}" = "media" ]; then
             python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-media
           else
