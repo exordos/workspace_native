@@ -2457,7 +2457,7 @@ ApplicationWindow {
                 }
                 Text {
                     objectName: "organizationErrorBanner"
-                    visible: !loginCard.savedAccountsOnly && root.controller.error.length > 0 && root.controller.loginStep === "organization"
+                    visible: root.controller.error.length > 0 && root.controller.loginStep === "organization"
                     text: root.controller.error
                     textFormat: Text.PlainText
                     color: root.colors.danger

@@ -14935,13 +14935,16 @@ mv -Tf "$root/.current-new" "$root/current"
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls_data()
     {
         QTest::addColumn<bool>("startup");
-        QTest::newRow("manual-continue") << false;
-        QTest::newRow("automatic-startup") << true;
+        QTest::addColumn<bool>("accountList");
+        QTest::newRow("manual-continue") << false << false;
+        QTest::newRow("automatic-startup") << true << false;
+        QTest::newRow("saved-account-list") << false << true;
     }
 
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls()
     {
         QFETCH(bool, startup);
+        QFETCH(bool, accountList);
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
         WindowSecrets backend;
@@ -14997,8 +15000,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!controller.authenticated());
         auto *add = visibleItem(content, "savedAccountsAddServer");
         QVERIFY(add);
-        click(window, add);
-        QTRY_VERIFY(visibleItem(content, "serverInput"));
+        if (!accountList) {
+            click(window, add);
+            QTRY_VERIFY(visibleItem(content, "serverInput"));
+        }
         QCOMPARE(controller.savedAccounts().size(), 1);
         backend.holdRead = true;
         backend.readError = SessionSecretStore::Error::Unavailable;
@@ -15009,9 +15014,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.busy());
         QVERIFY(!item(content, "resume-" + saved.id)->isEnabled());
         QVERIFY(!item(content, "forget-" + saved.id)->isEnabled());
-        QVERIFY(!item(content, "serverInput")->isEnabled());
+        if (!accountList) QVERIFY(!item(content, "serverInput")->isEnabled());
         backend.finishRead();
         QTRY_VERIFY(!controller.error().isEmpty());
+        QVERIFY(hasVisibleText(content, controller.error()));
         QVERIFY(!controller.authenticated());
         QCOMPARE(controller.savedAccounts().size(), 1);
         QCOMPARE(requests, 0);
