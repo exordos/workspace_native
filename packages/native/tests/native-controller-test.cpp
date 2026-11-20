@@ -14924,6 +14924,58 @@ private slots:
         QCOMPARE(fixture.controller.draft().size(), 40000);
     }
 
+    void uploadedAttachmentOrderInOutgoingBody_data()
+    {
+        QTest::addColumn<QString>("body");
+        QTest::addColumn<QString>("expected");
+        const auto quote = QStringLiteral("[Sam](urn:quote:") + messageId + ")";
+        QTest::newRow("plain") << QStringLiteral("Caption") << QStringLiteral("LINK\nCaption");
+        QTest::newRow("existing") << QStringLiteral("Caption\nLINK") << QStringLiteral("Caption\nLINK");
+        QTest::newRow("quote-and-answer") << quote + "\n\nCaption" << quote + "\n\nLINK\n\nCaption";
+        QTest::newRow("quote-only") << quote << quote + "\n\nLINK";
+        QTest::newRow("continued-paragraph") << quote + "\nanswer" << "LINK\n" + quote + "\nanswer";
+        QTest::newRow("list-starts-new-block") << quote + "\n- list item" << quote + "\n\nLINK\n\n- list item";
+        QTest::newRow("heading-starts-new-block") << quote + "\n# Heading" << quote + "\n\nLINK\n\n# Heading";
+        QTest::newRow("setext-title") << quote + "\n===" << "LINK\n" + quote + "\n===";
+        QTest::newRow("inline-quote") << quote + " text" << "LINK\n" + quote + " text";
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody()
+    {
+        QFETCH(QString, body);
+        QFETCH(QString, expected);
+        Fixture f;
+        FileClient files(&f.api);
+        f.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile file(directory.filePath("report.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("report"), 6);
+        file.close();
+        f.files = [](const Request &) { return Response{QJsonObject{
+            {"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+            {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        QString sent;
+        f.messages = [&](const Request &r) {
+            if (r.method == "POST") {
+                sent = r.body.value("payload").toObject().value("content").toString();
+                return Response{QJsonObject{}, 503};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(f.start());
+        f.controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!f.controller.fileBusy());
+        QCOMPARE(f.controller.uploadEntries().size(), 1);
+        const auto link = f.controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        f.controller.setDraft(body.replace("LINK", link));
+        f.controller.send();
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent, expected.replace("LINK", link));
+    }
+
     void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
     {
         QTemporaryDir directory; NativeDraftService storage(directory.filePath("drafts")); NativeDrafts drafts(&storage);

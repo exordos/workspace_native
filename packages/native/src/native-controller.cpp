@@ -13883,6 +13883,31 @@ std::optional<ParsedLeadingQuote> leadingQuoteReference(const QString &content)
     return parsed;
 }
 
+QString prependUploadedLinks(const QString &body, const QStringList &attachments)
+{
+    if (attachments.isEmpty()) return body;
+    const auto content = body.trimmed();
+    QStringList missing;
+    for (const auto &link : attachments)
+        if (!content.contains(link) && !missing.contains(link)) missing.append(link);
+    if (missing.isEmpty()) return content;
+    const auto links = missing.join('\n');
+    if (content.isEmpty()) return links;
+
+    const auto newline = content.indexOf('\n');
+    const auto first = content.left(newline).trimmed();
+    if (leadingQuoteReference(first) && (newline < 0 || NativeMarkdown::startsWithParagraph(content, first))) {
+        auto result = first + QStringLiteral("\n\n") + links;
+        if (newline >= 0) {
+            auto rest = newline + 1;
+            while (rest < content.size() && (content[rest] == '\r' || content[rest] == '\n')) ++rest;
+            if (rest < content.size()) result += QStringLiteral("\n\n") + content.mid(rest);
+        }
+        return result;
+    }
+    return links + '\n' + content;
+}
+
 // Issue #202: mirrors restoreWorkspaceReplySessionFromMarkdown (workspace_ui
 // 61dacef workspace-reply-restore.lib.ts). A leading standalone
 // "[Name](urn:quote:...)" line restores one quote block; the legacy blockquote
@@ -16084,16 +16109,13 @@ void NativeController::send()
             // same mention serialization.
             auto answer = (tab.id == m_replyActiveTab ? wire
                 : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
-            if (blocks.isEmpty() && !attachments.isEmpty())
-                answer = attachments.join('\n') + (answer.isEmpty() ? QString{} : QStringLiteral("\n\n") + answer);
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
         }
         auto body = blocks.join(QStringLiteral("\n\n"));
         while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
         wire = body;
-    } else if (!attachments.isEmpty()) {
-        wire = attachments.join('\n') + (wire.trimmed().isEmpty() ? QString{} : QStringLiteral("\n") + wire.trimmed());
     }
+    wire = prependUploadedLinks(wire, attachments);
     if (!boundedText(wire, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;
@@ -18414,9 +18436,7 @@ void NativeController::submitEditMessage()
     text = replaceImageAliases(text, true);
     if (m_editRestoresReply && !m_replyTabs.isEmpty())
         text = NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(QString()));
-    const auto newAttachments = readyUploadLinks(m_editSession);
-    if (!newAttachments.isEmpty())
-        text = newAttachments.join('\n') + (text.isEmpty() ? QString{} : QStringLiteral("\n") + text);
+    text = prependUploadedLinks(text, readyUploadLinks(m_editSession));
     if (text.size() > 40000 || !boundedText(text, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;

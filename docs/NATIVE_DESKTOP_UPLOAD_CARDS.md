@@ -27,7 +27,10 @@ tree, not the separately modified UI working directory.
   in `chat-page-workspace.test.tsx` check those contracts.
 
 Native keeps verified uploads in separate cards and transfers their serialized
-links to the existing durable outgoing queue on send. A ready image can also be
+links to the existing durable outgoing queue on send. Missing attachment links
+precede the text. When the first paragraph is a standalone quote, the quote
+stays first, followed by the missing links and the answer. A link already in
+the body is kept at its original position. A ready image can also be
 dragged into the composer as a readable alias; the alias is kept in memory,
 omitted from the saved draft, and replaced with the canonical image reference
 in the submitted body. The card indicates an image in text and can remove it

@@ -26,6 +26,7 @@ public:
     QVariantMap editContent(const QString &markdown) const;
     QString removeEditAttachment(const QString &markdown, const QString &attachment) const;
     static QVariantList updateEditAttachments(const QString &markdown, const QVariantList &attachments);
+    static bool startsWithParagraph(const QString &markdown, const QString &paragraph);
     static QString prependEditAttachments(const QString &markdown, const QVariantList &attachments);
 
 private:
