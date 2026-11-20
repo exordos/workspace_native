@@ -95,11 +95,15 @@ packages/native/build/workspace-native
 
 On Windows or macOS, select the installed Qt kit with `CMAKE_PREFIX_PATH` when
 CMake cannot locate it. Use a compiler matching that kit. The repository
-packages Windows x64 and macOS arm64 portable previews and launches the
-relocated archives on fresh native runners. The clean-runner checks cover
+packages Windows x64 and macOS arm64/x64 portable previews and launches the
+relocated archives on fresh native runners. The Windows x64 workflow also
+installs and launches the per-user MSI, then verifies its removal. The clean-runner checks cover
 the first visible window, second-launch activation and plain-text clipboard
 input. Both desktop packages also signed in to a loopback fixture, restored the rotated
 account after process restart, and removed it from the OS credential store on sign-out.
+The Windows x64 and macOS arm64 previews also uploaded a file selected in the
+native file chooser. On Apple Silicon, Launch Services opened the requested
+message in both a running application and a new process.
 The Intel macOS package also launched on a clean Intel runner after
 verification of its Mach-O architecture and ad hoc signature. [Windows and macOS packaging](NATIVE_DESKTOP_PLATFORM_PACKAGING.md)
 
