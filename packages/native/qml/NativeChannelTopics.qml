@@ -25,6 +25,7 @@ Column {
         return qsTr("Default")
     }
     function context(row, anchor, x, y) {
+        if (pendingAction) return
         target = row
         failed = false
         menu.popup(anchor, x, y)

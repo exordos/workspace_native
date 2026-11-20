@@ -22341,17 +22341,31 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *row = visibleItem("channelTopicRow-" + secondTopicId);
         QVERIFY(row);
         QVERIFY(visibleItem("channelTopicMention-" + secondTopicId));
-        QCOMPARE(QQmlProperty(toggle, "Accessible.name").read().toString(), QString("Collapse topics"));
-        QCOMPARE(QQmlProperty(row, "Accessible.description").read().toString(), QString("Topic notifications: Muted"));
+        QAccessible::setActive(true);
+        auto *toggleAccessible = QAccessible::queryAccessibleInterface(toggle);
+        auto *rowAccessible = QAccessible::queryAccessibleInterface(row);
+        QVERIFY(toggleAccessible && rowAccessible);
+        QCOMPARE(toggleAccessible->text(QAccessible::Name), QString("Collapse topics"));
+        QCOMPARE(rowAccessible->text(QAccessible::Description), QString("Topic notifications: Muted"));
         QCOMPARE(visibleItem("channelTopicTitle-" + secondTopicId)->property("font").value<QFont>().italic(), true);
         QVERIFY(visibleItem("channelTopicBell-" + secondTopicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
         QCOMPARE(scene.text("channelTopicUnread-" + secondTopicId), QString("1k+"));
         click(scene.window, toggle);
         QVERIFY(!visibleItem("channelTopicRow-" + secondTopicId));
-        QCOMPARE(QQmlProperty(toggle, "Accessible.name").read().toString(), QString("Expand topics"));
+        QCOMPARE(toggleAccessible->text(QAccessible::Name), QString("Expand topics"));
         click(scene.window, toggle);
         row = visibleItem("channelTopicRow-" + secondTopicId);
         QVERIFY(row);
+        const auto rowName = row->objectName();
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll);
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QString("4 members, 2 online"));
+        row = visibleItem(rowName);
+        QVERIFY(row);
+        const auto rowY = row->mapToItem(scroll, QPointF(12, 15)).y();
+        if (rowY >= scroll->height() || rowY < 0)
+            scroll->setProperty("contentY", scroll->property("contentY").toReal() + rowY - scroll->height() / 2);
+        QTRY_VERIFY(scroll->contains(row->mapToItem(scroll, QPointF(12, 15))));
         QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier, row->mapToScene(QPointF(12, 15)).toPoint());
         QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
         QTest::keyClick(scene.window, Qt::Key_Escape);
@@ -22436,6 +22450,16 @@ mv -Tf "$root/.current-new" "$root/current"
         scene.openChannelInfo();
         auto *row = visibleItem("channelTopicRow-" + topicId);
         QVERIFY(row);
+        const auto rowName = row->objectName();
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll);
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QString("4 members, 2 online"));
+        row = visibleItem(rowName);
+        QVERIFY(row);
+        const auto rowY = row->mapToItem(scroll, QPointF(12, 15)).y();
+        if (rowY >= scroll->height() || rowY < 0)
+            scroll->setProperty("contentY", scroll->property("contentY").toReal() + rowY - scroll->height() / 2);
+        QTRY_VERIFY(scroll->contains(row->mapToItem(scroll, QPointF(12, 15))));
         QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier, row->mapToScene(QPointF(12, 15)).toPoint());
         QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
         click(scene.window, visibleItem("channelTopicMuteAction"));
@@ -22449,6 +22473,43 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
         click(scene.window, visibleItem("channelTopicSummaryToggle"));
         QTRY_VERIFY(visibleItem("channelTopicSummaryDisabled"));
+    }
+
+    void openingAnotherTopicMenuDuringMuteAllowsFurtherActions()
+    {
+        ChannelInfoWindowScene scene;
+        auto second = windowChannelTopic(secondTopicId, streamId, "Second");
+        second["kind"] = "topic.created"; second["is_default"] = false;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", second}}));
+        std::function<void()> release;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/" + topicId + "/actions/notifications/invoke")) {
+                auto dto = windowChannelTopic(topicId, streamId, "General Topic");
+                dto["notification_mode"] = "mute";
+                Response response{dto};
+                response.defer = [&](auto finish) { release = std::move(finish); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        auto openMenu = [&](const QString &topic) {
+            auto *row = visibleItem("channelTopicRow-" + topic);
+            QVERIFY(row);
+            row->forceActiveFocus();
+            QTest::keyClick(scene.window, Qt::Key_Menu);
+        };
+        openMenu(topicId);
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
+        click(scene.window, visibleItem("channelTopicMuteAction"));
+        QTRY_VERIFY(bool(release));
+        openMenu(secondTopicId);
+        release();
+        QTRY_VERIFY(visibleItem("channelTopicBell-" + topicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        if (!visibleItem("channelTopicMuteAction")) openMenu(secondTopicId);
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction") && visibleItem("channelTopicMuteAction")->isEnabled());
     }
 
     void channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending()
