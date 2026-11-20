@@ -99,6 +99,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check repository for generated artifacts
+        run: sh packages/native/tests/repository-artifacts-test.sh
+
       - name: Check installer and package-version regressions
         shell: bash
         run: |
