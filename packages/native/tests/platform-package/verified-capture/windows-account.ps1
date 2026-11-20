@@ -110,9 +110,24 @@ switch ($Mode) {
         if (!$dialog) { throw 'The Microsoft common file chooser did not appear.' }
         $typeFilter = [System.Windows.Automation.PropertyCondition]::new($type::ControlTypeProperty,
             [System.Windows.Automation.ControlType]::Edit)
-        $edit = @($dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, $typeFilter) |
-            Where-Object { $_.Current.Name -eq 'File name:' -or $_.Current.AutomationId -eq '1148' })
-        if ($edit.Count -ne 1) { throw 'The native file name field was not unique.' }
+        $filenameCombo = [System.Windows.Automation.PropertyCondition]::new($type::AutomationIdProperty, '1148')
+        $deadline = (Get-Date).AddSeconds(12)
+        do {
+            $combo = $dialog.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $filenameCombo)
+            if ($combo) {
+                $edit = @($combo.FindAll([System.Windows.Automation.TreeScope]::Subtree, $typeFilter))
+            } else {
+                $edit = @($dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, $typeFilter) |
+                    Where-Object { $_.Current.Name.TrimEnd(':') -eq 'File name' })
+            }
+            if ($edit.Count -eq 1) { break }
+            Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $deadline)
+        if ($edit.Count -ne 1) {
+            $dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, $typeFilter) |
+                ForEach-Object { Write-Host "Common dialog Edit id=$($_.Current.AutomationId) class=$($_.Current.ClassName)" }
+            throw 'The native file name field was not unique.'
+        }
         $edit[0].SetFocus()
         $edit[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Origin)
         Key '{ENTER}'
