@@ -547,7 +547,8 @@ if(BUILD_TESTING)
             --jobs 6 --separate ${e2ee_pulse_cases})
         # A fresh CI directory has no CTestCostData.txt. Start the longest
         # headless suite early so its TLS peer waits overlap other tests.
-        set_property(TEST native-native-e2ee-read PROPERTY COST 1000)
+        # Charge each worker to the limit shared with the other CTest suites.
+        set_tests_properties(native-native-e2ee-read PROPERTIES COST 1000 PROCESSORS 6)
     else()
         add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
     endif()
