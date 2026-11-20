@@ -164,10 +164,14 @@ flag -> sibling page that hides the conversation column -> controller-enriched
 5. `activityStarredChipOpensPageAndCloseFlow` - chip enabled (updates the
    older gating test that asserted it disabled), page renders rows newest
    first, close restores the conversation, card click jumps and closes.
-6. `activityStarredScrollPaginationAndStates` - scrolling within 64 px of the
-   bottom fires exactly one request with the exact `page_marker` and no
-   re-fire until rearm beyond 96 px; error/empty states assert the exact
-   locale strings (en + ru).
+6. `activityStarredScrollPaginationFollowsMarkerAndRearm` covers an overflowing
+   first page. Opening or resizing it can briefly give the list unfinished
+   dimensions. The page keeps its marker until the settled view scrolls within
+   64 px of the bottom and rearms beyond 96 px. Closing the view cancels
+   its pending pagination check.
+7. `activityStarredShortFirstPageAutoLoadsNextMarker` covers a first page that
+   fits after layout. The list follows its marker automatically.
+8. `activityStarredErrorAndEmptyStates` checks the English and Russian strings.
 
 ## Out of scope (named)
 

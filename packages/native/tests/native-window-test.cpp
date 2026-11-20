@@ -5968,8 +5968,16 @@ mv -Tf "$root/.current-new" "$root/current"
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
+    void activityStarredScrollPaginationFollowsMarkerAndRearm_data()
+    {
+        QTest::addColumn<bool>("closeBeforeNextFrame");
+        QTest::newRow("scroll") << false;
+        QTest::newRow("leave-page") << true;
+    }
+
     void activityStarredScrollPaginationFollowsMarkerAndRearm()
     {
+        QFETCH(bool, closeBeforeNextFrame);
         class WindowStarredPageFixture final : public WindowChannelFixture {
         public:
             int starredPages = 0;
@@ -6044,10 +6052,32 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(list->property("contentHeight").toReal()
             > list->height() + 96.0, 5000);
         QCOMPARE(fixture.starredPages, 1);
+        // Opening or resizing the page can report an underfilled viewport
+        // before the final list geometry arrives in the same layout pass.
+        // The overflowing page must keep its marker until someone scrolls.
+        auto *page = view("nativeStarredPage"); QVERIFY(page);
+        const qreal settledHeight = page->height();
+        page->setHeight(settledHeight + list->property("contentHeight").toReal());
+        QVERIFY(list->height() > list->property("contentHeight").toReal());
+        page->setHeight(settledHeight);
+        QVERIFY(list->height() + 96 < list->property("contentHeight").toReal());
+        QVERIFY(controller.starredPage().value("canLoadMore").toBool());
         // Moving within 64 px of the bottom fires exactly one request with
         // the exact marker, and it does not re-fire while still down there.
         const auto travel = list->property("contentHeight").toReal() - list->height();
         list->setProperty("contentY", travel - 50.0);
+        if (closeBeforeNextFrame) {
+            controller.closeStarred();
+            QVERIFY(!list->isVisible());
+            // Let the queued pagination check return before inspecting the
+            // controller. An HTTP request may still be travelling to the fixture.
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+            const auto closedPage = controller.starredPage();
+            QCOMPARE(closedPage.value("rows").toList().size(), 12);
+            QVERIFY(closedPage.value("canLoadMore").toBool());
+            QCOMPARE(fixture.starredPages, 1);
+            return;
+        }
         QTRY_VERIFY_WITH_TIMEOUT(fixture.starredPages == 2, 3000);
         QCOMPARE(fixture.lastMarker, QStringLiteral("page2"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 14, 5000);
@@ -21590,6 +21620,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerPreviewShowsTheBodyItSends()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         QFETCH(bool, inlineFile);
@@ -21712,6 +21747,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(posted, outgoing);
         QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
         QTRY_VERIFY(controller.draft().isEmpty());
+        QVERIFY(!accessible->state().checked);
 
         QVERIFY(controller.beginEditMessage(messageId));
         const QString revision = "Edited **reply source**";
@@ -21737,6 +21773,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerAiNoticeTracksItsTriggerAndOtherPickers()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         WindowChannelFixture fixture;
@@ -21815,6 +21856,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(send && send->isEnabled());
         click(window, send);
         QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
         QCOMPARE(sent.size(), 0);
         click(window, ai);
         QTRY_VERIFY(open(notice));
@@ -35966,7 +36008,11 @@ private slots:
         QTRY_VERIFY(!save->isEnabled());
         click(window, visibleItem("supportPrepare"));
         QTRY_VERIFY(save->isEnabled());
-        const auto counts = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object()["eventCounts"].toObject();
+        const auto report = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object();
+        const auto counts = report["eventCounts"].toObject();
+        const auto classes = report["eventClasses"].toObject();
+        if (authenticated) QVERIFY(classes["other"].toInt() < 24);
+        else QCOMPARE(classes["other"].toInt(), 24);
         QVERIFY(counts.contains("error"));
         if (authenticated) QVERIFY(counts["error"].toInt() < 24);
         else QCOMPARE(counts["error"].toInt(), 24);
