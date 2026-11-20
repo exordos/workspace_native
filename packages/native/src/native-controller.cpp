@@ -12229,6 +12229,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                     ++m_reactionRevisions[message->uuid]; m_ownReactions.remove(message->uuid);
                 }
                 if (m_confirmedReadIds.contains(message->uuid) || (previous && previous->read)) message->read = true;
+                if (!previous && kind == QLatin1String("message.created") && !m_messages.isEmpty()) {
+                    const auto &tail = m_messages.constLast();
+                    if (message->createdMicros > tail.createdMicros
+                        || (message->createdMicros == tail.createdMicros && message->uuid > tail.uuid))
+                        ++m_historyTailAppends;
+                }
                 ++m_messageRevision;
                 m_messages = mergeMessages(m_messages, {*message});
                 pruneMessageFields();
@@ -16597,6 +16603,7 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
     const auto selection = m_selection;
     const auto generation = m_api->generation();
     const auto revision = m_messageRevision;
+    const auto pageRevision = historyPageRevision(older);
     const auto cacheRevision = m_cacheRevision;
     const auto lease = m_cacheLease;
     const QPointer<NativeCacheService> cache = m_cache;
@@ -16605,20 +16612,27 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
     m_loading = true;
     emit stateChanged();
     if (!guard) return;
-    const auto network = [this, guard, older, latest, selection, generation, revision, key, networkStarted] {
+    const auto network = [this, guard, older, latest, selection, generation, pageRevision, key, networkStarted] {
         if (!guard || generation != m_api->generation() || selection != m_selection || *networkStarted) return;
         *networkStarted = true;
         const auto boundary = latest || m_messages.isEmpty() ? std::optional<Message>{} : std::optional<Message>{m_messages.first()};
-        historyPage(older, selection, revision, boundary, older ? key.marker : QByteArray{}, {}, {});
+        historyPage(older, selection, pageRevision, boundary, older ? key.marker : QByteArray{}, {}, {});
     };
-    const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, cacheRevision, older, network](bool savedOnly) {
+    const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, pageRevision, cacheRevision, older, network](bool savedOnly) {
         if (!guard || !cache || cache != m_cache || selection != m_selection || generation != m_api->generation()) return;
-        cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
+        cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, pageRevision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
             if (!guard || selection != m_selection || cache != m_cache || generation != m_api->generation()) return;
-            const bool current = cacheRevision == m_cacheRevision && lease.owner == m_cacheLease.owner
-                && lease.generation == m_cacheLease.generation && revision == m_messageRevision;
-            if (!current) {
-                if (!savedOnly) { m_loading = false; loadMessages(); }
+            const bool sameLease = lease.owner == m_cacheLease.owner && lease.generation == m_cacheLease.generation;
+            if (!sameLease || cacheRevision != m_cacheRevision || revision != m_messageRevision) {
+                if (savedOnly) return;
+                if (sameLease && older && revision != m_messageRevision && pageRevision == historyPageRevision(true)) {
+                    // The cached projection predates a tail arrival. Fetch the original
+                    // older cursor from the server without replaying the visible window.
+                    network();
+                } else {
+                    m_loading = false;
+                    loadMessages();
+                }
                 return;
             }
             if (savedOnly && (m_historyVerified || !m_messages.isEmpty())) return;
@@ -16701,7 +16715,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery, requestTimer](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
-        if (revision != m_messageRevision) {
+        if (revision != historyPageRevision(older)) {
             // A confirmed local mutation is newer than this snapshot. Keep the
             // verified rows while rebuilding from a fresh server transaction.
             m_loading = false;
