@@ -761,6 +761,10 @@ ApplicationWindow {
         const message = currentMessage(menuMessageId);
         return Boolean(message && message.kind === "markdown" && !selectedStreamEncrypted);
     }
+    readonly property bool menuMessageReplyable: {
+        const message = currentMessage(menuMessageId);
+        return root.menuMessageOrdinaryReadable || Boolean(message && message.kind === "poll" && !selectedStreamEncrypted);
+    }
     readonly property bool menuMessageReadable: {
         const message = currentMessage(menuMessageId);
         return root.menuMessageOrdinaryReadable || Boolean(message && message.kind === "e2ee" && message.decrypted);
@@ -8528,7 +8532,7 @@ component NativeMentionChip: Item {
                                 // first image, else first video, never for a
                                 // selected-text quote (quote.ui.tsx:257-294).
                                 readonly property bool quoteMediaAllowed:
-                                    String(messageRow.modelData.quoteStatus) === "ready"
+                                    String(messageRow.modelData.quoteStatus) === "ready" && !messageRow.modelData.quoteIsPoll
                                     && String(messageRow.modelData.quoteText || "").length === 0
                                 readonly property var quoteMedia: quoteMediaAllowed
                                     ? root.controller.mediaPreviewReference(String(messageRow.modelData.quoteContent || ""))
@@ -8567,7 +8571,7 @@ component NativeMentionChip: Item {
                                     y: 6
                                     height: parent.height - 12
                                 }
-                                readonly property string quoteHtml: String(messageRow.modelData.quoteStatus) === "ready"
+                                readonly property string quoteHtml: String(messageRow.modelData.quoteStatus) === "ready" && !messageRow.modelData.quoteIsPoll
                                     && String(messageRow.modelData.quoteText || "").length === 0
                                     ? String(root.markdown.render(String(messageRow.modelData.quoteContent),
                                         messageQuoteFrame.quoteMediaShown).html)
@@ -8604,10 +8608,11 @@ component NativeMentionChip: Item {
                                     }
                                     Text {
                                         id: quoteSelection
-                                        visible: String(messageRow.modelData.quoteStatus) === "ready"
-                                            && String(messageRow.modelData.quoteText || "").length > 0
+                                        objectName: "quotePlainText-" + messageRow.modelData.id
+                                        visible: String(messageRow.modelData.quoteStatus) === "ready" && text.length > 0
                                         width: parent.width
-                                        text: String(messageRow.modelData.quoteText || "")
+                                        text: String(messageRow.modelData.quoteText
+                                            || (messageRow.modelData.quoteIsPoll ? messageRow.modelData.quoteContent : "") || "")
                                         textFormat: Text.PlainText
                                         font.pixelSize: 14
                                         lineHeightMode: Text.FixedHeight
@@ -9460,7 +9465,7 @@ component NativeMentionChip: Item {
                             Accessible.name: text
                             hoverEnabled: true
                             visible: root.composerAvailable && !root.controller.topicClosed && !root.encryptedConversation
-                                && messageRow.modelData.kind === "markdown" && !root.controller.cacheStale
+                                && (messageRow.modelData.kind === "markdown" || messageRow.modelData.kind === "poll") && !root.controller.cacheStale
                                 && root.messageSelectionCount === 0 && !root.aggregateConversation
                                 && (messageHover.hovered || bubble.activeFocus || visualFocus || hovered
                                     || quickReactions.hasFocus || messageBody.activeFocus)
@@ -14199,7 +14204,7 @@ component NativeMentionChip: Item {
         MessageMenuSeparator { visible: root.menuMessageKeyMissing }
         MessageMenuAction {
             objectName: "replyMessageAction"
-            visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation
+            visible: root.menuMessageReplyable && !root.aggregateConversation
             enabled: visible
             asset: "reply.svg"
             text: qsTr("Reply")
@@ -14214,7 +14219,7 @@ component NativeMentionChip: Item {
             }
         }
         MessageMenuSeparator {
-            visible: root.menuMessageOrdinaryReadable && !root.aggregateConversation
+            visible: root.menuMessageReplyable && !root.aggregateConversation
         }
         MessageMenuAction {
             objectName: "copyMessageImageAction"
@@ -14263,7 +14268,7 @@ component NativeMentionChip: Item {
             // The reference puts "Select" last in the bubble menu's secondary
             // section (workspace-message-bubble-menu.ui.tsx:383-395); toggling
             // the first message enters selection mode.
-            visible: root.menuMessageOrdinaryReadable && root.messageSelectionSurface
+            visible: root.menuMessageReplyable && root.messageSelectionSurface
                 && !root.aggregateConversation
             enabled: visible
             asset: "check.svg"

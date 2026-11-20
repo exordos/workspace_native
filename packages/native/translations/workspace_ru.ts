@@ -2770,8 +2770,8 @@
         <translation>Пересылка в неизвестное назначение не поддерживается.</translation>
     </message>
     <message>
-        <source>Only text messages can be forwarded.</source>
-        <translation>Пересылать можно только текстовые сообщения.</translation>
+        <source>Only text messages and polls can be forwarded.</source>
+        <translation>Пересылать можно только текстовые сообщения и опросы.</translation>
     </message>
     <message>
         <source>Could not create folder</source>

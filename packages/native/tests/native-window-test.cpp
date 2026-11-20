@@ -1461,6 +1461,7 @@ public:
     QString streamSource = "native";
     bool streamEncrypted = false;
     bool secondPollOnPage = false;
+    QJsonArray replies;
     // Poll config (reference defaults per the polls contract).
     bool multipleAnswers = true;
     bool anonymous = false;
@@ -1650,6 +1651,7 @@ public:
                 return {QJsonArray{QJsonObject{{"uuid", userId}, {"username", QStringLiteral("cassi")}}}};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 QJsonArray rows{row()};
+                for (const auto &reply : replies) rows.append(reply);
                 if (secondPollOnPage)
                     rows.append(row(messageUuidTwo, QStringLiteral("Where?")));
                 return {rows};
@@ -27122,6 +27124,55 @@ QTRY_VERIFY(create->property("enabled").toBool());
     static QString pollBubbleName(const QString &prefix, const QString &messageUuid)
     {
         return prefix + "-" + messageUuid;
+    }
+
+    void pollQuoteFrameAndComposerRenderPlainText_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void pollQuoteFrameAndComposerRenderPlainText()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        PollBubbleScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.fixture.closesAt.clear();
+        const auto id = scene.fixture.messageUuid;
+        const auto quotedId = scene.fixture.messageUuidTwo;
+        const QString selectedId = "8d000000-0000-4000-8000-000000000003";
+        scene.fixture.addedOptions.append({pollBubbleOptionThree, "**Office**"});
+        scene.fixture.replies.append(message("[Peer](urn:quote:" + id + ")\n\nAnswer", quotedId));
+        scene.fixture.replies.append(message("[Peer](urn:quote:" + id + "?text=Monday)\n\nAnswer", selectedId));
+        scene.start();
+        const QString expected = "Which day?\n• Monday\n• Tuesday\n• **Office**";
+        auto *content = scene.content();
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(content, "quotePlainText-" + quotedId), 2000);
+        auto *plain = visibleItem(content, "quotePlainText-" + quotedId);
+        QCOMPARE(plain->property("text").toString(), expected);
+        QCOMPARE(plain->property("textFormat").toInt(), int(Qt::PlainText));
+        auto *selection = visibleItem(content, "quotePlainText-" + selectedId);
+        QVERIFY(selection);
+        QCOMPARE(selection->property("text").toString(), QString("Monday"));
+        QVERIFY(!visibleItem(content, "quoteBodyHtml-" + quotedId));
+        auto *bubble = visibleItem(content, "message-" + id);
+        QVERIFY(bubble);
+        QTest::mouseMove(scene.window, QPoint(5, 5));
+        bubble->forceActiveFocus(Qt::TabFocusReason);
+        const auto replyButton = [&] { return visibleItem(content, "quickReply-" + id); };
+        QTRY_VERIFY(replyButton());
+        for (int i = 0; i < 20 && replyButton() && !replyButton()->hasActiveFocus(); ++i)
+            QTest::keyClick(scene.window, Qt::Key_Tab);
+        QVERIFY(replyButton() && replyButton()->hasActiveFocus());
+        QTest::keyClick(scene.window, Qt::Key_Space);
+        QTRY_COMPARE(scene.controller.replyMessageId(), id);
+        QCOMPARE(pollItemText(content, "replyExcerptText"), expected.simplified());
+        QVERIFY(scene.controller.replyMediaUrn().isEmpty());
     }
 
     void pollBubbleCardGeometryAndStructure()
