@@ -64,7 +64,9 @@ The header strings: `app.loading` = "Loading…" (en.json, ellipsis U+2026),
 ### Blocks and geometry (reference Tailwind -> px, `sidebar-workspace.ui.tsx:827-870`)
 
 All blocks sit inside the sidebar scroll area, between the activity section
-and the stream list. Outer wrapper of the cards is `px-3 py-4` (12/16), the
+and the stream list. In the native layout, opening Activity pushes the state
+cards and the chat list below the expanded panel. A search hides Activity and
+uses the same card position whether Activity was open or closed. Outer wrapper of the cards is `px-3 py-4` (12/16), the
 partial banner wrapper is `px-3 pb-2` (12 left/right, 8 bottom).
 
 Loading card (`827-838`, `role=status`, `aria-busy`): dashed card

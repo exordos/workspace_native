@@ -168,6 +168,21 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+static void checkSidebarCardBelowExpandedActivity(QQuickWindow *window, const QString &cardName)
+{
+    auto *root = window->contentItem();
+    clickCurrentItem(window, "activityExpandButton");
+    QTRY_VERIFY(visibleItem(root, "activityHeader"));
+    auto *panel = visibleItem(root, "sidebarActivityPanel"); QVERIFY(panel);
+    auto *card = visibleItem(root, cardName); QVERIFY(card);
+    QTRY_VERIFY(panel->height() > 32);
+    const auto panelBounds = panel->mapRectToItem(root, QRectF(QPointF{}, panel->size()));
+    const auto cardBounds = card->mapRectToItem(root, QRectF(QPointF{}, card->size()));
+    QVERIFY2(!cardBounds.intersects(panelBounds) && cardBounds.top() >= panelBounds.bottom(),
+        qPrintable(QStringLiteral("card top %1, expanded Activity bottom %2")
+            .arg(cardBounds.top()).arg(panelBounds.bottom())));
+}
+
 // Issue #420: QtTest warns on any mouse event outside the window and window
 // warnings fail cases, so a click on a control inside a scrolling page body
 // must be gated on a real viewport reachability check. True when the item's
@@ -30502,6 +30517,7 @@ private slots:
         QVERIFY(!visibleItem("sidebarEmptyCard"));
         QVERIFY(!visibleItem("sidebarPartialBanner"));
         QVERIFY(!visibleItem("stream-"+streamId));
+        checkSidebarCardBelowExpandedActivity(window, "sidebarErrorCard");
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
@@ -30671,6 +30687,8 @@ private slots:
         if (stateCase == "workspace") QVERIFY(controller.streams().isEmpty());
         if (stateCase == "personal" || stateCase == "channels" || stateCase == "folder")
             QVERIFY(controller.sidebarStreams().isEmpty());
+        if (stateCase == "search") QVERIFY(!visibleItem("sidebarActivityPanel"));
+        else checkSidebarCardBelowExpandedActivity(window, "sidebarEmptyCard");
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
@@ -30678,8 +30696,16 @@ private slots:
     // the empty card together (a query that matches nothing while a catalog
     // refresh failed). The card must stack below the banner, never paint over
     // it (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md stacking rule).
+    void sidebarPartialErrorStacksEmptyCardBelowBanner_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QStringLiteral("en");
+        QTest::newRow("ru") << QStringLiteral("ru");
+    }
+
     void sidebarPartialErrorStacksEmptyCardBelowBanner()
     {
+        QFETCH(QString, locale);
         WindowChannelFixture fixture;
         bool failCatalog = false;
         const auto fallback = fixture.server.handler;
@@ -30691,7 +30717,7 @@ private slots:
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("sidebar-partial-empty.ini"));
-        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setLocale(locale); preferences.setMode("light");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
@@ -30709,6 +30735,7 @@ private slots:
         failCatalog = true;
         controller.refresh();
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarPartialBanner"),5000);
+        checkSidebarCardBelowExpandedActivity(window, "sidebarPartialBanner");
         // A query that matches nothing on top of the failed refresh keeps the
         // banner AND surfaces the empty card: both states are active together.
         window->setProperty("sidebarQuery","nothing-matches");
