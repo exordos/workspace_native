@@ -14822,11 +14822,11 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             QVERIFY(distanceFromBottom() >= 500);
             if (prepend) {
-                QTRY_VERIFY(list->property("atYBeginning").toBool());
-                // The climb crossed the 100 px auto-page zone
-                // (docs/NATIVE_DESKTOP_AUTO_PAGING.md): the older page arrives
-                // on its own, without the button click.
+                // The user's wheel crossed the prefetch reserve. A fast page can
+                // already have restored the old anchor below 50 newly inserted
+                // rows by the next frame. Observe the page and its marker.
                 QTRY_COMPARE(controller.messages().size(), 100);
+                QTRY_VERIFY(!list->property("positioning").toBool());
                 QCOMPARE(olderPageMarkers, QStringList{initialOldest});
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
