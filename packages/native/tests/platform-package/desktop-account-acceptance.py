@@ -49,6 +49,17 @@ class SessionFixture(ThreadingHTTPServer):
         self.refresh_count = 0
         self.introspect_count = 0
 
+    def get_request(self):
+        # Complete TLS on a bounded socket. Qt can speculatively open a
+        # connection before it has a request ready.
+        connection, address = self.socket.accept()
+        connection.settimeout(4)
+        try:
+            return self.tls.wrap_socket(connection, server_side=True), address
+        except BaseException:
+            connection.close()
+            raise
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -99,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def run(*args, **kwargs):
+    kwargs.setdefault("timeout", 35)
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
@@ -149,12 +161,13 @@ def stored(key):
         check(error == 1168, f"Credential Manager lookup failed with {error}")
         return False
     result = subprocess.run(["security", "find-generic-password", "-s", SERVICE, "-a", key],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
     check(result.returncode in (0, 44), f"Keychain lookup failed with {result.returncode}")
     return result.returncode == 0
 
 
 def drive(pid, mode, origin):
+    print(f"Driving the packaged {mode} interaction.", flush=True)
     if WINDOWS:
         run("pwsh", "-NoProfile", "-File", HERE / "windows-account.ps1", "-ApplicationPid", pid,
             "-Mode", mode, "-Origin", origin, timeout=100)
@@ -171,7 +184,8 @@ def scenario(executable):
         with trust_loopback_certificate(folder) as (cert, key), SessionFixture() as fixture:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(cert, key)
-            fixture.socket = context.wrap_socket(fixture.socket, server_side=True)
+            fixture.tls = context
+            print("Trusted an ephemeral loopback TLS fixture.", flush=True)
             origin = "https://127.0.0.1:" + str(fixture.server_port)
             identity = json.dumps(["workspace-session-v1", origin, PROJECT, USER], separators=(",", ":"))
             record = hashlib.sha256(identity.encode()).hexdigest()
@@ -183,6 +197,7 @@ def scenario(executable):
                     with (folder / (mode + ".log")).open("wb") as log:
                         app = subprocess.Popen([executable], stdout=log, stderr=log)
                         try:
+                            print(f"Started the normal package for {mode}.", flush=True)
                             if mode == "login":
                                 drive(app.pid, "login", origin)
                                 wait_for(lambda: fixture.introspect_count >= 1 and stored(record), "Login did not populate the native store")
