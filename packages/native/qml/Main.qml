@@ -1407,6 +1407,77 @@ ApplicationWindow {
         onTriggered: root.calendarDate = new Date()
     }
 
+    // #108 (docs/NATIVE_DESKTOP_MESSAGE_TIMESTAMP_VIEWER.md): the stored instant
+    // shown by the read-only timestamp panel and the trigger that opened it
+    // (null when opened through an urn:time reference instead of a chip).
+    property var messageTimeAnchor: null
+    property string messageTimeInstant: ""
+    readonly property var messageTimeDate: messageTimeInstant.length ? new Date(messageTimeInstant) : null
+    readonly property bool messageTimeValid: messageTimeDate != null && !isNaN(messageTimeDate.getTime())
+    readonly property int messageTimeSelectedDay: root.messageTimeValid ? messageTimeDate.getDate() : 0
+    readonly property string messageTimeMonthCaption: root.messageTimeValid
+        ? Qt.locale(root.preferences.locale).toString(messageTimeDate, "MMMM yyyy") : ""
+    // Leading 0 cells are blank grid slots before the first day.
+    readonly property var messageTimeCalendar: {
+        if (!root.messageTimeValid)
+            return []
+        const firstWeekday = Qt.locale(root.preferences.locale).firstDayOfWeek
+        const daysInMonth = new Date(messageTimeDate.getFullYear(), messageTimeDate.getMonth() + 1, 0).getDate()
+        const leading = ((messageTimeDate.getDay() + 6) % 7 - (firstWeekday - 1) + 7) % 7
+        const cells = []
+        for (let index = 0; index < leading; ++index)
+            cells.push(0)
+        for (let day = 1; day <= daysInMonth; ++day)
+            cells.push(day)
+        return cells
+    }
+
+    // localTime() of the reference date-time-picker.lib.ts:17-21: HH:mm, plus
+    // seconds only when the stored instant has non-zero seconds/ms (:75).
+    function messageTimeClock(instant) {
+        const date = new Date(String(instant || ""))
+        if (isNaN(date.getTime()))
+            return ""
+        const pad = part => String(part).padStart(2, "0")
+        const parts = [pad(date.getHours()), pad(date.getMinutes())]
+        if (date.getSeconds() !== 0 || date.getMilliseconds() !== 0)
+            parts.push(pad(date.getSeconds()))
+        return parts.join(":")
+    }
+
+    function openMessageTimeView(instant, anchor) {
+        const value = String(instant || "")
+        if (!value.length || isNaN(new Date(value).getTime()))
+            return
+        root.messageTimeInstant = value
+        root.messageTimeAnchor = anchor || null
+        messageTimePanel.open()
+    }
+
+    // Mirrors computeFloatingPickerPosition (floating-panel-position.lib.ts:1-46):
+    // 8 px viewport margin, 8 px anchor gap, centered, prefer above, clamp.
+    // The panel binds x/y to this so every open recomputes from the trigger.
+    readonly property point messageTimePanelTopLeft: {
+        // Touching the instant keeps the position reactive to each open.
+        if (!messageTimeInstant.length)
+            return Qt.point(8, Math.max(8, root.height - messageTimePanel.implicitHeight - 8))
+        const margin = 8
+        const gap = 8
+        const panelWidth = messageTimePanel.width
+        const panelHeight = messageTimePanel.height > 0 ? messageTimePanel.height : messageTimePanel.implicitHeight
+        const anchor = root.messageTimeAnchor
+        if (anchor == null)
+            return Qt.point(margin, Math.max(margin, root.height - panelHeight - margin))
+        const origin = anchor.mapToItem(messageTimePanel.parent, 0, 0)
+        const maxLeft = Math.max(margin, root.width - panelWidth - margin)
+        const x = Math.min(Math.max(margin, origin.x + anchor.width / 2 - panelWidth / 2), maxLeft)
+        const topAbove = origin.y - panelHeight - gap
+        if (topAbove >= margin)
+            return Qt.point(x, topAbove)
+        return Qt.point(x, Math.min(Math.max(margin, origin.y + anchor.height + gap),
+            Math.max(margin, root.height - panelHeight - margin)))
+    }
+
     function openMessageActions(message, anchor, selectedText) {
         if (root.encryptionControlLabel(String(message.kind)).length)
             return;
@@ -1451,6 +1522,11 @@ ApplicationWindow {
             root.downloadOwner = root.controller.ownerKey;
             root.downloadId = reference.id;
             attachmentSaveDialog.open();
+        } else if (reference.kind === "time" && String(reference.utc || "").length) {
+            // #108: an urn:time reference opens the read-only timestamp panel
+            // with the normalized instant (workspace-reference.cpp:328-333)
+            // instead of falling through to the under-development notice.
+            root.openMessageTimeView(reference.utc, null)
         } else {
             referenceNotice.open();
         }
@@ -8804,6 +8880,25 @@ ApplicationWindow {
                             lineHeightMode: Text.FixedHeight
                             lineHeight: 16
                             color: root.colors["text-muted"]
+                            // #108: the time chip is the trigger of the read-only
+                            // timestamp viewer (reference hook :566-572 click and
+                            // :490-496 Enter/Space on the focused [datetime] element).
+                            activeFocusOnTab: true
+                            Accessible.role: Accessible.Button
+                            Accessible.name: text
+                            MouseArea {
+                                anchors.fill: parent
+                                anchors.margins: -2
+                                acceptedButtons: Qt.LeftButton
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                            }
+                            Keys.onPressed: event => {
+                                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                    event.accepted = true
+                                    root.openMessageTimeView(messageRow.modelData.createdAt, messageTime)
+                                }
+                            }
                         }
                         Accessible.name: messageRow.modelData.kind === "key_announced" ? announcementTitle.text : messageRow.keyResponse ? keyServiceResponse.accessibleSummary : messageRow.incomingKeyRequest !== null ? keyRequestService.accessibleSummary : messageRow.encryptedLocked ? root.encryptedPreparationState(messageRow.modelData) === "error" ? qsTr("Could not decrypt message") : root.encryptedPreparationState(messageRow.modelData) === "preparing" ? qsTr("Decrypting message") : qsTr("Key required") : String(messageRow.modelData.author) + ": " + String(messageRow.rendered.plain)
                     }
@@ -11127,6 +11222,145 @@ ApplicationWindow {
             text: qsTr("Profiles, referenced messages and attachment previews are still under development.")
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
+        }
+    }
+
+    // #108 (docs/NATIVE_DESKTOP_MESSAGE_TIMESTAMP_VIEWER.md): read-only view of
+    // the instant stored by a message time chip. Parity with the reference
+    // AnchoredPopover (rounded-xl border border-subtle bg-elevated shell,
+    // role=dialog named by dateTimePicker.label) hosting a read-only
+    // DateTimePicker: PANEL_WIDTH 371 (:9), max height viewport - 16 px (:67),
+    // seconds only when the stored instant has them (:75), Escape/outside click
+    // dismisses and focus returns to the trigger (:63-66).
+    Popup {
+        id: messageTimePanel
+        objectName: "messageTimePanel"
+        width: 371
+        padding: 0
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        // Reference panel style: maxHeight calc(100dvh - 16px) (:67).
+        height: Math.max(0, Math.min(implicitHeight, root.height - 16))
+        x: root.messageTimePanelTopLeft.x
+        y: root.messageTimePanelTopLeft.y
+        background: Rectangle {
+            radius: 12
+            color: root.colors["bg-elevated"]
+            border.color: root.colors["border-subtle"]
+        }
+        onClosed: {
+            const anchor = root.messageTimeAnchor
+            root.messageTimeAnchor = null
+            if (anchor != null)
+                anchor.forceActiveFocus(Qt.OtherFocusReason)
+        }
+        contentItem: Column {
+            objectName: "messageTimePanelContent"
+            x: 16
+            width: messageTimePanel.availableWidth - 32
+            spacing: 0
+            // role=dialog named by dateTimePicker.label (reference dialog contract).
+            Accessible.role: Accessible.Dialog
+            Accessible.name: qsTr("Date and time")
+            Text {
+                objectName: "messageTimePanelDate"
+                topPadding: 14
+                bottomPadding: 6
+                text: root.messageTimeMonthCaption
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                font.weight: Font.Medium
+                color: root.colors["text-primary"]
+                Accessible.ignored: true
+            }
+            Grid {
+                objectName: "messageTimePanelWeekdays"
+                columns: 7
+                rowSpacing: 2
+                Accessible.ignored: true
+                Repeater {
+                    model: 7
+                    delegate: Text {
+                        required property int index
+                        width: 48
+                        horizontalAlignment: Text.AlignHCenter
+                        text: Qt.locale(root.preferences.locale).dayName(((index + Qt.locale(root.preferences.locale).firstDayOfWeek - 1) % 7) + 1, Locale.NarrowDay)
+                        textFormat: Text.PlainText
+                        font.pixelSize: 12
+                        color: root.colors["text-muted"]
+                        Accessible.ignored: true
+                    }
+                }
+            }
+            Grid {
+                objectName: "messageTimePanelGrid"
+                columns: 7
+                rowSpacing: 2
+                Accessible.ignored: true
+                Repeater {
+                    model: root.messageTimeCalendar
+                    delegate: Item {
+                        id: messageTimeDayCell
+                        required property var modelData
+                        required property int index
+                        width: 48
+                        height: 30
+                        Accessible.ignored: true
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 34
+                            height: 26
+                            radius: 6
+                            visible: Number(messageTimeDayCell.modelData) === root.messageTimeSelectedDay
+                            color: root.colors["accent"]
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            objectName: Number(messageTimeDayCell.modelData) === 0 ? ""
+                                : Number(messageTimeDayCell.modelData) === root.messageTimeSelectedDay ? "messageTimePanelSelectedDay"
+                                : "messageTimePanelDay-" + Number(messageTimeDayCell.modelData)
+                            visible: Number(messageTimeDayCell.modelData) !== 0
+                            text: Number(messageTimeDayCell.modelData) === 0 ? "" : String(Number(messageTimeDayCell.modelData))
+                            textFormat: Text.PlainText
+                            font.pixelSize: 13
+                            color: Number(messageTimeDayCell.modelData) === root.messageTimeSelectedDay
+                                ? root.colors["bg-elevated"] : root.colors["text-primary"]
+                            Accessible.ignored: true
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: root.colors["border-subtle"]
+                Accessible.ignored: true
+            }
+            Row {
+                objectName: "messageTimePanelTimeRow"
+                topPadding: 12
+                bottomPadding: 16
+                spacing: 10
+                Text {
+                    objectName: "messageTimePanelTimeLabel"
+                    text: qsTr("Time")
+                    textFormat: Text.PlainText
+                    font.pixelSize: 13
+                    color: root.colors["text-muted"]
+                    Accessible.ignored: true
+                }
+                Text {
+                    objectName: "messageTimePanelTime"
+                    text: root.messageTimeClock(root.messageTimeInstant)
+                    textFormat: Text.PlainText
+                    font.pixelSize: 14
+                    font.weight: Font.Medium
+                    color: root.colors["text-primary"]
+                    Accessible.ignored: true
+                }
+            }
         }
     }
 
