@@ -178,6 +178,55 @@ class Controls(unittest.TestCase):
             cleanup.assert_not_called()
         cleanup.assert_called_once()
 
+    def test_typing_preserves_existing_draft_when_the_peer_check_fails(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "live-workspace-acceptance.py"))
+        desktop = runner["Desktop"].__new__(runner["Desktop"])
+        desktop.env = {}
+        desktop.atspi = Mock()
+        desktop.lookup = Mock()
+        desktop.latest = Mock(return_value={})
+        desktop.record = Mock()
+        desktop.action = Mock(return_value=contextlib.nullcontext())
+        desktop.until = lambda condition, reason: self.assertTrue(condition(), reason)
+        original = "an existing draft"
+        field = {"text": original, "caret": 4}
+        text = desktop.atspi.Text
+        text.get_text.side_effect = lambda *_: field["text"]
+        text.get_character_count.side_effect = lambda *_: len(field["text"])
+        text.get_caret_offset.side_effect = lambda *_: field["caret"]
+
+        def set_caret(_, offset):
+            field["caret"] = offset
+            return True
+
+        text.set_caret_offset.side_effect = set_caret
+        # Clicking the middle of the editor puts the caret inside the saved text.
+        desktop.click = lambda _: set_caret(None, 4)
+
+        def type_sample(data):
+            pos = field["caret"]
+            field["text"] = field["text"][:pos] + data.decode() + field["text"][pos:]
+            field["caret"] += len(data)
+
+        def backspace(argv, **_):
+            pos = field["caret"]
+            count = argv.count("BackSpace")
+            field["text"] = field["text"][:pos - count] + field["text"][pos:]
+
+        def peer_event(_):
+            self.assertEqual(field["text"], original + "acceptance draft")
+            raise RuntimeError("peer disconnected")
+
+        peer = Mock()
+        peer.exercise.side_effect = peer_event
+        keyboard = Mock()
+        keyboard.stdin.write.side_effect = type_sample
+        with patch.object(runner["subprocess"], "Popen", return_value=keyboard), patch.dict(
+            desktop.exercise_composer.__globals__, {"command": backspace}
+        ), self.assertRaisesRegex(RuntimeError, "peer disconnected"):
+            desktop.exercise_composer(peer)
+        self.assertEqual(field["text"], original)
+
     def test_peer_uses_the_public_uuid_returned_by_the_deployed_backend(self):
         runner = runpy.run_path(
             str(

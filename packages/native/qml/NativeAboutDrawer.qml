@@ -314,7 +314,10 @@ FocusScope {
                                     wrapMode: Text.Wrap
                                 }
                                 Text {
+                                    id: updateStatus
                                     objectName: "nativeUpdateStatus"
+                                    Accessible.role: Accessible.StaticText
+                                    Accessible.name: updateStatus.text
                                     width: parent.width
                                     text: {
                                         switch (drawer.phase) {
