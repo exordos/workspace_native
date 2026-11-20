@@ -440,12 +440,12 @@ private slots:
             return Response{QJsonArray{}};
         };
         QVERIFY(f.start());
-        f.controller.setDraft(QStringLiteral("Hi @Alice!"));
+        f.controller.setDraft(QStringLiteral("Hi @Alice and @cassi!"));
         f.controller.send();
         QTRY_VERIFY_WITH_TIMEOUT(!posted.isEmpty(), 4000);
         // The wire body carries the canonical URN while the visible draft kept the name.
         QCOMPARE(posted.value("payload").toObject().value("content").toString(),
-            QStringLiteral("Hi [Alice](urn:user:%1)!").arg(alice));
+            QStringLiteral("Hi [Alice](urn:user:%1) and [cassi](urn:user:%2)!").arg(alice, userId));
         QTRY_VERIFY_WITH_TIMEOUT(f.controller.draft().isEmpty(), 4000);
     }
 };
