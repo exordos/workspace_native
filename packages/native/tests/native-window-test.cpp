@@ -31100,6 +31100,104 @@ private slots:
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void latestTopicClickFromStarredWaitsForItsOwnedRoute_data()
+    {
+        QTest::addColumn<QString>("outcome");
+        for (const auto *outcome : {"opened", "unavailable", "superseded"})
+            QTest::newRow(outcome) << QString(outcome);
+    }
+
+    void latestTopicClickFromStarredWaitsForItsOwnedRoute()
+    {
+        QFETCH(QString, outcome);
+        WindowChannelFixture fixture;
+        const QString originStream = "da000000-0000-4000-8000-000000000001";
+        const QString lastMessage = "81000000-0000-4000-8000-000000000003";
+        attachStreamLastMessage(fixture, lastMessage);
+        std::function<void()> releaseTopic;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/") && request.method == "GET") {
+                auto rows = fallback(request).data.toArray();
+                rows.append(windowChannel(originStream, "Another channel"));
+                return {rows};
+            }
+            if (path.endsWith("/stream_topics/") && QUrlQuery(request.target).queryItemValue("stream_uuid") == originStream)
+                return {QJsonArray{}};
+            if (path.endsWith("/stream_topics/" + secondTopicId)) {
+                Response response{windowChannelTopic(secondTopicId, streamId, "Planning"), outcome == "unavailable" ? 404 : 200};
+                response.defer = [&](std::function<void()> send) { releaseTopic = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        const auto cacheDirectory = directory.filePath("cache");
+        {
+            NativeCache seed(cacheDirectory, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            QVERIFY(seed.putMessageBody(seed.lease(), message("Latest planning update", lastMessage, secondTopicId)));
+        }
+        NativeCacheService cache(cacheDirectory, {}, true);
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        preferences.setChatClickAction("latestTopic");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 2);
+        controller.selectStream(originStream);
+        QTRY_VERIFY(!controller.busy());
+        const auto latestTopic = [&] {
+            for (const auto &entry : controller.streams()) {
+                const auto row = entry.toMap();
+                if (row.value("id").toString() == streamId) return row.value("previewTopic").toString();
+            }
+            return QString{};
+        };
+        QTRY_COMPARE(latestTopic(), secondTopicId);
+        controller.showStarred();
+        QTRY_VERIFY(visibleItem("nativeStarredPage"));
+        QTRY_COMPARE(latestTopic(), secondTopicId);
+        QTRY_VERIFY(visibleItem("stream-" + streamId));
+        click(window, visibleItem("stream-" + streamId));
+        QTRY_VERIFY(releaseTopic);
+        QCOMPARE(controller.selectedStream(), originStream);
+        QVERIFY(!visibleItem("conversationPanel"));
+        if (outcome == "superseded") {
+            controller.selectStream(originStream);
+            controller.showStarred();
+        }
+        releaseTopic();
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        if (outcome == "opened") {
+            QTRY_COMPARE(controller.selectedStream(), streamId);
+            QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("conversationPanel"), 2000);
+            QVERIFY(!controller.starredVisible());
+        } else {
+            QCOMPARE(controller.selectedStream(), originStream);
+            QVERIFY(controller.starredVisible());
+            QVERIFY(visibleItem("nativeStarredPage"));
+            QVERIFY(!visibleItem("conversationPanel"));
+        }
+    }
+
     void chatClickActionLatestTopicOpensTheLastMessageTopic()
     {
         WindowChannelFixture fixture;

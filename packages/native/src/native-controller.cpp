@@ -15262,6 +15262,8 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
         m_topicOpening.routeStream = m_stream;
         m_topicOpening.routeTopic = m_topic;
         m_topicOpening.routeSecurity = topicOpeningSecurity(*currentStream());
+        // Publish the user's destination and its visible page in the same route change.
+        if (!m_restoringSidebarRoute) m_starredVisible = false;
     }
     const auto current = [&] {
         return guard && selection == m_selection

@@ -343,3 +343,9 @@ matching `activity/<collection>` branch:
 - Route-to-page wiring for `activity` collections other than `reactions`.
 - `qml/NativeReactionPicker.qml` and `qml/NativeQuickReactions.qml` (message
   reactions) are untouched.
+
+
+When the user clicks another channel's latest topic from Starred, the page stays
+visible while the native client looks up the topic. A successful route change
+reveals the new conversation. A failed or superseded lookup leaves the selected
+page in place.
