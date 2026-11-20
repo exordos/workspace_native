@@ -21613,6 +21613,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(posted, outgoing);
         QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
         QTRY_VERIFY(controller.draft().isEmpty());
+        QVERIFY(!accessible->state().checked);
 
         QVERIFY(controller.beginEditMessage(messageId));
         const QString revision = "Edited **reply source**";
@@ -21721,6 +21722,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(send && send->isEnabled());
         click(window, send);
         QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
         QCOMPARE(sent.size(), 0);
         click(window, ai);
         QTRY_VERIFY(open(notice));
