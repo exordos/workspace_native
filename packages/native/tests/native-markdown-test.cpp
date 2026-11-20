@@ -242,6 +242,37 @@ private slots:
         QCOMPARE(deviations, QStringList{});
     }
 
+    void mediaTextPartsCarryTheirOwnCodeBlocks()
+    {
+        NativeMarkdown renderer;
+        QStringList deviations;
+        const auto rendered = renderer.render("Before\n\n![shot.png](urn:image:"
+            + messageId + "?name=shot.png)\n\n```bash\nsed -i copy-part\n```\n\nAfter");
+        const auto parts = rendered.value("parts").toList();
+        if (parts.size() != 3)
+            deviations << QStringLiteral("expected text/image/text parts, got %1").arg(parts.size());
+        else
+        {
+            if (parts.at(0).toMap().contains("codeBlocks"))
+                deviations << QStringLiteral("the leading text part unexpectedly carries code blocks");
+            const auto trailing = parts.at(2).toMap();
+            const auto blocks = trailing.value("codeBlocks").toList();
+            if (blocks.size() != 1)
+                deviations << QStringLiteral("the trailing text part carries %1 copy targets, expected 1").arg(blocks.size());
+            else
+            {
+                const auto block = blocks.first().toMap();
+                if (block.value("text").toString() != QStringLiteral("sed -i copy-part"))
+                    deviations << QStringLiteral("part copy text [%1] != [sed -i copy-part]").arg(block.value("text").toString());
+                if (block.value("start").toInt() != 0)
+                    deviations << QStringLiteral("part copy start %1 is not 0 (offsets must be part-relative)").arg(block.value("start").toInt());
+            }
+        }
+        for (const auto &deviation : deviations)
+            qWarning().noquote() << "mediaTextPartsCarryTheirOwnCodeBlocks:" << deviation;
+        QCOMPARE(deviations, QStringList{});
+    }
+
     void lineBreakCorrectionPreservesTaskMarkersAndCodeLines()
     {
         NativeMarkdown renderer;
