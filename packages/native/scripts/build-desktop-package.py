@@ -42,7 +42,11 @@ install("application", root / "packages/native", stage, "-DBUILD_TESTING=OFF",
         f"-DWORKSPACE_NATIVE_PYTHON3={sys.executable}")
 shell_test = build / "application" / ("Release/native-platform-shell-test.exe" if windows
                                      else "native-platform-shell-test")
-run(shell_test, "-o", "-,txt")
+shell_log = build / "platform-shell.txt"
+result = subprocess.run([str(shell_test), "-o", f"{shell_log},txt"])
+if shell_log.is_file():
+    print(shell_log.read_text(encoding="utf-8", errors="replace"), flush=True)
+result.check_returncode()
 artifacts.mkdir(parents=True, exist_ok=True)
 name = "workspace-native-windows-x64" if windows else "workspace-native-macos-arm64"
 archive = artifacts / f"{name}.zip"
