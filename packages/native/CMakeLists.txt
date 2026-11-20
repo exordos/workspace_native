@@ -82,6 +82,10 @@ add_library(workspace-native-core STATIC
     src/native-hotkeys.cpp src/native-hotkeys.h
     src/composer-references.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
+if(MSVC)
+    # ARM64 emits more sections for the controller than a standard COFF object can hold.
+    set_property(SOURCE src/native-controller.cpp APPEND PROPERTY COMPILE_OPTIONS /bigobj)
+endif()
 # Incoming invite UI variant, the native counterpart of the reference
 # VITE_CALL_INCOMING_MODAL_VARIANT build flag (shared/lib/env.ts:132-135):
 # "large" (default) or "compact"; invalid values fall back to "large" at
