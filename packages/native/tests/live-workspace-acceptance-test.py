@@ -8,6 +8,7 @@ import ssl
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from importlib.util import find_spec
 from pathlib import Path
@@ -455,6 +456,25 @@ class NetworkControlTests(unittest.TestCase):
                     connection.request.side_effect = error
                     self.assertEqual(probe_organization_settings(origin), expected)
             self.assertEqual(connection.close.call_count, 10)
+
+    def test_discovery_budget_includes_time_spent_waiting_for_settings(self):
+        from live_acceptance_network import probe_organization_settings
+
+        with patch(
+            "live_acceptance_network.SETTINGS_TIMEOUT", 0.05, create=True
+        ), patch("live_acceptance_network.http.client.HTTPSConnection") as factory:
+            response = factory.return_value.getresponse.return_value
+            response.status = 200
+
+            def delayed_settings(_):
+                time.sleep(0.25)
+                return b"{}"
+
+            response.read.side_effect = delayed_settings
+            self.assertEqual(
+                probe_organization_settings("https://fixture.invalid"), "timeout"
+            )
+            factory.return_value.close.assert_called_once()
 
     def test_shutdown_with_a_connected_client_waiting_for_the_backend(self):
         with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Echo) as endpoint:

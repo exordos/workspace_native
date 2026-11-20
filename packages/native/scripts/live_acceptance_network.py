@@ -4,18 +4,28 @@ import asyncio
 import contextlib
 import http.client
 import json
+import signal
 import socket
 import ssl
 import threading
 from urllib.parse import urlsplit
+
+SETTINGS_TIMEOUT = 8
+
+
+def _settings_deadline(_signum, _frame):
+    raise TimeoutError
 
 
 def probe_organization_settings(origin):
     """Check the runner's unauthenticated path independently of the Qt proxy."""
     parsed = urlsplit(origin)
     connection = http.client.HTTPSConnection(
-        parsed.hostname, parsed.port or 443, timeout=8
+        parsed.hostname, parsed.port or 443, timeout=SETTINGS_TIMEOUT
     )
+    # This runs on the main thread of the dedicated Linux worker before Sway.
+    previous_handler = signal.signal(signal.SIGALRM, _settings_deadline)
+    signal.setitimer(signal.ITIMER_REAL, SETTINGS_TIMEOUT)
     try:
         connection.request("GET", "/api/workspace/v1/messenger/server_settings")
         response = connection.getresponse()
@@ -36,6 +46,8 @@ def probe_organization_settings(origin):
     except (ValueError, RecursionError):
         return "invalid-settings"
     finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
         connection.close()
 
 
