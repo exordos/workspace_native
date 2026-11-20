@@ -1475,10 +1475,19 @@ ApplicationWindow {
         // pixel-delta wheels, which belong to the Flickable's own precise
         // touchpad path) keeps travelling to the Flickable, like the
         // reference ScrollArea's non-passive hand-off at an edge.
-        if (wheel.angleDelta.y === 0
-                || wheel.pixelDelta.y !== 0 && wheel.phase !== Qt.NoScrollPhase)
-            return false
-        const dy = -wheel.angleDelta.y / 120 * root.wheelPixelsPerNotch
+        return scrollFlickableBy(flick, wheelDistance(wheel))
+    }
+    function wheelDistance(wheel) {
+        return wheel.pixelDelta.y !== 0 && wheel.phase !== Qt.NoScrollPhase
+            ? 0 : -wheel.angleDelta.y / 120 * root.wheelPixelsPerNotch
+    }
+    function boundedWheelPosition(flick, target) {
+        const top = flick.originY - flick.topMargin
+        const bottom = flick.originY + Math.max(0, flick.contentHeight - flick.height) + flick.bottomMargin
+        return Math.min(Math.max(target, top), bottom)
+    }
+    function scrollFlickableBy(flick, dy) {
+        if (!dy) return false
         // An outward wheel that cannot move the list (already pinned at the
         // requested edge) must stay unconsumed so an outer scroller under the
         // pointer still receives it, like the reference ScrollArea's
@@ -1486,10 +1495,7 @@ ApplicationWindow {
         // contentY range, with a half-pixel tolerance so a settled list that
         // rests on a fractional edge (contentHeight rounding, DPR alignment)
         // is not falsely treated as movable.
-        const minY = flick.originY - flick.topMargin
-        const maxY = flick.originY
-            + Math.max(0, flick.contentHeight - flick.height) + flick.bottomMargin
-        const settled = Math.min(Math.max(flick.contentY + dy, minY), maxY)
+        const settled = boundedWheelPosition(flick, flick.contentY + dy)
         if (Math.abs(settled - flick.contentY) < 0.5)
             return false
         if (flick.moving)
@@ -7033,6 +7039,30 @@ component NativeMentionChip: Item {
                 // of the boolean edge.
                 property int userScrollGeneration: 0
                 property bool anchorJumpPending: false
+                // A burst can arrive in one event-loop turn. Apply its net movement once
+                // so ListView only creates the rows the next frame can actually show.
+                property real pendingWheelDistance: 0
+                function flushWheelDistance() {
+                    const distance = pendingWheelDistance
+                    pendingWheelDistance = 0
+                    root.scrollFlickableBy(messageList, distance)
+                }
+                function queueWheel(wheel) {
+                    const distance = root.wheelDistance(wheel)
+                    if (!distance) {
+                        flushWheelDistance()
+                        return false
+                    }
+                    const from = contentY + pendingWheelDistance
+                    const to = root.boundedWheelPosition(messageList, from + distance)
+                    if (Math.abs(to - from) < 0.5) {
+                        flushWheelDistance()
+                        return false
+                    }
+                    pendingWheelDistance += to - from
+                    Qt.callLater(flushWheelDistance)
+                    return true
+                }
                 // Read the current position inside the scroll signal. A dependent
                 // binding can still hold the previous Y during contentYChanged.
                 function distanceFromTop() { return contentY - originY + topMargin }
@@ -7060,7 +7090,7 @@ component NativeMentionChip: Item {
                         messageList.userScrollSeen = true
                         ++messageList.userScrollGeneration
                         messageList.takeOpeningControl()
-                        wheel.accepted = root.scrollFlickableWithWheel(messageList, wheel)
+                        wheel.accepted = messageList.queueWheel(wheel)
                     }
                 }
                 section.property: "dayKey"
@@ -7548,6 +7578,7 @@ component NativeMentionChip: Item {
                         root.controller.loadOlder()
                 }
                 function captureViewport() {
+                    flushWheelDistance();
                     forceLayout();
                     const snapshot = {
                         anchorId: "",
@@ -7605,6 +7636,7 @@ component NativeMentionChip: Item {
                     const opening = root.controller.conversationOpening;
                     const sameRoute = displayedRoute === route;
                     if (!sameRoute || positionRuntime !== opening.runtime) {
+                        pendingWheelDistance = 0;
                         if (positionRuntime === opening.runtime) rememberViewport();
                         else { conversationPositions = ({}); positionOrder = []; }
                         positionRuntime = opening.runtime;
@@ -8269,11 +8301,11 @@ component NativeMentionChip: Item {
                     // z cannot cross the Loader/list-row stacking boundary.
                     z: messageBodyLoader.item ? messageBodyLoader.item.quickReactionsLayer : 1
                     readonly property Item unreadDivider: unreadRule.visible ? unreadRule : null
-                    readonly property real bodyTop: unreadRule.height + (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeader.height : 0)
+                    readonly property real bodyTop: unreadRule.height + (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeaderLoader.height : 0)
                     height: bodyTop + (messageBodyLoader.active && messageBodyLoader.item ? messageBodyLoader.item.height : 0) + (serviceLast ? (index + 1 < messageList.count ? 8 : 4) : 0)
                     readId: String(entry.id)
                     dispatchReadId: serviceReadId
-                    readBoundary: serviceCollapsed ? collapsedReadBoundary : messageBodyLoader.item ? messageBodyLoader.item.readBoundary : null
+                    readBoundary: serviceCollapsed ? (serviceHeaderLoader.item ? serviceHeaderLoader.item.collapsedBoundary : null) : messageBodyLoader.item ? messageBodyLoader.item.readBoundary : null
                     function settleGeometry() {
                         if (messageBodyLoader.item) messageBodyLoader.item.settleGeometry();
                     }
@@ -8316,90 +8348,95 @@ component NativeMentionChip: Item {
                             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["border-subtle"] }
                         }
                     }
-                    Item {
-                        id: serviceHeader
-                        objectName: "serviceGroupHeader-" + viewRow.entry.id
-                        visible: viewRow.serviceFirst
-                        y: unreadRule.height + serviceTopicDivider.height + 4
+                    Loader {
+                        id: serviceHeaderLoader
                         width: parent.width
-                        height: visible ? Math.max(28, serviceToggle.implicitHeight) + 8 : 0
-                        readonly property color tone: root.colors[viewRow.serviceStatus === "action-required" ? "notice-base" : "text-muted"]
-                        readonly property color rule: root.colors[viewRow.serviceStatus === "action-required" ? "notice-base" : "border-subtle"]
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 16; anchors.rightMargin: 16
-                            anchors.topMargin: 4; anchors.bottomMargin: 4
-                            spacing: 8
-                            Rectangle {
-                                Layout.fillWidth: true; Layout.preferredHeight: 1
-                                color: serviceHeader.rule
-                                opacity: viewRow.serviceStatus === "action-required" ? 0.3 : 1
-                            }
-                            Button {
-                                id: serviceToggle
-                                objectName: "serviceGroupToggle-" + viewRow.entry.id
-                                property bool expanded: viewRow.serviceExpanded
-                                property string status: viewRow.serviceStatus
-                                Layout.maximumWidth: Math.max(0, serviceHeader.width - 48)
-                                implicitHeight: Math.max(28, contentItem.implicitHeight)
-                                implicitWidth: contentItem.implicitWidth + 8
-                                padding: 0; horizontalPadding: 4; verticalPadding: 0
-                                enabled: !messageList.serviceSelectionMode
-                                hoverEnabled: true
-                                text: messageList.serviceCaption(viewRow.serviceCount, viewRow.serviceStatus)
-                                Accessible.name: text
-                                Accessible.checkable: true
-                                Accessible.checked: expanded
-                                contentItem: RowLayout {
-                                    spacing: 12
-                                    NativeIconButton {
-                                        objectName: "serviceGroupChevron-" + viewRow.entry.id
-                                        colors: root.colors; asset: "chevron-down.svg"
-                                        Layout.preferredWidth: 12; Layout.preferredHeight: 12
-                                        padding: 0; horizontalPadding: 0
-                                        glyphWidth: 12; glyphHeight: 6; glyphSize: 12
-                                        enabled: false; opacity: 1; icon.color: serviceHeader.tone
-                                        rotation: serviceToggle.expanded ? 0 : -90
-                                        Accessible.ignored: true
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true; spacing: 4
-                                        Text {
-                                            objectName: "serviceGroupCaption-" + viewRow.entry.id
-                                            text: messageList.serviceCaption(viewRow.serviceCount, ""); textFormat: Text.PlainText
-                                            wrapMode: Text.Wrap; font.pixelSize: 12
-                                            lineHeightMode: Text.FixedHeight; lineHeight: 16
-                                            color: serviceHeader.tone
-                                        }
-                                        Text {
-                                            objectName: "serviceGroupStatus-" + viewRow.entry.id
-                                            visible: viewRow.serviceStatus.length > 0
-                                            text: "· " + messageList.serviceStatusLabel(viewRow.serviceStatus); textFormat: Text.PlainText
-                                            wrapMode: Text.Wrap; font.pixelSize: 12
-                                            lineHeightMode: Text.FixedHeight; lineHeight: 16
-                                            color: serviceHeader.tone
-                                            Accessible.role: Accessible.StatusBar
-                                        }
-                                    }
+                        active: viewRow.serviceFirst
+                        visible: active
+                        y: unreadRule.height + serviceTopicDivider.height + 4
+                        sourceComponent: Item {
+                            id: serviceHeader
+                            readonly property Item collapsedBoundary: collapsedReadBoundary
+                            objectName: "serviceGroupHeader-" + viewRow.entry.id
+                            height: visible ? Math.max(28, serviceToggle.implicitHeight) + 8 : 0
+                            readonly property color tone: root.colors[viewRow.serviceStatus === "action-required" ? "notice-base" : "text-muted"]
+                            readonly property color rule: root.colors[viewRow.serviceStatus === "action-required" ? "notice-base" : "border-subtle"]
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 16; anchors.rightMargin: 16
+                                anchors.topMargin: 4; anchors.bottomMargin: 4
+                                spacing: 8
+                                Rectangle {
+                                    Layout.fillWidth: true; Layout.preferredHeight: 1
+                                    color: serviceHeader.rule
+                                    opacity: viewRow.serviceStatus === "action-required" ? 0.3 : 1
                                 }
-                                background: Rectangle {
-                                    radius: 4
-                                    color: serviceToggle.hovered ? root.colors["card-bg-active"] : "transparent"
-                                    border.width: serviceToggle.visualFocus ? 2 : 0
-                                    border.color: root.colors["accent-soft"]
+                                Button {
+                                    id: serviceToggle
+                                    objectName: "serviceGroupToggle-" + viewRow.entry.id
+                                    property bool expanded: viewRow.serviceExpanded
+                                    property string status: viewRow.serviceStatus
+                                    Layout.maximumWidth: Math.max(0, serviceHeader.width - 48)
+                                    implicitHeight: Math.max(28, contentItem.implicitHeight)
+                                    implicitWidth: contentItem.implicitWidth + 8
+                                    padding: 0; horizontalPadding: 4; verticalPadding: 0
+                                    enabled: !messageList.serviceSelectionMode
+                                    hoverEnabled: true
+                                    text: messageList.serviceCaption(viewRow.serviceCount, viewRow.serviceStatus)
+                                    Accessible.name: text
+                                    Accessible.checkable: true
+                                    Accessible.checked: expanded
+                                    contentItem: RowLayout {
+                                        spacing: 12
+                                        NativeIconButton {
+                                            objectName: "serviceGroupChevron-" + viewRow.entry.id
+                                            colors: root.colors; asset: "chevron-down.svg"
+                                            Layout.preferredWidth: 12; Layout.preferredHeight: 12
+                                            padding: 0; horizontalPadding: 0
+                                            glyphWidth: 12; glyphHeight: 6; glyphSize: 12
+                                            enabled: false; opacity: 1; icon.color: serviceHeader.tone
+                                            rotation: serviceToggle.expanded ? 0 : -90
+                                            Accessible.ignored: true
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 4
+                                            Text {
+                                                objectName: "serviceGroupCaption-" + viewRow.entry.id
+                                                text: messageList.serviceCaption(viewRow.serviceCount, ""); textFormat: Text.PlainText
+                                                wrapMode: Text.Wrap; font.pixelSize: 12
+                                                lineHeightMode: Text.FixedHeight; lineHeight: 16
+                                                color: serviceHeader.tone
+                                            }
+                                            Text {
+                                                objectName: "serviceGroupStatus-" + viewRow.entry.id
+                                                visible: viewRow.serviceStatus.length > 0
+                                                text: "· " + messageList.serviceStatusLabel(viewRow.serviceStatus); textFormat: Text.PlainText
+                                                wrapMode: Text.Wrap; font.pixelSize: 12
+                                                lineHeightMode: Text.FixedHeight; lineHeight: 16
+                                                color: serviceHeader.tone
+                                                Accessible.role: Accessible.StatusBar
+                                            }
+                                        }
+                                    }
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: serviceToggle.hovered ? root.colors["card-bg-active"] : "transparent"
+                                        border.width: serviceToggle.visualFocus ? 2 : 0
+                                        border.color: root.colors["accent-soft"]
+                                    }
+                                    onClicked: messageList.toggleServiceGroup(viewRow.serviceGroupId)
                                 }
-                                onClicked: messageList.toggleServiceGroup(viewRow.serviceGroupId)
+                                Rectangle {
+                                    Layout.fillWidth: true; Layout.preferredHeight: 1
+                                    color: serviceHeader.rule
+                                    opacity: viewRow.serviceStatus === "action-required" ? 0.3 : 1
+                                }
                             }
-                            Rectangle {
-                                Layout.fillWidth: true; Layout.preferredHeight: 1
-                                color: serviceHeader.rule
-                                opacity: viewRow.serviceStatus === "action-required" ? 0.3 : 1
+                            Item {
+                                id: collapsedReadBoundary
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                                height: 1
                             }
-                        }
-                        Item {
-                            id: collapsedReadBoundary
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                            height: 1
                         }
                     }
                     Loader {
@@ -8723,12 +8760,8 @@ component NativeMentionChip: Item {
                         // Quote text and its nested Column have independent
                         // polish passes. Finish them before the outer Column
                         // supplies a height to ListView's viewport restoration.
-                        if (messageQuoteFrame.visible) {
-                            quoteAuthor.forceLayout();
-                            if (quoteSelection.visible) quoteSelection.forceLayout();
-                            if (quoteBody.visible) quoteBody.forceLayout();
-                            messageQuoteContents.forceLayout();
-                        }
+                        const quote = quoteFrames.itemAt(0);
+                        if (quote) quote.settleGeometry();
                         // Issue #218: the body is a TextEdit now (no forceLayout
                         // slot); its document lays out inside the same polish
                         // pass that settles the content Column below.
@@ -9029,36 +9062,42 @@ component NativeMentionChip: Item {
                             // Meeting-URL messages render as the call card in
                             // place of the text body (issue #161, reference
                             // workspace-message-bubble-presentation.ui.tsx:543+906).
-                            NativeJitsiCard {
-                                id: callCard
-                                objectName: "call-card-" + messageRow.modelData.id
-                                visible: messageRow.isCallCard && !messageRow.keyControl
+                            Loader {
+                                id: callCardLoader
                                 width: parent.width
-                                colors: root.colors
-                                own: messageRow.own
-                                callUrl: messageRow.callUrl
-                                roomName: root.controller.callRoomName(messageRow.callUrl)
-                                locationName: ""
-                                authorName: String(messageRow.modelData.author || "")
-                                onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
+                                active: messageRow.isCallCard && !messageRow.keyControl
+                                visible: active
+                                sourceComponent: NativeJitsiCard {
+                                    objectName: "call-card-" + messageRow.modelData.id
+                                    colors: root.colors
+                                    own: messageRow.own
+                                    callUrl: messageRow.callUrl
+                                    roomName: root.controller.callRoomName(messageRow.callUrl)
+                                    locationName: ""
+                                    authorName: String(messageRow.modelData.author || "")
+                                    onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
+                                }
                             }
                             // Poll card (issue #216, docs/NATIVE_DESKTOP_POLLS_BUBBLE.md): the
                             // reference reserves a 336 px column inside the 360 px bubble
                             // (workspace-message-poll.css:4-9); voting, results, marks and the
                             // inline add-option input follow workspace-message-poll-question.ui.tsx.
-                            NativePollCard {
-                                visible: messageRow.hasPoll
+                            Loader {
                                 width: parent.width
-                                colors: root.colors
-                                controller: root.controller
-                                readOnly: !root.pollInteractiveStream
-                                messageUuid: String(messageRow.modelData.id || "")
-                                poll: messageRow.modelData.poll
-                                onVoteRequested: function (questionUuid, optionUuid, selected) {
-                                    root.controller.votePollOption(messageUuid, questionUuid, optionUuid, selected)
-                                }
-                                onAddOptionRequested: function (questionUuid, optionUuid, optionText) {
-                                    root.controller.addPollOption(messageUuid, questionUuid, optionUuid, optionText)
+                                active: messageRow.hasPoll
+                                visible: active
+                                sourceComponent: NativePollCard {
+                                    colors: root.colors
+                                    controller: root.controller
+                                    readOnly: !root.pollInteractiveStream
+                                    messageUuid: String(messageRow.modelData.id || "")
+                                    poll: messageRow.modelData.poll
+                                    onVoteRequested: function (questionUuid, optionUuid, selected) {
+                                        root.controller.votePollOption(messageUuid, questionUuid, optionUuid, selected)
+                                    }
+                                    onAddOptionRequested: function (questionUuid, optionUuid, optionText) {
+                                        root.controller.addPollOption(messageUuid, questionUuid, optionUuid, optionText)
+                                    }
                                 }
                             }
                             // Quote frame (docs/NATIVE_DESKTOP_REPLIES.md). Source message-surface
@@ -9068,173 +9107,182 @@ component NativeMentionChip: Item {
                             // (fallback label, else "Quote"), muted "Message unavailable" when the
                             // origin is gone, 12 px muted "Loading messages" while resolving, body
                             // 14 px / 20 px; clicking the frame jumps to the origin (quote.ui.tsx:353-397).
-                            Rectangle {
-                                id: messageQuoteFrame
-                                objectName: "message-quote-" + messageRow.modelData.id
-                                visible: String(messageRow.modelData.quoteId || "").length > 0
-                                    && !messageRow.keyControl && !messageRow.encryptedLocked
-                                width: parent.width
-                                // Media preview leading the quote frame (issue #217,
-                                // docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md):
-                                // first image, else first video, never for a
-                                // selected-text quote (quote.ui.tsx:257-294).
-                                readonly property bool quoteMediaAllowed:
-                                    String(messageRow.modelData.quoteStatus) === "ready"
-                                    && String(messageRow.modelData.quoteText || "").length === 0
-                                readonly property var quoteMedia: quoteMediaAllowed
-                                    ? root.controller.mediaPreviewReference(String(messageRow.modelData.quoteContent || ""))
-                                    : ({})
-                                readonly property string quoteMediaUrn: String(quoteMedia.urn || "")
-                                readonly property string quoteMediaKind: String(quoteMedia.kind || "")
-                                readonly property bool quoteMediaShown: messageQuoteThumbnail.visible
-                                    && messageQuoteThumbnail.mediaStatus === "ready"
-                                height: Math.max(messageQuoteContents.height,
-                                    messageQuoteThumbnail.visible ? 48 : 0) + 12
-                                radius: 6
-                                color: Qt.alpha(root.colors["bg"], 0.35)
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.controller.openMessageInChat(messageRow.modelData.quoteId)
-                                }
-                                Rectangle {
-                                    objectName: "quoteAccentBar-" + messageRow.modelData.id
-                                    width: 2
-                                    height: parent.height
-                                    radius: 1
-                                    color: root.colors.accent
-                                }
-                                NativeQuoteMediaThumbnail {
-                                    id: messageQuoteThumbnail
-                                    objectName: "quoteMediaThumbnail-" + messageRow.modelData.id
-                                    // Demand only: the component hides itself
-                                    // on a failed load (issue #217 exo-review).
-                                    demand: messageQuoteFrame.quoteMediaUrn.length > 0
-                                    colors: root.colors
-                                    images: root.messageImages
-                                    urn: messageQuoteFrame.quoteMediaUrn
-                                    kind: messageQuoteFrame.quoteMediaKind
-                                    x: 10
-                                    y: 6
-                                    height: parent.height - 12
-                                }
-                                readonly property string quoteHtml: String(messageRow.modelData.quoteStatus) === "ready"
-                                    && String(messageRow.modelData.quoteText || "").length === 0
-                                    ? String(root.markdown.render(String(messageRow.modelData.quoteContent),
-                                        messageQuoteFrame.quoteMediaShown).html)
-                                        .replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
-                                    : ""
-                                Column {
-                                    id: messageQuoteContents
-                                    x: messageQuoteThumbnail.visible ? 66 : 10
-                                    width: parent.width - (messageQuoteThumbnail.visible ? 74 : 18)
-                                    y: 6
-                                    spacing: 2
-                                    Text {
-                                        id: quoteAuthor
-                                        objectName: "quoteHeaderText-" + messageRow.modelData.id
-                                        width: parent.width
-                                        text: String(messageRow.modelData.quoteStatus) === "unavailable"
-                                            ? qsTr("Message unavailable")
-                                            : String(messageRow.modelData.quoteAuthorName || messageRow.modelData.quoteLabel || "") || qsTr("Quote")
-                                        textFormat: Text.PlainText
-                                        font.pixelSize: 12
-                                        font.weight: Font.Medium
-                                        lineHeightMode: Text.FixedHeight
-                                        lineHeight: 16
-                                        elide: Text.ElideRight
-                                        color: String(messageRow.modelData.quoteStatus) === "unavailable"
-                                            ? root.colors["text-muted"] : root.colors.accent
+                            Repeater {
+                                id: quoteFrames
+                                model: String(messageRow.modelData.quoteId || "").length > 0
+                                    && !messageRow.keyControl && !messageRow.encryptedLocked ? 1 : 0
+                                delegate: Rectangle {
+                                    id: messageQuoteFrame
+                                    width: parent.width
+                                    function settleGeometry() {
+                                        quoteAuthor.forceLayout();
+                                        if (quoteSelection.visible) quoteSelection.forceLayout();
+                                        if (quoteBody.visible) quoteBody.forceLayout();
+                                        messageQuoteContents.forceLayout();
                                     }
-                                    Text {
-                                        visible: String(messageRow.modelData.quoteStatus) === "loading"
-                                        text: qsTr("Loading messages")
-                                        textFormat: Text.PlainText
-                                        font.pixelSize: 12
-                                        color: root.colors["text-muted"]
+                                    objectName: "message-quote-" + messageRow.modelData.id
+                                    // Media preview leading the quote frame (issue #217,
+                                    // docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md):
+                                    // first image, else first video, never for a
+                                    // selected-text quote (quote.ui.tsx:257-294).
+                                    readonly property bool quoteMediaAllowed:
+                                        String(messageRow.modelData.quoteStatus) === "ready"
+                                        && String(messageRow.modelData.quoteText || "").length === 0
+                                    readonly property var quoteMedia: quoteMediaAllowed
+                                        ? root.controller.mediaPreviewReference(String(messageRow.modelData.quoteContent || ""))
+                                        : ({})
+                                    readonly property string quoteMediaUrn: String(quoteMedia.urn || "")
+                                    readonly property string quoteMediaKind: String(quoteMedia.kind || "")
+                                    readonly property bool quoteMediaShown: messageQuoteThumbnail.visible
+                                        && messageQuoteThumbnail.mediaStatus === "ready"
+                                    height: Math.max(messageQuoteContents.height,
+                                        messageQuoteThumbnail.visible ? 48 : 0) + 12
+                                    radius: 6
+                                    color: Qt.alpha(root.colors["bg"], 0.35)
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.controller.openMessageInChat(messageRow.modelData.quoteId)
                                     }
-                                    Text {
-                                        id: quoteSelection
-                                        visible: String(messageRow.modelData.quoteStatus) === "ready"
-                                            && String(messageRow.modelData.quoteText || "").length > 0
-                                        width: parent.width
-                                        text: String(messageRow.modelData.quoteText || "")
-                                        textFormat: Text.PlainText
-                                        font.pixelSize: 14
-                                        lineHeightMode: Text.FixedHeight
-                                        lineHeight: 20
-                                        wrapMode: Text.Wrap
-                                        color: root.colors["text-primary"]
+                                    Rectangle {
+                                        objectName: "quoteAccentBar-" + messageRow.modelData.id
+                                        width: 2
+                                        height: parent.height
+                                        radius: 1
+                                        color: root.colors.accent
                                     }
-                                    Text {
-                                        id: quoteBody
-                                        objectName: "quoteBodyHtml-" + messageRow.modelData.id
-                                        visible: messageQuoteFrame.quoteHtml.length > 0
-                                        width: parent.width
-                                        text: messageQuoteFrame.quoteHtml
-                                        textFormat: Text.RichText
-                                        font.pixelSize: 14
-                                        lineHeightMode: Text.FixedHeight
-                                        lineHeight: 20
-                                        wrapMode: Text.Wrap
-                                        linkColor: root.colors.accent
-                                        onLinkActivated: link => root.openReference(link)
-                                        color: root.colors["text-primary"]
+                                    NativeQuoteMediaThumbnail {
+                                        id: messageQuoteThumbnail
+                                        objectName: "quoteMediaThumbnail-" + messageRow.modelData.id
+                                        // Demand only: the component hides itself
+                                        // on a failed load (issue #217 exo-review).
+                                        demand: messageQuoteFrame.quoteMediaUrn.length > 0
+                                        colors: root.colors
+                                        images: root.messageImages
+                                        urn: messageQuoteFrame.quoteMediaUrn
+                                        kind: messageQuoteFrame.quoteMediaKind
+                                        x: 10
+                                        y: 6
+                                        height: parent.height - 12
                                     }
-                                    // Issue #222: decrypt-aware quote sub-states (reference
-                                    // workspace_ui 230e02b workspace-message-quote.ui.tsx:123-143 +
-                                    // encrypted-message-placeholder.ui.tsx geometry), mirrored from
-                                    // the bubble's encrypted-placeholder-* row without restyle.
-                                    // "preparing" renders the author header with no body, so it
-                                    // needs no node here.
-                                    Item {
-                                        id: quoteLockedPlaceholder
-                                        objectName: "quote-locked-" + messageRow.modelData.id
-                                        visible: String(messageRow.modelData.quoteStatus) === "locked"
-                                        width: Math.min(480, root.width * 0.6, parent.width)
-                                        height: 36
-                                        clip: true
-                                        Accessible.role: Accessible.StaticText
-                                        Accessible.name: qsTr("Key required")
-                                        Item {
-                                            anchors.fill: parent
-                                            readonly property bool blurSupported: GraphicsInfo.api !== GraphicsInfo.Software && GraphicsInfo.api !== GraphicsInfo.OpenVG && GraphicsInfo.api !== GraphicsInfo.Unknown && GraphicsInfo.api !== GraphicsInfo.Null
-                                            layer.enabled: visible && blurSupported
-                                            layer.effect: MultiEffect { objectName: "quote-locked-effect-" + messageRow.modelData.id; blurEnabled: true; blurMax: 36; blur: 1 }
-                                            Rectangle { objectName: "quote-locked-bar-wide-" + messageRow.modelData.id; y: 6; width: parent.width * 0.92; height: 8; radius: 4; color: root.colors["text-muted"]; opacity: 0.35 }
-                                            Rectangle { objectName: "quote-locked-bar-narrow-" + messageRow.modelData.id; y: 22; width: parent.width * 0.65; height: 8; radius: 4; color: root.colors["text-muted"]; opacity: 0.35 }
-                                            Accessible.ignored: true
-                                        }
-                                    }
-                                    Row {
-                                        id: quoteDecryptErrorRow
-                                        objectName: "quote-error-" + messageRow.modelData.id
-                                        visible: String(messageRow.modelData.quoteStatus) === "error"
-                                        width: parent.width; height: Math.max(36, quoteDecryptErrorText.implicitHeight); spacing: 8
-                                        NativeIconButton {
-                                            colors: root.colors; asset: "warning.svg"; glyphSize: 16
-                                            width: 16; height: 20; padding: 0; enabled: false; opacity: 1
-                                            icon.color: root.colors["text-muted"]; Accessible.ignored: true
+                                    readonly property string quoteHtml: String(messageRow.modelData.quoteStatus) === "ready"
+                                        && String(messageRow.modelData.quoteText || "").length === 0
+                                        ? String(root.markdown.render(String(messageRow.modelData.quoteContent),
+                                            messageQuoteFrame.quoteMediaShown).html)
+                                            .replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
+                                        : ""
+                                    Column {
+                                        id: messageQuoteContents
+                                        x: messageQuoteThumbnail.visible ? 66 : 10
+                                        width: parent.width - (messageQuoteThumbnail.visible ? 74 : 18)
+                                        y: 6
+                                        spacing: 2
+                                        Text {
+                                            id: quoteAuthor
+                                            objectName: "quoteHeaderText-" + messageRow.modelData.id
+                                            width: parent.width
+                                            text: String(messageRow.modelData.quoteStatus) === "unavailable"
+                                                ? qsTr("Message unavailable")
+                                                : String(messageRow.modelData.quoteAuthorName || messageRow.modelData.quoteLabel || "") || qsTr("Quote")
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 12
+                                            font.weight: Font.Medium
+                                            lineHeightMode: Text.FixedHeight
+                                            lineHeight: 16
+                                            elide: Text.ElideRight
+                                            color: String(messageRow.modelData.quoteStatus) === "unavailable"
+                                                ? root.colors["text-muted"] : root.colors.accent
                                         }
                                         Text {
-                                            id: quoteDecryptErrorText
-                                            objectName: "quote-error-text-" + messageRow.modelData.id
-                                            width: Math.max(0, parent.width - 32 - (quoteDecryptRetry.visible ? quoteDecryptRetry.implicitWidth : 0))
-                                            text: qsTr("Could not decrypt message"); textFormat: Text.PlainText
-                                            font.pixelSize: 14; color: root.colors["text-muted"]; wrapMode: Text.Wrap
-                                            Accessible.role: Accessible.AlertMessage
+                                            visible: String(messageRow.modelData.quoteStatus) === "loading"
+                                            text: qsTr("Loading messages")
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 12
+                                            color: root.colors["text-muted"]
                                         }
-                                        // Issue #222: the inline Retry re-runs the origin's per-message
-                                        // decrypt (#221 path) through the shared controller guard, so a
-                                        // bubble Retry and this one can never double-decrypt; disabled
-                                        // while the uuid is in flight.
-                                        InlineDecryptRetryAction {
-                                            id: quoteDecryptRetry
-                                            objectName: "quote-retry-" + messageRow.modelData.id
-                                            text: qsTr("Retry")
-                                            Accessible.name: text
-                                            enabled: root.controller.decryptRetryPendingUuids.indexOf(String(messageRow.modelData.quoteId)) < 0
-                                            onClicked: root.controller.retryMessageDecrypt(String(messageRow.modelData.quoteId))
+                                        Text {
+                                            id: quoteSelection
+                                            visible: String(messageRow.modelData.quoteStatus) === "ready"
+                                                && String(messageRow.modelData.quoteText || "").length > 0
+                                            width: parent.width
+                                            text: String(messageRow.modelData.quoteText || "")
+                                            textFormat: Text.PlainText
+                                            font.pixelSize: 14
+                                            lineHeightMode: Text.FixedHeight
+                                            lineHeight: 20
+                                            wrapMode: Text.Wrap
+                                            color: root.colors["text-primary"]
+                                        }
+                                        Text {
+                                            id: quoteBody
+                                            objectName: "quoteBodyHtml-" + messageRow.modelData.id
+                                            visible: messageQuoteFrame.quoteHtml.length > 0
+                                            width: parent.width
+                                            text: messageQuoteFrame.quoteHtml
+                                            textFormat: Text.RichText
+                                            font.pixelSize: 14
+                                            lineHeightMode: Text.FixedHeight
+                                            lineHeight: 20
+                                            wrapMode: Text.Wrap
+                                            linkColor: root.colors.accent
+                                            onLinkActivated: link => root.openReference(link)
+                                            color: root.colors["text-primary"]
+                                        }
+                                        // Issue #222: decrypt-aware quote sub-states (reference
+                                        // workspace_ui 230e02b workspace-message-quote.ui.tsx:123-143 +
+                                        // encrypted-message-placeholder.ui.tsx geometry), mirrored from
+                                        // the bubble's encrypted-placeholder-* row without restyle.
+                                        // "preparing" renders the author header with no body, so it
+                                        // needs no node here.
+                                        Item {
+                                            id: quoteLockedPlaceholder
+                                            objectName: "quote-locked-" + messageRow.modelData.id
+                                            visible: String(messageRow.modelData.quoteStatus) === "locked"
+                                            width: Math.min(480, root.width * 0.6, parent.width)
+                                            height: 36
+                                            clip: true
+                                            Accessible.role: Accessible.StaticText
+                                            Accessible.name: qsTr("Key required")
+                                            Item {
+                                                anchors.fill: parent
+                                                readonly property bool blurSupported: GraphicsInfo.api !== GraphicsInfo.Software && GraphicsInfo.api !== GraphicsInfo.OpenVG && GraphicsInfo.api !== GraphicsInfo.Unknown && GraphicsInfo.api !== GraphicsInfo.Null
+                                                layer.enabled: visible && blurSupported
+                                                layer.effect: MultiEffect { objectName: "quote-locked-effect-" + messageRow.modelData.id; blurEnabled: true; blurMax: 36; blur: 1 }
+                                                Rectangle { objectName: "quote-locked-bar-wide-" + messageRow.modelData.id; y: 6; width: parent.width * 0.92; height: 8; radius: 4; color: root.colors["text-muted"]; opacity: 0.35 }
+                                                Rectangle { objectName: "quote-locked-bar-narrow-" + messageRow.modelData.id; y: 22; width: parent.width * 0.65; height: 8; radius: 4; color: root.colors["text-muted"]; opacity: 0.35 }
+                                                Accessible.ignored: true
+                                            }
+                                        }
+                                        Row {
+                                            id: quoteDecryptErrorRow
+                                            objectName: "quote-error-" + messageRow.modelData.id
+                                            visible: String(messageRow.modelData.quoteStatus) === "error"
+                                            width: parent.width; height: Math.max(36, quoteDecryptErrorText.implicitHeight); spacing: 8
+                                            NativeIconButton {
+                                                colors: root.colors; asset: "warning.svg"; glyphSize: 16
+                                                width: 16; height: 20; padding: 0; enabled: false; opacity: 1
+                                                icon.color: root.colors["text-muted"]; Accessible.ignored: true
+                                            }
+                                            Text {
+                                                id: quoteDecryptErrorText
+                                                objectName: "quote-error-text-" + messageRow.modelData.id
+                                                width: Math.max(0, parent.width - 32 - (quoteDecryptRetry.visible ? quoteDecryptRetry.implicitWidth : 0))
+                                                text: qsTr("Could not decrypt message"); textFormat: Text.PlainText
+                                                font.pixelSize: 14; color: root.colors["text-muted"]; wrapMode: Text.Wrap
+                                                Accessible.role: Accessible.AlertMessage
+                                            }
+                                            // Issue #222: the inline Retry re-runs the origin's per-message
+                                            // decrypt (#221 path) through the shared controller guard, so a
+                                            // bubble Retry and this one can never double-decrypt; disabled
+                                            // while the uuid is in flight.
+                                            InlineDecryptRetryAction {
+                                                id: quoteDecryptRetry
+                                                objectName: "quote-retry-" + messageRow.modelData.id
+                                                text: qsTr("Retry")
+                                                Accessible.name: text
+                                                enabled: root.controller.decryptRetryPendingUuids.indexOf(String(messageRow.modelData.quoteId)) < 0
+                                                onClicked: root.controller.retryMessageDecrypt(String(messageRow.modelData.quoteId))
+                                            }
                                         }
                                     }
                                 }
@@ -9338,323 +9386,339 @@ component NativeMentionChip: Item {
                                     onClicked: root.controller.retryMessageDecrypt(String(messageRow.modelData.id))
                                 }
                             }
-                            Column {
-                                id: keyRequestService
-                                objectName: "keyRequestService-" + messageRow.modelData.id
-                                visible: messageRow.incomingKeyRequest !== null
-                                readonly property var request: messageRow.incomingKeyRequest || ({})
-                                readonly property bool own: root.ownsKeyRequest(request)
-                                readonly property string title: root.incomingKeyRequestTitle(request)
-                                readonly property string description: root.incomingKeyRequestDescription(request)
-                                readonly property string status: root.incomingKeyRequestStatus(request)
-                                readonly property string actor: own ? "" : String(request.name || "")
-                                readonly property var responseIntent: {
-                                    const saved = root.chatEncryption.keyResponse || ({});
-                                    return String(saved.requestId || "") === String(messageRow.modelData.id) ? saved : ({});
-                                }
-                                readonly property bool retainedResponse: String(responseIntent.requestId || "").length > 0
-                                    && responseIntent.phase !== "ready"
-                                function responseEnabled(action) {
-                                    if (!root.controller.authenticated || !root.controller.hasConversation
-                                            || String(request.id || "") !== String(messageRow.modelData.id)
-                                            || Boolean(request.ownCurrentDevice) || Boolean(root.chatEncryption.busy))
-                                        return false;
-                                    if (action !== "grant" && action !== "reject")
-                                        return false;
-                                    const offered = action === "grant" ? Boolean(request.offerGrant) : Boolean(request.offerReject);
-                                    if (!offered)
-                                        return false;
-                                    if (retainedResponse)
-                                        return String(responseIntent.action || "") === action
-                                            && responseIntent.phase === "uncertain" && !Boolean(responseIntent.busy)
-                                            && Boolean(responseIntent.canRetry);
-                                    return action === "grant" ? Boolean(request.canGrant) : Boolean(request.canReject);
-                                }
-                                function respond(action) {
-                                    if (!responseEnabled(action))
-                                        return;
-                                    const id = String(messageRow.modelData.id);
-                                    if (retainedResponse)
-                                        root.controller.retryChatKeyResponse(id);
-                                    else if (action === "grant")
-                                        root.controller.grantChatKey(id);
-                                    else
-                                        root.controller.rejectChatKey(id);
-                                }
-                                readonly property string accessibleSummary: [actor, title, description, status].filter(part => part.length > 0).join(" ")
-                                width: parent.width; spacing: 4
-                                Flow {
-                                    id: keyRequestLine
-                                    readonly property real naturalWidth: keyRequestTitle.implicitWidth
-                                        + (keyRequestActor.visible ? keyRequestActor.implicitWidth + 4 : 0)
-                                        + (grantRequestKey.visible ? grantRequestKey.implicitWidth + 4 : 0)
-                                        + (rejectRequestKey.visible ? rejectRequestKey.implicitWidth + 4 : 0)
-                                    width: Math.min(parent.width, naturalWidth)
-                                    x: (parent.width - width) / 2
-                                    height: implicitHeight; spacing: 4
-                                    function centeredOffset(item) {
-                                        if (!item.visible || item.width <= 0 || item.height <= 0)
-                                            return Qt.point(0, 0);
-                                        const parts = [keyRequestActor, keyRequestTitle, grantRequestKey, rejectRequestKey];
-                                        let left = width, right = 0, rowHeight = 0;
-                                        for (let i = 0; i < parts.length; ++i) {
-                                            const part = parts[i];
-                                            // Flow owns raw x/y. Translate never changes this row witness.
-                                            if (!part.visible || part.width <= 0 || part.height <= 0 || part.y !== item.y)
-                                                continue;
-                                            left = Math.min(left, part.x);
-                                            right = Math.max(right, part.x + part.width);
-                                            rowHeight = Math.max(rowHeight, part.height);
-                                        }
-                                        return Qt.point((width - (right - left)) / 2 - left, (rowHeight - item.height) / 2);
+                            Loader {
+                                id: requestLoader
+                                width: parent.width
+                                active: messageRow.incomingKeyRequest !== null
+                                visible: active
+                                sourceComponent: Column {
+                                    id: keyRequestService
+                                    objectName: "keyRequestService-" + messageRow.modelData.id
+                                    readonly property var request: messageRow.incomingKeyRequest || ({})
+                                    readonly property bool own: root.ownsKeyRequest(request)
+                                    readonly property string title: root.incomingKeyRequestTitle(request)
+                                    readonly property string description: root.incomingKeyRequestDescription(request)
+                                    readonly property string status: root.incomingKeyRequestStatus(request)
+                                    readonly property string actor: own ? "" : String(request.name || "")
+                                    readonly property var responseIntent: {
+                                        const saved = root.chatEncryption.keyResponse || ({});
+                                        return String(saved.requestId || "") === String(messageRow.modelData.id) ? saved : ({});
                                     }
-                                    Text {
-                                        id: keyRequestActor
-                                        transform: Translate {
-                                            readonly property point offset: keyRequestLine.centeredOffset(keyRequestActor)
-                                            x: offset.x; y: offset.y
-                                        }
-                                        horizontalAlignment: Text.AlignHCenter
-                                        visible: keyRequestService.actor.length > 0
-                                        text: keyRequestService.actor; textFormat: Text.PlainText
-                                        width: Math.min(implicitWidth, keyRequestLine.width)
-                                        height: contentHeight; wrapMode: Text.Wrap
-                                        font.pixelSize: 14; color: root.colors["text-primary"]
-                                        lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                    readonly property bool retainedResponse: String(responseIntent.requestId || "").length > 0
+                                        && responseIntent.phase !== "ready"
+                                    function responseEnabled(action) {
+                                        if (!root.controller.authenticated || !root.controller.hasConversation
+                                                || String(request.id || "") !== String(messageRow.modelData.id)
+                                                || Boolean(request.ownCurrentDevice) || Boolean(root.chatEncryption.busy))
+                                            return false;
+                                        if (action !== "grant" && action !== "reject")
+                                            return false;
+                                        const offered = action === "grant" ? Boolean(request.offerGrant) : Boolean(request.offerReject);
+                                        if (!offered)
+                                            return false;
+                                        if (retainedResponse)
+                                            return String(responseIntent.action || "") === action
+                                                && responseIntent.phase === "uncertain" && !Boolean(responseIntent.busy)
+                                                && Boolean(responseIntent.canRetry);
+                                        return action === "grant" ? Boolean(request.canGrant) : Boolean(request.canReject);
                                     }
-                                    Text {
-                                        id: keyRequestTitle
-                                        transform: Translate {
-                                            readonly property point offset: keyRequestLine.centeredOffset(keyRequestTitle)
-                                            x: offset.x; y: offset.y
-                                        }
-                                        horizontalAlignment: Text.AlignHCenter
-                                        text: keyRequestService.title; textFormat: Text.PlainText
-                                        width: Math.min(implicitWidth, keyRequestLine.width)
-                                        height: contentHeight; wrapMode: Text.Wrap
-                                        font.pixelSize: 14; color: root.colors.accent
-                                        lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                    function respond(action) {
+                                        if (!responseEnabled(action))
+                                            return;
+                                        const id = String(messageRow.modelData.id);
+                                        if (retainedResponse)
+                                            root.controller.retryChatKeyResponse(id);
+                                        else if (action === "grant")
+                                            root.controller.grantChatKey(id);
+                                        else
+                                            root.controller.rejectChatKey(id);
                                     }
-                                    InlineKeyRequestAction {
-                                        id: grantRequestKey
-                                        transform: Translate {
-                                            readonly property point offset: keyRequestLine.centeredOffset(grantRequestKey)
-                                            x: offset.x; y: offset.y
-                                        }
-                                        objectName: "grantChatKeyButton-" + messageRow.modelData.id
-                                        visible: !Boolean(keyRequestService.request.ownCurrentDevice) && Boolean(keyRequestService.request.offerGrant)
-                                        enabled: keyRequestService.responseEnabled("grant")
-                                        text: qsTr("Send key")
-                                        onClicked: keyRequestService.respond("grant")
-                                    }
-                                    InlineKeyRequestAction {
-                                        id: rejectRequestKey
-                                        transform: Translate {
-                                            readonly property point offset: keyRequestLine.centeredOffset(rejectRequestKey)
-                                            x: offset.x; y: offset.y
-                                        }
-                                        objectName: "rejectChatKeyButton-" + messageRow.modelData.id
-                                        visible: !Boolean(keyRequestService.request.ownCurrentDevice) && Boolean(keyRequestService.request.offerReject)
-                                        enabled: keyRequestService.responseEnabled("reject")
-                                        text: qsTr("Reject")
-                                        onClicked: keyRequestService.respond("reject")
-                                    }
-                                }
-                                Text {
-                                    visible: text.length > 0
-                                    text: keyRequestService.description; textFormat: Text.PlainText
-                                    width: parent.width; height: contentHeight; wrapMode: Text.Wrap
-                                    horizontalAlignment: Text.AlignHCenter
-                                    font.pixelSize: 14; color: root.colors.accent
-                                    lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                }
-                                Text {
-                                    visible: text.length > 0
-                                    text: keyRequestService.status; textFormat: Text.PlainText
-                                    width: parent.width; height: contentHeight; wrapMode: Text.Wrap
-                                    horizontalAlignment: Text.AlignHCenter
-                                    font.pixelSize: 14; color: root.colors.accent
-                                    lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                    Accessible.role: Accessible.StatusBar
-                                }
-                            }
-                            Column {
-                                id: keyServiceResponse
-                                objectName: "keyServiceResponse-" + messageRow.modelData.id
-                                visible: messageRow.keyResponse
-                                readonly property var response: messageRow.modelData.keyServiceResponse || ({})
-                                readonly property bool grant: messageRow.modelData.kind === "key_grant"
-                                readonly property bool recipientKnown: Boolean(response.recipientKnown) && String(response.recipientId || "").length > 0
-                                readonly property bool ownCurrentDevice: recipientKnown && Boolean(response.ownCurrentDevice)
-                                readonly property string title: root.keyServiceResponseTitle(messageRow.modelData, response)
-                                readonly property string description: recipientKnown ? "" : qsTr("Recipient information is unavailable.")
-                                readonly property bool offerRequest: !grant && ownCurrentDevice && Boolean(response.offerRequest) && String(response.keyUuid || "").length > 0
-                                readonly property string status: grant && ownCurrentDevice && Boolean(response.hasKey) ? qsTr("The key is available on this device") : ""
-                                readonly property string accessibleSummary: [title, description, status].filter(part => part.length > 0).join(" ")
-                                width: parent.width; spacing: 4
-                                RowLayout {
-                                    id: responseTitleLine
-                                    width: Math.min(parent.width, Math.ceil(responseTitle.implicitWidth) + 28)
-                                    x: (parent.width - width) / 2
-                                    height: implicitHeight; spacing: 4
-                                    NativeIconButton {
-                                        objectName: "keyServiceResponseIcon-" + messageRow.modelData.id
-                                        colors: root.colors; asset: keyServiceResponse.grant ? "key-granted.svg" : "key-rejected.svg"
-                                        glyphSize: 24; Layout.preferredWidth: 24; Layout.preferredHeight: 24
-                                        Layout.minimumWidth: 24; Layout.maximumWidth: 24
-                                        Layout.minimumHeight: 24; Layout.maximumHeight: 24
-                                        Layout.alignment: Qt.AlignVCenter
-                                        padding: 0; enabled: false; opacity: 1; icon.color: root.colors.accent
-                                        Accessible.ignored: true
-                                    }
-                                    Text {
-                                        id: responseTitle
-                                        objectName: "keyServiceResponseText-" + messageRow.modelData.id
-                                        Layout.fillWidth: true; Layout.minimumWidth: 0
-                                        Layout.alignment: Qt.AlignVCenter
-                                        text: keyServiceResponse.title + (keyServiceResponse.description.length ? " " + keyServiceResponse.description : "")
-                                        textFormat: Text.PlainText; wrapMode: Text.Wrap
-                                        horizontalAlignment: Text.AlignHCenter
-                                        font.pixelSize: 14; color: root.colors.accent
-                                        lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                    }
-                                }
-                                GridLayout {
-                                    id: responseRequestLine
-                                    visible: keyServiceResponse.offerRequest
-                                    readonly property real naturalWidth: responseRetryText.implicitWidth + 4 + responseRequestButton.implicitWidth
-                                    readonly property bool inlineActions: naturalWidth <= parent.width
-                                    width: inlineActions ? naturalWidth : parent.width
-                                    x: (parent.width - width) / 2
-                                    height: implicitHeight
-                                    columns: inlineActions ? 2 : 1; columnSpacing: 4; rowSpacing: 4
-                                    Text {
-                                        id: responseRetryText
-                                        Layout.preferredWidth: Math.min(implicitWidth, responseRequestLine.width)
-                                        Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-                                        text: qsTr("You can request the key again"); textFormat: Text.PlainText
-                                        horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
-                                        font.pixelSize: 14; color: root.colors.accent
-                                        lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                    }
-                                    InlineKeyRequestAction {
-                                        id: responseRequestButton
-                                        objectName: "requestRejectedChatKeyButton-" + messageRow.modelData.id
-                                        Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-                                        enabled: Boolean(keyServiceResponse.response.canRequest) && !Boolean(root.chatEncryption.busy)
-                                        text: qsTr("Request")
-                                        onClicked: {
-                                            const response = keyServiceResponse.response;
-                                            const key = String(response.keyUuid || "");
-                                            if (!keyServiceResponse.grant && keyServiceResponse.recipientKnown && keyServiceResponse.ownCurrentDevice
-                                                    && Boolean(response.offerRequest) && Boolean(response.canRequest) && key.length)
-                                                root.controller.requestChatKey(key);
-                                        }
-                                    }
-                                }
-                                Text {
-                                    visible: text.length > 0
-                                    text: keyServiceResponse.status; textFormat: Text.PlainText
-                                    width: parent.width; height: contentHeight; wrapMode: Text.Wrap
-                                    horizontalAlignment: Text.AlignHCenter
-                                    font.pixelSize: 14; color: root.colors.accent
-                                    lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                    Accessible.role: Accessible.StatusBar
-                                }
-                            }
-                            Column {
-                                id: keyAnnouncement
-                                objectName: "keyAnnouncementService-" + messageRow.modelData.id
-                                visible: messageRow.modelData.kind === "key_announced"
-                                readonly property var announcement: messageRow.modelData.keyServiceAnnouncement || ({})
-                                width: parent.width; spacing: 4
-                                Flow {
-                                    id: announcementHeading
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    width: Math.min(parent.width, announcementTitle.implicitWidth + 28)
-                                    height: implicitHeight
+                                    readonly property string accessibleSummary: [actor, title, description, status].filter(part => part.length > 0).join(" ")
                                     spacing: 4
-                                    function lineOffset(item) {
-                                        const parts = [announcementIcon, announcementTitle].filter(part => part.visible && Math.abs(part.y - item.y) < 0.5);
-                                        let left = Infinity, right = -Infinity, maxHeight = 0;
-                                        for (const part of parts) {
-                                            left = Math.min(left, part.x); right = Math.max(right, part.x + part.width);
-                                            maxHeight = Math.max(maxHeight, part.height);
+                                    Flow {
+                                        id: keyRequestLine
+                                        readonly property real naturalWidth: keyRequestTitle.implicitWidth
+                                            + (keyRequestActor.visible ? keyRequestActor.implicitWidth + 4 : 0)
+                                            + (grantRequestKey.visible ? grantRequestKey.implicitWidth + 4 : 0)
+                                            + (rejectRequestKey.visible ? rejectRequestKey.implicitWidth + 4 : 0)
+                                        width: Math.min(parent.width, naturalWidth)
+                                        x: (parent.width - width) / 2
+                                        height: implicitHeight; spacing: 4
+                                        function centeredOffset(item) {
+                                            if (!item.visible || item.width <= 0 || item.height <= 0)
+                                                return Qt.point(0, 0);
+                                            const parts = [keyRequestActor, keyRequestTitle, grantRequestKey, rejectRequestKey];
+                                            let left = width, right = 0, rowHeight = 0;
+                                            for (let i = 0; i < parts.length; ++i) {
+                                                const part = parts[i];
+                                                // Flow owns raw x/y. Translate never changes this row witness.
+                                                if (!part.visible || part.width <= 0 || part.height <= 0 || part.y !== item.y)
+                                                    continue;
+                                                left = Math.min(left, part.x);
+                                                right = Math.max(right, part.x + part.width);
+                                                rowHeight = Math.max(rowHeight, part.height);
+                                            }
+                                            return Qt.point((width - (right - left)) / 2 - left, (rowHeight - item.height) / 2);
                                         }
-                                        return { x: (width - (right - left)) / 2 - left, y: (maxHeight - item.height) / 2 };
-                                    }
-                                    NativeIconButton {
-                                        id: announcementIcon
-                                        objectName: "keyAnnouncementIcon-" + messageRow.modelData.id
-                                        colors: root.colors; asset: "warning.svg"
-                                        width: 24; height: 24
-                                        glyphSize: 24; padding: 0; horizontalPadding: 0
-                                        enabled: false; opacity: 1; icon.color: root.colors.accent
-                                        Accessible.ignored: true
-                                        transform: Translate {
-                                            x: announcementHeading.lineOffset(announcementIcon).x
-                                            y: announcementHeading.lineOffset(announcementIcon).y
+                                        Text {
+                                            id: keyRequestActor
+                                            transform: Translate {
+                                                readonly property point offset: keyRequestLine.centeredOffset(keyRequestActor)
+                                                x: offset.x; y: offset.y
+                                            }
+                                            horizontalAlignment: Text.AlignHCenter
+                                            visible: keyRequestService.actor.length > 0
+                                            text: keyRequestService.actor; textFormat: Text.PlainText
+                                            width: Math.min(implicitWidth, keyRequestLine.width)
+                                            height: contentHeight; wrapMode: Text.Wrap
+                                            font.pixelSize: 14; color: root.colors["text-primary"]
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                        }
+                                        Text {
+                                            id: keyRequestTitle
+                                            transform: Translate {
+                                                readonly property point offset: keyRequestLine.centeredOffset(keyRequestTitle)
+                                                x: offset.x; y: offset.y
+                                            }
+                                            horizontalAlignment: Text.AlignHCenter
+                                            text: keyRequestService.title; textFormat: Text.PlainText
+                                            width: Math.min(implicitWidth, keyRequestLine.width)
+                                            height: contentHeight; wrapMode: Text.Wrap
+                                            font.pixelSize: 14; color: root.colors.accent
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                        }
+                                        InlineKeyRequestAction {
+                                            id: grantRequestKey
+                                            transform: Translate {
+                                                readonly property point offset: keyRequestLine.centeredOffset(grantRequestKey)
+                                                x: offset.x; y: offset.y
+                                            }
+                                            objectName: "grantChatKeyButton-" + messageRow.modelData.id
+                                            visible: !Boolean(keyRequestService.request.ownCurrentDevice) && Boolean(keyRequestService.request.offerGrant)
+                                            enabled: keyRequestService.responseEnabled("grant")
+                                            text: qsTr("Send key")
+                                            onClicked: keyRequestService.respond("grant")
+                                        }
+                                        InlineKeyRequestAction {
+                                            id: rejectRequestKey
+                                            transform: Translate {
+                                                readonly property point offset: keyRequestLine.centeredOffset(rejectRequestKey)
+                                                x: offset.x; y: offset.y
+                                            }
+                                            objectName: "rejectChatKeyButton-" + messageRow.modelData.id
+                                            visible: !Boolean(keyRequestService.request.ownCurrentDevice) && Boolean(keyRequestService.request.offerReject)
+                                            enabled: keyRequestService.responseEnabled("reject")
+                                            text: qsTr("Reject")
+                                            onClicked: keyRequestService.respond("reject")
                                         }
                                     }
                                     Text {
-                                        id: announcementTitle
-                                        objectName: "keyAnnouncementTitle-" + messageRow.modelData.id
-                                        width: Math.min(implicitWidth, announcementHeading.width)
-                                        height: contentHeight
-                                        text: qsTr("The security key was updated"); textFormat: Text.PlainText
-                                        wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
+                                        visible: text.length > 0
+                                        text: keyRequestService.description; textFormat: Text.PlainText
+                                        width: parent.width; height: contentHeight; wrapMode: Text.Wrap
+                                        horizontalAlignment: Text.AlignHCenter
                                         font.pixelSize: 14; color: root.colors.accent
                                         lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                        transform: Translate {
-                                            x: announcementHeading.lineOffset(announcementTitle).x
-                                            y: announcementHeading.lineOffset(announcementTitle).y
-                                        }
+                                    }
+                                    Text {
+                                        visible: text.length > 0
+                                        text: keyRequestService.status; textFormat: Text.PlainText
+                                        width: parent.width; height: contentHeight; wrapMode: Text.Wrap
+                                        horizontalAlignment: Text.AlignHCenter
+                                        font.pixelSize: 14; color: root.colors.accent
+                                        lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                        Accessible.role: Accessible.StatusBar
                                     }
                                 }
-                                Flow {
-                                    id: announcementDescription
-                                    visible: Boolean(keyAnnouncement.announcement.offerRequest)
-                                    readonly property real naturalWidth: announcementDescriptionLabel.implicitWidth + announcementRequest.implicitWidth + 4
-                                    width: Math.min(parent.width, naturalWidth)
-                                    anchors.horizontalCenter: parent.horizontalCenter
-                                    height: implicitHeight; spacing: 4
-                                    function lineOffset(item) {
-                                        // Same bounded centering rule as incoming R:
-                                        // Flow's untransformed packing is authoritative.
-                                        const parts = [announcementDescriptionLabel, announcementRequest].filter(part => part.visible && Math.abs(part.y - item.y) < 0.5);
-                                        let left = Infinity, right = -Infinity, maxHeight = 0;
-                                        for (const part of parts) {
-                                            left = Math.min(left, part.x); right = Math.max(right, part.x + part.width);
-                                            maxHeight = Math.max(maxHeight, part.height);
+                            }
+                            Loader {
+                                id: responseLoader
+                                width: parent.width
+                                active: messageRow.keyResponse
+                                visible: active
+                                sourceComponent: Column {
+                                    id: keyServiceResponse
+                                    objectName: "keyServiceResponse-" + messageRow.modelData.id
+                                    readonly property var response: messageRow.modelData.keyServiceResponse || ({})
+                                    readonly property bool grant: messageRow.modelData.kind === "key_grant"
+                                    readonly property bool recipientKnown: Boolean(response.recipientKnown) && String(response.recipientId || "").length > 0
+                                    readonly property bool ownCurrentDevice: recipientKnown && Boolean(response.ownCurrentDevice)
+                                    readonly property string title: root.keyServiceResponseTitle(messageRow.modelData, response)
+                                    readonly property string description: recipientKnown ? "" : qsTr("Recipient information is unavailable.")
+                                    readonly property bool offerRequest: !grant && ownCurrentDevice && Boolean(response.offerRequest) && String(response.keyUuid || "").length > 0
+                                    readonly property string status: grant && ownCurrentDevice && Boolean(response.hasKey) ? qsTr("The key is available on this device") : ""
+                                    readonly property string accessibleSummary: [title, description, status].filter(part => part.length > 0).join(" ")
+                                    spacing: 4
+                                    RowLayout {
+                                        id: responseTitleLine
+                                        width: Math.min(parent.width, Math.ceil(responseTitle.implicitWidth) + 28)
+                                        x: (parent.width - width) / 2
+                                        height: implicitHeight; spacing: 4
+                                        NativeIconButton {
+                                            objectName: "keyServiceResponseIcon-" + messageRow.modelData.id
+                                            colors: root.colors; asset: keyServiceResponse.grant ? "key-granted.svg" : "key-rejected.svg"
+                                            glyphSize: 24; Layout.preferredWidth: 24; Layout.preferredHeight: 24
+                                            Layout.minimumWidth: 24; Layout.maximumWidth: 24
+                                            Layout.minimumHeight: 24; Layout.maximumHeight: 24
+                                            Layout.alignment: Qt.AlignVCenter
+                                            padding: 0; enabled: false; opacity: 1; icon.color: root.colors.accent
+                                            Accessible.ignored: true
                                         }
-                                        return { x: (width - (right - left)) / 2 - left, y: (maxHeight - item.height) / 2 };
+                                        Text {
+                                            id: responseTitle
+                                            objectName: "keyServiceResponseText-" + messageRow.modelData.id
+                                            Layout.fillWidth: true; Layout.minimumWidth: 0
+                                            Layout.alignment: Qt.AlignVCenter
+                                            text: keyServiceResponse.title + (keyServiceResponse.description.length ? " " + keyServiceResponse.description : "")
+                                            textFormat: Text.PlainText; wrapMode: Text.Wrap
+                                            horizontalAlignment: Text.AlignHCenter
+                                            font.pixelSize: 14; color: root.colors.accent
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                        }
+                                    }
+                                    GridLayout {
+                                        id: responseRequestLine
+                                        visible: keyServiceResponse.offerRequest
+                                        readonly property real naturalWidth: responseRetryText.implicitWidth + 4 + responseRequestButton.implicitWidth
+                                        readonly property bool inlineActions: naturalWidth <= parent.width
+                                        width: inlineActions ? naturalWidth : parent.width
+                                        x: (parent.width - width) / 2
+                                        height: implicitHeight
+                                        columns: inlineActions ? 2 : 1; columnSpacing: 4; rowSpacing: 4
+                                        Text {
+                                            id: responseRetryText
+                                            Layout.preferredWidth: Math.min(implicitWidth, responseRequestLine.width)
+                                            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                                            text: qsTr("You can request the key again"); textFormat: Text.PlainText
+                                            horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+                                            font.pixelSize: 14; color: root.colors.accent
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                        }
+                                        InlineKeyRequestAction {
+                                            id: responseRequestButton
+                                            objectName: "requestRejectedChatKeyButton-" + messageRow.modelData.id
+                                            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                                            enabled: Boolean(keyServiceResponse.response.canRequest) && !Boolean(root.chatEncryption.busy)
+                                            text: qsTr("Request")
+                                            onClicked: {
+                                                const response = keyServiceResponse.response;
+                                                const key = String(response.keyUuid || "");
+                                                if (!keyServiceResponse.grant && keyServiceResponse.recipientKnown && keyServiceResponse.ownCurrentDevice
+                                                        && Boolean(response.offerRequest) && Boolean(response.canRequest) && key.length)
+                                                    root.controller.requestChatKey(key);
+                                            }
+                                        }
                                     }
                                     Text {
-                                        id: announcementDescriptionLabel
-                                        text: qsTr("Request the key to read the messages"); textFormat: Text.PlainText
-                                        width: Math.min(implicitWidth, announcementDescription.width)
-                                        height: contentHeight; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
+                                        visible: text.length > 0
+                                        text: keyServiceResponse.status; textFormat: Text.PlainText
+                                        width: parent.width; height: contentHeight; wrapMode: Text.Wrap
+                                        horizontalAlignment: Text.AlignHCenter
                                         font.pixelSize: 14; color: root.colors.accent
                                         lineHeightMode: Text.FixedHeight; lineHeight: 20
-                                        transform: Translate {
-                                            x: announcementDescription.lineOffset(announcementDescriptionLabel).x
-                                            y: announcementDescription.lineOffset(announcementDescriptionLabel).y
+                                        Accessible.role: Accessible.StatusBar
+                                    }
+                                }
+                            }
+                            Loader {
+                                id: announcementLoader
+                                width: parent.width
+                                active: messageRow.modelData.kind === "key_announced"
+                                visible: active
+                                sourceComponent: Column {
+                                    id: keyAnnouncement
+                                    readonly property string accessibleSummary: qsTr("The security key was updated")
+                                    objectName: "keyAnnouncementService-" + messageRow.modelData.id
+                                    readonly property var announcement: messageRow.modelData.keyServiceAnnouncement || ({})
+                                    spacing: 4
+                                    Flow {
+                                        id: announcementHeading
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: Math.min(parent.width, announcementTitle.implicitWidth + 28)
+                                        height: implicitHeight
+                                        spacing: 4
+                                        function lineOffset(item) {
+                                            const parts = [announcementIcon, announcementTitle].filter(part => part.visible && Math.abs(part.y - item.y) < 0.5);
+                                            let left = Infinity, right = -Infinity, maxHeight = 0;
+                                            for (const part of parts) {
+                                                left = Math.min(left, part.x); right = Math.max(right, part.x + part.width);
+                                                maxHeight = Math.max(maxHeight, part.height);
+                                            }
+                                            return { x: (width - (right - left)) / 2 - left, y: (maxHeight - item.height) / 2 };
+                                        }
+                                        NativeIconButton {
+                                            id: announcementIcon
+                                            objectName: "keyAnnouncementIcon-" + messageRow.modelData.id
+                                            colors: root.colors; asset: "warning.svg"
+                                            width: 24; height: 24
+                                            glyphSize: 24; padding: 0; horizontalPadding: 0
+                                            enabled: false; opacity: 1; icon.color: root.colors.accent
+                                            Accessible.ignored: true
+                                            transform: Translate {
+                                                x: announcementHeading.lineOffset(announcementIcon).x
+                                                y: announcementHeading.lineOffset(announcementIcon).y
+                                            }
+                                        }
+                                        Text {
+                                            id: announcementTitle
+                                            objectName: "keyAnnouncementTitle-" + messageRow.modelData.id
+                                            width: Math.min(implicitWidth, announcementHeading.width)
+                                            height: contentHeight
+                                            text: keyAnnouncement.accessibleSummary; textFormat: Text.PlainText
+                                            wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
+                                            font.pixelSize: 14; color: root.colors.accent
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                            transform: Translate {
+                                                x: announcementHeading.lineOffset(announcementTitle).x
+                                                y: announcementHeading.lineOffset(announcementTitle).y
+                                            }
                                         }
                                     }
-                                    InlineKeyRequestAction {
-                                        id: announcementRequest
-                                        objectName: "requestAnnouncedChatKeyButton-" + messageRow.modelData.id
-                                        text: qsTr("Request key")
-                                        enabled: Boolean(keyAnnouncement.announcement.canRequest) && !Boolean(root.chatEncryption.busy)
-                                        transform: Translate {
-                                            x: announcementDescription.lineOffset(announcementRequest).x
-                                            y: announcementDescription.lineOffset(announcementRequest).y
+                                    Flow {
+                                        id: announcementDescription
+                                        visible: Boolean(keyAnnouncement.announcement.offerRequest)
+                                        readonly property real naturalWidth: announcementDescriptionLabel.implicitWidth + announcementRequest.implicitWidth + 4
+                                        width: Math.min(parent.width, naturalWidth)
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        height: implicitHeight; spacing: 4
+                                        function lineOffset(item) {
+                                            // Same bounded centering rule as incoming R:
+                                            // Flow's untransformed packing is authoritative.
+                                            const parts = [announcementDescriptionLabel, announcementRequest].filter(part => part.visible && Math.abs(part.y - item.y) < 0.5);
+                                            let left = Infinity, right = -Infinity, maxHeight = 0;
+                                            for (const part of parts) {
+                                                left = Math.min(left, part.x); right = Math.max(right, part.x + part.width);
+                                                maxHeight = Math.max(maxHeight, part.height);
+                                            }
+                                            return { x: (width - (right - left)) / 2 - left, y: (maxHeight - item.height) / 2 };
                                         }
-                                        onClicked: {
-                                            const facts = keyAnnouncement.announcement;
-                                            const key = String(facts.keyUuid || "");
-                                            if (Boolean(facts.offerRequest) && Boolean(facts.canRequest) && key.length && !Boolean(root.chatEncryption.busy))
-                                                root.controller.requestChatKey(key);
+                                        Text {
+                                            id: announcementDescriptionLabel
+                                            text: qsTr("Request the key to read the messages"); textFormat: Text.PlainText
+                                            width: Math.min(implicitWidth, announcementDescription.width)
+                                            height: contentHeight; wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter
+                                            font.pixelSize: 14; color: root.colors.accent
+                                            lineHeightMode: Text.FixedHeight; lineHeight: 20
+                                            transform: Translate {
+                                                x: announcementDescription.lineOffset(announcementDescriptionLabel).x
+                                                y: announcementDescription.lineOffset(announcementDescriptionLabel).y
+                                            }
+                                        }
+                                        InlineKeyRequestAction {
+                                            id: announcementRequest
+                                            objectName: "requestAnnouncedChatKeyButton-" + messageRow.modelData.id
+                                            text: qsTr("Request key")
+                                            enabled: Boolean(keyAnnouncement.announcement.canRequest) && !Boolean(root.chatEncryption.busy)
+                                            transform: Translate {
+                                                x: announcementDescription.lineOffset(announcementRequest).x
+                                                y: announcementDescription.lineOffset(announcementRequest).y
+                                            }
+                                            onClicked: {
+                                                const facts = keyAnnouncement.announcement;
+                                                const key = String(facts.keyUuid || "");
+                                                if (Boolean(facts.offerRequest) && Boolean(facts.canRequest) && key.length && !Boolean(root.chatEncryption.busy))
+                                                    root.controller.requestChatKey(key);
+                                            }
                                         }
                                     }
                                 }
@@ -10182,7 +10246,7 @@ component NativeMentionChip: Item {
                             id: messageTime
                             visible: !messageRow.keyControl
                             objectName: "message-time-" + messageRow.modelData.id
-                            parent: messageRow.isCallCard ? callCard.metadataRow : bubble
+                            parent: callCardLoader.item ? callCardLoader.item.metadataRow : bubble
                             x: parent.width - (messageRow.isCallCard ? 0 : 12) - implicitWidth
                             y: messageRow.isCallCard ? (parent.height - height) / 2
                                 : messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
@@ -10217,7 +10281,7 @@ component NativeMentionChip: Item {
                                 }
                             }
                         }
-                        Accessible.name: messageRow.modelData.kind === "key_announced" ? announcementTitle.text : messageRow.keyResponse ? keyServiceResponse.accessibleSummary : messageRow.incomingKeyRequest !== null ? keyRequestService.accessibleSummary : messageRow.encryptedLocked ? root.encryptedPreparationState(messageRow.modelData) === "error" ? qsTr("Could not decrypt message") : root.encryptedPreparationState(messageRow.modelData) === "preparing" ? qsTr("Decrypting message") : qsTr("Key required") : String(messageRow.modelData.author) + ": " + String(messageRow.rendered.plain)
+                        Accessible.name: announcementLoader.item ? announcementLoader.item.accessibleSummary : responseLoader.item ? responseLoader.item.accessibleSummary : requestLoader.item ? requestLoader.item.accessibleSummary : messageRow.encryptedLocked ? root.encryptedPreparationState(messageRow.modelData) === "error" ? qsTr("Could not decrypt message") : root.encryptedPreparationState(messageRow.modelData) === "preparing" ? qsTr("Decrypting message") : qsTr("Key required") : String(messageRow.modelData.author) + ": " + String(messageRow.rendered.plain)
                     }
                 }
             }
