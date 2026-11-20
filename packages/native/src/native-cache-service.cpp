@@ -54,6 +54,7 @@ struct Input {
     qint64 limit = NativeCache::DefaultDiskLimitBytes;
     quint64 epoch = 0;
     bool retainOnly = false;
+    NativeCache::Removal removal = NativeCache::Removal::Omission;
 };
 struct Result {
     bool okay = false, cancelled = false;
@@ -146,7 +147,7 @@ class CacheWorker final : public QObject
                         result.okay = target->markHistoryRead(target->lease(), input.key.stream,
                                                               input.key.topic, input.ids);
                     if (input.op == Op::OmitBody)
-                        result.okay = target->removeMessageBodyAndHistory(target->lease(), QString::fromUtf8(input.key.marker));
+                        result.okay = target->removeMessageBodyAndHistory(target->lease(), QString::fromUtf8(input.key.marker), input.removal);
                     result.error = target->error();
                     result.usage = target->diskUsageBytes();
                 } else if (cleanup)
@@ -681,9 +682,10 @@ bool NativeCacheService::putMessageBody(const Lease &lease, const QJsonObject &c
 }
 
 bool NativeCacheService::removeMessageBodyAndHistory(const Lease &lease, const QString &uuid,
-                                                     QObject *receiver, Completion done)
+                                                     QObject *receiver, Completion done, NativeCache::Removal reason)
 {
     auto job = d->make(Op::OmitBody, receiver, std::move(done));
+    job.input.removal = reason;
     job.input.key = {Kind::MessageBody, {}, {}, uuid.toLower().toUtf8()};
     job.required = true;
     if (!d->accepts(lease) || !isUuid(uuid)) { d->notify(std::move(job), false); return false; }

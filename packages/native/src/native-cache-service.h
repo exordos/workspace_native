@@ -58,7 +58,8 @@ class NativeCacheService final : public QObject
     // Captured-owner required erasure, not an optional write. Accepted means
     // queued; only done(true) confirms Body and all indexed History are erased.
     bool removeMessageBodyAndHistory(const Lease &lease, const QString &uuid,
-                                     QObject *receiver = nullptr, Completion done = {});
+                                     QObject *receiver = nullptr, Completion done = {},
+                                     NativeCache::Removal reason = NativeCache::Removal::Omission);
     // Local projections stay saved but cannot become authoritative warm pages.
     // The retained write and freshness change share one optional worker job.
     bool put(const Lease &lease, const Key &key, const QJsonArray &rows, const QByteArray &nextMarker = {},
