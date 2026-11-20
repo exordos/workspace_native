@@ -1508,6 +1508,11 @@ public:
     QString messageUuidTwo = QStringLiteral("8d000000-0000-4000-8000-000000000002");
     QString streamSource = "native";
     bool streamEncrypted = false;
+    bool ownPoll = false;
+    int closePosts = 0, managementStatus = 200;
+    bool holdManagement = false;
+    QJsonObject lastSettings;
+    std::function<void()> releaseManagement;
     bool secondPollOnPage = false;
     // Poll config (reference defaults per the polls contract).
     bool multipleAnswers = true;
@@ -1581,7 +1586,7 @@ public:
     QJsonObject row(const QString &id, const QString &questionText) const
     {
         return {{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
-            {"topic_uuid", topicId}, {"author_uuid", channelPeer}, {"is_own", false},
+            {"topic_uuid", topicId}, {"author_uuid", ownPoll ? userId : channelPeer}, {"is_own", ownPoll},
             {"read", true}, {"starred", false},
             {"created_at", QStringLiteral("2026-01-02T10:00:30.000Z")},
             {"payload", payload(questionText)}, {"poll_state", state()}};
@@ -1671,12 +1676,25 @@ public:
                 }
                 return response;
             }
-            if (path == actions + "update_settings/invoke") {
-                // Another actor changes the poll: a revision bump with no
-                // vote or option effects (issue #216 round-3 lock case).
-                ++settingsPosts;
-                ++revision;
-                return {row(), 200};
+            if (path == actions + "update_settings/invoke" || path == actions + "close_poll/invoke") {
+                if (path == actions + "close_poll/invoke") {
+                    ++closePosts;
+                    if (managementStatus == 200) closed = true;
+                } else {
+                    ++settingsPosts;
+                    lastSettings = request.body.value("settings").toObject();
+                    if (managementStatus == 200) {
+                        allowAddingOptions = lastSettings.value("allow_adding_options").toBool();
+                        closesAt = lastSettings.value("closes_at").toString();
+                    }
+                }
+                if (managementStatus == 200) ++revision;
+                Response response{row(), managementStatus};
+                if (holdManagement) {
+                    holdManagement = false;
+                    response.defer = [this](std::function<void()> send) { releaseManagement = std::move(send); };
+                }
+                return response;
             }
             if (path.endsWith("/streams/") && request.method == "GET") {
                 auto stream = windowChannel(streamId, QStringLiteral("Product team"));
@@ -1709,6 +1727,7 @@ public:
     {
         if (releaseVote) releaseVote();
         if (releaseAddOption) releaseAddOption();
+        if (releaseManagement) releaseManagement();
     }
 };
 
@@ -2139,8 +2158,8 @@ public:
                 notifBody = request.body;
                 // streams/{uuid}/actions/notifications/invoke: the invoke
                 // answers with the canonical DTO of the stream it addressed.
-                auto row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
-                row["notification_mode"] = request.body.value("notification_mode");
+                auto &row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
+                if (notifStatus == 200) row["notification_mode"] = request.body.value("notification_mode");
                 return {row, notifStatus, notifStatus == 200 ? 180 : 160};
             }
             if (request.method == "DELETE" && path.contains("/stream_bindings/")) {
@@ -13144,6 +13163,58 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void firstEncryptedBatchReservesAnAccessibleMessageViewport()
+    {
+        WindowChannelFixture fixture;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy() && controller.messages().isEmpty());
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QVariantMap first{{"id", messageId}, {"kind", "e2ee"}, {"encryptionState", "ready"},
+            {"authorId", userId}, {"author", "Cassi"}, {"content", "First"}, {"displayContent", "First"},
+            {"createdAt", "2026-01-02T10:00:00Z"}, {"time", "10:00"}, {"decrypted", true}, {"read", true}};
+        auto second = first;
+        second["id"] = returnedId;
+        second["encryptionState"] = "preparing";
+        second["decrypted"] = false;
+        const auto project = [&](const QVariantMap &row) {
+            return QMetaObject::invokeMethod(list, "replaceMessages", Q_ARG(QVariant, QVariant(QVariantList{first, row})),
+                Q_ARG(QVariant, QVariant(false)));
+        };
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 0);
+        auto *surface = item(window->contentItem(), "messagePreparationSurface");
+        QVERIFY(surface && surface->isVisible());
+        QCOMPARE(surface->height(), list->height());
+        auto *accessible = QAccessible::queryAccessibleInterface(surface);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::ProgressBar);
+        second["encryptionState"] = "ready";
+        second["decrypted"] = true;
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 2);
+        QVERIFY(!surface->isVisible());
+        second["encryptionState"] = "preparing";
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 1);
+        QVERIFY(!surface->isVisible());
+    }
+
     void realQuickWindowSignsInNavigatesAndSends()
     {
         QTemporaryDir preferencesDirectory;
@@ -15176,6 +15247,14 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             return anchor;
         };
+        if (prepend) {
+            // A general notification with the same outgoing presentation must
+            // preserve the settled layout before the user's first wheel event.
+            const auto ticket = list->property("layoutTicket");
+            QVERIFY(ticket.isValid());
+            emit controller.stateChanged();
+            QCOMPARE(list->property("layoutTicket"), ticket);
+        }
         if (behavior != "incoming-bottom") {
             const auto before = list->property("contentY").toReal();
             const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
@@ -23461,6 +23540,70 @@ mv -Tf "$root/.current-new" "$root/current"
             QStringLiteral("muted"));
     }
 
+    void windowChannelNotificationLevelsAndUnsupportedFallback_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void windowChannelNotificationLevelsAndUnsupportedFallback()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.openChannelInfo();
+        auto *control = visibleItem("channelInfoNotificationSwitch"); QVERIFY(control);
+        auto *group = QAccessible::queryAccessibleInterface(control); QVERIFY(group);
+        QCOMPARE(group->role(), QAccessible::Grouping);
+        QCOMPARE(group->text(QAccessible::Name), locale == "ru" ? QString("Уведомления") : QString("Notifications"));
+        const QStringList segments{"channelInfoNotifSubscribed", "channelInfoNotifDefault", "channelInfoNotifMuted"};
+        const QStringList modes{"all_messages", "mentions_only", "muted"};
+        const QStringList labels = locale == "ru"
+            ? QStringList{"Все сообщения", "Только при упоминаниях", "Без уведомлений"}
+            : QStringList{"All messages", "Mentions only", "Muted"};
+        for (int i = 0; i < segments.size(); ++i) {
+            auto *segment = visibleItem(segments[i]); QVERIFY(segment);
+            QTRY_COMPARE(segment->height(), qreal(36));
+            auto *choice = QAccessible::queryAccessibleInterface(segment); QVERIFY(choice);
+            QCOMPARE(choice->role(), QAccessible::RadioButton);
+            QVERIFY(choice->state().checkable);
+            QCOMPARE(choice->text(QAccessible::Name), labels[i]);
+            if (i == 1) {
+                auto *actions = choice->actionInterface(); QVERIFY(actions);
+                const auto toggle = QAccessibleActionInterface::toggleAction();
+                QVERIFY(actions->actionNames().contains(toggle));
+                actions->doAction(toggle);
+            } else if (i == 2) {
+                click(scene.window, segment);
+            }
+            QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), modes[i]);
+            for (int j = 0; j < segments.size(); ++j) {
+                const auto *option = QAccessible::queryAccessibleInterface(visibleItem(segments[j])); QVERIFY(option);
+                QCOMPARE(option->state().checked, i == j);
+            }
+        }
+        QTRY_VERIFY(visibleItem("streamNotif-" + streamId));
+        QCOMPARE(scene.fixture.notifPosts, 2);
+        scene.controller.refresh();
+        QTRY_VERIFY(!scene.controller.busy());
+        QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), QString("muted"));
+
+        scene.fixture.streamRow.remove("notification_mode");
+        scene.controller.refresh();
+        QTRY_VERIFY(scene.controller.channelInfoNotificationMode().isEmpty());
+        QTRY_VERIFY(!visibleItem("channelInfoNotificationSwitch"));
+        auto *fallback = visibleItem("channelInfoNotificationUnsupported"); QVERIFY(fallback);
+        QVERIFY(!fallback->childItems().isEmpty());
+        QCOMPARE(fallback->childItems().first()->property("text").toString(), locale == "ru"
+            ? QString("Это действие пока недоступно в этом чате.")
+            : QString("This action is not available in this conversation yet."));
+    }
+
     // Issue #132: a failed level update keeps the previous mode and surfaces
     // the reference failure text (t("app.error") -> "Something went wrong",
     // notification-level-switch.lib.ts), under the switch, and a later
@@ -29346,6 +29489,171 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!avatarProbeCircle(card, 20));
     }
 
+    void pollManagementMenuTracksActorAndState_data()
+    {
+        QTest::addColumn<bool>("own"); QTest::addColumn<bool>("closed");
+        QTest::addColumn<bool>("expired"); QTest::addColumn<bool>("readOnly");
+        QTest::newRow("author") << true << false << false << false;
+        QTest::newRow("peer") << false << false << false << false;
+        QTest::newRow("closed") << true << true << false << false;
+        QTest::newRow("expired") << true << false << true << false;
+        QTest::newRow("encrypted") << true << false << false << true;
+    }
+
+    void pollManagementMenuTracksActorAndState()
+    {
+        QFETCH(bool, own); QFETCH(bool, closed); QFETCH(bool, expired); QFETCH(bool, readOnly);
+        PollBubbleScene scene;
+        scene.fixture.ownPoll = own; scene.fixture.closed = closed;
+        scene.fixture.closesAt = expired ? "2000-01-01T00:00:00Z" : "";
+        scene.fixture.streamEncrypted = readOnly;
+        scene.start();
+        auto *bubble = visibleItem(scene.content(), "message-" + scene.fixture.messageUuid);
+        QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        auto *menu = scene.window->findChild<QObject *>("messageMenu");
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->property("visible").toBool());
+        for (const auto &name : {"pollSettingsAction", "pollCloseAction"}) {
+            auto *action = scene.window->findChild<QObject *>(name);
+            QVERIFY(action);
+            QCOMPARE(action->property("visible").toBool(), own && !closed && !expired && !readOnly);
+        }
+    }
+
+    void pollManagementAcceptsAnUnchangedDeadlineLaterThisMinute()
+    {
+        PollBubbleScene scene;
+        auto &fixture = scene.fixture;
+        fixture.ownPoll = true;
+        fixture.closesAt.clear();
+        scene.start();
+        // Set the fixture after the window is ready and allow enough time for
+        // an actual click before the final instant of the current minute.
+        QTRY_VERIFY_WITH_TIMEOUT(QTime::currentTime().second() < 45, 20000);
+        auto deadline = QDateTime::currentDateTimeUtc();
+        deadline.setTime(QTime(deadline.time().hour(), deadline.time().minute(), 59, 938));
+        fixture.closesAt = deadline.toString(Qt::ISODateWithMs);
+        ++fixture.revision;
+        auto updated = fixture.row();
+        updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        auto *bubble = visibleItem(scene.content(), "message-" + fixture.messageUuid);
+        QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        QTRY_VERIFY(visibleItem(scene.content(), "pollSettingsAction"));
+        scene.click(visibleItem(scene.content(), "pollSettingsAction"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        scene.click(visibleItem(scene.content(), "poll-management-add-options"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_VERIFY(fixture.settingsPosts == 1 || visibleItem(scene.content(), "poll-management-invalid"));
+        QCOMPARE(fixture.settingsPosts, 1);
+        QCOMPARE(fixture.lastSettings.value("closes_at").toString(), deadline.toString(Qt::ISODateWithMs));
+    }
+
+    void pollManagementClosesWhenItsSourceIsDeleted()
+    {
+        PollBubbleScene scene;
+        scene.fixture.ownPoll = true;
+        scene.fixture.closesAt.clear();
+        scene.start();
+        const auto id = scene.fixture.messageUuid;
+        auto *bubble = visibleItem(scene.content(), "message-" + id); QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        QTRY_VERIFY(visibleItem(scene.content(), "pollSettingsAction"));
+        scene.click(visibleItem(scene.content(), "pollSettingsAction"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", QJsonObject{{"kind", "message.deleted"}, {"uuid", id},
+                {"stream_uuid", streamId}, {"topic_uuid", topicId}}}}));
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        QCOMPARE(scene.fixture.settingsPosts, 0);
+    }
+
+    void pollManagementCloseHoldAndRetryAndSettingsPayload_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void pollManagementCloseHoldAndRetryAndSettingsPayload()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        PollBubbleScene scene;
+        scene.preferences.setLocale(locale); scene.preferences.setMode(mode);
+        auto &fixture = scene.fixture;
+        fixture.ownPoll = true; fixture.closesAt.clear();
+        scene.start();
+        const auto openAction = [&](const QString &name) {
+            auto *bubble = visibleItem(scene.content(), "message-" + fixture.messageUuid);
+            QVERIFY(bubble);
+            QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+                bubble->mapToScene(QPointF(10, 12)).toPoint());
+            QTRY_VERIFY(visibleItem(scene.content(), name));
+            scene.click(visibleItem(scene.content(), name));
+        };
+        openAction("pollSettingsAction");
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QCOMPARE(pollItemText(scene.content(), "poll-management-title"), locale == "ru" ? QString("Изменить опрос") : QString("Edit poll"));
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        auto *date = visibleItem(scene.content(), "poll-management-date"); QVERIFY(date);
+        date->setProperty("text", "2000-01-01");
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-invalid"));
+        QCOMPARE(fixture.settingsPosts, 0);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        openAction("pollSettingsAction");
+        QVERIFY(!visibleItem(scene.content(), "poll-management-date"));
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        date = visibleItem(scene.content(), "poll-management-date"); QVERIFY(date);
+        date->setProperty("text", "2099-11-15");
+        visibleItem(scene.content(), "poll-management-time")->setProperty("text", "12:30");
+        scene.click(visibleItem(scene.content(), "poll-management-add-options"));
+        fixture.holdManagement = true; fixture.managementStatus = 503;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 1);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QVERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(!visibleItem(scene.content(), "poll-management-submit")->isEnabled());
+        auto releaseSettings = std::move(fixture.releaseManagement); QVERIFY(releaseSettings); releaseSettings();
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-error"));
+        fixture.managementStatus = 200;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 2);
+        QVERIFY(!fixture.lastSettings.value("allow_adding_options").toBool());
+        QVERIFY(QDateTime::fromString(fixture.lastSettings.value("closes_at").toString(), Qt::ISODateWithMs).isValid());
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        openAction("pollSettingsAction");
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 3);
+        QVERIFY(fixture.lastSettings.value("closes_at").isNull());
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        fixture.managementStatus = 503;
+        fixture.holdManagement = true;
+        openAction("pollCloseAction");
+        QCOMPARE(pollItemText(scene.content(), "poll-management-title"), locale == "ru" ? QString("Завершить опрос?") : QString("Close poll?"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.closePosts, 1);
+        QVERIFY(!visibleItem(scene.content(), "poll-management-submit")->isEnabled());
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QVERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        auto releaseClose = std::move(fixture.releaseManagement); QVERIFY(releaseClose); releaseClose();
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-error"));
+        fixture.managementStatus = 200;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.closePosts, 2);
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(fixture.closed);
+    }
+
     void pollBubbleClosedShowsResultsAndNoControls()
     {
         PollBubbleScene scene;
@@ -29569,8 +29877,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
             "poll-option-0-1-" + scene.fixture.messageUuid));
         // Another actor changes the poll settings: the poll revision bumps
         // while our vote request is still waiting for its own response.
-        scene.controller.updatePollSettings(scene.fixture.messageUuid, QString(), true);
-        QTRY_COMPARE(scene.fixture.settingsPosts, 1);
+        ++scene.fixture.revision;
+        auto updated = scene.fixture.row();
+        updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        QTRY_COMPARE(scene.controller.messages().first().toMap().value("poll").toMap().value("state")
+            .toMap().value("revision").toLongLong(), scene.fixture.revision);
         QTest::qWait(150);
         QVERIFY2(pollItemDisabled(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid),
@@ -37028,8 +37341,15 @@ private slots:
     // Selecting a level closes the menu and posts {notification_mode} against
     // streams/{id}/actions/notifications/invoke; the canonical response flips the
     // sidebar row (indicator + 0.7 dim) and a same-level repeat sends nothing.
+    void windowStreamContextMenuNotificationSwitch_data()
+    {
+        QTest::addColumn<bool>("missingMode");
+        QTest::newRow("all-messages") << false;
+        QTest::newRow("missing-means-mentions") << true;
+    }
     void windowStreamContextMenuNotificationSwitch()
     {
+        QFETCH(bool, missingMode);
         WindowChannelFixture fixture;
         const QString direct = QStringLiteral("97000000-0000-4000-8000-970000000002");
         int notifPosts = 0; QJsonObject notifBody; QString notifPath;
@@ -37046,7 +37366,13 @@ private slots:
             if (request.method == "GET" && path.endsWith("/streams/")) {
                 auto response = fallback(request);
                 auto rows = response.data.toArray();
+                if (missingMode) {
+                    auto channel = rows.first().toObject();
+                    channel.remove("notification_mode");
+                    rows.replace(0, channel);
+                }
                 auto directRow = windowChannel(direct, "Alice Adams");
+                if (missingMode) directRow.remove("notification_mode");
                 directRow["private"] = true; directRow["direct_user_uuid"] = channelPeer;
                 rows.append(directRow);
                 response.data = rows;
@@ -37083,6 +37409,8 @@ private slots:
         QVERIFY(visibleItem("streamMenuNotifMuted"));
         QVERIFY(visibleItem("streamMenuNotifSubscribed"));
         // Switching to Muted closes the menu and persists through the invoke endpoint.
+        QVERIFY(visibleItem(missingMode ? "streamMenuNotifDefault" : "streamMenuNotifSubscribed")
+            ->property("isCurrent").toBool());
         click(window, visibleItem("streamMenuNotifMuted"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 1);
@@ -37100,7 +37428,7 @@ private slots:
         openMenu("stream-" + direct);
         QVERIFY(!visibleItem("streamMenuNotifDefault"));
         QVERIFY(visibleItem("streamMenuNotifMuted"));
-        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        QVERIFY(visibleItem("streamMenuNotifSubscribed")->property("isCurrent").toBool());
         menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
         menu->setProperty("visible", false);
     }
@@ -37112,18 +37440,30 @@ private slots:
     // three levels inactive, a press on a disabled level posts no second
     // request, another stream's menu stays interactive, and the switch
     // re-enables live (menu still open) the moment the held response settles.
+    void windowStreamContextMenuNotificationSwitchDisabledWhileBusy_data()
+    {
+        QTest::addColumn<bool>("renewSession");
+        QTest::newRow("settled-post") << false;
+        QTest::newRow("renewed-session") << true;
+    }
+
     void windowStreamContextMenuNotificationSwitchDisabledWhileBusy()
     {
+        QFETCH(bool, renewSession);
         WindowChannelFixture fixture;
         const QString other = QStringLiteral("97000000-0000-4000-8000-970000000003");
         int notifPosts = 0; QJsonObject notifBody;
         bool deferNext = false;
+        bool renewToken = false;
         std::vector<std::function<void()>> releases;
         const auto fallback = fixture.server.handler;
         auto gate = qScopeGuard([&]{ fixture.server.handler = fallback;
             for (auto &release : releases) if (release) release(); });
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (renewToken && path.endsWith("/actions/get_token/invoke"))
+                return {QJsonObject{{"access_token", "synthetic-renewed-menu"}, {"refresh_token", "synthetic-refresh"},
+                    {"expires_in", 3600}}};
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
                 ++notifPosts; notifBody = request.body;
                 auto row = windowChannel(streamId, "Product team");
@@ -37131,6 +37471,7 @@ private slots:
                 row["updated_at"] = "2026-01-02T11:00:00Z";
                 Response response{row};
                 if (deferNext) {
+                    if (renewSession) response.status = 503;
                     deferNext = false;
                     response.defer = [&releases](std::function<void()> send)
                     { releases.push_back(std::move(send)); };
@@ -37199,16 +37540,28 @@ private slots:
         // Back on A: disabled again while its write is still held.
         openMenu("stream-" + streamId);
         QVERIFY(!levelEnabled("streamMenuNotifMuted"));
-        // Releasing the held response releases the slot live: the still-open
-        // menu's switch re-enables without reopening.
+        // A changed token retires the held reply; the catalog fixture still
+        // reports the original all-messages mode. A normally settled POST
+        // instead confirms muted.
+        if (renewSession) {
+            QSignalSpy renewed(&session, &Session::authenticated);
+            renewToken = true;
+            session.requestRefresh();
+            QTRY_COMPARE(renewed.size(), 1);
+            QTRY_VERIFY(!controller.busy());
+            QVERIFY(controller.streamNotificationBusy(streamId));
+        }
         releases[0](); releases[0] = {};
         QTRY_VERIFY(!controller.streamNotificationBusy(streamId));
+        if (!menu->property("opened").toBool()) openMenu("stream-" + streamId);
         QTRY_VERIFY(levelEnabled("streamMenuNotifMuted"));
-        // Interactive again: the next level change goes through normally.
-        click(window, visibleItem("streamMenuNotifSubscribed"));
+        const auto current = renewSession ? "streamMenuNotifSubscribed" : "streamMenuNotifMuted";
+        QTRY_VERIFY(visibleItem(current)->property("isCurrent").toBool());
+        // An interaction on this same stream sends a second write.
+        click(window, visibleItem("streamMenuNotifDefault"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 2);
-        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("all_messages"));
+        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("mentions_only"));
     }
 
     // Issue #438 review (finding 4633233517): a selection edge skipped while

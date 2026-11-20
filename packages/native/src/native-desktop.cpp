@@ -1,4 +1,5 @@
 #include "native-desktop.h"
+#include "native-platform-shell.h"
 
 #include <QAction>
 #include <QCloseEvent>
@@ -129,6 +130,9 @@ void NativeDesktop::refreshLabels()
     const auto base = QStringLiteral(":/workspace/tray/tray-icon");
 #endif
     m_tray->setIcon(QIcon(base + suffix));
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    setPlatformUnread(m_window, m_unread > 0, !m_callRoom.isEmpty(), tr("Unread messages"));
+#endif
 }
 
 void NativeDesktop::requestQuit()

@@ -345,6 +345,38 @@ private slots:
         QCOMPARE(fixture.requests.size(), 0);
     }
 
+    void pendingWriteAcrossRenewalStillHonorsCancellation_data()
+    {
+        QTest::addColumn<bool>("changeAccount");
+        QTest::newRow("explicit-cancel") << false;
+        QTest::newRow("other-account") << true;
+    }
+
+    void pendingWriteAcrossRenewalStillHonorsCancellation()
+    {
+        QFETCH(bool, changeAccount);
+        HttpFixture fixture;
+        fixture.hold = true;
+        ApiClient client(nullptr, true);
+        QVERIFY(client.setServer(fixture.origin()));
+        client.setAccessToken("synthetic-first");
+        int callbacks = 0;
+        ApiResult result;
+        const auto write = client.request("POST", "/api/notification", QJsonObject{}, {},
+            [&](const ApiResult &response) { result = response; ++callbacks; },
+            false, {}, ApiClient::TokenRenewal::AwaitReply);
+        QTRY_COMPARE(fixture.requests.size(), 1);
+        client.setAccessToken("synthetic-renewed", true);
+        QCOMPARE(callbacks, 0);
+        if (changeAccount) client.setAccessToken("synthetic-other-account");
+        else QVERIFY(client.cancelRequest(write));
+        QTRY_COMPARE(callbacks, 1);
+        QVERIFY(!result.ok());
+        QVERIFY(!result.completedAfterTokenRenewal);
+        QVERIFY(result.data.isUndefined() || result.data.isNull());
+        QVERIFY(!client.cancelRequest(write));
+    }
+
     void tokenRotationRetiresOnlyTheOldGenerationHandle()
     {
         HttpFixture fixture;

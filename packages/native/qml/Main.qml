@@ -832,6 +832,23 @@ ApplicationWindow {
         const message = currentMessage(menuMessageId);
         return Boolean(message && message.kind === "markdown" && !selectedStreamEncrypted);
     }
+    function manageMenuPoll(closing) {
+        const message = currentMessage(menuMessageId)
+        messageMenu.close()
+        pollManagement.showFor(message, closing)
+    }
+    property int pollMenuClock: 0
+    readonly property bool menuPollManageable: {
+        pollMenuClock
+        const message = currentMessage(menuMessageId)
+        return Boolean(message && message.kind === "poll" && root.controller.canManagePoll(menuMessageId))
+    }
+    Timer {
+        interval: 1000
+        repeat: true
+        running: messageMenu.visible && root.menuPollManageable
+        onTriggered: root.pollMenuClock++
+    }
     readonly property bool menuMessageReadable: {
         const message = currentMessage(menuMessageId);
         return root.menuMessageOrdinaryReadable || Boolean(message && message.kind === "e2ee" && message.decrypted);
@@ -6996,7 +7013,7 @@ component NativeMentionChip: Item {
             }
             NativeButton {
                 colors: root.colors
-                visible: root.controller.canLoadOlder
+                visible: root.controller.canLoadOlder && !messageList.preparingRows
                 Layout.alignment: Qt.AlignHCenter
                 text: qsTr("Load older messages")
                 enabled: !root.controller.busy
@@ -7016,6 +7033,54 @@ component NativeMentionChip: Item {
                 // Keep delegates stable when a verified QVariantList snapshot
                 // changes, then restore the visible UUID after layout.
                 model: renderedMessages
+                property string preparedScope: ""
+                property bool preparedWindowOpened: false
+                property bool preparingRows: false
+                property bool preparationSurfaceVisible: false
+                property var outgoingPresentation: ({})
+                property var lastOutgoing: ({})
+                readonly property var currentOutgoing: root.controller.encryptedOutgoingPresentation
+                onCurrentOutgoingChanged: {
+                    const next = currentOutgoing || {};
+                    if (next.id === lastOutgoing.id && next.text === lastOutgoing.text)
+                        return;
+                    lastOutgoing = next;
+                    if (preparedScope.length)
+                        replaceMessages(messageSnapshot, true)
+                }
+                Item {
+                    objectName: "messagePreparationSurface"
+                    anchors.fill: parent
+                    visible: messageList.preparationSurfaceVisible
+                    Accessible.role: Accessible.ProgressBar
+                    Accessible.name: qsTr("Decrypting message")
+                    Accessible.ignored: !visible
+                }
+                footer: Item {
+                    width: messageList.width - messageList.leftMargin - messageList.rightMargin
+                    height: visible ? outgoingBubble.implicitHeight + 4 : 0
+                    visible: Boolean(messageList.outgoingPresentation.id)
+                    Rectangle {
+                        id: outgoingBubble
+                        objectName: "outgoingPresentationBubble"
+                        anchors.right: parent.right
+                        width: Math.min(parent.width, outgoingText.implicitWidth + 24)
+                        implicitHeight: outgoingText.implicitHeight + 12
+                        height: implicitHeight
+                        radius: 8
+                        color: root.colors["bg-elevated"]
+                        Text {
+                            id: outgoingText
+                            objectName: "outgoingPresentationText"
+                            anchors.fill: parent
+                            anchors.margins: 6
+                            text: String(messageList.outgoingPresentation.text || "")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            color: root.colors["text-primary"]
+                        }
+                    }
+                }
                 // Scroll-triggered older paging (docs/NATIVE_DESKTOP_AUTO_PAGING.md,
                 // reserve policy for #156 in docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md):
                 // reference workspace-message-list-scroll.hook.ts LOAD_MORE_THRESHOLD
@@ -7362,6 +7427,11 @@ component NativeMentionChip: Item {
                         // State changes can precede route-clearing messagesChanged.
                         // Never re-project the previous route's saved snapshot.
                         messageSnapshot = [];
+                        preparedScope = "";
+                        preparedWindowOpened = false;
+                        preparationSurfaceVisible = false;
+                        preparingRows = false;
+                        outgoingPresentation = {};
                         serviceGroups = [];
                         serviceAliases = {};
                     }
@@ -7562,7 +7632,7 @@ component NativeMentionChip: Item {
                         hiddenAdvanceKey = ""
                         return
                     }
-                    if (positioning || messageSnapshot.length === 0 || !root.controller.messageHistoryReady)
+                    if (positioning || preparingRows || messageSnapshot.length === 0 || !root.controller.messageHistoryReady)
                         return
                     const direction = root.controller.canLoadNewer ? "newer"
                         : root.controller.canLoadOlder ? "older" : ""
@@ -7680,7 +7750,27 @@ component NativeMentionChip: Item {
                         snapshot.center = Boolean(target.length && (!openingPosition || openingPosition.kind !== "anchor"));
                         snapshot.offset = openingPosition && openingPosition.kind === "anchor" ? openingPosition.offset : 0;
                     }
-                    const projection = projectServiceRows(messageSnapshot, historical);
+                    const preparationScope = JSON.stringify([route, opening.runtime, root.chatEncryption.presentationEpoch]);
+                    if (preparedScope !== preparationScope) {
+                        preparedScope = preparationScope;
+                        preparedWindowOpened = false;
+                        outgoingPresentation = {};
+                    }
+                    const pending = messageSnapshot.filter(row => row.kind === "e2ee" && row.encryptionState === "preparing");
+                    preparingRows = pending.length > 0;
+                    const outgoing = currentOutgoing || {};
+                    if (outgoing.id && !messageSnapshot.some(row => row.id === outgoing.id && row.encryptionState !== "preparing")) {
+                        if (outgoing.id !== outgoingPresentation.id || outgoing.text !== outgoingPresentation.text)
+                            outgoingPresentation = outgoing;
+                    }
+                    else if (outgoingPresentation.id && !pending.some(row => row.id === outgoingPresentation.id))
+                        outgoingPresentation = {};
+                    preparationSurfaceVisible = preparingRows && !preparedWindowOpened && !outgoingPresentation.id;
+                    const presented = preparationSurfaceVisible ? [] : preparingRows
+                        ? messageSnapshot.filter(row => row.kind !== "e2ee" || row.encryptionState !== "preparing") : messageSnapshot;
+                    if (presented.length || outgoingPresentation.id)
+                        preparedWindowOpened = true;
+                    const projection = projectServiceRows(presented, historical);
                     positioning = true;
                     visibleReadTimer.stop();
                     pendingViewport = snapshot;
@@ -7776,7 +7866,7 @@ component NativeMentionChip: Item {
                         // arm/coalescing/end-of-history guards inside
                         // noteScrollReserve keep this from ever duplicating or
                         // storming a request.
-                        root.controller.noteScrollReserve(distanceFromTop(), height)
+                        if (!preparingRows) root.controller.noteScrollReserve(distanceFromTop(), height)
                         finishServiceHistoryReady();
                         scheduleVisibleRead();
                         return;
@@ -7943,7 +8033,7 @@ component NativeMentionChip: Item {
                     // Issue #156: user-attributed scroll passes hand the reserve
                     // decision to the controller (reference gates preserved:
                     // userScrollSeen, positioning, anchorJumpPending).
-                    if (userScrollSeen && !positioning && !anchorJumpPending)
+                    if (userScrollSeen && !positioning && !anchorJumpPending && !preparingRows)
                         root.controller.noteScrollReserve(distanceFromTop(), height)
                     // Issue #253: same reference syncAtBottomFromElement analogue
                     // that keeps the resize-time tail intent current outside the
@@ -10289,7 +10379,7 @@ component NativeMentionChip: Item {
             NativeButton {
                 id: loadNewerButton
                 colors: root.colors
-                visible: root.controller.canLoadNewer
+                visible: root.controller.canLoadNewer && !messageList.preparingRows
                 Layout.alignment: Qt.AlignHCenter
                 text: qsTr("Load newer messages")
                 enabled: !root.controller.busy
@@ -13150,10 +13240,11 @@ component NativeMentionChip: Item {
                                 padding: 0
                                 display: AbstractButton.IconOnly
                                 property bool isCurrent: {
-                                    const rows = root.controller.streams;
-                                    const stream = root.currentStream(root.streamMenuTarget);
-                                    return stream != null
-                                        && String(stream.notificationMode || "") === String(modelData.mode);
+                                    const stream = root.currentStream(root.streamMenuTarget)
+                                    if (!stream) return false
+                                    const mode = String(stream.notificationMode || "mentions_only")
+                                    const selected = stream.isDirect && mode === "mentions_only" ? "all_messages" : mode
+                                    return selected === modelData.mode
                                 }
                                 icon.source: "qrc:/workspace/icons/" + modelData.asset
                                 icon.width: 22
@@ -13167,8 +13258,9 @@ component NativeMentionChip: Item {
                                 }
                                 onClicked: {
                                     const target = root.streamMenuTarget
+                                    const selected = isCurrent
                                     streamMenu.close()
-                                    root.controller.setStreamNotificationMode(target, String(modelData.mode))
+                                    if (!selected) root.controller.setStreamNotificationMode(target, String(modelData.mode))
                                 }
                             }
                         }
@@ -14710,6 +14802,13 @@ component NativeMentionChip: Item {
     }
 
     // Issue #215 create-poll dialog (docs/NATIVE_DESKTOP_POLL_CREATION.md).
+    NativePollManagementDialog {
+        id: pollManagement
+        parent: Overlay.overlay
+        colors: root.colors
+        controller: root.controller
+    }
+
     NativePollDialog {
         id: pollCreateDialog
         parent: Overlay.overlay
@@ -15128,6 +15227,20 @@ component NativeMentionChip: Item {
         }
         MessageMenuSeparator {
             visible: root.menuMessageOwn && root.menuMessageOrdinaryReadable
+        }
+        MessageMenuAction {
+            objectName: "pollSettingsAction"
+            visible: root.menuPollManageable
+            text: qsTr("Poll settings")
+            asset: "settings.svg"
+            onTriggered: root.manageMenuPoll(false)
+        }
+        MessageMenuAction {
+            objectName: "pollCloseAction"
+            visible: root.menuPollManageable
+            text: qsTr("Close poll")
+            asset: "block.svg"
+            onTriggered: root.manageMenuPoll(true)
         }
         MessageMenuAction {
             objectName: "editMessageAction"
