@@ -128,6 +128,12 @@ class Controls(unittest.TestCase):
             ],
         )
 
+    def test_an_unrelated_read_event_cannot_stand_in_for_the_test_receipt(self):
+        rows = [{"event": "realtime", "ms": 1, "kind": "message.read", "peer": True}]
+        self.assertIn("session-receipt-unobserved", evaluate(rows, None)["blocked"])
+        rows[0]["receipt"] = True
+        self.assertNotIn("session-receipt-unobserved", evaluate(rows, None)["blocked"])
+
     def test_fixture_stream_selection_keeps_the_auto_expanded_topics_open(self):
         runner = runpy.run_path(
             str(
@@ -223,6 +229,50 @@ class Controls(unittest.TestCase):
         self.assertNotIn(missing, evaluate(rows, LIMITS)["blocked"])
         rows[4]["ms"] = 11
         self.assertIn(missing, evaluate(rows, LIMITS)["blocked"])
+
+    def test_delayed_cache_interaction_requires_visible_movement_before_the_reply(self):
+        rows = [
+            {"event": "action", "ms": 0, "id": 1, "kind": "warm-delayed"},
+            {
+                "event": "request",
+                "ms": 1,
+                "category": "history",
+                "view": "b",
+                "index": 7,
+            },
+            {"event": "sample", "ms": 2, "view": "b", "count": 30, "offset": 50},
+            {"event": "picture", "ms": 3, "occupancy": 0.2, "signature": "first"},
+            {"event": "wheel", "ms": 4, "angle": 120, "pixel": 0},
+            {"event": "sample", "ms": 5, "view": "b", "count": 30, "offset": 20},
+            {"event": "picture", "ms": 6, "occupancy": 0.2, "signature": "moved"},
+            {
+                "event": "response",
+                "ms": 7,
+                "category": "history",
+                "view": "b",
+                "index": 7,
+            },
+            {"event": "end", "ms": 8, "id": 1},
+        ]
+        blocked = "cached-interaction-during-revalidation-unobserved"
+        self.assertNotIn(blocked, evaluate(rows, None)["blocked"])
+        rows[7]["ms"] = 5
+        self.assertIn(blocked, evaluate(rows, None)["blocked"])
+
+    def test_offline_switch_needs_a_sample_of_the_selected_topic_before_restoring(self):
+        rows = [
+            {"event": "action", "ms": 0, "id": 1, "kind": "reconnect"},
+            {"event": "offline-observation", "ms": 30},
+            {"event": "sample", "ms": 31, "view": "b", "count": 10},
+            {"event": "network-enabled", "ms": 85},
+            {"event": "sample", "ms": 90, "view": "a", "count": 10},
+            {"event": "end", "ms": 100, "id": 1},
+        ]
+        self.assertIn("offline-target-unobserved", evaluate(rows, None)["blocked"])
+        rows[2].update(view="a", count=0)
+        self.assertIn(
+            "warmed-topic-blank-during-disconnect", evaluate(rows, None)["failures"]
+        )
 
     def test_cpu_ticks_accumulate_across_the_real_restart(self):
         rows = [

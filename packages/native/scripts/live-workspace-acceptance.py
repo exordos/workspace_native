@@ -844,13 +844,18 @@ class Desktop:
             create()
             with self.action("warm-delayed"), network.disturb("delay"):
                 self.topic("b", wait_for_content=False)
-                time.sleep(1.5)
+                self.position(self.pane)
+                for _ in range(16):
+                    self.point("wheel -12")
+                    time.sleep(0.08)
+                time.sleep(0.2)
         with self.action("reconnect"):
             with network.disturb("disconnect"):
                 self.topic("a", wait_for_content=False)
                 self.record("offline-observation")
                 time.sleep(0.8)
             restored = clock()
+            self.record("network-enabled")
             self.record("tunnel-restored", reachable=network.restored_tls())
 
             def online():
@@ -878,14 +883,16 @@ class Peer:
         self.identity = config.get("peers", {}).get(role)
         self.message = str(uuid4())
 
-    def request(self, method, path, payload=None):
+    def request(self, method, path, payload=None, *, token=None):
         import requests
 
         try:
             response = requests.request(
                 method,
                 self.config["origin"].rstrip("/") + path,
-                headers={"Authorization": "Bearer " + self.identity["token"]},
+                headers={
+                    "Authorization": "Bearer " + (token or self.identity["token"])
+                },
                 json=payload,
                 timeout=(5, 10),
                 allow_redirects=False,
@@ -897,7 +904,7 @@ class Peer:
             raise Blocked("peer-api-transport") from exc
 
     @contextlib.contextmanager
-    def temporary_message(self, topic, identifier):
+    def temporary_message(self, topic, identifier, content="Acceptance arrival"):
         if not self.identity or not self.identity.get("token"):
             raise Blocked("peer-role-unavailable")
         collection = "/api/workspace/v1/messenger/messages/"
@@ -905,7 +912,7 @@ class Peer:
         expected = {
             "stream_uuid": self.config["stream"],
             "topic_uuid": self.config["topic_" + topic],
-            "payload": {"kind": "markdown", "content": "Acceptance arrival"},
+            "payload": {"kind": "markdown", "content": content},
         }
 
         def matches(row):
@@ -926,12 +933,45 @@ class Peer:
                 self.public_message = public_id
             if not matches(self.request("GET", item)):
                 raise Blocked("peer-message-route")
+            return item
 
         try:
             yield create
         finally:
             if item:
                 self.request("DELETE", item)
+
+    def session_receipt(self, desktop):
+        # Workspace delivers personal read-state changes to the reader's own sessions.
+        token = self.config.get("session_token")
+        if not token:
+            desktop.record("missing-session-receipt-token")
+            return
+        content = "Acceptance receipt " + self.message
+        with self.temporary_message("b", str(uuid4()), content) as create:
+            item = create()
+            row = self.request("GET", item, token=token)
+            if (
+                row.get("read") is not False
+                or row.get("topic_uuid") != self.config["topic_b"]
+                or row.get("stream_uuid") != self.config["stream"]
+                or row.get("author_uuid") != self.identity["uuid"]
+                or row.get("payload", {}).get("content") != content
+            ):
+                raise Blocked("session-receipt-target")
+            receipt = self.request(
+                "POST", item + "/actions/read/invoke", {}, token=token
+            )
+            if receipt.get("uuid") != row["uuid"] or receipt.get("read") is not True:
+                raise Blocked("session-receipt-readback")
+            try:
+                desktop.until(
+                    lambda: any(e.get("receipt") for e in list(desktop.events)),
+                    "session-receipt-unobserved",
+                    8,
+                )
+            except Blocked:
+                desktop.record("session-receipt-unverified")
 
     def exercise(self, desktop):
         api = "/api/workspace/v1/messenger"
@@ -953,11 +993,16 @@ class Peer:
             or boundary.get("topic_uuid") != self.config["topic_a"]
         ):
             raise Blocked("peer-read-route")
-        self.request(
+        if boundary.get("read") is not False:
+            raise Blocked("peer-read-boundary-already-read")
+        changed = self.request(
             "POST",
             api + "/messages/" + read_target + "/actions/read_up_to/invoke",
             {},
         )
+        if changed.get("read") is not True or changed.get("uuid") != read_target:
+            raise Blocked("peer-read-boundary-result")
+        self.session_receipt(desktop)
         peer = str(UUID(self.identity["uuid"]))
         presence = "/api/workspace/v1/users/" + peer + "/actions/presence/invoke"
         self.request("POST", presence, {"status": "idle"})

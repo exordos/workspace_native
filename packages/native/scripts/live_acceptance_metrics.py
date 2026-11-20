@@ -32,7 +32,7 @@ def sanitize_native_event(raw):
         "frame": (),
         "click": (),
         "wheel": ("angle", "pixel", "phase"),
-        "realtime": ("peer", "reaction"),
+        "realtime": ("peer", "reaction", "receipt"),
         "request": ("older", "index"),
         "response": ("older", "elapsed", "status", "index"),
     }
@@ -125,6 +125,60 @@ def percentile(values, percentile_value):
         return None
     values = sorted(values)
     return values[round((len(values) - 1) * percentile_value)]
+
+
+def measure_pending_history(window):
+    """Correlate target rows, compositor pixels and a delivered wheel with the same outstanding read."""
+    pending = set()
+    sample, picture, wheel = {}, {}, None
+    cached_frames, wheel_latency = 0, None
+    for event in window:
+        kind = event["event"]
+        if (
+            event.get("category") == "history"
+            and event.get("view") == "b"
+            and "index" in event
+        ):
+            if kind == "request":
+                pending.add(event["index"])
+            elif kind == "response":
+                pending.discard(event["index"])
+        if not pending:
+            wheel, picture = None, {}
+        if kind == "sample":
+            sample = event
+        if not pending or sample.get("view") != "b" or sample.get("count", 0) <= 0:
+            wheel, picture = None, {}
+            continue
+        if (
+            kind == "wheel"
+            and wheel is None
+            and picture
+            and "offset" in sample
+            and (event["pixel"] or event["angle"])
+        ):
+            wheel = (
+                event["ms"],
+                sample["offset"],
+                picture["signature"],
+                pending.copy(),
+            )
+        if kind == "picture" and event["occupancy"] > 0:
+            cached_frames += 1
+            picture = event
+            if (
+                wheel
+                and pending.intersection(wheel[3])
+                and sample.get("offset", wheel[1]) != wheel[1]
+                and picture["signature"] != wheel[2]
+            ):
+                if wheel_latency is None:
+                    wheel_latency = event["ms"] - wheel[0]
+                wheel = None
+    return {
+        "cached_frames_while_pending": cached_frames,
+        "cached_scroll_visible_ms": wheel_latency,
+    }
 
 
 def evaluate(events, limits):
@@ -384,14 +438,21 @@ def evaluate(events, limits):
             blocked.add("loaded-range-not-isolated")
         if kind == "reconnect":
             off = next((e for e in window if e["event"] == "offline-observation"), None)
+            enabled = next((e for e in window if e["event"] == "network-enabled"), None)
             pending = [
                 e
                 for e in observed
                 if off
-                and off["ms"] <= e["ms"] < off["ms"] + 750
+                and enabled
+                and off["ms"] <= e["ms"] < enabled["ms"]
                 and e.get("view") == "a"
             ]
-            if pending and not any(e.get("count", 0) > 0 for e in pending):
+            metrics["offline_target_samples"] = len(pending)
+            if off and enabled:
+                metrics["offline_observation_ms"] = enabled["ms"] - off["ms"]
+            if not pending:
+                blocked.add("offline-target-unobserved")
+            elif not any(e.get("count", 0) > 0 for e in pending):
                 failures.add("warmed-topic-blank-during-disconnect")
             if any(
                 e["event"] == "tunnel-restored" and not e["reachable"] for e in window
@@ -400,30 +461,11 @@ def evaluate(events, limits):
             if any(e["event"] == "reconnect-unverified" for e in window):
                 blocked.add("reconnect-unverified")
         if kind == "warm-delayed":
-            pending = set()
-            visible = False
-            served = False
-            for e in window:
-                if (
-                    e.get("category") == "history"
-                    and e.get("view") == "b"
-                    and "index" in e
-                ):
-                    if e["event"] == "request":
-                        pending.add(e["index"])
-                    elif e["event"] == "response":
-                        pending.discard(e["index"])
-                if e["event"] == "sample":
-                    visible = e.get("count", 0) > 0 and e.get("view") == "b"
-                if (
-                    pending
-                    and visible
-                    and e["event"] == "picture"
-                    and e["occupancy"] > 0
-                ):
-                    served = True
-            if not served:
+            metrics.update(measure_pending_history(window))
+            if not metrics["cached_frames_while_pending"]:
                 blocked.add("cached-content-during-revalidation-unobserved")
+            if metrics["cached_scroll_visible_ms"] is None:
+                blocked.add("cached-interaction-during-revalidation-unobserved")
     required = {
         "cold-start",
         "warm-start",
@@ -446,26 +488,30 @@ def evaluate(events, limits):
         for e in events
         if e["event"] == "realtime" and e.get("peer")
     )
-    if (
-        not {
-            "message.created",
-            "message.updated",
-            "message.deleted",
-            "user.updated",
-        }.issubset(realtime)
-        or not (
-            any(
-                k in realtime
-                for k in ("message_reaction.created", "message_reaction.updated")
-            )
-            or any(
-                e["event"] == "realtime" and e.get("peer") and e.get("reaction")
-                for e in events
-            )
+    if not {
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "user.updated",
+    }.issubset(realtime) or not (
+        any(
+            k in realtime
+            for k in ("message_reaction.created", "message_reaction.updated")
         )
-        or not any(k in realtime for k in ("message.read", "messages.read"))
+        or any(
+            e["event"] == "realtime" and e.get("peer") and e.get("reaction")
+            for e in events
+        )
     ):
         blocked.add("peer-event-classes-unobserved")
+    session_receipt = any(
+        e["event"] == "realtime"
+        and e.get("kind") == "message.read"
+        and e.get("receipt")
+        for e in events
+    )
+    if not session_receipt:
+        blocked.add("session-receipt-unobserved")
     if not any(e["event"] == "peer-workload" for e in events):
         blocked.add("peer-workload-unobserved")
     if not any(
@@ -500,6 +546,7 @@ def evaluate(events, limits):
             Counter(e["category"] for e in events if e["event"] == "request")
         ),
         "peer_events": dict(realtime),
+        "session_read_receipt": session_receipt,
         "peer_reaction_in_snapshot": any(
             e["event"] == "realtime" and e.get("peer") and e.get("reaction")
             for e in events
