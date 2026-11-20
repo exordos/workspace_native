@@ -33355,6 +33355,34 @@ private:
         }
     };
 
+    // Issue #110 (docs/NATIVE_DESKTOP_BODY_COPY_AFFORDANCES.md): fenced code
+    // blocks grow a copy button, a right-clicked body hyperlink gains the
+    // "Copy link" item, and mailto anchors stay interactive links.
+private:
+    struct BodyCopyWindowFixture {
+        WindowChannelFixture base;
+        QJsonObject codeNote, linkNote;
+        QString codeMessageId = QStringLiteral("5a5a5a5a-5a5a-4a5a-8a5a-5a5a5a5a5a5a");
+        QString linkMessageId = QStringLiteral("7c7c7c7c-7c7c-4c7c-8c7c-7c7c7c7c7c7c");
+        BodyCopyWindowFixture()
+        {
+            const auto fallback = base.server.handler;
+            codeNote = message(QStringLiteral("Console snippet\n\n```bash\necho copy-me\n```"), codeMessageId);
+            codeNote["is_own"] = false;
+            linkNote = message(
+                QStringLiteral("See [reference page](https://example.org/docs-page) and mail <mailbox@example.org>."),
+                linkMessageId);
+            linkNote["is_own"] = false;
+            base.server.handler = [this, fallback](const Request &request) -> Response {
+                if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                    ++base.historyGets;
+                    return {QJsonArray{codeNote, linkNote}};
+                }
+                return fallback(request);
+            };
+        }
+    };
+
     // Reference contract (workspace-message-time-view.ui.test.tsx:19-20): the
     // panel renders zero role=button/spinbutton elements. Scrolling viewports
     // internally use mouse areas (Flickable, scrollbars) which are not
@@ -33989,6 +34017,154 @@ private slots:
         for (auto &send : *readGate) send();
         readGate->clear();
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    private slots:
+    void codeBlockCopyButtonWritesClipboardAndResetsFeedback()
+    {
+        QTest::failOnWarning();
+        BodyCopyWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Body copy teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-copy", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.messages().size() == 2, 12000);
+        auto *content = window->contentItem();
+        auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
+        clipboard->setText(QStringLiteral("code-copy-sentinel"));
+
+        // The fenced block grows the mounted copy button (reference
+        // workspace-message-body-interactions.hook.ts:137-214).
+        QTRY_VERIFY(item(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
+        auto *button = visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0");
+        auto *label = item(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
+        QCOMPARE(label->property("text").toString(), QStringLiteral("Copy"));
+
+        // Pointer activation of the mounted button; the delegate exports one
+        // performCopy() code path shared by the MouseArea and this invoke
+        // (pointer routing itself is covered by the right-click Copy link case).
+        QMetaObject::invokeMethod(button, "performCopy");
+        QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("echo copy-me"), 3000);
+        // Success feedback lasts CODE_COPY_RESET_MS = 1200 ms before the idle
+        // label returns (hook.ts:25,140-162).
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("text").toString() == QStringLiteral("Copied"), 600);
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("text").toString() == QStringLiteral("Copy"), 2600);
+        clipboard->setText(QStringLiteral("code-copy-sentinel-after"));
+    }
+
+    void rightClickOnBodyLinkOffersCopyLinkAndPlainClickDoesNot()
+    {
+        QTest::failOnWarning();
+        BodyCopyWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Body copy teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-copy", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *menu = window->findChild<QObject *>("messageMenu"); QVERIFY(menu);
+        auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
+        clipboard->setText(QStringLiteral("link-copy-sentinel"));
+
+        // A plain right-click keeps the message-scoped menu without the
+        // hyperlink section (workspace-message-body-interactions.hook.ts:266-280).
+        auto *bubble = item(content, "message-" + fixture.linkMessageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(4.0, bubble->height() - 4.0)).toPoint());
+        QTRY_VERIFY(menu->property("visible").toBool());
+        QVERIFY(!visibleItem("copyBodyLinkAction"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!menu->property("visible").toBool());
+
+        // Right-click on the rendered link text offers Copy link and the item
+        // writes the href (workspace-message-bubble-menu.ui.tsx:349-360).
+        auto *body = item(content, "message-content-" + fixture.linkMessageId); QVERIFY(body);
+        QString plain;
+        QMetaObject::invokeMethod(body, "getText", Q_RETURN_ARG(QString, plain), Q_ARG(int, 0), Q_ARG(int, 10000));
+        QVERIFY2(plain.contains(QStringLiteral("reference page")), qPrintable(plain));
+        const int at = plain.indexOf(QStringLiteral("reference page")) + 4;
+        QRectF cursor;
+        QMetaObject::invokeMethod(body, "positionToRectangle", Q_RETURN_ARG(QRectF, cursor), Q_ARG(int, at));
+        const auto linkPoint = body->mapToScene(QPointF(cursor.x() + 2.0, cursor.y() + cursor.height() / 2.0));
+        QTest::mouseClick(window, Qt::RightButton, {}, linkPoint.toPoint());
+        QTRY_VERIFY(menu->property("visible").toBool());
+        auto *copyLink = visibleItem("copyBodyLinkAction"); QVERIFY(copyLink);
+        click(window, copyLink);
+        QTRY_VERIFY(!menu->property("visible").toBool());
+        QTRY_COMPARE(clipboard->text(), QStringLiteral("https://example.org/docs-page"));
+        clipboard->setText(QStringLiteral("link-copy-sentinel-after"));
+    }
+
+    void mailtoAnchorStaysInteractiveAndNeverOffersCopyLink()
+    {
+        QTest::failOnWarning();
+        BodyCopyWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Body copy teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-copy", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *menu = window->findChild<QObject *>("messageMenu"); QVERIFY(menu);
+
+        // The mailto anchor survives rendering (SAFE_LINK_PROTOCOL_PATTERN,
+        // workspace-message-render.lib.ts:53) and stays hit-testable, so the
+        // left-click path can hand it to the OS mail handler.
+        auto *body = item(content, "message-content-" + fixture.linkMessageId); QVERIFY(body);
+        QVERIFY2(body->property("text").toString().contains(QStringLiteral("href=\"mailto:mailbox@example.org\"")),
+            qPrintable(body->property("text").toString()));
+        QString plain;
+        QMetaObject::invokeMethod(body, "getText", Q_RETURN_ARG(QString, plain), Q_ARG(int, 0), Q_ARG(int, 10000));
+        QVERIFY2(plain.contains(QStringLiteral("mailbox@example.org")), qPrintable(plain));
+        const int at = plain.indexOf(QStringLiteral("mailbox@example.org")) + 4;
+        QRectF cursor;
+        QMetaObject::invokeMethod(body, "positionToRectangle", Q_RETURN_ARG(QRectF, cursor), Q_ARG(int, at));
+        QString href;
+        QMetaObject::invokeMethod(body, "linkAt", Q_RETURN_ARG(QString, href),
+            Q_ARG(qreal, cursor.x() + 2.0), Q_ARG(qreal, cursor.y() + cursor.height() / 2.0));
+        QCOMPARE(href, QStringLiteral("mailto:mailbox@example.org"));
+
+        // mailto is not an isValidUrl link, so right-click offers no Copy link
+        // (validation.ts:8,20-27 gate in the reference resolver).
+        QTest::mouseClick(window, Qt::RightButton, {},
+            body->mapToScene(QPointF(cursor.x() + 2.0, cursor.y() + cursor.height() / 2.0)).toPoint());
+        QTRY_VERIFY(menu->property("visible").toBool());
+        QVERIFY(!visibleItem("copyBodyLinkAction"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!menu->property("visible").toBool());
     }
 };
 

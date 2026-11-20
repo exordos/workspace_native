@@ -43,25 +43,22 @@ parsed `QTextDocument` before export:
   `containedCodeBlocks` re-tag from earlier work). TextEdit re-imports the
   exported body with a 1:1 block/text mapping, so the offsets hold in the bubble's
   `messageBody` document.
-- `links`: one map per anchor fragment that survives reference sanitization, with
-  the document `start`, `length` and `href`. This is the same text-preserving
-  export path, so offsets map onto `messageBody` positions; `reserveMessageTime`
-  only appends the transparent clock reserve after the final `</p>`, never before
-  an existing anchor.
 
 The message bubble (`Main.qml`, message row) adds a `Repeater` over
 `messageRow.rendered.codeBlocks`. Each delegate is a small flat button
-(objectName `codeCopyButton-<messageId>-<index>`, idle label `Copy`, asset
-`copy.svg`) positioned at the top-right corner of its code block:
-`messageBody` + `positionToRectangle(start)` for the y, right edge of the body for
-the x. Clicking writes the block text with `Clipboard.trigger`-free
-`clipboard.setText(text)` directly (reference parity: success is the write
-itself), swaps the label to `Copied` / `Failed to copy`, and a
-`Timer { interval: 1200 }` (JS constant mirrors `CODE_COPY_RESET_MS`) restores
+(objectName `codeCopyButton-<messageId>-<index>`, idle label `Copy`) positioned
+at the top-right corner of its code block: `messageBody` +
+`positionToRectangle(start)` for the y, right edge of the body for the x.
+Clicking writes the block text through `controller.copyToClipboard(text)`,
+swaps the label to `Copied` / `Failed to copy`, and a
+`Timer { interval: 1200 }` (mirrors `CODE_COPY_RESET_MS`) restores
 `Copy`; a repeat click restarts the timer, matching the reference's clear-and-reset.
 The label Text carries objectName `codeCopyButtonText-<messageId>-<index>` so
 tests and AT see the feedback. The button is hidden for encrypted-locked,
 key-control and media-split bodies only insofar as those already replace the body.
+The message-permalink row was relabeled `Copy message link`
+(`message.copyMessageLink`, reference :247) so it cannot be confused with the
+hyperlink `Copy link` item introduced below.
 
 ### 2. Copy link on right-click
 

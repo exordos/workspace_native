@@ -720,7 +720,7 @@ public:
     Q_INVOKABLE QVariantList profileDetails(const QString &userUuid, const QString &localeName) const;
     Q_INVOKABLE QString buildProfileShareLink(const QString &userUuid) const;
     // Clipboard writes stay in C++ (message copy precedent).
-    Q_INVOKABLE void copyToClipboard(const QString &text) const;
+    Q_INVOKABLE bool copyToClipboard(const QString &text) const;
     Q_INVOKABLE QVariantMap profileAvatarCapabilities() const;
     Q_INVOKABLE QVariantMap validateAvatarFile(const QString &path) const;
     Q_INVOKABLE void loadOwnProfile();

@@ -491,13 +491,35 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
         cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
         cursor.insertText(text, format);
     }
+    // Issue #110 (docs/NATIVE_DESKTOP_BODY_COPY_AFFORDANCES.md): the bubble
+    // mounts a copy button into every fenced block (reference
+    // workspace-message-body-interactions.hook.ts:137-214). Fenced code arrives
+    // as consecutive nonBreakableLines blocks (the same marker the containedCodeBlocks
+    // re-tag targets), and the exporter reproduces each block 1:1, so the start
+    // offsets carry over when the message view re-imports the exported html.
+    QVariantList codeBlocks;
+    {
+        QString pending;
+        int start = -1;
+        for (auto block = document.begin(); block.isValid(); block = block.next()) {
+            if (block.blockFormat().nonBreakableLines()) {
+                if (start < 0) start = block.position();
+                if (!pending.isEmpty()) pending += QLatin1Char('\n');
+                pending += block.text();
+            } else if (start >= 0) {
+                codeBlocks.append(QVariantMap{{"start", start}, {"text", pending}});
+                pending.clear(); start = -1;
+            }
+        }
+        if (start >= 0) codeBlocks.append(QVariantMap{{"start", start}, {"text", pending}});
+    }
     auto html = document.toHtml();
     const auto body = html.indexOf("<body");
     const auto start = html.indexOf('>', body);
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
-                             {"parts", orderedImageParts(document)}};
+                             {"parts", orderedImageParts(document)}, {"codeBlocks", codeBlocks}};
     while (m_order.size() >= 128)
         m_cache.remove(m_order.dequeue());
     m_order.enqueue(cacheKey);

@@ -670,6 +670,9 @@ ApplicationWindow {
             root.messageSelectionIds = []
     }
     property string menuMessageId: ""
+    // Issue #110: the href of the body hyperlink under a right-click, when the
+    // target is an anchor (workspace-message-body-interactions.hook.ts:266-280).
+    property string menuContextLink: ""
     // Snapshot of the body selection at the moment the bubble menu opened
     // (workspace-message-body-interactions.hook.ts:364,383 at 230e02b8): the
     // menu Reply quotes exactly what was selected when the menu appeared,
@@ -1481,13 +1484,18 @@ ApplicationWindow {
             Math.max(margin, root.height - panelHeight - margin)))
     }
 
-    function openMessageActions(message, anchor, selectedText) {
+    function openMessageActions(message, anchor, selectedText, bodyLink) {
         if (root.encryptionControlLabel(String(message.kind)).length)
             return;
         root.menuOwner = root.controller.ownerKey;
         root.menuStream = root.controller.selectedStream;
         root.menuTopic = root.controller.selectedTopic;
         root.menuMessageId = message.id;
+        // Issue #110: the bubble menu gains the "Copy link" item only when the
+        // right-click landed on an http/https anchor (reference
+        // workspace-message-bubble-menu.ui.tsx:349-360 with the isValidUrl
+        // gate in shared/lib/validation.ts:8,20-27).
+        root.menuContextLink = String(bodyLink || "");
         // TextEdit encodes paragraph breaks as U+2029 and hard breaks as
         // U+2028; the fragment travels to the controller carrying the
         // selected text's own newlines (issue #218 review r2).
@@ -1496,6 +1504,17 @@ ApplicationWindow {
         root.menuMessageOwn = Boolean(message.own);
         root.menuMessageAnchor = anchor || null;
         messageMenu.popup();
+    }
+
+    // The reference keeps the "Copy link" item only for http/https hrefs
+    // (isValidUrl, shared/lib/validation.ts:8,20-27); a mailto anchor right-click
+    // therefore shows the plain message menu (issue #110).
+    function isSafeBodyLink(link) {
+        const parsed = root.markdown.reference(link);
+        if (String(parsed.kind || "") !== "external")
+            return false;
+        const url = String(parsed.url || "");
+        return url.startsWith("http://") || url.startsWith("https://");
     }
 
     function openReference(link, imageFailed) {
@@ -8902,12 +8921,77 @@ ApplicationWindow {
                             anchors.fill: parent
                             acceptedButtons: Qt.RightButton
                             onClicked: mouse => {
-                                root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText);
+                                // Issue #110: TextEdit.linkAt identifies the
+                                // anchor under the right-click (reference
+                                // target.closest("a[href]") resolver,
+                                // workspace-message-body-interactions.hook.ts:266-280).
+                                const bodyPoint = messageBody.mapFromItem(bubble, mouse.x, mouse.y);
+                                const bodyLink = messageBody.visible && messageBody.enabled
+                                    ? messageBody.linkAt(bodyPoint.x, bodyPoint.y) : "";
+                                root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText, bodyLink);
+                            }
+                        }
+                        // Issue #110 (docs/NATIVE_DESKTOP_BODY_COPY_AFFORDANCES.md):
+                        // a copy button is mounted into every rendered code block
+                        // (workspace-message-body-interactions.hook.ts:137-214).
+                        // The label swaps to Copied / Failed to copy and resets
+                        // after CODE_COPY_RESET_MS = 1200 ms (hook.ts:25).
+                        Repeater {
+                            model: messageBody.visible && !messageRow.hasInlineImages
+                                && !messageRow.encryptedLocked && !messageRow.keyControl
+                                ? (messageRow.rendered.codeBlocks || []) : []
+                            delegate: Rectangle {
+                                id: codeCopyButton
+                                required property var modelData
+                                required property int index
+                                readonly property string codeText: String(modelData.text || "")
+                                objectName: "codeCopyButton-" + messageRow.modelData.id + "-" + index
+                                property string copyState: "idle"
+                                width: codeCopyLabel.implicitWidth + 16
+                                height: 20
+                                radius: 5
+                                visible: codeText.trim().length > 0
+                                x: bubbleContent.x + messageBody.width - width - 2
+                                y: messageBody.length > Number(modelData.start)
+                                    ? messageBody.mapToItem(bubble, 0,
+                                        messageBody.positionToRectangle(Number(modelData.start)).y).y + 2 : 0
+                                color: codeCopyMouse.containsMouse ? root.colors["bg-elevated"] : "transparent"
+                                border.width: codeCopyMouse.containsMouse ? 1 : 0
+                                border.color: root.colors["border-subtle"]
+                                Text {
+                                    id: codeCopyLabel
+                                    objectName: "codeCopyButtonText-" + messageRow.modelData.id + "-" + index
+                                    anchors.centerIn: parent
+                                    font.pixelSize: 11
+                                    color: root.colors["text-muted"]
+                                    text: codeCopyButton.copyState === "copied" ? qsTr("Copied")
+                                        : codeCopyButton.copyState === "failed" ? qsTr("Failed to copy") : qsTr("Copy")
+                                }
+                                // Exported so pointer and AT activation share one
+                                // code path (the reference mounts a real button).
+                                function performCopy() {
+                                    if (!codeText.trim().length)
+                                        return;
+                                    copyState = root.controller.copyToClipboard(codeText) ? "copied" : "failed";
+                                    codeCopyReset.restart();
+                                }
+                                MouseArea {
+                                    id: codeCopyMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: codeCopyButton.performCopy()
+                                }
+                                Timer {
+                                    id: codeCopyReset
+                                    interval: 1200
+                                    onTriggered: codeCopyButton.copyState = "idle"
+                                }
                             }
                         }
                         Keys.onPressed: event => {
                             if (event.key === Qt.Key_Menu || (event.key === Qt.Key_F10 && event.modifiers & Qt.ShiftModifier)) {
-                                root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText);
+                                root.openMessageActions(messageRow.modelData, bubble, messageBody.selectedText, "");
                                 event.accepted = true;
                             }
                         }
@@ -13459,8 +13543,22 @@ ApplicationWindow {
             visible: root.menuMessageReadable
             enabled: visible
             asset: "copy.svg"
-            text: qsTr("Copy link")
+            // Reference label message.copyMessageLink
+            // (workspace-message-bubble-menu.ui.tsx:247); issue #110 separates it
+            // from the hyperlink "Copy link" row below.
+            text: qsTr("Copy message link")
             onTriggered: root.controller.copyMessageLink(root.menuMessageId)
+        }
+        MessageMenuAction {
+            objectName: "copyBodyLinkAction"
+            // The reference adds the item only when the right-click target is an
+            // http/https anchor (workspace-message-bubble-menu.ui.tsx:349-360),
+            // in the secondary section before "Copy text" (issue #110).
+            visible: root.menuContextLink.length > 0 && root.isSafeBodyLink(root.menuContextLink)
+            enabled: visible
+            asset: "copy.svg"
+            text: qsTr("Copy link")
+            onTriggered: root.controller.copyToClipboard(root.menuContextLink)
         }
         MessageMenuAction {
             objectName: "copyMessageAction"
