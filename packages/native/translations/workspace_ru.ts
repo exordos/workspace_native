@@ -1022,6 +1022,10 @@
             <translation>Расшифровка сообщения</translation>
         </message>
         <message>
+            <source>Decrypting message…</source>
+            <translation>Расшифровка сообщения…</translation>
+        </message>
+        <message>
             <source>Encrypted key grant received</source>
             <translation>Получен зашифрованный ключ</translation>
         </message>

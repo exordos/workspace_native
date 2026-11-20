@@ -22780,8 +22780,18 @@ private slots:
 
     // A hydrated last message gives the row its sender, the summary and the row time; the
     // own-message sender is common.you (workspace_ui messenger-topic-list.lib.ts:169-172).
+    void sidebarRowsExposePreviewAndRowTime_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("markdown") << QString("markdown") << QString("Alpha line second line");
+        QTest::newRow("poll") << QString("poll") << QStringLiteral("Which day? • Monday (1) • Tuesday (2) Where? • Office (3) • Online (0)");
+    }
+
     void sidebarRowsExposePreviewAndRowTime()
     {
+        QFETCH(QString, kind);
+        QFETCH(QString, expected);
         Fixture test;
         const auto last = QStringLiteral("88888888-8888-4888-8888-000000000abc");
         test.streams = [&](const Request &request) {
@@ -22803,14 +22813,16 @@ private slots:
                 {"updated_at", "2026-01-02T10:00:05Z"}}}};
         };
         test.messages = [&](const Request &) {
-            auto row = message("Alpha   line\n\nsecond line", last);
+            auto row = kind == "poll" ? pollMessageDto(last, 3, true) : message("Alpha   line\n\nsecond line", last);
             row["created_at"] = "2026-01-02T10:00:05.000Z";
             return Response{QJsonArray{row}};
         };
         QVERIFY(test.start());
         const auto topicRow = test.controller.topics().first().toMap();
         QCOMPARE(topicRow.value("previewSender").toString(), QStringLiteral("You"));
-        QCOMPARE(topicRow.value("previewText").toString(), QStringLiteral("Alpha line second line"));
+        QCOMPARE(topicRow.value("previewText").toString(), expected);
+        QCOMPARE(topicRow.value("previewKind").toString(), kind);
+        QCOMPARE(topicRow.value("previewState").toString(), QStringLiteral("ready"));
         QVERIFY(!topicRow.value("previewLocked").toBool());
         // The row time is the last-message instant under the same formatter the contract
         // case pins; asserting against the current date keeps this case locale-correct.
@@ -22818,7 +22830,7 @@ private slots:
             QDateTime(QDate(2026, 1, 2), QTime(10, 0, 5), Qt::UTC), QLocale::system(),
             QDate::currentDate(), QStringLiteral("Yesterday")));
         const auto streamRow = test.controller.streams().first().toMap();
-        QCOMPARE(streamRow.value("previewText").toString(), QStringLiteral("Alpha line second line"));
+        QCOMPARE(streamRow.value("previewText").toString(), expected);
         QCOMPARE(streamRow.value("rowTime").toString(), topicRow.value("rowTime").toString());
     }
 
@@ -22874,6 +22886,8 @@ private slots:
         QVERIFY(test.start());
         const auto row = test.controller.topics().first().toMap();
         QVERIFY2(row.value("previewLocked").toBool(), qPrintable(row.value("previewText").toString()));
+        QCOMPARE(row.value("previewState").toString(), QStringLiteral("locked"));
+        QCOMPARE(row.value("previewKind").toString(), QStringLiteral("e2ee"));
         QVERIFY2(!row.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
             qPrintable(row.value("previewText").toString()));
     }
