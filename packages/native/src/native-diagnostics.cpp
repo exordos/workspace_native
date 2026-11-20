@@ -240,6 +240,7 @@ void SessionLogBuffer::append(const QString &level, const QString &scope,
         entry.hasData = true;
     }
     m_entries.prepend(entry); // newest first
+    m_scopeEntries = qMin<qsizetype>(MaxEntries, m_scopeEntries + 1);
     while (m_entries.size() > MaxEntries)
         m_entries.removeLast(); // reference evicts the oldest entry
     emit entriesChanged();
@@ -271,8 +272,20 @@ SessionLogSummary SessionLogBuffer::summary(qint64 nowMs) const
     return result;
 }
 
+QVariantMap SessionLogBuffer::supportEventCounts() const
+{
+    QVariantMap counts{{"debug", 0}, {"info", 0}, {"warn", 0}, {"error", 0}};
+    for (qsizetype index = 0; index < m_scopeEntries; ++index) {
+        const auto level = m_entries.at(index).level;
+        auto found = counts.find(level);
+        if (found != counts.end()) found.value() = found.value().toInt() + 1;
+    }
+    return counts;
+}
+
 void SessionLogBuffer::clear()
 {
+    m_scopeEntries = 0;
     if (m_entries.isEmpty()) {
         emit entriesChanged();
         return;

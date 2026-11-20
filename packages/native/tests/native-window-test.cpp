@@ -11,6 +11,7 @@
 #include "file-client.h"
 #include "avatar-images.h"
 #include "message-images.h"
+#include "workspace-reference.h"
 
 #include <functional>
 #include <algorithm>
@@ -75,6 +76,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
+#include <QTextCursor>
 #include <QTextOption>
 #include <QUrlQuery>
 #include <QWheelEvent>
@@ -425,6 +427,16 @@ static QJsonObject windowChannelTopic(const QString &id, const QString &stream, 
         {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
         {"last_message_uuid", QJsonValue::Null}, {"created_at", "2026-01-02T10:00:00Z"},
         {"updated_at", "2026-01-02T10:00:00Z"}};
+}
+
+static bool isInitialUnreadMentionIndex(const Request &request)
+{
+    const QUrlQuery query(request.target);
+    return request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/"
+        && query.queryItemValue("mentioned") == "true" && query.queryItemValue("read") == "false"
+        && query.queryItemValue("sort_key") == "created_at" && query.queryItemValue("sort_dir") == "desc"
+        && query.queryItemValue("page_limit") == "100" && !query.hasQueryItem("page_marker")
+        && !query.hasQueryItem("stream_uuid") && !query.hasQueryItem("topic_uuid");
 }
 
 class WindowChannelFixture {
@@ -2165,11 +2177,23 @@ struct ChannelInfoWindowScene {
     NativeController controller;
     QQmlApplicationEngine engine;
     QPointer<QQuickWindow> window;
-    explicit ChannelInfoWindowScene(bool streamOwner = true)
+    explicit ChannelInfoWindowScene(bool streamOwner = true, const QString &permission = {})
         : fixture(streamOwner), preferences(directory.filePath("channel-info.ini")),
           session(&api), controller(&api, &session)
     {
         QVERIFY(directory.isValid());
+        if (!permission.isEmpty()) {
+            const auto base = fixture.server.handler;
+            fixture.server.handler = [base, permission](const Request &request) {
+                auto response = base(request);
+                if (request.target.path().endsWith("/actions/introspect")) {
+                    auto identity = response.data.toObject();
+                    identity["permissions"] = QJsonArray{permission};
+                    response.data = identity;
+                }
+                return response;
+            };
+        }
         preferences.setLocale("en");
         loadNativeUi(engine, &controller, &preferences);
         window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -3318,6 +3342,102 @@ struct WindowChatHeaderCountersScene {
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
+    void clearCacheKeepsAccountAndOrganizations_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QStringLiteral("en"), QStringLiteral("ru")})
+            for (const auto &mode : {QStringLiteral("light"), QStringLiteral("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void clearCacheKeepsAccountAndOrganizations()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        const auto cacheDir = directory.filePath("cache");
+        {
+            NativeCache seed(cacheDir, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, channelPeer));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}},
+                QJsonArray{windowChannel(streamId, "Other saved account")}));
+        }
+        bool holdBootstrap = false;
+        QVector<std::function<void()>> held;
+        const auto respond = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto response = respond(request);
+            if (holdBootstrap && request.method == "GET")
+                response.defer = [&](std::function<void()> release) { held.append(std::move(release)); };
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeCacheService cache(cacheDir, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.recordOrganizationOrigin("https://previous.example.invalid");
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "example-member", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(cache.available() && cache.stats().entries > 1);
+        const auto organizations = preferences.organizationHistory();
+        QVERIFY(organizations.contains("https://previous.example.invalid"));
+        preferences.setMode(mode);
+        preferences.setLocale(locale);
+        preferences.setComposerToolbarExpanded(true);
+        preferences.setChatClickAction("latestTopic");
+        auto *root = window->contentItem();
+        click(window, item(root, "accountMenuButton"));
+        QTRY_VERIFY(visibleItem(root, "currentServerLabel"));
+        QCOMPARE(visibleItem(root, "currentServerLabel")->property("text").toString(), fixture.server.origin().host());
+        QCOMPARE(visibleItem(root, "currentServerLogin")->property("text").toString(), QString("example-member"));
+        auto *action = visibleItem(root, "clearLocalCacheAction"); QVERIFY(action);
+        auto *scroll = visibleItem(root, "accountMenuScroll"); QVERIFY(scroll);
+        scroll->setProperty("contentY", std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height()));
+        click(window, action);
+        auto *dialog = window->findChild<QObject *>("clearLocalCacheDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        const QString confirmation = locale == "en"
+            ? QStringLiteral("Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.")
+            : QStringLiteral("Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.");
+        QCOMPARE(visibleItem(root, "clearLocalCacheConfirmation")->property("text").toString(), confirmation);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QVERIFY(preferences.composerToolbarExpanded());
+        QVERIFY(cache.stats().entries > 1);
+        const int catalog = fixture.catalogGets;
+        holdBootstrap = true;
+        click(window, action);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QQmlExpression ok(qmlContext(dialog), dialog, "standardButton(Dialog.Ok)");
+        auto *button = qobject_cast<QQuickItem *>(ok.evaluate().value<QObject *>());
+        QVERIFY2(button, qPrintable(ok.error().toString()));
+        click(window, button);
+        QTRY_VERIFY(fixture.catalogGets > catalog && cache.available());
+        QTRY_COMPARE(cache.stats().entries, 0);
+        QCOMPARE(preferences.chatClickAction(), QString("stream"));
+        QVERIFY(!preferences.composerToolbarExpanded());
+        QCOMPARE(preferences.mode(), QString("system"));
+        QCOMPARE(preferences.organizationHistory(), organizations);
+        QCOMPARE(session.loginName(), QString("example-member"));
+        QVERIFY(controller.authenticated());
+        holdBootstrap = false;
+        for (auto &release : held) release();
+        QTRY_COMPARE(controller.streams().size(), 1);
+    }
+
     void aboutDrawerPreservesTheActualPendingCheck_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
@@ -5969,12 +6089,17 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool russian = locale == QLatin1String("ru");
         class WindowReactionsFixture final : public WindowChannelFixture {
         public:
+            int indexRequests = 0;
             int collectionRequests = 0;
             WindowReactionsFixture()
             {
                 sourceScene = true;
                 const auto fallback = server.handler;
                 server.handler = [this, fallback](const Request &request) -> Response {
+                    if (isInitialUnreadMentionIndex(request)) {
+                        ++indexRequests;
+                        return Response{QJsonArray{}};
+                    }
                     const QUrlQuery query(request.target);
                     if (request.target.path().endsWith("/messages/")
                         && (query.hasQueryItem("starred") || query.hasQueryItem("mentioned")))
@@ -5997,6 +6122,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_COMPARE(fixture.indexRequests, 1);
         QVERIFY(view("messageList")); // the conversation renders before the route
         QVERIFY(!view("activityUnsupportedText"));
         controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
@@ -6033,6 +6159,8 @@ mv -Tf "$root/.current-new" "$root/current"
             + QString::number(fixture.server.origin().port())
             + QStringLiteral("/project/") + projectId + QStringLiteral("/activity/reactions"));
         QTRY_VERIFY(view("activityUnsupportedText"));
+        QCOMPARE(fixture.indexRequests, 1);
+        QCOMPARE(fixture.collectionRequests, 0);
         QVERIFY(!view("messageList"));
         // The header close control returns to the conversation.
         auto *closeButton = view("activityUnsupportedCloseButton"); QVERIFY(closeButton);
@@ -6783,6 +6911,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *page = view("nativeFeedPage"); QVERIFY(page);
         auto *list = view("feedList"); QVERIFY(list);
         // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
         const auto atBottom = [list] {
@@ -6790,7 +6919,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 - list->property("contentY").toReal()
                 - list->property("height").toReal() <= 1.0;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("anchorRunning").toBool() && atBottom(), 5000);
         QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
         // Reaching the top fires exactly one marker request; the gated response
         // stays in flight while the user scrolls away and back: the armed flag
@@ -6810,10 +6939,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
         // The prepend restore keeps the visual position: contentY moved down by
         // the merged height instead of jumping to the top.
-        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 10.0, 3000);
         QCOMPARE(fixture.feedMarkerPages, 1);
         // Clicking the button returns to the bottom.
-        click(window, view("feedScrollToBottom"));
+        auto *bottom = view("feedScrollToBottom"); QVERIFY(bottom);
+        clickReadyItem(window, bottom);
         QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
     }
 
@@ -7050,7 +7180,15 @@ mv -Tf "$root/.current-new" "$root/current"
             const auto expected = action == "server" ? QString("Changed on another client") : QString("My conflicting draft");
             QCOMPARE(fixture.draftPuts, action == "server" ? 1 : 2); QCOMPARE(fixture.draftDeletes, 0);
             QCOMPARE(fixture.drafts[returnedId].value("payload").toObject().value("content").toString(), expected);
-            QTRY_VERIFY(view("draft-open-" + returnedId)); click(window, view("draft-open-" + returnedId));
+            // Refreshing the list can replace a visible delegate between finding
+            // its action and delivering the physical click.
+            const auto siblingId = QStringLiteral("75000000-0000-4500-8500-000000000028");
+            auto sibling = WindowDraftFixture::row(siblingId, "Another saved draft");
+            sibling["topic_uuid"] = secondTopicId;
+            fixture.drafts.insert(siblingId, sibling);
+            QTRY_VERIFY(view("draft-open-" + returnedId));
+            QTimer::singleShot(0, &controller, &NativeController::refreshDrafts);
+            clickCurrentItem(window, "draft-open-" + returnedId);
             QTRY_VERIFY(!controller.draftsVisible() && composer->isVisible());
             QTRY_COMPARE(composer->property("text").toString(), expected);
             QCOMPARE(drafts.capture(streamId, topicId).uuid, returnedId);
@@ -7248,6 +7386,108 @@ mv -Tf "$root/.current-new" "$root/current"
         for (const auto &request : fixture.server.requests)
             if (request.target.path().startsWith("/api/workspace/")) QCOMPARE(request.method, QByteArray("GET"));
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
+    void shortcutSettingsSearchRecordingAndHelp_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("theme");
+        for (const auto *locale : {"en","ru"})
+            for (const auto *theme : {"light","dark"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(locale,theme))) << QString(locale) << QString(theme);
+    }
+
+    void shortcutSettingsSearchRecordingAndHelp()
+    {
+        QFETCH(QString,locale); QFETCH(QString,theme);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("shortcuts.ini"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Shortcut window teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture,controller,session));
+        preferences.setLocale(locale); preferences.setMode(theme);
+        auto *registry=preferences.hotkeys();
+        QVERIFY(!window->findChild<QObject *>("shortcutsHelp"));
+        QVERIFY(!window->findChild<QObject *>("shortcutSettings"));
+        window->contentItem()->forceActiveFocus();
+        QTest::keyClick(window,Qt::Key_Slash,Qt::ControlModifier);
+        QTRY_VERIFY(window->findChild<QObject *>("shortcutsHelp"));
+        QPointer<QObject> help = window->findChild<QObject *>("shortcutsHelp");
+        QTRY_VERIFY(help && help->property("visible").toBool());
+        QTRY_VERIFY(visibleItem("shortcut-composer.bold"));
+        QVERIFY(!visibleItem("shortcut-navigation.calendar"));
+        for (const auto &id : {"cancel", "focus", "send", "editing", "focusZones"})
+            QVERIFY(visibleItem("shortcut-fixed." + QString::fromLatin1(id)));
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(help.isNull());
+        QTRY_VERIFY(visibleItem("accountMenuButton"));
+        click(window,visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(window,visibleItem("accountSettingsAction"));
+        QTRY_VERIFY(visibleItem("accountKeyboardShortcuts"));
+        click(window,visibleItem("accountKeyboardShortcuts"));
+        QTRY_VERIFY(window->findChild<QObject *>("shortcutSettings"));
+        QPointer<QObject> settings = window->findChild<QObject *>("shortcutSettings");
+        QTRY_VERIFY(settings && settings->property("visible").toBool());
+        auto find=[&](const QString &name) { return item(window->contentItem(), name); };
+        auto *search=find("shortcutsSearch"); QVERIFY(search);
+        const auto boldLabel=locale=="ru" ? QStringLiteral("Жирный") : QStringLiteral("Bold");
+        search->setProperty("text",boldLabel);
+        QTRY_VERIFY(find("shortcut-composer.bold") && find("shortcut-composer.bold")->isVisible());
+        QVERIFY(!find("shortcut-composer.italic") || !find("shortcut-composer.italic")->isVisible());
+        search->setProperty("text","no-matching-shortcut");
+        QTRY_VERIFY(find("shortcutsEmpty") && find("shortcutsEmpty")->isVisible());
+        search->setProperty("text",boldLabel);
+        QTRY_VERIFY(find("shortcut-composer.bold") && find("shortcut-composer.bold")->isVisible());
+        click(window,find("shortcut-composer.bold"));
+        QTRY_VERIFY(registry->recording());
+        QTest::keyClick(window,Qt::Key_C,Qt::ControlModifier);
+        QTRY_COMPARE(settings->property("errorCode").toString(),QString("reserved"));
+        QVERIFY(!find("shortcutSave")->isEnabled());
+        QTest::keyClick(window,Qt::Key_E,Qt::ControlModifier);
+        QTRY_COMPARE(settings->property("errorCode").toString(),QString("conflict"));
+        QTest::keyClick(window,Qt::Key_B,Qt::ControlModifier|Qt::ShiftModifier);
+        QTRY_VERIFY(find("shortcutSave")->isEnabled());
+        click(window,find("shortcutSave"));
+        QTRY_COMPARE(registry->binding("composer.bold"),QString("Ctrl+Shift+B"));
+        QTRY_VERIFY(find("shortcut-composer.bold")->hasActiveFocus());
+        click(window,find("shortcut-composer.bold"));
+        QTRY_VERIFY(registry->recording());
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(settings->property("editor").toString().isEmpty());
+        QVERIFY(settings->property("visible").toBool());
+        QCOMPARE(registry->binding("composer.bold"),QString("Ctrl+Shift+B"));
+        click(window,find("shortcut-composer.bold"));
+        click(window,find("shortcutDisable"));
+        QTRY_VERIFY(registry->binding("composer.bold").isEmpty());
+        click(window,find("shortcut-composer.bold"));
+        click(window,find("shortcutReset"));
+        QTRY_COMPARE(registry->binding("composer.bold"),QString("Mod+B"));
+        QVERIFY(registry->assign("composer.bold","Ctrl+Shift+K").isEmpty());
+        click(window,find("shortcutsResetAll"));
+        QTRY_COMPARE(registry->binding("composer.bold"),QString("Mod+B"));
+        click(window,find("shortcutsEnabled"));
+        QTRY_VERIFY(!registry->enabled());
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(settings.isNull());
+        auto *composer=find("messageComposer"); QVERIFY(composer);
+        click(window,composer); QTRY_VERIFY(composer->hasActiveFocus());
+        QTest::keyClick(window,Qt::Key_B,Qt::ControlModifier);
+        QVERIFY(controller.draft().isEmpty());
+        QVERIFY(registry->setEnabled(true).isEmpty());
+        QVERIFY(registry->assign("composer.bold","Ctrl+Shift+K").isEmpty());
+        QTest::keyClick(window,Qt::Key_B,Qt::ControlModifier);
+        QVERIFY(controller.draft().isEmpty());
+        QTest::keyClick(window,Qt::Key_K,Qt::ControlModifier|Qt::ShiftModifier);
+        QTRY_COMPARE(controller.draft(),QString("****"));
     }
 
     void composerFormattingDefaultsRespectCompositionRepeatAndOtherTargets()
@@ -9083,6 +9323,99 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void globalUserSearchMatchesDirectoryAndOpensDirect_data()
+    {
+        QTest::addColumn<bool>("existing");
+        QTest::addColumn<bool>("rejectFirst");
+        QTest::newRow("new-en-light") << false << false;
+        QTest::newRow("reject-then-create") << false << true;
+        QTest::newRow("existing-ru-dark") << true << false;
+    }
+
+    void globalUserSearchMatchesDirectoryAndOpensDirect()
+    {
+        QFETCH(bool, existing);
+        QFETCH(bool, rejectFirst);
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("appearance.ini"));
+        preferences.setLocale(existing ? "ru" : "en");
+        preferences.setMode(existing ? "dark" : "light");
+        WindowDirectFixture fixture;
+        if (existing) fixture.seed();
+        if (rejectFirst) fixture.lookupStatus = 403;
+        fixture.users[1] = QJsonObject{{"uuid", channelPeer}, {"first_name", "Alice"},
+            {"username", "treeline"}, {"email", "mailbox@example.invalid"},
+            {"status", "active"}, {"status_emoji", "🏠"}};
+        for (int index = 23; index >= 0; --index)
+            fixture.users.append(QJsonObject{{"uuid", QString("86000000-0000-4000-8000-%1").arg(index, 12, 10, QLatin1Char('0'))},
+                {"username", QString("roster%1").arg(index)}, {"status_text", "On vacation"}});
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto teardown = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(controller.canStartDirectChatWith(channelPeer));
+        if (rejectFirst) controller.showSection("mail");
+        auto *button = visibleItem("globalUserSearchButton"); QVERIFY(button);
+        click(window, button);
+        QTRY_VERIFY(visibleItem("globalUserSearchInput"));
+        auto *input = visibleItem("globalUserSearchInput");
+        QTRY_VERIFY(input->hasActiveFocus());
+        auto *list = visibleItem("globalUserSearchResults"); QVERIFY(list);
+        QCOMPARE(list->property("count").toInt(), 0);
+        QVERIFY(!visibleItem("globalUserSearchEmpty"));
+        for (const auto &query : {"ALIce", "  LINE  ", "MAILBOX", "🏠"}) {
+            input->setProperty("text", QString::fromUtf8(query));
+            QTRY_COMPARE(list->property("count").toInt(), 1);
+            QTRY_VERIFY(visibleItem("globalUserSearchRow-" + channelPeer));
+            QTRY_COMPARE(visibleItem("globalUserSearchSecondary-" + channelPeer)->property("text").toString(), QString("🏠"));
+        }
+        auto *named = visibleItem("globalUserSearchName-" + channelPeer);
+        auto *secondary = visibleItem("globalUserSearchSecondary-" + channelPeer);
+        QVERIFY(named && secondary);
+        QVERIFY(named->mapToScene(QPointF{}).y() < secondary->mapToScene(QPointF{}).y());
+        auto *accessible = QAccessible::queryAccessibleInterface(visibleItem("globalUserSearchRow-" + channelPeer));
+        QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), QString("Alice (mailbox@example.invalid)"));
+        input->setProperty("text", "VACATION");
+        QTRY_COMPARE(list->property("count").toInt(), 20);
+        QTRY_VERIFY(visibleItem("globalUserSearchRow-86000000-0000-4000-8000-000000000023"));
+        input->setProperty("text", "unmatched-value");
+        QTRY_COMPARE(list->property("count").toInt(), 0);
+        QTRY_VERIFY(visibleItem("globalUserSearchEmpty"));
+        QCOMPARE(visibleItem("globalUserSearchEmpty")->property("text").toString(), existing
+            ? QString("Ничего не найдено") : QString("No results found"));
+        QVERIFY(!visibleItem("globalMessageSearchResults"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("globalUserSearchInput"));
+        click(window, button);
+        QTRY_VERIFY(visibleItem("globalUserSearchInput"));
+        input = visibleItem("globalUserSearchInput");
+        QCOMPARE(input->property("text").toString(), QString());
+        input->setProperty("text", "alice");
+        QTRY_VERIFY(visibleItem("globalUserSearchRow-" + channelPeer));
+        click(window, visibleItem("globalUserSearchRow-" + channelPeer));
+        if (rejectFirst) {
+            QTRY_COMPARE(controller.directChatPhase(), QString("failed"));
+            QVERIFY(visibleItem("globalUserSearchInput"));
+            QCOMPARE(input->property("text").toString(), QString("alice"));
+            QVERIFY(visibleItem("globalUserSearchError"));
+            QCOMPARE(fixture.posts, 0);
+            QCOMPARE(controller.section(), QString("mail"));
+            fixture.lookupStatus = 0;
+            click(window, visibleItem("globalUserSearchRow-" + channelPeer));
+        }
+        QTRY_COMPARE(controller.directPeer().value("id").toString(), channelPeer);
+        QTRY_COMPARE(controller.selectedTopic(), channelDefault);
+        QTRY_VERIFY(!visibleItem("globalUserSearchInput"));
+        QCOMPARE(fixture.posts, existing ? 0 : 1);
+        QCOMPARE(controller.section(), QString("chat"));
+    }
+
     void globalNewChatStartsWithTheSourceDirectChatTab()
     {
         QTemporaryDir directory;
@@ -9209,7 +9542,10 @@ mv -Tf "$root/.current-new" "$root/current"
         if (!fixture.directBodies.isEmpty())
             QCOMPARE(fixture.directBodies.first(), QJsonObject({{"name", "Direct"}, {"description", "Private workspace"},
                 {"source_name", "native"}, {"direct_user_uuid", channelPeer}}));
-        click(window, item(window->contentItem(), "topic-" + channelDefault));
+        // The sidebar publishes its expansion on the next event loop turn.
+        const auto topicRow = [&] { return visibleItem(window->contentItem(), "topic-" + channelDefault); };
+        QTRY_VERIFY(topicRow() && topicRow()->width() > 0 && topicRow()->height() > 0);
+        clickReadyItem(window, topicRow());
         QTRY_COMPARE(controller.selectedTopic(), channelDefault);
         QTRY_VERIFY(!controller.busy());
         QCOMPARE(visibleItem("directConversationName")->property("text").toString(), QString("Alice"));
@@ -9588,6 +9924,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "History"}}}, 200, phase == "restore" ? 350 : 0};
+            if (isInitialUnreadMentionIndex(request)) return Response{QJsonArray{}};
             if (path.endsWith("/messages/")) {
                 const bool aggregate = !QUrlQuery(request.target).hasQueryItem("topic_uuid");
                 if (aggregate) ++aggregateGets;
@@ -9957,6 +10294,7 @@ mv -Tf "$root/.current-new" "$root/current"
                     topics.append(QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId}, {"name", id == topicId ? "First" : "Second"}});
                 return Response{topics};
             }
+            if (isInitialUnreadMentionIndex(request)) return Response{QJsonArray{}};
             if (path.endsWith("/messages/")) {
                 const auto id = QUrlQuery(request.target).queryItemValue("topic_uuid");
                 if (id.isEmpty()) {
@@ -11112,6 +11450,195 @@ mv -Tf "$root/.current-new" "$root/current"
     // sidebar-chat-row-meta.ui.tsx) render inside the existing 60 px stream and 56 px topic
     // rows. Colors are the blue-cold light palette of qml/NativeTheme.qml: sidebar-sender
     // #7087ff, text-secondary #787878, text-muted #989898.
+    void openLocalSearchReflectsRealtimeEditsAndDeletions_data()
+    {
+        QTest::addColumn<bool>("deleted");
+        QTest::newRow("edit") << false;
+        QTest::newRow("delete") << true;
+    }
+    void openLocalSearchReflectsRealtimeEditsAndDeletions()
+    {
+        QFETCH(bool, deleted);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        const auto cachePath = directory.filePath("cache");
+        const QString id = "a9100000-0000-4000-8000-000000000001";
+        auto original = message("needle before update", id, secondTopicId);
+        {
+            NativeCache seed(cachePath, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            QVERIFY(seed.putMessageBody(seed.lease(), original));
+        }
+        NativePreferences preferences(directory.filePath("ui.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeCacheService cache(cachePath, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(cache.available());
+        click(window, visibleItem(window->contentItem(), "cachedMessageSearchButton"));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        auto *query = visibleItem(window->contentItem(), "cachedMessageSearchQuery");
+        query->setProperty("text", "needle");
+        const auto text = [&] {
+            return controller.cachedSearchResults().value(0).toMap().value("text").toString();
+        };
+        const auto visibleExcerpt = [&] {
+            auto *row = visibleItem(window->contentItem(), "cachedSearchResult-" + id);
+            auto *accessible = row ? QAccessible::queryAccessibleInterface(row) : nullptr;
+            return accessible ? accessible->text(QAccessible::Name) : QString{};
+        };
+        QTRY_COMPARE(text(), QString("needle before update"));
+        QTRY_VERIFY(visibleExcerpt().endsWith("needle before update"));
+        auto update = message("needle after update", id, secondTopicId);
+        update["kind"] = deleted ? "message.deleted" : "message.updated";
+        QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"project_id", projectId}, {"user_uuid", userId},
+            {"uuid", returnedId}, {"payload", update}}));
+        QTRY_COMPARE(text(), deleted ? QString{} : QString("needle after update"));
+        QCOMPARE(query->property("text").toString(), QString("needle"));
+        if (deleted) QTRY_VERIFY(visibleExcerpt().isEmpty());
+        else QTRY_VERIFY(visibleExcerpt().endsWith("needle after update"));
+        QTRY_COMPARE(controller.cachedSearchState(), QString("ready"));
+        if (deleted) {
+            auto *status = visibleItem(window->contentItem(), "cachedMessageSearchStatus");
+            QVERIFY(status);
+            QCOMPARE(status->property("text").toString(), QString("No matches in cached messages."));
+        } else QVERIFY(visibleItem(window->contentItem(), "cachedMessageSearchResults"));
+    }
+
+    void localCachedMessageSearchNavigatesByKeyboard()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto cachePath = directory.filePath("cache");
+        const QString first = "9a000000-0000-4000-8000-000000000001";
+        const QString second = "9a000000-0000-4000-8000-000000000002";
+        const QString ignored = "9a000000-0000-4000-8000-000000000003";
+        const auto firstRow = message(QStringLiteral("Original **Иголка** result."), first, secondTopicId);
+        const auto secondRow = message(QStringLiteral("Another иголка result."), second, secondTopicId);
+        const QString foreignUser = "9a000000-0000-4000-8000-000000000004";
+        const QString foreignProject = "9a000000-0000-4000-8000-000000000005";
+        {
+            qint64 savedAt = QDateTime::currentMSecsSinceEpoch();
+            NativeCache seed(cachePath, {}, true, [&] { return savedAt; });
+            for (const auto &identity : {qMakePair(foreignProject, userId), qMakePair(projectId, foreignUser)}) {
+                QVERIFY(seed.open(fixture.server.origin(), identity.first, identity.second));
+                auto foreign = message(QStringLiteral("Foreign иголка must stay private"), ignored, secondTopicId);
+                foreign["project_id"] = identity.first;
+                foreign["user_uuid"] = identity.second;
+                QVERIFY(seed.putMessageBody(seed.lease(), foreign));
+                seed.close();
+            }
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            const QString edited = "9a000000-0000-4000-8000-000000000006";
+            QVERIFY(seed.putMessageBody(seed.lease(), message("Obsolete searchable text", edited, secondTopicId)));
+            // Real replies and edits can be persisted within the same millisecond.
+            auto opaque = message({}, ignored, secondTopicId);
+            opaque["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", foreignProject},
+                {"content", QStringLiteral("Transport иголка must stay hidden")}};
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, streamId, secondTopicId, "older"},
+                QJsonArray{firstRow, secondRow, opaque, message("Edited content", edited, secondTopicId)}));
+            QVERIFY(seed.putMessageBody(seed.lease(), secondRow));
+            auto poll = pollCreateDto("9a000000-0000-4000-8000-000000000007");
+            poll["user_uuid"] = userId;
+            QVERIFY(seed.putMessageBody(seed.lease(), poll));
+        }
+        const auto normal = fixture.server.handler;
+        int messageLookups = 0;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const QUrlQuery params(request.target);
+                const auto id = params.queryItemValue("uuid");
+                if (id == first || id == second) {
+                    ++messageLookups;
+                    return {QJsonArray{id == first ? firstRow : secondRow}};
+                }
+                if (params.queryItemValue("topic_uuid") == secondTopicId) return {QJsonArray{firstRow, secondRow}};
+            }
+            return normal(request);
+        };
+        NativePreferences preferences(directory.filePath("ui.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeCacheService cache(cachePath, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(cache.available());
+        controller.showSection("calendar");
+        QCOMPARE(controller.section(), QString("calendar"));
+        auto *launcher = visibleItem(window->contentItem(), "cachedMessageSearchButton");
+        QVERIFY2(launcher, "The signed-in account needs a local history search entry point");
+        click(window, launcher);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        auto *query = visibleItem(window->contentItem(), "cachedMessageSearchQuery");
+        QTRY_VERIFY(query->hasActiveFocus());
+        auto *content = visibleItem(window->contentItem(), "cachedMessageSearchContent");
+        QVERIFY(content);
+        auto *accessible = QAccessible::queryAccessibleInterface(content);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::Dialog);
+        QCOMPARE(accessible->text(QAccessible::Name), QString("Search cached messages"));
+        query->setProperty("text", "Obsolete searchable text");
+        QTRY_COMPARE(controller.property("cachedSearchState").toString(), QString("ready"));
+        QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+        auto *status = visibleItem(window->contentItem(), "cachedMessageSearchStatus");
+        QVERIFY(status);
+        QCOMPARE(status->property("text").toString(), QString("No matches in cached messages."));
+        const auto pollQuestion = pollCreateDto(ignored).value("payload").toObject().value("questions").toArray().first().toObject();
+        const auto optionText = pollQuestion.value("options").toArray().first().toObject().value("text").toString();
+        query->setProperty("text", optionText);
+        QTRY_COMPARE(controller.property("cachedSearchResults").toList().size(), 1);
+        QCOMPARE(controller.property("cachedSearchResults").toList().first().toMap().value("id").toString(),
+            QString("9a000000-0000-4000-8000-000000000007"));
+        query->setProperty("text", QStringLiteral("ИГОЛКА"));
+        QTRY_COMPARE(controller.property("cachedSearchResults").toList().size(), 2);
+        const auto rows = controller.property("cachedSearchResults").toList();
+        QSet<QString> ids;
+        for (const auto &entry : rows) {
+            const auto row = entry.toMap();
+            ids.insert(row.value("id").toString());
+            QVERIFY(row.value("text").toString().contains(QStringLiteral("иголка"), Qt::CaseInsensitive));
+            QVERIFY(!row.value("text").toString().contains("**"));
+            QVERIFY(row.value("location").toString().contains("Planning"));
+        }
+        QCOMPARE(ids, (QSet<QString>{first, second}));
+        QCOMPARE(messageLookups, 0);
+        auto *list = visibleItem(window->contentItem(), "cachedMessageSearchResults");
+        QVERIFY(list);
+        QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(list->property("currentIndex").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(list->property("currentIndex").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_Down);
+        const auto target = rows[1].toMap().value("id").toString();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(controller.section(), QString("chat"));
+        QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+        QTRY_COMPARE(controller.anchorMessageId(), target);
+        QCOMPARE(messageLookups, 0); // Both matching identifiers and their routes are already in this cache.
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        click(window, launcher);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery")
+            && visibleItem(window->contentItem(), "cachedMessageSearchQuery")->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(launcher->hasActiveFocus());
+        QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+    }
+
     void sidebarRowsRenderPreviewAndTime()
     {
         WindowChannelFixture fixture;
@@ -12531,16 +13058,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QJsonObject saved;
         const QString peerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         QString directoryName = "Cassi";
+        std::function<void()> releaseDirectory;
+        bool firstDirectoryRequest = true;
         QJsonObject verifiedProfile{{"uuid", userId}, {"username", "cassi"},
             {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "cassi@example.invalid"}};
-        server.handler = [&saved, &verifiedProfile, &peerId, &directoryName](const Request &request) {
+        server.handler = [&](const Request &request) {
             const auto path = request.target.path();
             if (path.endsWith("/streams/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
                     {"name", "Product team"}, {"description", "Native preview"}, {"encryption", false}, {"unread_count", 2}}}};
-            if (path.endsWith("/users/"))
-                return Response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", directoryName}},
+            if (path.endsWith("/users/")) {
+                Response response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", directoryName}},
                     QJsonObject{{"uuid", peerId}, {"username", "Cassi"}}}};
+                if (std::exchange(firstDirectoryRequest, false))
+                    response.defer = [&releaseDirectory](auto send) { releaseDirectory = std::move(send); };
+                return response;
+            }
             if (path.endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "Native desktop"}, {"unread_count", 2}}}};
@@ -12597,7 +13130,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "profileDisplayName"), 1000);
         // A committed sign-in persists the organization origin for future suggestions.
         QCOMPARE(preferences.organizationHistory(), QStringList{server.origin().toString()});
-        QCOMPARE(item(content, "profileDisplayName")->property("text").toString(), QString("Cassi"));
+        QTRY_VERIFY(static_cast<bool>(releaseDirectory));
+        auto *profileName = item(content, "profileDisplayName");
+        QCOMPARE(profileName->property("text").toString(), QString("Cassandra Volkova"));
+        releaseDirectory();
+        QTRY_COMPARE(profileName->property("text").toString(), directoryName);
         QCOMPARE(item(content, "profileEmail")->property("text").toString(), QString("cassi@example.invalid"));
         QCOMPARE(item(content, "profileInitial")->property("text").toString(), QString("C"));
         QCOMPARE(item(content, "profileAvatar")->width(), 36);
@@ -14507,6 +15044,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
+        auto *model = qobject_cast<QAbstractItemModel *>(list->property("model").value<QObject *>());
+        QVERIFY(model);
+        QSignalSpy inserted(model, &QAbstractItemModel::rowsInserted);
         const auto initialOldest = controller.messages().first().toMap().value("id").toString();
         const auto lastId = controller.messages().last().toMap().value("id").toString();
         QTRY_VERIFY(item(window->contentItem(), "message-" + lastId));
@@ -14560,12 +15100,17 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             QVERIFY(distanceFromBottom() >= 500);
             if (prepend) {
-                QTRY_VERIFY(list->property("atYBeginning").toBool());
-                // The climb crossed the 100 px auto-page zone
-                // (docs/NATIVE_DESKTOP_AUTO_PAGING.md): the older page arrives
-                // on its own, without the button click.
+                // The user's wheel crossed the prefetch reserve. A fast page can
+                // already have restored the old anchor below 50 newly inserted
+                // rows by the next frame. Observe the page and its marker.
                 QTRY_COMPARE(controller.messages().size(), 100);
+                QTRY_VERIFY(!list->property("positioning").toBool());
                 QCOMPARE(olderPageMarkers, QStringList{initialOldest});
+                // One arriving page must trigger a single view insertion, even
+                // though every retained message can still update its roles.
+                QCOMPARE(inserted.size(), 1);
+                QCOMPARE(inserted.first().at(1).toInt(), 0);
+                QCOMPARE(inserted.first().at(2).toInt(), 49);
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
             }
@@ -14962,7 +15507,7 @@ mv -Tf "$root/.current-new" "$root/current"
             return entry;
         };
         QVector<QPair<QString, QString>> pageGets; // (page_marker, sort_dir) per history page GET
-        std::function<void()> finishSourceHistory, finishLookup;
+        std::function<void()> finishMentionIndex, finishSourceHistory, finishLookup;
         bool pagedSourceForTarget = false;
         const auto streamDto = [&] {
             return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Service fixture"},
@@ -14987,6 +15532,14 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
+                if (query.queryItemValue("mentioned") == "true") {
+                    auto mention = ordinaryRow(42);
+                    mention["mentioned"] = true;
+                    mention["read"] = false;
+                    Response response{QJsonArray{mention}};
+                    response.defer = [&](auto finish) { finishMentionIndex = std::move(finish); };
+                    return response;
+                }
                 const auto wanted = query.queryItemValue("uuid");
                 if (!wanted.isEmpty()) {
                     if (anchor && wanted == uuidOf(60)) {
@@ -15052,14 +15605,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(finishMentionIndex);
+        // Complete the independent badge request during the sidebar click's readiness wait.
+        QTimer::singleShot(0, finishMentionIndex);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
         if (!anchor) {
-            click(window, item(window->contentItem(), "stream-" + streamId));
-            QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, item(window->contentItem(), "topic-" + topicId));
+            clickCurrentItem(window, "topic-" + topicId);
             QTRY_VERIFY(controller.messages().size() >= 4);
         } else {
-            click(window, item(window->contentItem(), "stream-" + streamId));
-            QTRY_COMPARE(controller.topics().size(), 1);
             QTRY_VERIFY(finishSourceHistory);
             controller.openMessageInChat(uuidOf(60));
             QTRY_VERIFY(finishLookup);
@@ -19984,7 +20538,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(viewer && !viewer->open());
         QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
         QCOMPARE(visibleItem(content, "mediaViewer-counter")->property("text").toString(), QString("1 / 2"));
@@ -20024,6 +20578,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
 
         wheel({}, QPoint(0, 120));
         QCOMPARE(image->scale(), 1.12);
@@ -20072,7 +20627,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // [64,189] and [1251,1376]) is a backdrop click and closes the viewer.
         QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(100, 450));
         QTRY_VERIFY(!viewer->open());
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
 
         // Click and keyboard navigation clamps without wrap-around.
@@ -20092,7 +20647,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!window->findChild<QQuickItem *>("mediaViewer-overlay")->isVisible());
 
         // A thumbnail navigates; a backdrop click closes the overlay.
-        click(window, visibleItem(content, "inline-image-" + second));
+        clickActiveInlineImage(window, second);
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->index(), 1);
         QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-0"));
@@ -20852,6 +21407,9 @@ mv -Tf "$root/.current-new" "$root/current"
                 const auto compactAxis = expandToggle->mapToItem(window->contentItem(), QPointF{}).x();
                 click(window, expandToggle);
                 QTRY_VERIFY(toolbar->isVisible());
+                QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+                window->update();
+                QTRY_VERIFY(!painted.isEmpty());
                 auto *collapseToggle = view("composerToolbarCollapse"); QVERIFY(collapseToggle);
                 // COMPOSER_LEADING_CONTROLS_INSET pl-2: the collapse toggle
                 // sits 8px from the toolbar row's left edge.
@@ -20899,6 +21457,448 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             QVERIFY(closeIncubatedTestWindow(engine, window)); close.dismiss();
         }
+    }
+
+    void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void composerHeightFollowsContentDragKeyboardAndFullHeight()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{message("Editable source", messageId)}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("composer-height.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *shell = view("messageComposerShell");
+        auto *editor = view("messageComposer");
+        auto *list = view("messageList");
+        QVERIFY(shell && editor && list);
+        const auto draftLines = [&](int lines) {
+            QStringList words;
+            for (int i = 0; i < lines; ++i) words.append("line");
+            controller.setDraft(words.join('\n'));
+        };
+        const auto drag = [&](QQuickItem *handle, int vertical) {
+            const auto start = handle->mapToScene({handle->width() / 2, 4}).toPoint();
+            const auto end = start + QPoint(0, vertical);
+            QTest::mousePress(window, Qt::LeftButton, {}, start);
+            QTest::mouseMove(window, end);
+            QTest::mouseRelease(window, Qt::LeftButton, {}, end);
+        };
+        draftLines(1);
+        QTRY_COMPARE(shell->height(), 57.0);
+        QVERIFY(!view("composerResizeHandle") && !view("composerHeightButton"));
+        draftLines(2);
+        QTRY_COMPARE_WITH_TIMEOUT(shell->height(), 81.0, 1500);
+        auto *handle = view("composerResizeHandle"); QVERIFY(handle);
+        QCOMPARE(handle->height(), 20.0);
+        QVERIFY(!view("composerHeightButton"));
+        draftLines(3); QTRY_COMPARE(shell->height(), 105.0);
+        draftLines(4); QTRY_COMPARE(shell->height(), 129.0);
+        auto *heightButton = view("composerHeightButton"); QVERIFY(heightButton);
+        QCOMPARE(heightButton->size(), QSizeF(28, 28));
+        const auto *iface = QAccessible::queryAccessibleInterface(heightButton); QVERIFY(iface);
+        const auto expandName = locale == "ru" ? QString("Развернуть поле сообщения") : QString("Expand message editor");
+        QCOMPARE(iface->text(QAccessible::Name), expandName);
+        auto *attach = view("attachButton"), *emoji = view("composerEmojiButton"); QVERIFY(attach && emoji);
+        QTRY_COMPARE(attach->mapToScene(QPointF{}).x(), emoji->mapToScene(QPointF{}).x());
+        QVERIFY(attach->mapToScene(QPointF{}).y() < emoji->mapToScene(QPointF{}).y());
+        draftLines(3); QTRY_COMPARE(shell->height(), 105.0);
+        QVERIFY(heightButton->isVisible());
+        draftLines(2); QTRY_COMPARE(shell->height(), 81.0);
+        QTRY_VERIFY(!heightButton->isVisible());
+        QTRY_COMPARE(attach->mapToScene(QPointF{}).y(), emoji->mapToScene(QPointF{}).y());
+        click(window, editor);
+        QSet<QQuickItem *> visited;
+        while (window->activeFocusItem() != handle && !visited.contains(window->activeFocusItem())) {
+            visited.insert(window->activeFocusItem());
+            QTest::keyClick(window, Qt::Key_Tab);
+        }
+        QTRY_VERIFY(handle->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Up); QTRY_COMPARE(shell->height(), 105.0);
+        QTest::keyClick(window, Qt::Key_Down); QTRY_COMPARE(shell->height(), 81.0);
+        draftLines(1); QTRY_COMPARE(shell->height(), 57.0);
+        draftLines(8); QTRY_COMPARE(shell->height(), 145.0);
+        drag(handle, 160);
+        QTRY_COMPARE(shell->height(), 113.0);
+        drag(handle, -55); QTRY_COMPARE(shell->height(), 168.0);
+        controller.setDraft({}); QTRY_COMPARE(shell->height(), 168.0);
+        click(window, heightButton);
+        QTRY_COMPARE(list->height(), 4.0);
+        const auto full = shell->height(); QVERIFY(full > 168);
+        draftLines(1); QTRY_COMPARE(shell->height(), full);
+        window->resize(window->width(), window->height() - 75);
+        QTRY_COMPARE(shell->height(), full - 75);
+        QTRY_COMPARE(list->height(), 4.0);
+        window->resize(window->minimumSize());
+        QTRY_COMPARE(window->size(), window->minimumSize());
+        QTRY_COMPARE(list->height(), 4.0);
+        click(window, heightButton); QTRY_COMPARE(shell->height(), 57.0);
+        QVERIFY(!handle->isVisible() && !heightButton->isVisible());
+
+        QVERIFY(controller.beginEditMessage(messageId));
+        draftLines(5);
+        QVERIFY(!view("pollButton"));
+        QTRY_VERIFY(heightButton->isVisible());
+        auto *field = view("composerFieldViewport"); QVERIFY(field);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        const auto fieldRight = field->mapToScene(QPointF(field->width(), 0)).x();
+        const auto buttonLeft = heightButton->mapToScene(QPointF()).x();
+        QVERIFY2(fieldRight <= buttonLeft,
+            qPrintable(QString("Editor ends at %1, height button begins at %2").arg(fieldRight).arg(buttonLeft)));
+    }
+
+    void composerPreviewShowsTheBodyItSends_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("inlineFile");
+        QTest::addColumn<bool>("reply");
+        QTest::newRow("en-light-missing") << QString("en") << QString("light") << false << false;
+        QTest::newRow("en-dark-inline") << QString("en") << QString("dark") << true << false;
+        QTest::newRow("ru-light-inline") << QString("ru") << QString("light") << true << false;
+        QTest::newRow("ru-dark-missing") << QString("ru") << QString("dark") << false << false;
+        QTest::newRow("en-quoted-missing") << QString("en") << QString("light") << false << true;
+        QTest::newRow("ru-quoted-inline") << QString("ru") << QString("dark") << true << true;
+    }
+
+    void composerPreviewShowsTheBodyItSends()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        QFETCH(bool, inlineFile);
+        QFETCH(bool, reply);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QFile file(directory.filePath("fixture.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("fixture"), 7);
+        file.close();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QJsonObject canonical;
+        auto editable = message("Reply source", messageId);
+        QString posted, saved;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{editable}};
+            if (path.endsWith("/messages/" + messageId)) {
+                if (request.method == "PUT") {
+                    editable["payload"] = request.body.value("payload");
+                    saved = editable.value("payload").toObject().value("content").toString();
+                }
+                if (request.method == "GET" || request.method == "PUT")
+                    return {editable};
+            }
+            if (request.method == "POST" && path.endsWith("/files/")) {
+                return {QJsonObject{{"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "fixture.txt"},
+                    {"size_bytes", 7}, {"content_type", "text/plain"},
+                    {"hash", QString::fromLatin1(QCryptographicHash::hash("fixture", QCryptographicHash::Sha256).toHex())}}, 201};
+            }
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                canonical = message(posted, request.body.value("uuid").toString());
+                return {canonical, 201};
+            }
+            if (request.method == "GET" && !canonical.isEmpty() && path.endsWith("/messages/" + canonical.value("uuid").toString()))
+                return {canonical};
+            return fallback(request);
+        };
+        NativePreferences preferences(directory.filePath("preview.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api);
+        FileClient files(&api); NativeController controller(&api, &session); controller.useFiles(&files);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guarded = QPointer<QQuickWindow>(window)] {
+            if (guarded) closeIncubatedTestWindow(engine, guarded.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *expand = view("composerToolbarExpand"); QVERIFY(expand);
+        QVERIFY(!view("composerPreviewToggle"));
+        click(window, expand);
+        auto *toggle = view("composerPreviewToggle");
+        QVERIFY2(toggle, "The expanded composer toolbar must expose Preview");
+        auto *collapse = view("composerToolbarCollapse"); QVERIFY(collapse);
+        auto *accessible = QAccessible::queryAccessibleInterface(toggle);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru" ? QString("Предпросмотр") : QString("Preview"));
+        QVERIFY(accessible->state().checkable && !accessible->state().checked);
+        click(window, toggle);
+        QTRY_VERIFY(view("composerPreviewEmpty"));
+        QCOMPARE(view("composerPreviewEmpty")->property("text").toString(),
+            locale == "ru" ? QString("Пока нечего предпросматривать") : QString("Nothing to preview yet"));
+        auto *preview = view("composerPreviewRegion");
+        QVERIFY(preview);
+        QTRY_COMPARE(preview->height(), 40.0);
+        const auto longBody = QStringLiteral("## Heading\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+            "```cpp\nconst int a = 1;\n```\n\n||inside||\n\n") + QString("line\n\n").repeated(45);
+        controller.setDraft(longBody);
+        auto *markdown = view("composerPreviewMarkdown");
+        QTRY_VERIFY(markdown = view("composerPreviewMarkdown"));
+        QTRY_COMPARE(preview->height(), 128.0);
+        QVERIFY(markdown->height() > preview->height());
+        const auto viewport = qobject_cast<QQuickItem *>(preview->property("contentItem").value<QObject *>());
+        QVERIFY(viewport);
+        const auto center = preview->mapToScene({preview->width() / 2, preview->height() / 2});
+        QTest::wheelEvent(window, center, QPoint(0, -720));
+        QTRY_VERIFY(viewport->property("contentY").toReal() > 0);
+        controller.setDraft(QString(40001, 'x'));
+        NativeMarkdown renderer;
+        QTRY_COMPARE(markdown->property("text").toString(), renderer.render(controller.draft()).value("html").toString());
+        controller.setDraft({});
+        QTRY_VERIFY(view("composerPreviewEmpty"));
+        QVERIFY(!collapse->isEnabled() && !view("messageComposer") && !view("composerAiButton"));
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru" ? QString("Написание") : QString("Write"));
+        QVERIFY(accessible->state().checked);
+        click(window, toggle);
+        QTRY_VERIFY(view("messageComposer") && collapse->isEnabled() && view("composerAiButton"));
+        QString quote;
+        if (reply) {
+            QVERIFY(controller.beginReply(messageId));
+            quote = workspace::buildWorkspaceQuoteReference(controller.replyAuthor(), messageId);
+            QVERIFY(quote.contains("urn:quote:" + messageId));
+        }
+        controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!controller.uploadEntries().isEmpty()
+                    && controller.uploadEntries().first().toMap().value("status").toString() == "ready");
+        const auto link = controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        const QString body = inlineFile ? "**before** " + link + " after" : QString("**before** and after");
+        controller.setDraft(body);
+        click(window, toggle);
+        auto *rendered = view("composerPreviewMarkdown");
+        QTRY_VERIFY(rendered = view("composerPreviewMarkdown"));
+        const auto plain = inlineFile ? body : link + '\n' + body;
+        const auto outgoing = reply ? quote + "\n\n" + (inlineFile ? body : link + "\n\n" + body) : plain;
+        QCOMPARE(rendered->property("sourceMarkdown").toString(), outgoing);
+        QCOMPARE(rendered->property("sourceMarkdown").toString().count(link), 1);
+        QCOMPARE(rendered->property("text").toString(), renderer.render(outgoing).value("html").toString());
+        QCOMPARE(controller.draft(), body);
+        QVERIFY(posted.isEmpty());
+        auto *send = view("sendButton"); QVERIFY(send && send->isEnabled());
+        click(window, send);
+        QTRY_COMPARE(posted, outgoing);
+        QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
+        QTRY_VERIFY(controller.draft().isEmpty());
+
+        QVERIFY(controller.beginEditMessage(messageId));
+        const QString revision = "Edited **reply source**";
+        controller.setDraft(revision);
+        click(window, toggle);
+        QTRY_VERIFY(rendered = view("composerPreviewMarkdown"));
+        QCOMPARE(rendered->property("sourceMarkdown").toString(), revision);
+        auto *save = view("saveEditButton"); QVERIFY(save && save->isEnabled());
+        click(window, save);
+        QTRY_COMPARE(saved, revision);
+        QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
+        QTRY_VERIFY(controller.editingMessageId().isEmpty());
+    }
+
+    void composerAiNoticeTracksItsTriggerAndOtherPickers_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void composerAiNoticeTracksItsTriggerAndOtherPickers()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{message("Editable message")}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("composer-ai.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *expand = view("composerToolbarExpand");
+        QVERIFY(expand);
+        QVERIFY(!view("composerAiButton"));
+        click(window, expand);
+        auto *ai = view("composerAiButton");
+        QVERIFY2(ai, "The expanded formatting toolbar must expose the AI assistant");
+        QCOMPARE(ai->size(), QSizeF(32, 32));
+        auto *iface = QAccessible::queryAccessibleInterface(ai);
+        QVERIFY(iface);
+        QCOMPARE(iface->text(QAccessible::Name), QString("AI assistant"));
+        QVERIFY(iface->state().checkable);
+        QVERIFY(!iface->state().checked);
+        QObject *notice = window->findChild<QObject *>("composerAiUnavailablePopover");
+        QObject *emoji = window->findChild<QObject *>("composerEmojiPicker");
+        QObject *attachments = window->findChild<QObject *>("attachmentPicker");
+        QVERIFY(notice && emoji && attachments);
+        const auto open = [](QObject *popup) { return popup->property("visible").toBool(); };
+        controller.setDraft("preserved draft");
+        QSignalSpy sent(&controller, &NativeController::messageSent);
+
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QVERIFY(iface->state().checked);
+        const auto message = locale == "ru" ? QString("AI-функции в вашей организации не подключены.")
+                                            : QString("AI features are temporarily unavailable in your organization.");
+        auto *body = view("composerAiNoticeText");
+        QVERIFY(body);
+        QCOMPARE(body->property("text").toString(), message);
+        QCOMPARE(notice->property("width").toReal(), 320.0);
+        if (locale == "en") QTRY_COMPARE(notice->property("height").toReal(), 58.0);
+        QVERIFY(body->mapToScene({}).y() + body->height() < ai->mapToScene({}).y());
+        auto *dialog = QAccessible::queryAccessibleInterface(body);
+        QVERIFY(dialog);
+        QCOMPARE(dialog->role(), QAccessible::Dialog);
+        QCOMPARE(dialog->text(QAccessible::Name), message);
+        click(window, ai);
+        QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        // The transparent backdrop consumes the outside click, even over Send.
+        auto *send = view("sendButton");
+        QVERIFY(send && send->isEnabled());
+        click(window, send);
+        QTRY_VERIFY(!open(notice));
+        QCOMPARE(sent.size(), 0);
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+        QTRY_VERIFY(ai->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+
+        auto *emojiButton = view("composerEmojiButton");
+        QVERIFY(emojiButton);
+        click(window, emojiButton);
+        QTRY_VERIFY(open(emoji));
+        QVERIFY(!open(notice));
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QVERIFY(!open(emoji));
+        auto *attach = view("attachButton");
+        QVERIFY(attach && attach->isEnabled());
+        click(window, attach);
+        QTRY_VERIFY(!open(notice));
+        click(window, attach);
+        QTRY_VERIFY(open(attachments));
+        QVERIFY(!open(notice));
+        QVERIFY(QMetaObject::invokeMethod(attachments, "reject"));
+        QTRY_VERIFY(!open(attachments));
+        QCOMPARE(controller.draft(), QString("preserved draft"));
+        QCOMPARE(sent.size(), 0);
+
+        window->resize(window->minimumSize());
+        QTRY_COMPARE(window->size(), window->minimumSize());
+        auto *toolbar = view("composerToolbarRow");
+        auto *spoiler = item(window->contentItem(), "composerFormatSpoiler");
+        QVERIFY(toolbar && spoiler);
+        const auto withinToolbar = [&](QQuickItem *button) {
+            const auto rect = button->mapRectToItem(toolbar, QRectF(QPointF{}, button->size()));
+            return QRectF(QPointF{}, toolbar->size()).contains(rect);
+        };
+        QVERIFY(withinToolbar(ai));
+        QTRY_VERIFY(QRectF(QPointF{}, window->size()).contains(
+            toolbar->mapRectToScene(QRectF(QPointF{}, toolbar->size()))));
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!painted.isEmpty());
+        const auto scrollTo = [&](QQuickItem *button, int angle) {
+            for (int i = 0; i < 12 && !withinToolbar(button); ++i) {
+                const auto center = toolbar->mapToScene({toolbar->width() / 2, toolbar->height() / 2});
+                const auto before = toolbar->property("contentX").toReal();
+                QTest::wheelEvent(window, center, QPoint(angle, 0));
+                if (!QTest::qWaitFor([&] {
+                        return toolbar->property("contentX").toReal() != before || withinToolbar(button);
+                    }, 300))
+                    continue;
+                QTRY_VERIFY(!toolbar->property("moving").toBool());
+            }
+            QVERIFY2(withinToolbar(button), qPrintable(QString("%1 at x=%2, toolbar width=%3, scroll=%4 of %5")
+                .arg(button->objectName()).arg(button->mapToItem(toolbar, QPointF{}).x()).arg(toolbar->width())
+                .arg(toolbar->property("contentX").toReal()).arg(toolbar->property("contentWidth").toReal())));
+        };
+        scrollTo(spoiler, -720);
+        if (QTest::currentTestFailed()) return;
+        auto *editor = view("messageComposer");
+        QVERIFY(editor);
+        click(window, editor);
+        QTest::keyClick(window, Qt::Key_End);
+        click(window, spoiler);
+        QTRY_COMPARE(controller.draft(), QString("preserved draft||||"));
+        click(window, editor);
+        for (int i = 0; i < 10 && window->activeFocusItem() != spoiler; ++i)
+            QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_COMPARE(window->activeFocusItem(), spoiler);
+        QTRY_VERIFY(withinToolbar(spoiler));
+        scrollTo(ai, 720);
+        if (QTest::currentTestFailed()) return;
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+        QVERIFY(controller.beginEditMessage(messageId));
+        QTRY_VERIFY(!view("composerAiButton"));
+        controller.cancelEditMessage();
+        QTRY_VERIFY(view("composerAiButton"));
     }
 
     void composerToolbarKeyboardNavigationPreservesSelection_data()
@@ -21557,10 +22557,324 @@ mv -Tf "$root/.current-new" "$root/current"
     // "X members, Y online" subline) plus the three blocks in reference
     // order. Oracles: right-panel-workspace-info.ui.tsx at
     // 61dacef78dab2f5d0be76f283bebf49fe29b84af (header px-4 py-3, avatar lg
+    void externalAccountDrawerReadsAndChangesTheOwnedList_data()
+    {
+        QTest::addColumn<bool>("rebound");
+        QTest::newRow("new-zulip") << false;
+        QTest::newRow("rebind-imported-zulip") << true;
+    }
+
+    void externalAccountDrawerReadsAndChangesTheOwnedList()
+    {
+        QFETCH(bool, rebound);
+        ChannelInfoWindowScene scene;
+        QJsonArray accounts;
+        QStringList writes;
+        int lookups = 0, canonicalLookups = 0, status = 200;
+        const auto base = scene.fixture.server.handler;
+        const QString collection = "/api/workspace/v1/messenger/external_accounts/";
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (!request.target.path().startsWith(collection)) return base(request);
+            if (request.method == "GET" && request.target.path() == collection) {
+                ++lookups;
+                return {accounts, status};
+            }
+            if (request.method == "GET") {
+                if (accounts.isEmpty() || request.target.path() != collection + returnedId)
+                    return {QJsonObject{}, 404};
+                ++canonicalLookups;
+                return {accounts.first()};
+            }
+            writes.append(request.method);
+            if (request.method == "DELETE") { accounts = {}; return {QJsonValue{}, 204}; }
+            if (request.method == "POST" && request.target.path() == collection) {
+                const auto settings = request.body.value("settings").toObject();
+                if (request.body.value("provider") != "zulip" || settings.value("api_key") != "fixture-only"
+                    || settings.value("server_url") != "https://chat.example.invalid" || settings.value("email") != "peer@example.invalid")
+                    return {QJsonObject{}, 400};
+                auto stored = settings;
+                stored.remove("api_key");
+                accounts.append(QJsonObject{{"uuid", rebound ? QJsonValue(returnedId) : request.body.value("uuid")}, {"settings", stored},
+                    {"status","active"}, {"live_ready",true},{"revision",1},{"user_uuid",userId},{"project_id",projectId}});
+            }
+            return {accounts.first()};
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QTRY_VERIFY(visibleItem("externalAccountsEmpty"));
+        QCOMPARE(lookups, 1);
+        click(scene.window, visibleItem("externalAccountConnect"));
+        QTRY_VERIFY(visibleItem("externalAccountServer"));
+        click(scene.window, visibleItem("externalAccountCancel"));
+        QCOMPARE(writes.size(), 0);
+        click(scene.window, visibleItem("externalAccountConnect"));
+        QTRY_VERIFY(visibleItem("externalAccountServer"));
+        visibleItem("externalAccountServer")->setProperty("text","https://chat.example.invalid");
+        visibleItem("externalAccountEmail")->setProperty("text","peer@example.invalid");
+        visibleItem("externalAccountCredential")->setProperty("text","fixture-only");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_COMPARE(writes, QStringList{"POST"});
+        QTRY_VERIFY(!accounts.isEmpty());
+        const auto account = accounts.first().toObject()["uuid"].toString();
+        QTRY_VERIFY(visibleItem("externalAccountName-" + account));
+        QCOMPARE(visibleItem("externalAccountName-" + account)->property("text").toString(), QString("peer@example.invalid"));
+        QCOMPARE(canonicalLookups, rebound ? 1 : 0);
+        QCOMPARE(visibleItem("externalAccountStatus-" + account)->property("text").toString(), QString("Zulip · Connected"));
+        click(scene.window, visibleItem("externalAccountActions-" + account));
+        QTRY_VERIFY(visibleItem("externalAccountDelete"));
+        QVERIFY(!visibleItem("externalAccountReconnect"));
+        click(scene.window, visibleItem("externalAccountDelete"));
+        QTRY_VERIFY(visibleItem("externalAccountDeleteConfirm"));
+        click(scene.window, visibleItem("externalAccountDeleteConfirm"));
+        QTRY_COMPARE(writes, (QStringList{"POST","DELETE"}));
+        QTRY_VERIFY(visibleItem("externalAccountsEmpty"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        status = 503;
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QTRY_VERIFY(visibleItem("externalAccountsError"));
+        QVERIFY(!visibleItem("externalAccountsEmpty"));
+    }
+
+    void externalAccountDismissedSubmissionRefreshesAfterTheServerCommits_data()
+    {
+        QTest::addColumn<bool>("reopenList");
+        QTest::newRow("keep-list-open") << false;
+        QTest::newRow("reopen-list-before-commit") << true;
+    }
+
+    void externalAccountDismissedSubmissionRefreshesAfterTheServerCommits()
+    {
+        QFETCH(bool, reopenList);
+        ChannelInfoWindowScene scene;
+        const QString path = "/api/workspace/v1/messenger/external_accounts/";
+        QJsonArray accounts;
+        QJsonObject submitted;
+        int lists = 0, writes = 0;
+        std::function<void()> finish;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() != path) return base(request);
+            if (request.method == "GET") {
+                ++lists;
+                return {accounts};
+            }
+            ++writes;
+            auto settings = request.body.value("settings").toObject();
+            settings.remove("api_key");
+            submitted = {{"uuid", request.body.value("uuid")}, {"settings", settings}, {"status", "active"},
+                {"live_ready", true}, {"project_id", projectId}, {"user_uuid", userId}};
+            Response response{submitted};
+            response.defer = [&](auto send) { finish = std::move(send); };
+            return response;
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QTRY_VERIFY(visibleItem("externalAccountsEmpty"));
+        click(scene.window, visibleItem("externalAccountConnect"));
+        QTRY_VERIFY(visibleItem("externalAccountServer"));
+        visibleItem("externalAccountServer")->setProperty("text", "https://chat.example.invalid");
+        visibleItem("externalAccountEmail")->setProperty("text", "peer@example.invalid");
+        visibleItem("externalAccountCredential")->setProperty("text", "fixture-only");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_VERIFY(bool(finish));
+        click(scene.window, visibleItem("externalAccountCancel"));
+        QTRY_VERIFY(!visibleItem("externalAccountCancel"));
+        if (reopenList) {
+            click(scene.window, visibleItem("externalAccountsToggle"));
+            QTRY_VERIFY(!visibleItem("externalAccountsEmpty"));
+            click(scene.window, visibleItem("externalAccountsToggle"));
+        }
+        QTRY_VERIFY(scene.controller.externalAccounts()->busy() || lists > 1);
+        accounts.append(submitted);
+        finish();
+        QTRY_VERIFY(visibleItem("externalAccountName-" + submitted.value("uuid").toString()));
+        QCOMPARE(writes, 1);
+    }
+
+    void externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision()
+    {
+        ChannelInfoWindowScene scene;
+        const QString collection = "/api/workspace/v1/messenger/external_accounts/";
+        auto settings = QJsonObject{{"kind","zulip"},{"server_url","https://chat.example.invalid"},
+            {"email","before@example.invalid"},{"selection_mode","explicit"},{"history_depth","30_days"},
+            {"default_project_id",projectId}};
+        QJsonObject row{{"uuid",returnedId},{"settings",settings},{"status","auth_required"},
+            {"live_ready",false},{"revision",7},{"safe_error","Authentication required"},{"project_id",projectId},{"user_uuid",userId}};
+        QStringList writes;
+        int gets = 0;
+        bool hold = true;
+        std::function<void()> finishRead;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (!request.target.path().startsWith(collection)) return base(request);
+            if (request.method == "GET" && request.target.path() == collection) return {QJsonArray{row}};
+            if (request.method == "GET") {
+                ++gets;
+                Response response{row};
+                if (hold) response.defer = [&](auto send) { finishRead = std::move(send); };
+                return response;
+            }
+            const auto body = request.body.value("settings").toObject();
+            writes.append(request.method);
+            if (request.method == "PUT") {
+                if (body.value("history_depth") != "30_days" || body.value("selection_mode") != "explicit"
+                    || body.value("email") != "after@example.invalid" || body.contains("api_key")
+                    || request.headers.value("if-match") != "\"7\"") return {QJsonObject{}, 400};
+                row["settings"] = body; row["revision"] = 8;
+            } else {
+                if (!request.target.path().endsWith("/actions/reconnect/invoke") || body.value("api_key") != "fixture-only"
+                    || request.headers.value("if-match") != "\"8\"") return {QJsonObject{}, 400};
+                row["live_ready"] = true; row["status"] = "live"; row["revision"] = 9;
+            }
+            return {row};
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle")); click(scene.window, visibleItem("externalAccountsToggle"));
+        const auto menu = "externalAccountActions-" + returnedId;
+        QTRY_VERIFY(visibleItem(menu)); click(scene.window, visibleItem(menu));
+        QTRY_VERIFY(visibleItem("externalAccountReconnect"));
+        click(scene.window, visibleItem("externalAccountEdit"));
+        QTRY_VERIFY(visibleItem("externalAccountEmail"));
+        visibleItem("externalAccountEmail")->setProperty("text","after@example.invalid");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_VERIFY(bool(finishRead));
+        click(scene.window, visibleItem("externalAccountCancel"));
+        QTRY_VERIFY(!visibleItem("externalAccountCredential"));
+        finishRead();
+        hold = false;
+        QTRY_VERIFY(visibleItem(menu));
+        click(scene.window, visibleItem(menu));
+        QTRY_VERIFY(visibleItem("externalAccountEdit"));
+        click(scene.window, visibleItem("externalAccountEdit"));
+        QTRY_VERIFY(visibleItem("externalAccountEmail"));
+        QCOMPARE(visibleItem("externalAccountEmail")->property("text").toString(), QString("before@example.invalid"));
+        QCOMPARE(writes.size(), 0);
+        visibleItem("externalAccountEmail")->setProperty("text", "after@example.invalid");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        const auto name = "externalAccountName-" + returnedId;
+        QTRY_VERIFY(visibleItem(name) && visibleItem(name)->property("text").toString() == "after@example.invalid");
+        QCOMPARE(gets, 2); QCOMPARE(writes, QStringList{"PUT"});
+        click(scene.window, visibleItem(menu));
+        QTRY_VERIFY(visibleItem("externalAccountReconnect")); click(scene.window, visibleItem("externalAccountReconnect"));
+        QTRY_VERIFY(visibleItem("externalAccountCredential"));
+        visibleItem("externalAccountCredential")->setProperty("text","fixture-only");
+        click(scene.window, visibleItem("externalAccountSubmit"));
+        QTRY_COMPARE(writes, (QStringList{"PUT","POST"}));
+        QTRY_VERIFY(!visibleItem("externalAccountCredential"));
+        click(scene.window, visibleItem(menu)); QTRY_VERIFY(visibleItem("externalAccountEdit"));
+        QVERIFY(!visibleItem("externalAccountReconnect"));
+    }
+
     // Reference: packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx (measured
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
     // and packages/web/src/shared/lib/avatar-color.lib.ts for the color.
+    void accountMenuKeepsSignOutReachableWhileScrolling()
+    {
+        ChannelInfoWindowScene scene;
+        scene.window->resize(900, 600);
+        click(scene.window, visibleItem("accountMenuButton"));
+        auto *scroll = visibleItem("accountMenuScroll");
+        auto *signOut = visibleItem("signOutButton");
+        QVERIFY(scroll && signOut);
+        QTRY_VERIFY(scroll->property("contentHeight").toReal() > scroll->height());
+        const QRectF bounds(QPointF{}, scene.window->size());
+        QTRY_VERIFY(bounds.contains(signOut->mapRectToScene({QPointF{}, signOut->size()})));
+        const auto position = signOut->mapToScene(QPointF{});
+        auto *command = visibleItem("refreshButton");
+        QVERIFY(command);
+        const auto before = command->mapToScene(QPointF{}).y();
+        scroll->setProperty("contentY", scroll->property("contentHeight").toReal() - scroll->height());
+        QTRY_VERIFY(command->mapToScene(QPointF{}).y() < before);
+        QCOMPARE(signOut->mapToScene(QPointF{}), position);
+        click(scene.window, signOut);
+        QTRY_VERIFY(!scene.controller.authenticated());
+    }
+
+    void accountPreferencePanelsApplyAndPersist_data()
+    {
+        QTest::addColumn<bool>("appearance");
+        QTest::newRow("settings-light-en") << false;
+        QTest::newRow("appearance-dark-ru") << true;
+    }
+
+    void accountPreferencePanelsApplyAndPersist()
+    {
+        QFETCH(bool, appearance);
+        ChannelInfoWindowScene scene;
+        scene.controller.setPreferences(&scene.preferences);
+        scene.preferences.setMode(appearance ? "dark" : "light");
+        scene.preferences.setLocale(appearance ? "ru" : "en");
+        if (appearance) {
+            auto second = scene.fixture.secondStreamRow;
+            second["name"] = "Aardvark";
+            second["kind"] = "stream.updated";
+            QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId},
+                {"project_id", projectId}, {"user_uuid", userId}, {"payload", second}}));
+            QTRY_COMPARE(scene.controller.sidebarStreams().first().toMap().value("id").toString(), streamId);
+        }
+        click(scene.window, visibleItem("accountMenuButton"));
+        const QString entry = appearance ? "accountAppearanceAction" : "accountSettingsAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(scene.window, visibleItem(entry));
+        const auto choose = [&](const QString &key, const QString &value) {
+            const auto trigger = "accountSetting-" + key;
+            const auto option = "accountOption-" + key + "-" + value;
+            QTRY_VERIFY(visibleItem(trigger));
+            click(scene.window, visibleItem(trigger));
+            QTRY_VERIFY(visibleItem(option));
+            click(scene.window, visibleItem(option));
+            QTRY_VERIFY(visibleItem(option)->property("checked").toBool());
+            click(scene.window, visibleItem(trigger));
+            QTRY_VERIFY(!visibleItem(option));
+        };
+        if (appearance) {
+            auto *summary = visibleItem("accountSettingValue-theme");
+            QVERIFY(summary);
+            QCOMPARE(summary->property("text").toString(),
+                QCoreApplication::translate("NativeAccountPreferences", "Dark"));
+            click(scene.window, visibleItem("accountSetting-theme"));
+            QTRY_VERIFY(visibleItem("accountOption-mode-light"));
+            click(scene.window, visibleItem("accountOption-mode-light"));
+            click(scene.window, visibleItem("accountSetting-theme"));
+            QTRY_VERIFY(!visibleItem("accountOption-mode-light"));
+            QCOMPARE(summary->property("text").toString(),
+                QCoreApplication::translate("NativeAccountPreferences", "Light"));
+            choose("sidebarSortMode", "alphabetical");
+            QCOMPARE(scene.preferences.property("sidebarSortMode").toString(), QString("alphabetical"));
+            QTRY_COMPARE(scene.controller.sidebarStreams().first().toMap().value("id").toString(), scene.fixture.secondStreamRow.value("uuid").toString());
+            auto *first = visibleItem("stream-" + scene.fixture.secondStreamRow.value("uuid").toString());
+            auto *other = visibleItem("stream-" + streamId);
+            QVERIFY(first && other);
+            QTRY_VERIFY(first->mapToScene(QPointF{}).y() < other->mapToScene(QPointF{}).y());
+            choose("folderRailLayout", "horizontal");
+            QCOMPARE(scene.preferences.folderRailLayout(), QString("horizontal"));
+            choose("chatListDensity", "compact");
+            QCOMPARE(scene.preferences.chatListDensity(), QString("compact"));
+        } else {
+            choose("chatClickAction", "latestTopic");
+            QCOMPARE(scene.preferences.chatClickAction(), QString("latestTopic"));
+            QSignalSpy preview(&scene.preferences, SIGNAL(notificationSoundRequested(QString)));
+            QVERIFY(preview.isValid());
+            choose("notificationSound", "glass");
+            QCOMPARE(preview.size(), 1);
+            QCOMPARE(preview.first().first().toString(), QString("glass"));
+            choose("notificationSound", "none");
+            QCOMPARE(preview.size(), 1);
+            choose("authIdleTimeout", "12h");
+            QCOMPARE(scene.preferences.authIdleTimeout(), QString("12h"));
+            NativePreferences restored(scene.directory.filePath("channel-info.ini"));
+            restored.setOwner(scene.controller.ownerKey());
+            QCOMPARE(restored.authIdleTimeout(), QString("12h"));
+            QCOMPARE(restored.property("notificationSound").toString(), QString("none"));
+        }
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;
@@ -21600,6 +22914,242 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto avatarPos = avatar->mapToScene(QPointF(0, 0));
         const auto titlePos = title->mapToScene(QPointF(0, 0));
         QVERIFY(titlePos.x() >= avatarPos.x() + 48.0 + 16.0 - 1.0);
+    }
+
+    void channelInfoTopicRowsNavigateAndCollapse()
+    {
+        ChannelInfoWindowScene scene;
+        auto item = windowChannelTopic(secondTopicId, streamId, "");
+        item["is_default"] = false;
+        item["notification_mode"] = "mute";
+        item["passive_unread_count"] = 1203;
+        item["unread_count"] = 1203;
+        item["kind"] = "topic.created";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        auto mention = message("A synthetic mention", messageId, secondTopicId);
+        mention["kind"] = "message.created";
+        mention["author_uuid"] = channelPeer;
+        mention["is_own"] = false;
+        mention["read"] = false;
+        mention["mentioned"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", mention}}));
+        scene.openChannelInfo();
+        auto *toggle = visibleItem("channelTopicsToggle");
+        QVERIFY(toggle);
+        auto *row = visibleItem("channelTopicRow-" + secondTopicId);
+        QVERIFY(row);
+        QVERIFY(visibleItem("channelTopicMention-" + secondTopicId));
+        QAccessible::setActive(true);
+        auto *toggleAccessible = QAccessible::queryAccessibleInterface(toggle);
+        auto *rowAccessible = QAccessible::queryAccessibleInterface(row);
+        QVERIFY(toggleAccessible && rowAccessible);
+        QCOMPARE(toggleAccessible->text(QAccessible::Name), QString("Collapse topics"));
+        QCOMPARE(rowAccessible->text(QAccessible::Description), QString("Topic notifications: Muted"));
+        QCOMPARE(visibleItem("channelTopicTitle-" + secondTopicId)->property("font").value<QFont>().italic(), true);
+        QVERIFY(visibleItem("channelTopicBell-" + secondTopicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        QCOMPARE(scene.text("channelTopicUnread-" + secondTopicId), QString("1k+"));
+        click(scene.window, toggle);
+        QVERIFY(!visibleItem("channelTopicRow-" + secondTopicId));
+        QCOMPARE(toggleAccessible->text(QAccessible::Name), QString("Expand topics"));
+        click(scene.window, toggle);
+        row = visibleItem("channelTopicRow-" + secondTopicId);
+        QVERIFY(row);
+        const auto rowName = row->objectName();
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll);
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QString("4 members, 2 online"));
+        row = visibleItem(rowName);
+        QVERIFY(row);
+        const auto rowY = row->mapToItem(scroll, QPointF(12, 15)).y();
+        if (rowY >= scroll->height() || rowY < 0)
+            scroll->setProperty("contentY", scroll->property("contentY").toReal() + rowY - scroll->height() / 2);
+        QTRY_VERIFY(scroll->contains(row->mapToItem(scroll, QPointF(12, 15))));
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier, row->mapToScene(QPointF(12, 15)).toPoint());
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        click(scene.window, row);
+        QTRY_COMPARE(scene.controller.selectedTopic(), secondTopicId);
+    }
+
+    void channelInfoSummaryFollowsSelectedTopicAndPermission_data()
+    {
+        QTest::addColumn<bool>("owner");
+        QTest::addColumn<QString>("permission");
+        QTest::addColumn<bool>("gear");
+        QTest::newRow("channel-owner") << true << QString() << true;
+        QTest::newRow("ordinary-member") << false << QString() << false;
+        QTest::newRow("project-settings") << false << QString("workspace.topic_summary_settings.manage") << true;
+        QTest::newRow("project-endpoint") << false << QString("workspace.topic_summary_endpoint.manage") << true;
+        QTest::newRow("lookalike-permission") << false << QString("workspace.topic_summary_endpoint.read") << false;
+    }
+
+    void channelInfoSummaryFollowsSelectedTopicAndPermission()
+    {
+        QFETCH(bool, owner);
+        QFETCH(QString, permission);
+        QFETCH(bool, gear);
+        ChannelInfoWindowScene scene(owner, permission);
+        const bool russian = permission.endsWith("manage");
+        scene.preferences.setLocale(russian ? "ru" : "en");
+        scene.preferences.setMode(russian ? "dark" : "light");
+        auto item = windowChannelTopic(topicId, streamId, "General");
+        item["kind"] = "topic.updated";
+        item["summary"] = "**Synthetic** summary";
+        item["summary_enabled"] = false;
+        item["summary_has_new_messages"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        scene.openChannelInfo();
+        auto *text = visibleItem("channelTopicSummaryMarkdown");
+        QVERIFY(text);
+        QTextDocument rendered;
+        rendered.setHtml(text->property("text").toString());
+        QCOMPARE(rendered.toPlainText().trimmed(), QString("Synthetic summary"));
+        QVERIFY(rendered.find("Synthetic").charFormat().fontWeight() > QFont::Normal);
+        QVERIFY(visibleItem("channelTopicSummaryStale"));
+        QVERIFY(visibleItem("channelTopicSummaryDisabled"));
+        QCOMPARE(bool(visibleItem("channelTopicSummarySettings")), gear);
+        if (gear) {
+            click(scene.window, visibleItem("channelTopicSummarySettings"));
+            QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+            QCOMPARE(visibleItem("channelTopicSummaryEnabled")->isEnabled(), owner);
+            QTest::keyClick(scene.window, Qt::Key_Escape);
+        }
+        item["summary"] = QJsonValue(QJsonValue::Null);
+        item["summary_enabled"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        QTRY_COMPARE(scene.text("channelTopicSummaryEmpty"), russian
+            ? QString("Выжимка появится после обработки сообщений.")
+            : QString("The summary will appear after the messages are processed."));
+        QVERIFY(!visibleItem("channelTopicSummaryStale"));
+    }
+
+    void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
+    {
+        ChannelInfoWindowScene scene;
+        auto dto = windowChannelTopic(topicId, streamId, "General Topic");
+        dto["summary_enabled"] = true;
+        int mutations = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.contains("/stream_topics/" + topicId + "/actions/")) {
+                ++mutations;
+                if (path.endsWith("/notifications/invoke") && request.body == QJsonObject{{"notification_mode","mute"}})
+                    dto["notification_mode"] = "mute";
+                else if (path.endsWith("/set_summary_prompt/invoke") && request.body == QJsonObject{{"summary_enabled",false}})
+                    dto["summary_enabled"] = false;
+                else return {QJsonObject{}, 400};
+                return {dto};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        auto *row = visibleItem("channelTopicRow-" + topicId);
+        QVERIFY(row);
+        const auto rowName = row->objectName();
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll);
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QString("4 members, 2 online"));
+        row = visibleItem(rowName);
+        QVERIFY(row);
+        const auto rowY = row->mapToItem(scroll, QPointF(12, 15)).y();
+        if (rowY >= scroll->height() || rowY < 0)
+            scroll->setProperty("contentY", scroll->property("contentY").toReal() + rowY - scroll->height() / 2);
+        QTRY_VERIFY(scroll->contains(row->mapToItem(scroll, QPointF(12, 15))));
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier, row->mapToScene(QPointF(12, 15)).toPoint());
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
+        click(scene.window, visibleItem("channelTopicMuteAction"));
+        QTRY_COMPARE(mutations, 1);
+        QTRY_VERIFY(visibleItem("channelTopicBell-" + topicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(mutations, 2);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+        click(scene.window, visibleItem("channelTopicSummaryToggle"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryDisabled"));
+    }
+
+    void openingAnotherTopicMenuDuringMuteAllowsFurtherActions()
+    {
+        ChannelInfoWindowScene scene;
+        auto second = windowChannelTopic(secondTopicId, streamId, "Second");
+        second["kind"] = "topic.created"; second["is_default"] = false;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", second}}));
+        std::function<void()> release;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/" + topicId + "/actions/notifications/invoke")) {
+                auto dto = windowChannelTopic(topicId, streamId, "General Topic");
+                dto["notification_mode"] = "mute";
+                Response response{dto};
+                response.defer = [&](auto finish) { release = std::move(finish); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        auto openMenu = [&](const QString &topic) {
+            auto *row = visibleItem("channelTopicRow-" + topic);
+            QVERIFY(row);
+            row->forceActiveFocus();
+            QTest::keyClick(scene.window, Qt::Key_Menu);
+        };
+        openMenu(topicId);
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction"));
+        click(scene.window, visibleItem("channelTopicMuteAction"));
+        QTRY_VERIFY(bool(release));
+        openMenu(secondTopicId);
+        release();
+        QTRY_VERIFY(visibleItem("channelTopicBell-" + topicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        if (!visibleItem("channelTopicMuteAction")) openMenu(secondTopicId);
+        QTRY_VERIFY(visibleItem("channelTopicMuteAction") && visibleItem("channelTopicMuteAction")->isEnabled());
+    }
+
+    void channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending()
+    {
+        ChannelInfoWindowScene scene;
+        auto dto = windowChannelTopic(topicId, streamId, "General Topic");
+        std::function<void()> release;
+        int writes = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().contains("/stream_topics/" + topicId + "/actions/")) {
+                ++writes;
+                if (request.target.path().endsWith("/notifications/invoke")) {
+                    dto["notification_mode"] = "mute";
+                    Response response{dto};
+                    response.defer = [&](auto finish) { release = std::move(finish); };
+                    return response;
+                }
+                dto["summary_enabled"] = false;
+                return {dto};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        scene.controller.applyChannelTopicAction(topicId, "notifications", "mute");
+        QTRY_VERIFY(bool(release));
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummaryEnabled"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save);
+        const bool retryable = save->isEnabled();
+        release();
+        QCOMPARE(writes, 1);
+        QVERIFY2(retryable, "a competing topic request left the settings form permanently pending");
+        QTRY_VERIFY(visibleItem("channelTopicBell-" + topicId)->property("source").toUrl().path().endsWith("bell_off.svg"));
+        click(scene.window, save);
+        QTRY_COMPARE(writes, 2);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySave"));
     }
 
     // Issue #132: the notification switch (notification-level-switch.lib.ts:
@@ -23559,6 +25109,7 @@ private:
             return entry;
         };
         for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        int mentionIndexGets = 0;
         QVector<std::function<void()>> heldPage;
         QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
         const auto streamDto = [&] {
@@ -23578,6 +25129,10 @@ private:
             if (path.endsWith("/users/")) return Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (isInitialUnreadMentionIndex(request)) {
+                ++mentionIndexGets;
+                return Response{QJsonArray{}};
+            }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
                 const auto marker = query.queryItemValue("page_marker");
@@ -23675,7 +25230,8 @@ private:
         }
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
-        QTRY_VERIFY(!heldPage.isEmpty());
+        QCOMPARE(mentionIndexGets, 1);
+        QTRY_COMPARE(heldPage.size(), 1);
         // The gesture continues while the page is in flight, including a
         // direction change: coalescing must hold the single request.
         QTest::wheelEvent(window, center, QPoint(0, 1200)); QVERIFY(settleWheel());
@@ -23751,6 +25307,7 @@ private:
             return entry;
         };
         for (int i = 0; i < 120; ++i) history.insert(i, row(i));
+        int mentionIndexGets = 0;
         QVector<std::function<void()>> heldPage;
         QVector<QString> olderMarkers; // page_marker per topic history GET (older pages only)
         const auto streamDto = [&] {
@@ -23770,6 +25327,10 @@ private:
             if (path.endsWith("/users/")) return Response{QJsonArray{}};
             if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topicDto()}};
             if (path.endsWith("/stream_topics/" + topicId)) return Response{topicDto()};
+            if (isInitialUnreadMentionIndex(request)) {
+                ++mentionIndexGets;
+                return Response{QJsonArray{}};
+            }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 const auto query = QUrlQuery(request.target);
                 const auto marker = query.queryItemValue("page_marker");
@@ -23857,7 +25418,8 @@ private:
         }
         QCOMPARE(olderMarkers.size(), 1);
         QCOMPARE(olderMarkers.first(), uuidOf(70));
-        QTRY_VERIFY(!heldPage.isEmpty());
+        QCOMPARE(mentionIndexGets, 1);
+        QTRY_COMPARE(heldPage.size(), 1);
         // Park below the reserve but not at the top: with the reference-notch
         // mapping each 120 notch moves exactly 100 px, so the coarse 1200
         // steps above park at the list top and the restore lands too close to
@@ -25888,11 +27450,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
             QTRY_COMPARE(controller.streams().size(), 1);
             preferences.setOwner(controller.ownerKey());
-            click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+            // This fixture exercises invalidated poll submissions. A fresh
+            // sign-in can publish its catalogue before the new sidebar row
+            // replaces the previous owner's delegate.
+            controller.selectStream(streamId);
+            QTRY_COMPARE(controller.selectedStream(), streamId);
             QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+            controller.selectTopic(topicId);
+            QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            click(window, visibleItem(window->contentItem(), "pollButton"));
+            QQuickItem *pollButton = nullptr;
+            QTRY_VERIFY((pollButton = visibleItem(window->contentItem(), "pollButton"))
+                        && pollButton->isEnabled() && pollButton->width() > 0 && pollButton->height() > 0);
+            clickReadyItem(window, pollButton);
         };
         loginAndOpen();
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -26618,8 +28188,16 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(capsule->property("expanded").toBool());
         const auto outside = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
         QTest::mouseMove(window, outside.toPoint());
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
         QTest::wheelEvent(window, outside, QPoint(0, 120));
         QTRY_VERIFY(list->property("contentY").toReal() < outerBefore);
+        // contentY changes as soon as the outer list accepts the wheel. Its
+        // newly visible delegates can still be incubating until presentation.
+        const auto *incubation = scene.engine.incubationController();
+        QVERIFY(incubation);
+        QTRY_VERIFY_WITH_TIMEOUT(!painted.isEmpty() && incubation->incubatingObjectCount() == 0, 2000);
+        QVERIFY(closeIncubatedTestWindow(scene.engine, window));
+        scene.window = nullptr; // Already closed and checked above.
     }
 
     // Issue #142: the wheel distance must match the measured reference notch.
@@ -28869,12 +30447,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const auto catalog = fixture.catalogGets, users = fixture.usersGets,
                    history = fixture.historyGets, canonical = fixture.canonicalGets;
         const auto selectionBefore = controller.selectedStream();
-        // The native build settings do not introduce the TOP_BAR_CALLS_NAV
-        // gate, so there is deliberately no Calls chip in the top bar; the
-        // section state (reached in production through the whitelisted
-        // /calls deep link) is the entry surface under test.
-        QVERIFY(!view("sectionCallsButton"));
-        controller.showSection(QStringLiteral("calls"));
+        const auto configured = engine.rootContext()->contextProperty("nativeCallsNavigationEnabled");
+        QVERIFY(configured.isValid());
+        auto *calls = view("sectionCallsButton");
+        QCOMPARE(bool(calls), configured.toBool());
+        if (calls) {
+            QCOMPARE(calls->property("help").toString(),
+                locale == "ru" ? QStringLiteral("Звонки") : QStringLiteral("Calls"));
+            click(window, calls);
+            QTRY_COMPARE(controller.section(), QStringLiteral("calls"));
+            QVERIFY(calls->property("selected").toBool());
+            controller.showSection("chat");
+        }
+        controller.showSection("calls");
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
         auto *page = view("nativeCallsPage"); QVERIFY(page);
         // Full-width page: it fills the content slot the conversation used,
@@ -29965,6 +31550,43 @@ private slots:
             {"object_type","user"},{"action","updated"},{"payload",cleared},
             {"created_at","2026-01-02T10:02:00Z"},{"updated_at","2026-01-02T10:02:00Z"}}));
         QTRY_COMPARE(caption(),online);
+    }
+
+    void channelHeaderOpensInfoOverSettingsAndRestoresTheLayer_data()
+    {
+        QTest::addColumn<QString>("control");
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("theme");
+        QTest::newRow("title-en-light") << QString("channelHeaderInfoAction") << QString("en") << QString("light");
+        QTest::newRow("toolbar-en-dark") << QString("conversationInfoAction") << QString("en") << QString("dark");
+        QTest::newRow("title-ru-dark") << QString("channelHeaderInfoAction") << QString("ru") << QString("dark");
+        QTest::newRow("toolbar-ru-light") << QString("conversationInfoAction") << QString("ru") << QString("light");
+    }
+
+    void channelHeaderOpensInfoOverSettingsAndRestoresTheLayer()
+    {
+        QFETCH(QString, control);
+        QFETCH(QString, locale);
+        QFETCH(QString, theme);
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(theme);
+        scene.evaluate("rightDrawer.openSettings()");
+        QTRY_COMPARE(scene.evaluate("rightDrawer.currentAccountScreen").toString(), QString("settings"));
+        auto *action = visibleItem(control);
+        QVERIFY(action);
+        QVERIFY(action->isEnabled());
+        click(scene.window, action);
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+        QCOMPARE(scene.text("channelInfoTitle"), QString("Info channel"));
+        scene.evaluate("rightDrawer.openWorkspaceUserProfile('" + channelPeer + "')");
+        QTRY_COMPARE(scene.evaluate("rightDrawer.currentProfileOverride").toString(), "workspace-user-uuid:" + channelPeer);
+        click(scene.window, action);
+        QTRY_VERIFY(scene.evaluate("rightDrawer.currentProfileOverride").toString().isEmpty());
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+        click(scene.window, visibleItem("nativeRightDrawerClose"));
+        QTRY_COMPARE(scene.evaluate("rightDrawer.currentAccountScreen").toString(), QString("settings"));
+        QCOMPARE(scene.controller.selectedTopic(), topicId);
     }
 
     // Issue #88 (reference chat-header-direct.ui.tsx:7-8,47-55): the whole
@@ -31766,7 +33388,6 @@ private slots:
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("chat-click-latest.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
-        preferences.setChatClickAction("latestTopic");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
@@ -31781,6 +33402,14 @@ private slots:
         QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(),1); QTRY_VERIFY(controller.channelMembersVerified());
         QTRY_VERIFY(visibleItem("stream-"+streamId));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(window, visibleItem("accountSettingsAction"));
+        QTRY_VERIFY(visibleItem("accountSetting-chatClickAction"));
+        click(window, visibleItem("accountSetting-chatClickAction"));
+        click(window, visibleItem("accountOption-chatClickAction-latestTopic"));
+        QTRY_COMPARE(preferences.chatClickAction(), QString("latestTopic"));
+        click(window, visibleItem("nativeRightDrawerClose"));
         // Reference sidebar-workspace.ui.tsx:446-462: the latestTopic body link is
         // `stream.preview?.route ?? stream.route`. While the last message is unknown the
         // body click falls back to the stream itself.
@@ -32133,7 +33762,9 @@ private slots:
         QVERIFY(controller.anchorNavigationError().isEmpty());
         QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), target, 4000);
         QTRY_VERIFY_WITH_TIMEOUT(!layer->isVisible(), 2000);
-        QTRY_VERIFY(visibleItem(content, "messageHighlight-" + target));
+        // The lookup and overlay can settle before the new list delegate
+        // presents its highlight on the next window frame.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(content, "messageHighlight-" + target), 2000);
         // A next failing jump (unknown target) re-arms the retryable alert, and
         // the inline scroll-to-bottom escapes to the conversation tail from there.
         const QString missingTarget = "99999999-9999-4999-8999-999999999999";
@@ -34283,8 +35914,69 @@ private slots:
     // open, narrows through level/source/search filters with the reference
     // "x of y entries" label, resets, clears back to the empty state and
     // exports the snapshot JSON through the save dialog.
+    void supportReportBeforeLoginAndFromDiagnostics_data()
+    {
+        QTest::addColumn<bool>("authenticated");
+        QTest::newRow("sign-in") << false;
+        QTest::newRow("diagnostics") << true;
+    }
+
+    void supportReportBeforeLoginAndFromDiagnostics()
+    {
+        QFETCH(bool, authenticated);
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("report.ini"));
+        WindowOwnStatusFixture fixture;
+        for (int i = 0; i < 24; ++i)
+            controller.appendSessionLog("error", "app", "Synthetic pre-login failure");
+        if (authenticated) QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (authenticated) {
+            click(window, visibleItem("accountMenuButton"));
+            QTRY_VERIFY(visibleItem("diagnosticsAction"));
+            click(window, visibleItem("diagnosticsAction"));
+        }
+        const auto entry = authenticated ? "diagnosticsSupportAction" : "loginSupportAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(window, visibleItem(entry));
+        QTRY_VERIFY(visibleItem("supportPrepare"));
+        auto *save = visibleItem("supportSave");
+        QVERIFY(save && !save->isEnabled());
+        auto *description = visibleItem("supportDescription");
+        QVERIFY(description);
+        description->setProperty("text", QStringLiteral("private-test-description"));
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        auto *preview = visibleItem("supportPreview");
+        QVERIFY(preview);
+        const auto bytes = preview->property("text").toString().toUtf8();
+        QVERIFY(!bytes.contains("private-test-description"));
+        QVERIFY(QJsonDocument::fromJson(bytes).object()["eventCounts"].isNull());
+        click(window, visibleItem("supportIncludeCounts"));
+        QTRY_VERIFY(!save->isEnabled());
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        const auto counts = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object()["eventCounts"].toObject();
+        QVERIFY(counts.contains("error"));
+        if (authenticated) QVERIFY(counts["error"].toInt() < 24);
+        else QCOMPARE(counts["error"].toInt(), 24);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("supportPrepare"));
+    }
+
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
+        QAccessible::setActive(true);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         ApiClient api(nullptr, true);
@@ -34300,7 +35992,11 @@ private slots:
         QVERIFY(window);
         const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
         QVERIFY(QTest::qWaitForWindowExposed(window));
-        controller.showSection("diagnostics");
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("diagnosticsAction"));
+        click(window, visibleItem("diagnosticsAction"));
         QTRY_VERIFY(visibleItem("diagnosticsViewLogsButton"));
         auto *view = visibleItem("diagnosticsViewLogsButton");
         auto *accessible = QAccessible::queryAccessibleInterface(view);
@@ -34313,12 +36009,24 @@ private slots:
         auto *previous = view->nextItemInFocusChain(false);
         QVERIFY(previous && previous != view);
         previous->forceActiveFocus(Qt::BacktabFocusReason);
-        for (const auto *id : {"diagnosticsViewLogsButton", "diagnosticsRefreshButton",
+        QSet<QQuickItem *> visited;
+        QStringList focusOrder;
+        while (window->activeFocusItem() != view && window->activeFocusItem()
+                && !visited.contains(window->activeFocusItem())) {
+            visited.insert(window->activeFocusItem());
+            focusOrder.append(window->activeFocusItem()->objectName());
+            QTest::keyClick(window, Qt::Key_Tab);
+        }
+        QVERIFY2(view->hasActiveFocus(), qPrintable(QString("Tab did not reach View logs through %1")
+            .arg(focusOrder.join(QStringLiteral(" → ")))));
+        for (const auto *id : {"diagnosticsRefreshButton",
                               "diagnosticsCopyReportButton", "diagnosticsCopySnapshotButton"}) {
             QTest::keyClick(window, Qt::Key_Tab);
             auto *item = visibleItem(id);
             QVERIFY(item);
-            QTRY_VERIFY(item->hasActiveFocus());
+            QTRY_VERIFY2(item->hasActiveFocus(), qPrintable(QString("Expected %1; focused %2; window active=%3")
+                .arg(QString::fromLatin1(id), window->activeFocusItem() ? window->activeFocusItem()->objectName() : QString())
+                .arg(window->isActive())));
             QVERIFY(item->property("visualFocus").toBool());
         }
         view->forceActiveFocus(Qt::TabFocusReason);
@@ -35805,6 +37513,49 @@ private:
     }
 
 private slots:
+    void messageTimeViewOpensWithoutApplicationServices()
+    {
+        QTest::failOnWarning();
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/workspace/qml/messages/time" as MessageTime
+            Window {
+                id: win
+                width: 800
+                height: 480
+                visible: true
+                Item {
+                    id: history
+                    x: 200; y: 35; width: 600; height: 430
+                    Item { id: chip; x: 120; y: 30; width: 44; height: 20 }
+                }
+                MessageTime.MessageTimeView {
+                    historyViewport: history
+                    windowContent: win.contentItem
+                    language: "en"
+                    colors: ({"accent": "blue", "bg-elevated": "white", "border-subtle": "gray",
+                              "text-primary": "black", "text-muted": "gray"})
+                    Component.onCompleted: showInstant("2026-01-02T10:02:03", chip)
+                }
+            }
+        )", QUrl("qrc:/tests/isolated-message-time.qml"));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 2000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        auto *panel = window->findChild<QObject *>("messageTimePanel");
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("selectedDay").toInt(), 2);
+        const auto panelCenter = [&] { return panel->property("x").toReal() + panel->property("width").toReal() / 2; };
+        QTRY_VERIFY(qAbs(panelCenter() - 342.0) < 1.0);
+        QCOMPARE(panel->property("y").toReal(), 93.0);
+        QVERIFY(QMetaObject::invokeMethod(panel, "close"));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeChipOpensReadOnlyTimestampPanel_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
@@ -36516,6 +38267,88 @@ private slots:
     // silent mention renders without the "@" prefix; a plain-text mention
     // without a uuid stays unstyled; clicking the chip raises the existing
     // profile-open path.
+    void messageSpoilersOpenByPointerAndKeyboard_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        for (const auto *locale : {"en", "ru"})
+            for (const auto *mode : {"light", "dark"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(locale, mode))) << QString(locale) << QString(mode);
+    }
+
+    void messageSpoilersOpenByPointerAndKeyboard()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/")) {
+                auto stream = windowChannel(streamId, "Product team");
+                stream["last_message_uuid"] = messageId;
+                return {QJsonArray{stream}};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && !QUrlQuery(request.target).hasQueryItem("mentioned")) {
+                return {QJsonArray{message("Before ||hidden word|| after\n\n```spoiler\nBlock answer\n```")}};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("spoilers.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("spoiler scene teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(controller.channelMembersVerified());
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        const auto target = [](int n) {
+            return visibleItem("message-spoiler-" + messageId + "-" + QString::number(n));
+        };
+        const auto display = [] {
+            const auto *item = visibleItem("message-content-" + messageId);
+            return item ? item->property("text").toString() : QString();
+        };
+        QTRY_VERIFY(target(1) && target(2));
+        QVERIFY(!display().contains("hidden word"));
+        QVERIFY(!display().contains("Block answer"));
+        QVERIFY(display().contains(locale == "ru" ? QStringLiteral("Спойлер") : QStringLiteral("Spoiler")));
+        const auto summary = controller.streams().first().toMap().value("previewText").toString();
+        QVERIFY2(summary.contains("hidden word") && summary.contains("Block answer"), qPrintable(summary));
+        click(window, target(1));
+        QTRY_VERIFY(display().contains("hidden word"));
+        QVERIFY(!display().contains("Block answer"));
+        QTRY_VERIFY(target(2));
+        target(2)->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(display().contains("Block answer"));
+        QVERIFY(display().contains("hidden word"));
+        QTRY_VERIFY(target(2) && target(2)->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!display().contains("Block answer"));
+        QTRY_VERIFY(target(1));
+        click(window, target(1));
+        QTRY_VERIFY(!display().contains("hidden word"));
+    }
+
     void mentionChipsRenderAndOpenProfile()
     {
         WindowMentionFixture fixture;
