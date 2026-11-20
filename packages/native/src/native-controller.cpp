@@ -9932,6 +9932,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     });
     connect(api, &ApiClient::sessionChanged, this, [this](quint64, bool sameOwnerRenewal) {
         const QPointer<NativeController> lookupGuard(this);
+        interruptForward(sameOwnerRenewal);
+        if (!lookupGuard) return;
         // A same-owner renewal lets the original write finish before another
         // choice can reach the server. Sign-out and account changes retire it.
         if (!sameOwnerRenewal) m_channelInfoNotificationInFlight.clear();
@@ -19525,6 +19527,26 @@ bool NativeController::forwardPending() const
     return m_forwardIntent.busy || m_forwardIntent.pending;
 }
 
+void NativeController::interruptForward(bool sameOwnerRenewal)
+{
+    auto &intent = m_forwardIntent;
+    if (!forwardPending()) return;
+
+    intent.generation = m_api->generation();
+    if (sameOwnerRenewal && forwardOwned(intent) && !intent.wire.isEmpty()) {
+        // Once the snapshot has reached the POST, only a read-back is safe.
+        intent.ticket = ++m_nextOutgoing;
+        intent.busy = false;
+        intent.pending = true;
+        m_forwardError = tr("Forwarding was not confirmed. Check does not send it again.");
+    } else {
+        clearForwardIntent();
+        m_forwardError = tr("Forwarding was interrupted by a session change.");
+    }
+    m_error = m_forwardError;
+    emit forwardChanged();
+}
+
 void NativeController::clearForwardIntent()
 {
     m_forwardIntent = ForwardIntent{};
@@ -19593,7 +19615,7 @@ void NativeController::forwardMessages(const QStringList &messageUuids, const QS
 
 void NativeController::fetchForwardSources(quint64 ticket)
 {
-    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) { clearForwardIntent(); return; }
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("project_id"), m_forwardIntent.project);
     for (const auto &uuid : m_forwardIntent.sources)
@@ -19730,10 +19752,11 @@ void NativeController::postForward(quint64 ticket)
 void NativeController::checkForwardStatus()
 {
     if (!m_forwardIntent.pending || m_forwardIntent.busy || !forwardOwned(m_forwardIntent)) return;
+    const auto ticket = m_forwardIntent.ticket;
     m_forwardIntent.busy = true;
     emit forwardChanged();
     emit stateChanged();
-    readForwardStatus(m_forwardIntent.ticket);
+    readForwardStatus(ticket);
 }
 
 void NativeController::readForwardStatus(quint64 ticket)

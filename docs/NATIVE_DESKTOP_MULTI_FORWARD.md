@@ -103,6 +103,14 @@ Deferred, recorded here and on the issue:
 - Cache projection of the confirmed forward is deferred with the slice-2 send
   route alignment (keep the edit surface away from lane #38).
 
+The dialog blocks dismissal while it sends or checks. Once a reply is
+ambiguous, Escape, an outside click, Close, or Cancel returns to the
+conversation with its selection intact. Reopening the dialog offers Check
+for the same batch. A token renewal for the same account and project keeps
+that read-back available, including when renewal interrupts the POST.
+Renewal during source loading releases the batch for a fresh attempt.
+Changing the session discards the previous batch and its snapshot.
+
 ### Review round 1 (PR #357, exordy cids 4586012787/4586012796/4586012826/4586012837/4586012848)
 
 Measured reference behavior at `workspace_ui`

@@ -31323,6 +31323,14 @@ private slots:
         QTest::failOnWarning();
         ForwardWindowFixture fixture;
         fixture.serverKept = false;
+        std::function<void()> deliverPost;
+        const auto respond = fixture.base.server.handler;
+        fixture.base.server.handler = [&](const Request &request) {
+            auto response = respond(request);
+            if (request.method == "POST" && request.target.path().endsWith("/messages/"))
+                response.defer = [&](std::function<void()> deliver) { deliverPost = std::move(deliver); };
+            return response;
+        };
         QTemporaryDir directory;
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
@@ -31382,6 +31390,13 @@ private slots:
         QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
         click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
 
+        QTRY_VERIFY(static_cast<bool>(deliverPost));
+        QVERIFY(!qml("forwardCloseButton")->property("enabled").toBool());
+        QVERIFY(!qml("forwardCancelButton")->property("enabled").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(dialog->property("opened").toBool());
+        deliverPost();
+
         // The 5xx POST leaves the batch unconfirmed: the alert explains that
         // Check never re-sends and the Check action appears; the dialog stays
         // open with a disabled re-submit - the batch is only settled by the
@@ -31391,6 +31406,24 @@ private slots:
         QVERIFY(qml("forwardCheckButton")->property("visible").toBool());
         QVERIFY(dialog->property("opened").toBool());
         QVERIFY(!qml("forwardConfirmButton")->property("enabled").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(qml("forwardCheckButton")->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardCancelButton")));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(qml("forwardErrorAlert")->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardCloseButton")));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(3, 3));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
         // The server actually kept it: Check confirms through the GET read-back
         // alone - the POST count stays at one - and the modal closes the same
         // way a clean success would, clearing the selection.
