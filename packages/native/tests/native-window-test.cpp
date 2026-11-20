@@ -11240,6 +11240,68 @@ mv -Tf "$root/.current-new" "$root/current"
     // sidebar-chat-row-meta.ui.tsx) render inside the existing 60 px stream and 56 px topic
     // rows. Colors are the blue-cold light palette of qml/NativeTheme.qml: sidebar-sender
     // #7087ff, text-secondary #787878, text-muted #989898.
+    void openLocalSearchReflectsRealtimeEditsAndDeletions_data()
+    {
+        QTest::addColumn<bool>("deleted");
+        QTest::newRow("edit") << false;
+        QTest::newRow("delete") << true;
+    }
+    void openLocalSearchReflectsRealtimeEditsAndDeletions()
+    {
+        QFETCH(bool, deleted);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        const auto cachePath = directory.filePath("cache");
+        const QString id = "a9100000-0000-4000-8000-000000000001";
+        auto original = message("needle before update", id, secondTopicId);
+        {
+            NativeCache seed(cachePath, {}, true);
+            QVERIFY(seed.open(fixture.server.origin(), projectId, userId));
+            QVERIFY(seed.putMessageBody(seed.lease(), original));
+        }
+        NativePreferences preferences(directory.filePath("ui.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeCacheService cache(cachePath, {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_VERIFY(cache.available());
+        click(window, visibleItem(window->contentItem(), "cachedMessageSearchButton"));
+        QTRY_VERIFY(visibleItem(window->contentItem(), "cachedMessageSearchQuery"));
+        auto *query = visibleItem(window->contentItem(), "cachedMessageSearchQuery");
+        query->setProperty("text", "needle");
+        const auto text = [&] {
+            return controller.cachedSearchResults().value(0).toMap().value("text").toString();
+        };
+        const auto visibleExcerpt = [&] {
+            auto *row = visibleItem(window->contentItem(), "cachedSearchResult-" + id);
+            auto *accessible = row ? QAccessible::queryAccessibleInterface(row) : nullptr;
+            return accessible ? accessible->text(QAccessible::Name) : QString{};
+        };
+        QTRY_COMPARE(text(), QString("needle before update"));
+        QTRY_VERIFY(visibleExcerpt().endsWith("needle before update"));
+        auto update = message("needle after update", id, secondTopicId);
+        update["kind"] = deleted ? "message.deleted" : "message.updated";
+        QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"project_id", projectId}, {"user_uuid", userId},
+            {"uuid", returnedId}, {"payload", update}}));
+        QTRY_COMPARE(text(), deleted ? QString{} : QString("needle after update"));
+        QCOMPARE(query->property("text").toString(), QString("needle"));
+        if (deleted) QTRY_VERIFY(visibleExcerpt().isEmpty());
+        else QTRY_VERIFY(visibleExcerpt().endsWith("needle after update"));
+        QTRY_COMPARE(controller.cachedSearchState(), QString("ready"));
+        if (deleted) {
+            auto *status = visibleItem(window->contentItem(), "cachedMessageSearchStatus");
+            QVERIFY(status);
+            QCOMPARE(status->property("text").toString(), QString("No matches in cached messages."));
+        } else QVERIFY(visibleItem(window->contentItem(), "cachedMessageSearchResults"));
+    }
+
     void localCachedMessageSearchNavigatesByKeyboard()
     {
         WindowChannelFixture fixture;

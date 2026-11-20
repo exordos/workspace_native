@@ -6309,6 +6309,7 @@ void NativeController::clearCachedSearch()
     ++m_searchTicket;
     if (m_cache) m_cache->cancelMessageSearch();
     m_searchOwner.clear();
+    m_searchQuery.clear();
     m_searchState.clear();
     m_searchResults.clear();
     emit cachedSearchChanged();
@@ -6320,6 +6321,7 @@ void NativeController::searchCachedMessages(const QString &query)
     if (needle.isEmpty() || !authenticated()) { clearCachedSearch(); return; }
     const auto ticket = ++m_searchTicket;
     m_searchOwner = ownerKey();
+    m_searchQuery = needle;
     m_searchResults.clear();
     auto cache = m_cache;
     const auto lease = m_cacheLease;
@@ -6351,6 +6353,21 @@ void NativeController::searchCachedMessages(const QString &query)
         }
         emit cachedSearchChanged();
     });
+}
+
+void NativeController::refreshOpenCachedSearch(bool changeAccepted)
+{
+    if (m_searchQuery.isEmpty() || m_searchOwner != ownerKey()) return;
+    const auto ticket = ++m_searchTicket;
+    m_searchResults.clear();
+    m_searchState = changeAccepted ? QStringLiteral("loading") : QStringLiteral("unavailable");
+    // Coalesce a burst of changes. A closed dialog or new query retires the
+    // ticket. The worker reads behind the write that triggered the refresh.
+    QMetaObject::invokeMethod(this, [this, ticket, changeAccepted] {
+        if (ticket != m_searchTicket) return;
+        if (changeAccepted) searchCachedMessages(m_searchQuery);
+        else emit cachedSearchChanged();
+    }, Qt::QueuedConnection);
 }
 
 bool NativeController::openCachedSearchResult(const QString &id)
@@ -6460,8 +6477,10 @@ void NativeController::projectCanonical(const QJsonObject &raw, NativeCache::Pro
                                         const ProjectionContext &context)
 {
     if (context.cache && context.cache == m_cache && context.generation == m_api->generation() &&
-        context.lease.owner == m_cacheLease.owner && context.lease.generation == m_cacheLease.generation)
-        context.cache->projectMessage(context.lease, raw, fields);
+        context.lease.owner == m_cacheLease.owner && context.lease.generation == m_cacheLease.generation) {
+        const bool accepted = context.cache->projectMessage(context.lease, raw, fields);
+        if (fields.testFlag(NativeCache::Projection::Payload)) refreshOpenCachedSearch(accepted);
+    }
 }
 
 void NativeController::observeMessage(const QJsonObject &raw)
@@ -11962,13 +11981,15 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         }
         const auto stream = payload.value("stream_uuid").toString();
         const auto topic = payload.value("topic_uuid").toString();
-        if (m_cache && m_cache->removeDeletedMessage(m_cacheLease, stream, topic, id)) {
+        const bool removed = m_cache && m_cache->removeDeletedMessage(m_cacheLease, stream, topic, id);
+        if (removed) {
             staleCache(NativeCache::Kind::History, stream, topic);
             invalidateCache(NativeCache::Kind::Streams);
             invalidateCache(NativeCache::Kind::Topics, stream);
         } else {
             invalidateConversation(stream, topic);
         }
+        refreshOpenCachedSearch(removed);
         if (m_messageFields.contains(id)) m_messageFields[id].deleted = true;
         if (payload.value("stream_uuid").toString() == m_stream
             && (m_topic.isEmpty() || payload.value("topic_uuid").toString() == m_topic)) {
