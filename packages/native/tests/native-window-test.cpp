@@ -1110,7 +1110,18 @@ static QPointF topicLinkPoint(QQuickItem *text, const QString &expected)
             QString href;
             if (!QMetaObject::invokeMethod(text, "linkAt", Q_RETURN_ARG(QString, href), Q_ARG(qreal, x), Q_ARG(qreal, y)))
                 return QPointF(-1, -1);
-            if (href == expected) return QPointF(x, y);
+            if (href != expected) continue;
+            int position = -1;
+            if (!QMetaObject::invokeMethod(text, "positionAt", Q_RETURN_ARG(int, position),
+                Q_ARG(qreal, x), Q_ARG(qreal, y)) || position < 0) continue;
+            const auto first = rectAt(text, position);
+            const auto next = rectAt(text, position + 1);
+            // Aim at the glyph itself. The hovered Reply pill overlaps the bubble's top edge.
+            const auto centerX = first.y() == next.y() ? (first.x() + next.x()) / 2 : x;
+            const auto centerY = first.center().y();
+            if (QMetaObject::invokeMethod(text, "linkAt", Q_RETURN_ARG(QString, href),
+                Q_ARG(qreal, centerX), Q_ARG(qreal, centerY)) && href == expected)
+                return QPointF(centerX, centerY);
         }
     }
     return QPointF(-1, -1);
@@ -13233,6 +13244,10 @@ mv -Tf "$root/.current-new" "$root/current"
             if (scenario == "quick-capsule" || scenario == "quick-keyboard" || scenario == "quick-capsule-ink") {
                 if (scenario == "quick-keyboard") {
                     bubble->forceActiveFocus(Qt::TabFocusReason);
+                    QTest::keyClick(window, Qt::Key_Tab);
+                    auto *reply = item(content, "quickReply-" + messageId);
+                    QVERIFY(reply);
+                    QTRY_VERIFY(reply->hasActiveFocus());
                     QTest::keyClick(window, Qt::Key_Tab);
                     auto *viewport = item(content, "quick-reactions-" + messageId);
                     QVERIFY(viewport);
