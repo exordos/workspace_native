@@ -171,6 +171,15 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+static void clickCallCard(QQuickWindow *window)
+{
+    const auto name = QStringLiteral("call-card-") + messageId;
+    QQuickItem *card = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((card = visibleItem(window->contentItem(), name))
+        && card->width() > 0 && card->height() > 0, 5000);
+    clickReadyItem(window, card);
+}
+
 static void clickActiveInlineImage(QQuickWindow *window, const QString &message)
 {
     const auto image = [&] { return visibleItem(window->contentItem(), "inline-image-" + message); };
@@ -13202,6 +13211,58 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    void firstEncryptedBatchReservesAnAccessibleMessageViewport()
+    {
+        WindowChannelFixture fixture;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy() && controller.messages().isEmpty());
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QVariantMap first{{"id", messageId}, {"kind", "e2ee"}, {"encryptionState", "ready"},
+            {"authorId", userId}, {"author", "Cassi"}, {"content", "First"}, {"displayContent", "First"},
+            {"createdAt", "2026-01-02T10:00:00Z"}, {"time", "10:00"}, {"decrypted", true}, {"read", true}};
+        auto second = first;
+        second["id"] = returnedId;
+        second["encryptionState"] = "preparing";
+        second["decrypted"] = false;
+        const auto project = [&](const QVariantMap &row) {
+            return QMetaObject::invokeMethod(list, "replaceMessages", Q_ARG(QVariant, QVariant(QVariantList{first, row})),
+                Q_ARG(QVariant, QVariant(false)));
+        };
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 0);
+        auto *surface = item(window->contentItem(), "messagePreparationSurface");
+        QVERIFY(surface && surface->isVisible());
+        QCOMPARE(surface->height(), list->height());
+        auto *accessible = QAccessible::queryAccessibleInterface(surface);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::ProgressBar);
+        second["encryptionState"] = "ready";
+        second["decrypted"] = true;
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 2);
+        QVERIFY(!surface->isVisible());
+        second["encryptionState"] = "preparing";
+        QVERIFY(project(second));
+        QCOMPARE(list->property("count").toInt(), 1);
+        QVERIFY(!surface->isVisible());
+    }
+
     void realQuickWindowSignsInNavigatesAndSends()
     {
         QTemporaryDir preferencesDirectory;
@@ -15234,6 +15295,14 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             return anchor;
         };
+        if (prepend) {
+            // A general notification with the same outgoing presentation must
+            // preserve the settled layout before the user's first wheel event.
+            const auto ticket = list->property("layoutTicket");
+            QVERIFY(ticket.isValid());
+            emit controller.stateChanged();
+            QCOMPARE(list->property("layoutTicket"), ticket);
+        }
         if (behavior != "incoming-bottom") {
             const auto before = list->property("contentY").toReal();
             const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
@@ -26142,9 +26211,7 @@ private:
         QTRY_COMPARE(controller.callWindow()->bounds(), QRect(32, 32, 1216, 736));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         // Join from the card: the store opens the shell expanded in a scrim.
-        const auto callCard = QStringLiteral("call-card-") + messageId;
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
-        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
         auto *surface = visibleItem(window->contentItem(), QStringLiteral("callWindowSurface"));
@@ -26601,7 +26668,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(),
             int(JitsiCallWindowController::Loading));
@@ -26659,9 +26726,7 @@ private:
         QVERIFY(viewSource.contains("host.controller.apiLoadSucceeded()"));
         QVERIFY(viewSource.contains("host.controller.apiLoadFailed()"));
 
-        const auto callCard = [window] { return visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId); };
-        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
-        clickReadyItem(window, callCard());
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
 
@@ -26693,8 +26758,7 @@ private:
         qmlCall(QStringLiteral("nativeController.callWindow.close()"), &error);
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
-        clickReadyItem(window, callCard());
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         qmlCall(QStringLiteral("nativeController.callWindow.apiLoadFailed()"), &error);
@@ -26735,9 +26799,7 @@ private:
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(
             controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -26795,9 +26857,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -26846,9 +26906,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -26892,9 +26950,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        const auto callCard = QStringLiteral("call-card-") + messageId;
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
-        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *button = visibleItem(window->contentItem(), QStringLiteral("callWindowFullscreenButton"));
         QVERIFY(button);
@@ -26939,7 +26995,8 @@ private:
         window->setPosition(120, 70);
         QTRY_COMPARE_WITH_TIMEOUT(window->x(), 120, 2000);
         QTRY_COMPARE_WITH_TIMEOUT(window->y(), 70, 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_COMPARE(controller.callWindow()->bounds(), JitsiCallWindowController::expandedBounds(QSize(1100, 700)));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         QQuickWindow *pip = nullptr;
@@ -26979,9 +27036,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         std::function<int(QQuickItem *)> activeEmbedLoaders =
             [&activeEmbedLoaders](QQuickItem *root) -> int {
@@ -27052,9 +27107,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -27074,7 +27127,7 @@ private:
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         fixture.breakMeetingLoads = 5; // outlives any Chromium-internal retry
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 20000);
@@ -27137,9 +27190,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -27218,9 +27269,7 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(
-            visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId) != nullptr, 5000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
@@ -27235,7 +27284,7 @@ private:
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         fixture.breakMeetingLoads = 5; // outlives any Chromium-internal retry
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 20000);
@@ -31600,6 +31649,14 @@ private slots:
         QTest::failOnWarning();
         ForwardWindowFixture fixture;
         fixture.serverKept = false;
+        std::function<void()> deliverPost;
+        const auto respond = fixture.base.server.handler;
+        fixture.base.server.handler = [&](const Request &request) {
+            auto response = respond(request);
+            if (request.method == "POST" && request.target.path().endsWith("/messages/"))
+                response.defer = [&](std::function<void()> deliver) { deliverPost = std::move(deliver); };
+            return response;
+        };
         QTemporaryDir directory;
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
@@ -31659,6 +31716,13 @@ private slots:
         QTRY_VERIFY(qml("forwardConfirmButton")->property("enabled").toBool());
         click(window, qobject_cast<QQuickItem *>(qml("forwardConfirmButton")));
 
+        QTRY_VERIFY(static_cast<bool>(deliverPost));
+        QVERIFY(!qml("forwardCloseButton")->property("enabled").toBool());
+        QVERIFY(!qml("forwardCancelButton")->property("enabled").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(dialog->property("opened").toBool());
+        deliverPost();
+
         // The 5xx POST leaves the batch unconfirmed: the alert explains that
         // Check never re-sends and the Check action appears; the dialog stays
         // open with a disabled re-submit - the batch is only settled by the
@@ -31668,6 +31732,24 @@ private slots:
         QVERIFY(qml("forwardCheckButton")->property("visible").toBool());
         QVERIFY(dialog->property("opened").toBool());
         QVERIFY(!qml("forwardConfirmButton")->property("enabled").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(qml("forwardCheckButton")->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardCancelButton")));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QVERIFY(qml("forwardErrorAlert")->property("visible").toBool());
+        click(window, qobject_cast<QQuickItem *>(qml("forwardCloseButton")));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(3, 3));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+        click(window, visibleItem("selectionForwardButton"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
         // The server actually kept it: Check confirms through the GET read-back
         // alone - the POST count stays at one - and the modal closes the same
         // way a clean success would, clearing the selection.

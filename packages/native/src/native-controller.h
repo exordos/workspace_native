@@ -190,6 +190,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
     Q_PROPERTY(QString composerPreviewBody READ composerPreviewBody NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap outgoingSend READ outgoingSend NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap encryptedOutgoingPresentation READ encryptedOutgoingPresentation NOTIFY stateChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
     Q_PROPERTY(bool canSaveEdit READ canSaveEdit NOTIFY editSessionChanged)
@@ -780,6 +781,7 @@ public:
     Q_INVOKABLE void checkTopicCreation();
     Q_INVOKABLE void send();
     QVariantMap outgoingSend() const;
+    QVariantMap encryptedOutgoingPresentation() const;
     Q_INVOKABLE void discardPendingSend();
     Q_INVOKABLE void checkPendingSend();
     Q_INVOKABLE void retryPendingSend();
@@ -1653,6 +1655,7 @@ private:
     };
     static QStringList uniqueForwardUuids(const QStringList &messageUuids);
     bool forwardOwned(const ForwardIntent &intent) const;
+    void interruptForward(bool sameOwnerRenewal);
     void clearForwardIntent();
     void failForward(const QString &error);
     QString forwardDestinationRefusal(const QString &streamUuid) const;

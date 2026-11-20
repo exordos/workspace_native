@@ -31251,6 +31251,7 @@ private slots:
         bool serverKept = false;
         QJsonObject postedBody;
         QString echoUuid;
+        QByteArray checkAuthorization;
         fixture.messages = [&](const Request &request) {
             const auto query = QUrlQuery(request.target);
             if (request.method == "GET" && query.hasQueryItem(QStringLiteral("uuid"))) {
@@ -31267,6 +31268,7 @@ private slots:
             if (request.method == "GET" && !echoUuid.isEmpty()
                 && request.target.path() == "/api/workspace/v1/messenger/messages/" + echoUuid) {
                 ++checkGets;
+                checkAuthorization = request.headers.value("authorization");
                 if (serverKept) return Response{forwardEchoDto(postedBody, echoUuid)};
                 return Response{QJsonObject{}, 404, 0, {}};
             }
@@ -31285,12 +31287,75 @@ private slots:
         QCOMPARE(posts, 1);
         // When the server actually committed it (the 5xx lied), Check confirms
         // with the GET read-back alone - still exactly one POST.
+        fixture.api.setAccessToken("renewed-member-token", true);
         serverKept = true;
         fixture.controller.checkForwardStatus();
         QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
         QVERIFY(fixture.controller.error().isEmpty());
         QCOMPARE(posts, 1);
-        QVERIFY(checkGets >= 2);
+        QCOMPARE(checkGets, 2);
+        QCOMPARE(checkAuthorization, QByteArray("Bearer renewed-member-token"));
+    }
+
+
+    void sessionChangeSettlesActiveForward_data()
+    {
+        QTest::addColumn<bool>("holdPost");
+        QTest::addColumn<bool>("sameOwner");
+        QTest::newRow("renew-during-source-read") << false << true;
+        QTest::newRow("renew-during-post") << true << true;
+        QTest::newRow("replace-session-during-source-read") << false << false;
+        QTest::newRow("replace-session-during-post") << true << false;
+    }
+
+    void sessionChangeSettlesActiveForward()
+    {
+        QFETCH(bool, holdPost);
+        QFETCH(bool, sameOwner);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        catalogTargetStream(fixture, targetStream);
+        std::function<void()> release;
+        int posts = 0, checks = 0;
+        QString publicId;
+        QJsonObject posted;
+        fixture.messages = [&](const Request &request) {
+            const bool sourceRead = request.method == "GET" && QUrlQuery(request.target).hasQueryItem("uuid");
+            Response response{QJsonArray{}};
+            if (sourceRead) {
+                response.data = QJsonArray{message("Forward source", source)};
+            } else if (request.method == "POST") {
+                ++posts;
+                posted = request.body;
+                publicId = QUuid::createUuidV5(QUuid(targetTopic), posted.value("uuid").toString().toUtf8())
+                    .toString(QUuid::WithoutBraces);
+                response.data = forwardEchoDto(posted, publicId);
+            } else if (!publicId.isEmpty() && request.target.path().endsWith("/" + publicId)) {
+                ++checks;
+                response.data = forwardEchoDto(posted, publicId);
+            }
+            if ((sourceRead && !holdPost) || (request.method == "POST" && holdPost))
+                response.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            return response;
+        };
+        QVERIFY(fixture.start({}, 2));
+        fixture.controller.forwardMessages({source}, targetStream, targetTopic);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 3000);
+        QVERIFY(fixture.controller.forwardPending());
+        QVERIFY(!fixture.controller.forwardAwaitingCheck());
+        fixture.api.setAccessToken("replacement-member-token", sameOwner);
+        QCOMPARE(fixture.controller.forwardAwaitingCheck(), sameOwner && holdPost);
+        QCOMPARE(fixture.controller.forwardPending(), sameOwner && holdPost);
+        QVERIFY(!fixture.controller.forwardError().isEmpty());
+        release();
+        fixture.controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
+        QCOMPARE(posts, holdPost ? 1 : 0);
+        QCOMPARE(checks, sameOwner && holdPost ? 1 : 0);
+        QVERIFY(fixture.controller.canForwardMessages());
     }
 
     void forwardMessagesRejectsEmptyAndInvalidBatches()

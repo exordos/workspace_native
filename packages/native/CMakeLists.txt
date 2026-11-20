@@ -581,6 +581,7 @@ if(BUILD_TESTING)
         uiEncryptedReadUsesActualSourceGrantAndSafeCopy
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
+        encryptedConversationPresentsItsFirstPreparedWindow
         encryptedSidebarPreviewsFollowTheLocalPresentation
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiSecretFragmentTracksRequestAndVaultRemoval
