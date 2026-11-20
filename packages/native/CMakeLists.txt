@@ -432,6 +432,8 @@ if(BUILD_TESTING)
         # Start the measured longest headless suites early on fresh CI runners.
         set_tests_properties(native-controller-history native-controller-channels PROPERTIES COST 150)
         set_tests_properties(native-controller-profiles native-controller-replies native-controller-direct-chat PROPERTIES COST 90)
+        set_tests_properties(native-controller-sidebar native-controller-navigation native-controller-encrypted-channels PROPERTIES COST 75)
+        set_tests_properties(native-controller-sessions PROPERTIES COST 50)
     endif()
     # These suites share the real desktop clipboard or window focus on the full gate.
     set_tests_properties(native-controller-media native-controller-navigation
