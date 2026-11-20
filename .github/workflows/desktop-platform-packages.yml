@@ -1,6 +1,12 @@
 name: Check published preview archives on clean native desktops
 on:
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Desktop to exercise
+        type: choice
+        default: both
+        options: [both, windows, macos]
 permissions:
   contents: read
   actions: read
@@ -10,9 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { platform: windows-x64, runner: windows-2022 }
-          - { platform: macos-arm64, runner: macos-15 }
+        include: ${{ fromJSON(inputs.platform == 'windows' && '[{"platform":"windows-x64","runner":"windows-2022"}]' || inputs.platform == 'macos' && '[{"platform":"macos-arm64","runner":"macos-15"}]' || '[{"platform":"windows-x64","runner":"windows-2022"},{"platform":"macos-arm64","runner":"macos-15"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
