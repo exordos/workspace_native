@@ -516,6 +516,7 @@ if(BUILD_TESTING)
         uiEncryptedReadUsesActualSourceGrantAndSafeCopy
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
+        encryptedConversationPresentsItsFirstPreparedWindow
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
         uiE2eeQuoteErrorFrameRetryRepairsTheOrigin

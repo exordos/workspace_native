@@ -392,7 +392,7 @@ QVariantMap NativeController::encryption() const
         }
         if (earliest.isValid()) keyAnnouncedAt = earliest.toString(Qt::ISODateWithMs);
     }
-    return {{"available", chatVaultMatches()}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
+    return {{"available", chatVaultMatches()}, {"presentationEpoch", m_chatEpoch}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
         {"busy", m_chatBusy || issuing || m_chatReissueBusy}, {"error", m_chatError}, {"keyUuid", m_chatRequestKey},
         {"keyRequests", chatKeyRequestsMetadata()}, {"keyResponse", chatKeyResponseMetadata()},
         {"storeOpening", m_chatKeyStoreOpening}, {"pendingSend", pendingSendMetadata()},
@@ -14562,6 +14562,15 @@ bool NativeController::canCompose() const
         && stream->security->provider.isEmpty() && stream->security->providerIdentity.isEmpty()
         && QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(stream->role)
         && !encryptedSendTarget().isEmpty();
+}
+
+QVariantMap NativeController::encryptedOutgoingPresentation() const
+{
+    const auto intent = m_pendingSends.constFind(conversationKey());
+    if (intent == m_pendingSends.cend() || !intent->encrypted || intent->restored || intent->text.isEmpty()
+        || intent->selection != m_selection || !chatReadAllowed() || !encryptedSendOwned(*intent, true))
+        return {};
+    return {{"id", intent->publicId}, {"text", intent->text}};
 }
 
 QVariantMap NativeController::pendingSendMetadata() const

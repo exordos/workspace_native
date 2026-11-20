@@ -9811,6 +9811,86 @@ private slots:
     // Issue #221 acceptance: the error row carries an inline ghost Retry (reference
     // encrypted-message-placeholder.ui.tsx:28-48 at workspace_ui 230e02b), disabled while its
     // single-message re-decrypt is in flight, and success replaces the row body.
+    void encryptedConversationPresentsItsFirstPreparedWindow()
+    {
+        Fixture f;
+        f.stream = fullEncryptedStream();
+        useCompleteSendEcho(f);
+        QVERIFY(f.start());
+        QVERIFY(f.prepareA());
+        NativePreferences preferences(f.directory.filePath("window.ini"));
+        preferences.setOwner(f.controller.ownerKey());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([window] { closeEncryptedVisualWindow(window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *list = encryptedUiItem(window, "messageList");
+        QVERIFY(list);
+        QTRY_VERIFY(encryptedUiItem(window, "message-" + messageId));
+
+        const QString initialId = QStringLiteral("93000000-0000-4000-8000-000000000001");
+        const QString laterId = QStringLiteral("93000000-0000-4000-8000-000000000002");
+        auto initial = f.cipher;
+        initial["uuid"] = initialId;
+        initial["topic_uuid"] = secondTopicId;
+        std::function<void()> releaseHistory, releasePost;
+        const auto previous = f.http.handler;
+        f.http.handler = [&](const Request &request) {
+            if (request.target.path() == "/api/workspace/v1/messenger/messages/") {
+                if (request.method == "GET" && QUrlQuery(request.target).queryItemValue("topic_uuid") == secondTopicId) {
+                    Response response{QJsonArray{initial}};
+                    response.defer = [&](auto send) { releaseHistory = std::move(send); };
+                    return response;
+                }
+                if (request.method == "POST") {
+                    auto response = previous(request);
+                    response.defer = [&](auto send) { releasePost = std::move(send); };
+                    return response;
+                }
+            }
+            return previous(request);
+        };
+        const auto restore = qScopeGuard([&] { f.http.handler = previous; });
+        bool sawInitialPending = false, sawLaterPending = false;
+        const auto observe = connect(&f.controller, &NativeController::messagesChanged, this, [&] {
+            if (displayed(f.controller, initialId).value("encryptionState") == "preparing") {
+                sawInitialPending = list->property("count").toInt() == 0
+                    && encryptedUiItem(window, "messagePreparationSurface");
+            }
+            if (displayed(f.controller, laterId).value("encryptionState") == "preparing") {
+                sawLaterPending = list->property("count").toInt() == 1
+                    && !encryptedUiItem(window, "messagePreparationSurface");
+            }
+        });
+        const auto disconnectObserver = qScopeGuard([&] { disconnect(observe); });
+        f.controller.selectTopic(secondTopicId);
+        QTRY_VERIFY(static_cast<bool>(releaseHistory));
+        releaseHistory();
+        QTRY_COMPARE(displayed(f.controller, initialId).value("encryptionState").toString(), QString("ready"));
+        QVERIFY2(sawInitialPending, "A fresh encrypted route must reserve an empty busy viewport");
+        QTRY_VERIFY(encryptedUiItem(window, "message-" + initialId));
+        QVERIFY(!encryptedUiItem(window, "messagePreparationSurface"));
+        const QString outgoing = QStringLiteral("A visible synthetic outgoing message");
+        f.controller.setDraft(outgoing);
+        QTRY_VERIFY(f.controller.canSend());
+        auto later = initial;
+        later["uuid"] = laterId;
+        QVERIFY(f.controller.applyRealtimeEvent(cryptoEvent(later)));
+        QVERIFY2(sawLaterPending, "The earlier prepared row must stay visible while the new row prepares");
+        f.controller.send();
+        QTRY_VERIFY(static_cast<bool>(releasePost));
+        auto *outgoingText = encryptedUiItem(window, "outgoingPresentationText");
+        QVERIFY(outgoingText);
+        QCOMPARE(outgoingText->property("text").toString(), outgoing);
+        releasePost();
+        const auto confirmed = f.savedRequest.value("uuid").toString();
+        QTRY_COMPARE(displayed(f.controller, confirmed).value("content").toString(), outgoing);
+        QTRY_VERIFY(encryptedUiItem(window, "message-" + confirmed));
+        QVERIFY(!encryptedUiItem(window, "outgoingPresentationText"));
+    }
+
     void uiEncryptedMessageDecryptRetryRowCyclesAndRepairs_data() {
         QTest::addColumn<QString>("locale");
         QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");
