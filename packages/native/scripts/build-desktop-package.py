@@ -49,7 +49,14 @@ if shell_log.is_file():
     sys.stdout.buffer.flush()
 result.check_returncode()
 artifacts.mkdir(parents=True, exist_ok=True)
-name = "workspace-native-windows-x64" if windows else "workspace-native-macos-arm64"
+if windows:
+    name = "workspace-native-windows-x64"
+else:
+    machine = platform.machine()
+    mac_arch = {"arm64": "arm64", "x86_64": "x64"}.get(machine)
+    if mac_arch is None:
+        sys.exit(f"Unsupported macOS package architecture: {machine}")
+    name = f"workspace-native-macos-{mac_arch}"
 archive = artifacts / f"{name}.zip"
 # Workspace uses SQLite. Optional Qt SQL plugins such as Mimer and
 # PostgreSQL import external SDK libraries that are absent on clean hosts.
@@ -65,7 +72,6 @@ if windows:
         sys.exit("The Windows package is missing its executable.")
     shutil.make_archive(str(archive.with_suffix("")), "zip", stage)
 else:
-    assert platform.machine() == "arm64", platform.machine()
     app = stage / "workspace-native.app"
     if not (app / "Contents/MacOS/workspace-native").is_file():
         sys.exit("The macOS package is missing its application bundle.")
