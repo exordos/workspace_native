@@ -9930,6 +9930,7 @@ component NativeMentionChip: Item {
                 }
             }
             NativeButton {
+                id: loadNewerButton
                 colors: root.colors
                 visible: root.controller.canLoadNewer
                 Layout.alignment: Qt.AlignHCenter
@@ -10358,10 +10359,9 @@ component NativeMentionChip: Item {
                 onVisibleChanged: if (!visible) preview = false
                 visible: root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed && !root.aggregateConversation
                 Layout.fillWidth: true
-                // Source measured geometry: the composer box plus the 33 px edit notice
-                // (6+20+6 padding and line box, plus the 1 px rule) when a session is open.
-                Layout.preferredHeight: (preview ? Math.max(40, Math.min(128, composerPreviewContents.implicitHeight)) + 17
-                                                : Math.min(185, Math.max(57, composerText.contentHeight + 33)))
+                readonly property real naturalEditorHeight: Math.max(40, Math.min(128, 16 + 24 * composerText.lineCount))
+                readonly property real minimumEditorHeight: Math.min(96, naturalEditorHeight)
+                readonly property real chromeHeight: 17
                     + (composerToolbarRow.visible ? composerToolbarRow.Layout.preferredHeight + composerInputColumn.spacing : 0)
                     + (messageSelectionBar.visible ? messageSelectionBar.height : 0)
                     + (editMessageNotice.visible ? editMessageNotice.height : 0)
@@ -10369,6 +10369,39 @@ component NativeMentionChip: Item {
                     + (replyNotice.visible ? replyNotice.height : 0)
                     + editAttachmentStrip.height
                     + uploadCardStrip.height
+                readonly property real maximumEditorHeight: Math.max(40,
+                    parent.height - messageList.y - 4 - chromeHeight - parent.spacing
+                    - (loadNewerButton.visible ? loadNewerButton.height + parent.spacing : 0)
+                    - (outgoingStatus.visible ? outgoingStatus.height + parent.spacing : 0)
+                    - (encryptionStatus.visible ? encryptionStatus.height + parent.spacing : 0))
+                property real manualEditorHeight: -1
+                property bool fullHeight: false
+                property bool tallControls: false
+                readonly property real fieldHeight: fullHeight ? maximumEditorHeight
+                    : manualEditorHeight >= 0 ? Math.min(maximumEditorHeight, Math.max(minimumEditorHeight, manualEditorHeight))
+                    : preview ? Math.max(40, Math.min(128, composerPreviewContents.implicitHeight)) : naturalEditorHeight
+                readonly property bool compactRail: tallControls && !preview && !root.preferences.composerToolbarExpanded
+                Layout.preferredHeight: chromeHeight + fieldHeight
+                onFieldHeightChanged: updateTallControls()
+                function updateTallControls() {
+                    const holdTallLayout = manualEditorHeight < 0 && tallControls;
+                    tallControls = fullHeight || (holdTallLayout ? fieldHeight > 64 : fieldHeight >= 96);
+                }
+                function releaseHeight() {
+                    fullHeight = false;
+                    manualEditorHeight = -1;
+                    tallControls = naturalEditorHeight >= 96;
+                }
+                function resizeEditor(value) {
+                    const next = Math.min(maximumEditorHeight, Math.max(minimumEditorHeight, value));
+                    if (next < maximumEditorHeight - 1 && naturalEditorHeight <= 96 && next <= minimumEditorHeight + 1) {
+                        releaseHeight();
+                        return;
+                    }
+                    manualEditorHeight = next;
+                    fullHeight = next >= maximumEditorHeight - 1;
+                    updateTallControls();
+                }
                 color: root.colors["composer-outer"]
                 radius: 10
                 Rectangle {
@@ -11072,6 +11105,45 @@ component NativeMentionChip: Item {
                     color: "transparent"; border.width: 2; border.color: root.colors.accent
                     visible: composerDropArea.containsDrag && composerDropArea.externalFiles
                 }
+                Item {
+                    id: composerResizeHandle
+                    objectName: "composerResizeHandle"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 20
+                    z: 4
+                    visible: messageComposerShell.naturalEditorHeight >= 64 || messageComposerShell.manualEditorHeight >= 0
+                    activeFocusOnTab: true
+                    KeyNavigation.backtab: composerText
+                    KeyNavigation.tab: composerHeightButton.visible ? composerHeightButton
+                        : root.preferences.composerToolbarExpanded ? composerFormatLinkButton : composerToolbarExpand
+                    Accessible.role: Accessible.Grip
+                    Accessible.name: qsTranslate("ComposerHeight", "Resize message editor")
+                    Keys.onUpPressed: messageComposerShell.resizeEditor(messageComposerShell.fieldHeight + 24)
+                    Keys.onDownPressed: messageComposerShell.resizeEditor(messageComposerShell.fieldHeight - 24)
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        y: 2
+                        width: 56; height: 4; radius: 2
+                        color: parent.activeFocus ? root.colors.accent : root.colors["composer-icon"]
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.SizeVerCursor
+                        preventStealing: true
+                        property real startY
+                        property real startHeight
+                        onPressed: mouse => {
+                            composerResizeHandle.forceActiveFocus(Qt.MouseFocusReason);
+                            startY = mapToItem(null, mouse.x, mouse.y).y;
+                            startHeight = messageComposerShell.fieldHeight;
+                        }
+                        onPositionChanged: mouse => {
+                            if (pressed) messageComposerShell.resizeEditor(startHeight + startY - mapToItem(null, mouse.x, mouse.y).y);
+                        }
+                    }
+                }
                 ColumnLayout {
                     id: composerInputColumn
                     // Padded composer column: message-composer.ui.tsx:2040
@@ -11096,26 +11168,57 @@ component NativeMentionChip: Item {
                             Layout.fillHeight: true
                             radius: 10
                             color: root.colors.bg
+                            NativeIconButton {
+                                id: composerHeightButton
+                                objectName: "composerHeightButton"
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.margins: 16
+                                z: 3
+                                visible: messageComposerShell.tallControls
+                                colors: root.colors
+                                help: messageComposerShell.fullHeight ? qsTranslate("ComposerHeight", "Collapse message editor")
+                                    : qsTranslate("ComposerHeight", "Expand message editor")
+                                asset: messageComposerShell.fullHeight ? "composer-collapse-content.svg" : "composer-expand-content.svg"
+                                iconColor: root.colors["composer-icon"]
+                                implicitWidth: 28; implicitHeight: 28
+                                glyphSize: 20
+                                onClicked: {
+                                    if (messageComposerShell.fullHeight) messageComposerShell.releaseHeight();
+                                    else messageComposerShell.resizeEditor(messageComposerShell.maximumEditorHeight);
+                                }
+                            }
                             RowLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 8
                                 anchors.rightMargin: 8
                                 spacing: 8
-                                NativeIconButton {
-                                    objectName: "composerToolbarExpand"
-                                    colors: root.colors
-                                    // Compact mode keeps a single expand toggle in the
-                                    // input row (message-composer.ui.tsx:1925-1939), on
-                                    // the same pl-2 axis as the toolbar collapse toggle.
-                                    asset: "composer-bottom-panel-open.svg"
-                                    help: qsTr("Show formatting tools")
-                                    enabled: composerText.enabled
-                                    visible: !root.preferences.composerToolbarExpanded
-                                    implicitWidth: 32
-                                    implicitHeight: 32
-                                    glyphSize: 21
+                                GridLayout {
+                                    id: composerLeadingControls
+                                    columns: 1
+                                    rowSpacing: 4
+                                    columnSpacing: 0
+                                    visible: !messageComposerShell.preview && !root.preferences.composerToolbarExpanded
                                     Layout.alignment: Qt.AlignBottom
-                                    onClicked: root.preferences.composerToolbarExpanded = true
+                                    NativeIconButton {
+                                        id: composerToolbarExpand
+                                        objectName: "composerToolbarExpand"
+                                        Layout.row: messageComposerShell.compactRail ? 2 : 0
+                                        Layout.column: 0
+                                        colors: root.colors
+                                        // Compact mode keeps a single expand toggle in the
+                                        // input row (message-composer.ui.tsx:1925-1939), on
+                                        // the same pl-2 axis as the toolbar collapse toggle.
+                                        asset: "composer-bottom-panel-open.svg"
+                                        help: qsTr("Show formatting tools")
+                                        enabled: composerText.enabled
+                                        visible: !root.preferences.composerToolbarExpanded
+                                        implicitWidth: 32
+                                        implicitHeight: 32
+                                        glyphSize: 21
+                                        Layout.alignment: Qt.AlignBottom
+                                        onClicked: root.preferences.composerToolbarExpanded = true
+                                    }
                                 }
                                 ScrollView {
                                     id: composerPreviewScroll
@@ -11162,6 +11265,7 @@ component NativeMentionChip: Item {
                                 }
                                 ScrollView {
                                 id: composerScroll
+                                objectName: "composerFieldViewport"
                                 visible: !messageComposerShell.preview
                                 Layout.fillWidth: true
                                 Layout.fillHeight: true
@@ -11188,8 +11292,8 @@ component NativeMentionChip: Item {
                                     selectByMouse: true
                                     persistentSelection: true
                                     KeyNavigation.priority: KeyNavigation.BeforeItem
-                                    KeyNavigation.tab: root.preferences.composerToolbarExpanded
-                                        ? composerFormatLinkButton : null
+                                    KeyNavigation.tab: root.preferences.composerToolbarExpanded ? composerFormatLinkButton
+                                        : composerResizeHandle.visible ? composerResizeHandle : null
                                     topPadding: 8
                                     bottomPadding: 8
                                     leftPadding: 0
@@ -11459,11 +11563,20 @@ component NativeMentionChip: Item {
                                     }
                                 }
                             }
-                            RowLayout {
+                            GridLayout {
+                                id: composerCompactActions
+                                // Leave the tall editor's top-right button clear when the poll
+                                // action is hidden and the other actions move to the left rail.
+                                Layout.minimumWidth: composerHeightButton.visible ? composerHeightButton.width + 8 : 0
                                 visible: !messageComposerShell.preview
-                                spacing: 0
+                                columns: 3
+                                rowSpacing: 0
+                                columnSpacing: 0
                                 Layout.alignment: Qt.AlignBottom
                                 NativeIconButton {
+                                    parent: messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
+                                    Layout.row: 0
+                                    Layout.column: 0
                                     objectName: "attachButton"
                                     colors: root.colors
                                     asset: "composer-attach-compact.svg"
@@ -11483,6 +11596,9 @@ component NativeMentionChip: Item {
                                 }
                                 NativeIconButton {
                                     id: composerEmojiButton
+                                    parent: messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
+                                    Layout.row: messageComposerShell.compactRail ? 1 : 0
+                                    Layout.column: messageComposerShell.compactRail ? 0 : 1
                                     objectName: "composerEmojiButton"
                                     colors: root.colors
                                     asset: "composer-emoji.svg"
@@ -11498,6 +11614,8 @@ component NativeMentionChip: Item {
                                 // open and on channels without poll support.
                                 NativeIconButton {
                                     id: composerPollButton
+                                    Layout.row: 0
+                                    Layout.column: 2
                                     objectName: "pollButton"
                                     colors: root.colors
                                     asset: "poll.svg"

@@ -4973,4 +4973,10 @@
         <message><source>Showing 50 matches. Refine your search for more specific results.</source><translation>Показано 50 совпадений. Уточните запрос.</translation></message>
         <message><source>Close</source><translation>Закрыть</translation></message>
     </context>
+    <context>
+        <name>ComposerHeight</name>
+        <message><source>Resize message editor</source><translation>Изменить высоту поля сообщения</translation></message>
+        <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
+        <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
+    </context>
 </TS>
