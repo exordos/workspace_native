@@ -33320,6 +33320,192 @@ private slots:
         QVERIFY2(!mentionsBindings(QStringLiteral("GET")),
             qPrintable(lines.join(QStringLiteral("; "))));
     }
+
+    // ---- Issue #108 (docs/NATIVE_DESKTOP_MESSAGE_TIMESTAMP_VIEWER.md) ----
+    // The time chip opens the read-only timestamp panel of the reference
+    // workspace-message-time-view.ui.tsx at sha 61dacef78dab2f5d0be76f283bebf49fe29b84af.
+    // The fixture keeps the WindowChannelFixture base scene contract (three
+    // topics with default_topic_uuid) and swaps the history for two messages
+    // whose stored instants differ only in the seconds component (:71-79 of the
+    // reference drives showSeconds from non-zero seconds/ms).
+private:
+    struct TimestampWindowFixture final : WindowChannelFixture {
+        static const inline QString secondsId = "84000000-0000-4000-8000-000000000001";
+        static const inline QString minuteId = "84000000-0000-4000-8000-000000000002";
+        static QJsonObject stamped(const QString &text, const QString &uuid, const QString &utc)
+        {
+            auto row = message(text, uuid, topicId);
+            row["created_at"] = utc;
+            row["author_uuid"] = channelPeer;
+            row["is_own"] = false;
+            return row;
+        }
+        TimestampWindowFixture()
+        {
+            sourceScene = true;
+            const auto fallback = server.handler;
+            server.handler = [this, fallback](const Request &request) -> Response {
+                const auto path = request.target.path();
+                if (path.endsWith("/messages/") && request.method == "GET")
+                    return {QJsonArray{
+                        stamped("Instant carrying seconds", secondsId, "2026-01-02T10:02:03.456Z"),
+                        stamped("Instant on the minute", minuteId, "2026-01-02T10:05:00.000Z")}, 200, 0, {}};
+                return fallback(request);
+            };
+        }
+    };
+
+    static bool hasInteractivePanelDescendant(QQuickItem *root)
+    {
+        for (auto *child : root->childItems()) {
+            const auto name = QString::fromLatin1(child->metaObject()->className());
+            for (const auto *marker : {"Button", "SpinBox", "Slider", "MouseArea", "TextEdit", "TextField", "Switch"})
+                if (name.contains(marker))
+                    return true;
+            if (hasInteractivePanelDescendant(child))
+                return true;
+        }
+        return false;
+    }
+
+private slots:
+    void messageTimeChipOpensReadOnlyTimestampPanel_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+    void messageTimeChipOpensReadOnlyTimestampPanel()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        TimestampWindowFixture fixture;
+        NativePreferences preferences(directory.filePath("timestamp-viewer.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Timestamp viewer teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        auto *chip = item(content, "message-time-" + TimestampWindowFixture::secondsId); QVERIFY(chip);
+        QVERIFY(chip->isVisible());
+        const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
+        const auto historyBefore = fixture.historyGets;
+        // Reference contract: the click handler on the [datetime] chip opens
+        // the viewer (workspace-message-body-interactions.hook.ts:566-572).
+        click(window, chip);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY2(panel, "Read-only timestamp panel must open on the chip click");
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("width").toReal(), qreal(371)); // PANEL_WIDTH :9
+        QVERIFY(panel->property("height").toReal() > 0);
+        QVERIFY2(panel->property("height").toReal() <= window->height() - 16, "Panel must fit the viewport minus the 16 px cap (:67)");
+        const QPointF panelTopLeft(panel->property("x").toReal(), panel->property("y").toReal());
+        QVERIFY(panelTopLeft.x() >= 7.5 && panelTopLeft.y() >= 7.5); // floating-panel-position margin 8
+        QVERIFY(panelTopLeft.x() + panel->property("width").toReal() <= window->width() - 7.5);
+        QVERIFY(panelTopLeft.y() + panel->property("height").toReal() <= window->height() - 7.5);
+        // Reference test :19-20: zero buttons/spinbuttons - the panel is read-only.
+        auto *panelContent = visibleItem("messageTimePanelContent"); QVERIFY(panelContent);
+        QVERIFY2(!hasInteractivePanelDescendant(panelContent), "Timestamp panel must stay read-only");
+        auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
+        QCOMPARE(timeText->property("text").toString(), stored.toString("HH:mm:ss"));
+        auto *dateText = visibleItem("messageTimePanelDate"); QVERIFY(dateText);
+        const QLocale uiLocale(locale == "ru" ? QLocale::Russian : QLocale::English);
+        QCOMPARE(dateText->property("text").toString(), uiLocale.toString(stored.date(), "MMMM yyyy"));
+        auto *selected = visibleItem("messageTimePanelSelectedDay"); QVERIFY(selected);
+        QCOMPARE(selected->property("text").toString(), QString::number(stored.date().day()));
+        // Escape dismisses and returns focus to the trigger (reference test :31-46,
+        // workspace-message-time-view.ui.tsx:63-66).
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        QTRY_VERIFY(chip->hasActiveFocus());
+        // Non-zero gate: a minute-exact instant shows HH:mm without seconds (:75).
+        auto *plainChip = item(content, "message-time-" + TimestampWindowFixture::minuteId); QVERIFY(plainChip);
+        click(window, plainChip);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        auto *plainTime = visibleItem("messageTimePanelTime"); QVERIFY(plainTime);
+        const auto plain = QDateTime::fromString("2026-01-02T10:05:00.000Z", Qt::ISODateWithMs).toLocalTime();
+        QCOMPARE(plainTime->property("text").toString(), plain.toString("HH:mm"));
+        QVERIFY(!plainTime->property("text").toString().contains(plain.toString("ss")));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        // The viewer is a pure local view: opening and closing fetched nothing.
+        QCOMPARE(fixture.historyGets, historyBefore);
+        QCOMPARE(controller.messages().size(), 2);
+        const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    void messageTimeViewerOpensFromKeyboardAndTimeReference_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("enter") << QString("enter");
+        QTest::newRow("space") << QString("space");
+        QTest::newRow("reference") << QString("reference");
+    }
+    void messageTimeViewerOpensFromKeyboardAndTimeReference()
+    {
+        QFETCH(QString, scenario);
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        TimestampWindowFixture fixture;
+        NativePreferences preferences(directory.filePath("timestamp-keyboard.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Timestamp keyboard viewer teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
+        if (scenario == "reference") {
+            // The urn:time reference kind (workspace-reference.cpp:328-333) now
+            // opens the panel instead of falling through to the notice.
+            QVariant result;
+            QVERIFY(QMetaObject::invokeMethod(window, "openReference", Qt::DirectConnection,
+                Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, QStringLiteral("urn:time:2026-01-02T10:02:03.456Z")),
+                Q_ARG(QVariant, QVariant(false))));
+            auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+            QTRY_VERIFY(panel->property("visible").toBool());
+            QCOMPARE(panel->property("width").toReal(), qreal(371));
+            auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
+            QCOMPARE(timeText->property("text").toString(), stored.toString("HH:mm:ss"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(!panel->property("visible").toBool());
+            const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+            return;
+        }
+        // Reference contract: Enter/Space on the focused time element opens the
+        // same viewer (workspace-message-body-interactions.hook.ts:490-496).
+        auto *chip = item(content, "message-time-" + TimestampWindowFixture::secondsId); QVERIFY(chip);
+        chip->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(chip->hasActiveFocus());
+        QTest::keyClick(window, scenario == "enter" ? Qt::Key_Return : Qt::Key_Space);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY2(panel, "Keyboard trigger must open the read-only panel");
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("width").toReal(), qreal(371));
+        auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
+        QCOMPARE(timeText->property("text").toString(), stored.toString("HH:mm:ss"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
 };
 
 
