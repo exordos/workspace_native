@@ -546,7 +546,7 @@ ApplicationWindow {
     // ComposerMentionTrigger.REMINDER: "@query" only counts as a mention token at
     // a line start or after whitespace/punctuation, never inside "name@example".
     function composerMentionTokenBefore(caretText) {
-        return /(?:^|[\s([{,.:;!?])(@)(\S*)$/.exec(caretText);
+        return /(?:^|[\s([{,.:;!?])([@#])(\S*)$/.exec(caretText);
     }
     // WorkspaceAvatar fallback: first character of the display name, then of
     // the username, then "?" (message-composer-mention-dropdown.ui.tsx:78).
@@ -573,7 +573,9 @@ ApplicationWindow {
         composerMentionPopup.tokenStart = composerText.selectionStart - match[2].length - 1;
         // Positional snapshot: each keystroke replaces the whole array so no
         // delegate can dangle over a refreshed C++ candidate list.
-        composerMentionPopup.rows = root.controller.mentionSuggestions(match[2]);
+        composerMentionPopup.references = match[1] === "#";
+        composerMentionPopup.rows = composerMentionPopup.references
+            ? root.controller.composerReferences(match[2]) : root.controller.mentionSuggestions(match[2]);
         composerMentionPopup.activeIndex = 0;
         root.positionComposerMentionPopup();
         composerMentionPopup.open();
@@ -1587,6 +1589,8 @@ component NativeMentionChip: Item {
             // Quote frames and inline message anchors jump to the origin (source
             // workspace-message-quote.ui.tsx:353-397 onOpenMessage contract).
             root.controller.openMessageInChat(reference.id);
+        } else if (reference.kind === "stream" && root.controller.authenticated) {
+            root.controller.openStreamReference(reference.id);
         } else if (reference.kind === "topic" && root.controller.authenticated) {
             root.controller.openTopic(reference.id, reference.stream || "");
         } else if (reference.kind === "user" && root.controller.authenticated) {
@@ -10776,11 +10780,11 @@ component NativeMentionChip: Item {
                                         const start = composerMentionPopup.tokenStart;
                                         if (start < 0 || !row || typeof row !== "object")
                                             return;
-                                        const visible = String(row.visibleText || row.displayName);
-                                        const next = text.slice(0, start) + "@" + visible
-                                            + " " + text.slice(selectionEnd);
-                                        const caret = start + 1 + visible.length + 1;
-                                        root.controller.recordMentionPick(String(row.userUuid));
+                                        const insertion = row.markdown || ("@" + String(row.visibleText || row.displayName));
+                                        const next = text.slice(0, start) + insertion + " " + text.slice(selectionEnd);
+                                        const caret = start + insertion.length + 1;
+                                        if (!row.markdown)
+                                            root.controller.recordMentionPick(String(row.userUuid));
                                         const owner = root.controller.ownStatusContextKey;
                                         const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
                                         root.controller.draft = next;
@@ -10838,10 +10842,18 @@ component NativeMentionChip: Item {
                                             return;
                                         }
                                         const editing = root.controller.editingMessageId.length > 0;
-                                        if (event.key === Qt.Key_V && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier))
-                                            && !(event.modifiers & (Qt.AltModifier | Qt.GroupSwitchModifier))
-                                            && (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments())) {
-                                            event.accepted = true;
+                                        if (event.matches(StandardKey.Paste)) {
+                                            if (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments()) {
+                                                event.accepted = true;
+                                                return;
+                                            }
+                                            const converted = root.controller.composerReferenceClipboardText();
+                                            if (converted.length) {
+                                                const at = selectionStart;
+                                                remove(at, selectionEnd);
+                                                insert(at, converted);
+                                                event.accepted = true;
+                                            }
                                         } else if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
                                             // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
                                             composerMentionPopup.close();
@@ -11448,9 +11460,10 @@ component NativeMentionChip: Item {
     Popup {
         id: composerMentionPopup
         objectName: "composerMentionPopup"
+        property bool references: false
         Connections {
             target: root.controller
-            enabled: composerMentionPopup.visible
+            enabled: composerMentionPopup.visible && !composerMentionPopup.references
             function onMentionMembershipChanged() {
                 const current = composerMentionPopup.rows[composerMentionPopup.activeIndex];
                 const rows = root.controller.mentionSuggestions(composerMentionPopup.query);
@@ -11513,18 +11526,19 @@ component NativeMentionChip: Item {
                             // WorkspaceAvatar size="sm": 32px circle, 12px initials,
                             // first character of the display name (username fallback).
                             Rectangle {
-                                Layout.preferredWidth: 32
-                                Layout.preferredHeight: 32
+                                Layout.preferredWidth: composerMentionPopup.references ? 28 : 32
+                                Layout.preferredHeight: composerMentionPopup.references ? 28 : 32
                                 Layout.alignment: Qt.AlignVCenter
-                                radius: 16
+                                radius: composerMentionPopup.references ? 4 : 16
                                 color: root.colors["bg"]
                                 Text {
                                     anchors.centerIn: parent
-                                    text: String(root.composerMentionInitials(mentionRow))
+                                    text: mentionRow.kind === "topic" ? "›" : String(root.composerMentionInitials(mentionRow))
                                     font.pixelSize: 12
                                     color: root.colors["text-primary"]
                                 }
                                 PresenceBadge {
+                                    visible: !composerMentionPopup.references
                                     presence: String(mentionRow.status || "")
                                 }
                             }
@@ -11569,7 +11583,8 @@ component NativeMentionChip: Item {
                                 Text {
                                     objectName: "composerMentionSecondary" + index
                                     Layout.fillWidth: true
-                                    text: mentionRow.username ? "@" + String(mentionRow.username)
+                                    text: composerMentionPopup.references ? String(mentionRow.secondary || "")
+                                        : mentionRow.username ? "@" + String(mentionRow.username)
                                         : String(mentionRow.email || "")
                                     visible: text.length > 0
                                     elide: Text.ElideRight

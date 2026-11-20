@@ -55,7 +55,8 @@ add_library(workspace-native-core STATIC
     src/native-realtime-cursor-store.cpp src/native-realtime-cursor-store.h
     src/power-watcher.cpp src/power-watcher.h
     src/native-call-awareness.cpp src/native-call-awareness.h
-    src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp)
+    src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp
+    src/composer-references.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
 # VITE_CALL_INCOMING_MODAL_VARIANT build flag (shared/lib/env.ts:132-135):

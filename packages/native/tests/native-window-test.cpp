@@ -21981,6 +21981,38 @@ private:
         if (closed) close.dismiss(); QVERIFY(closed);
     }
 
+    void composerHashPopupInsertsReferenceAndPastesKnownLink()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("references.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        auto *composer = item(window->contentItem(), "messageComposer");
+        QVERIFY(composer);
+        click(window, composer);
+        QTest::keyClick(window, Qt::Key_NumberSign);
+        QTRY_VERIFY(mentionPopupVisible(window));
+        const auto rows = controller.composerReferences({});
+        QVERIFY(!rows.isEmpty());
+        const auto expected = rows.first().toMap().value("markdown").toString();
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(controller.draft(), expected + " ");
+        const auto origin = fixture.server.origin();
+        const auto link = origin.toString() + "/org/" + orgRouteIdFromOrigin(origin) + "/project/" + projectId
+            + "/stream/" + rows.first().toMap().value("stream").toString();
+        QGuiApplication::clipboard()->setText(link);
+        QTest::keyClick(window, Qt::Key_V, Qt::ControlModifier);
+        QTRY_COMPARE(controller.draft(), expected + " " + expected);
+    }
+
     void composerMentionPopupInsertsDisambiguatedDuplicateNames()
     {
         // Review PR #195 (M1): two users share the display name "Bob Ray", so
