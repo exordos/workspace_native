@@ -2634,6 +2634,7 @@ component NativeMentionChip: Item {
 
     Rectangle {
         id: topBar
+        Keys.onEscapePressed: event => root.handleChatEscape(event)
         objectName: "topBar"
         visible: root.controller.authenticated
         anchors.top: profileLinkFailure.bottom
@@ -4311,8 +4312,24 @@ component NativeMentionChip: Item {
         }
     }
 
+    function chatNavigationHasInputFocus() {
+        for (let item = root.activeFocusItem; item; item = item.parent) {
+            if (item instanceof TextInput || item instanceof TextEdit || item instanceof ComboBox)
+                return true;
+        }
+        return false;
+    }
+
+    function handleChatEscape(event) {
+        event.accepted = conversation.visible && root.controller.hasConversation
+            && !root.controller.favoritesVisible && !aboutDrawer.visible
+            && !root.controller.mediaViewer.open && !root.chatNavigationHasInputFocus();
+        if (event.accepted) root.controller.showInbox();
+    }
+
     RowLayout {
         id: workspace
+        Keys.onEscapePressed: event => root.handleChatEscape(event)
         visible: root.controller.authenticated
         anchors.top: topBar.bottom
         anchors.topMargin: 4
