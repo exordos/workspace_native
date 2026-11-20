@@ -15316,6 +15316,18 @@ mv -Tf "$root/.current-new" "$root/current"
             emit controller.stateChanged();
             QCOMPARE(list->property("layoutTicket"), ticket);
         }
+        if (scenario == "prepend") {
+            const QSize previousSize = window->size();
+            const qreal previousHeight = list->height();
+            // Ask Qt to prepare a viewport of loaded delegates ahead of input,
+            // including after a desktop resize on a larger display.
+            QVERIFY(list->property("cacheBuffer").toInt() >= qCeil(previousHeight));
+            window->resize(previousSize + QSize(0, 80));
+            QTRY_VERIFY(list->height() > previousHeight + 40);
+            QTRY_VERIFY(list->property("cacheBuffer").toInt() >= qCeil(list->height()));
+            window->resize(previousSize);
+            QTRY_COMPARE(list->height(), previousHeight);
+        }
         if (behavior != "incoming-bottom") {
             const auto before = list->property("contentY").toReal();
             const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
