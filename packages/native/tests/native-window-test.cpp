@@ -21191,6 +21191,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QFETCH(QString, mode);
         WindowChannelFixture fixture;
         fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{message("Editable source", messageId)}};
+            return fallback(request);
+        };
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("composer-height.ini"));
         preferences.setLocale(locale); preferences.setMode(mode);
@@ -21270,6 +21277,18 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(list->height(), 4.0);
         click(window, heightButton); QTRY_COMPARE(shell->height(), 57.0);
         QVERIFY(!handle->isVisible() && !heightButton->isVisible());
+
+        QVERIFY(controller.beginEditMessage(messageId));
+        draftLines(5);
+        QVERIFY(!view("pollButton"));
+        QTRY_VERIFY(heightButton->isVisible());
+        auto *field = view("composerFieldViewport"); QVERIFY(field);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        const auto fieldRight = field->mapToScene(QPointF(field->width(), 0)).x();
+        const auto buttonLeft = heightButton->mapToScene(QPointF()).x();
+        QVERIFY2(fieldRight <= buttonLeft,
+            qPrintable(QString("Editor ends at %1, height button begins at %2").arg(fieldRight).arg(buttonLeft)));
     }
 
     void composerPreviewShowsTheBodyItSends_data()

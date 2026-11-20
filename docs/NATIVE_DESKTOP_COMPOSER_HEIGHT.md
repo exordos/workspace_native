@@ -16,7 +16,7 @@ content shrinking until the user brings the field back to its floor.
 The expand control is 28 × 28 px. It appears at 96 px and stays through
 the intermediate range while the automatic field stays above 64 px. In this
 compact layout the attachment and emoji controls move into a vertical rail
-on the left of the field. The full-height composer leaves 4 px of the
+on the left of the field. The editable viewport reserves the top-right button’s width even when editing hides the poll action. The full-height composer leaves 4 px of the
 conversation area, tracks window resizing, and stays expanded when text is
 removed. Collapse restores automatic sizing. At a 900 px window height the
 observed conversation area measured 766 px and the expanded shell 762 px.

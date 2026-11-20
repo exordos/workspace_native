@@ -11565,6 +11565,9 @@ component NativeMentionChip: Item {
                             }
                             GridLayout {
                                 id: composerCompactActions
+                                // Leave the tall editor's top-right button clear when the poll
+                                // action is hidden and the other actions move to the left rail.
+                                Layout.minimumWidth: composerHeightButton.visible ? composerHeightButton.width + 8 : 0
                                 visible: !messageComposerShell.preview
                                 columns: 3
                                 rowSpacing: 0
