@@ -57,3 +57,9 @@ notification or download event. [Microsoft’s taskbar interface](https://learn.
 The shell adapter accepts download progress from the existing updater bridge. The macOS check reads the native progress indicator on the Dock tile. The Windows check captures Explorer's taskbar while the progress bar appears and clears. The current release updater supports Linux x86_64 and reports that updates are unavailable on other platforms. The Windows and macOS checks therefore supply controlled progress values to the shell adapter. A signed Windows or macOS update channel requires its own distribution and installation acceptance.
 
 [Desktop shell ownership decision](decisions/0011-native-desktop-shell.md)
+
+## Windows per-user installer
+
+Each Windows package includes a portable ZIP and a per-user MSI built by CPack and WiX from the same staged application. Check the chosen file against `SHA256SUMS`. The installer places the application under `%LOCALAPPDATA%\Workspace Native Preview` and creates a shortcut in the current user's Start menu. The shortcut and running application use `com.exordos.workspace.native.preview` as their Windows application ID. Users can remove the preview from Windows Settings under Installed apps.
+
+A two-version installation test removes an obsolete file during the MSI upgrade and retains an unrelated file. The clean Windows runner checks the installer digest, installs into a fresh profile, reads the current user's uninstall registration and Start menu shortcut, and launches the installed executable. After uninstall it checks that the application's files and registration are gone and a file it created alongside them was preserved.

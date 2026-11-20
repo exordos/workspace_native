@@ -274,6 +274,9 @@ foreach(default_login_org IN ITEMS URL NAME)
     endif()
 endforeach()
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
+if(WIN32)
+    target_link_libraries(workspace-native PRIVATE shell32)
+endif()
 if(APPLE)
     # QML loads the SVG image reader at runtime. macdeployqt discovers that
     # plugin from the app's QtSvg framework dependency.
