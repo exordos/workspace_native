@@ -14,6 +14,7 @@ import QtQuick.Effects
 // the shell. Geometry and colors are measured from the pinned reference.
 Item {
     id: page
+    signal referenceActivated(string link)
     required property var colors
     required property var controller
     objectName: "channelInfoPage"
@@ -351,6 +352,14 @@ Item {
                 }
             }
 
+            Loader {
+                width: flow.width - 16
+                x: 8
+                active: page.visible && page.controller.selectedTopic.length > 0
+                visible: active && !!page.controller.topics.find(row => row.id === page.controller.selectedTopic)
+                sourceComponent: Component { NativeTopicSummary { controller: page.controller; colors: page.colors; onReferenceActivated: link => page.referenceActivated(link) } }
+            }
+
             // ---- Description block (reference 730-739) ----
             Column {
                 objectName: "channelInfoDescriptionBlock"
@@ -386,6 +395,12 @@ Item {
                         color: page.colors["text-primary"]
                     }
                 }
+            }
+
+            Loader {
+                width: flow.width
+                active: page.visible
+                sourceComponent: Component { NativeChannelTopics { controller: page.controller; colors: page.colors } }
             }
 
             // ---- Members block (reference 748-812) ----

@@ -4011,10 +4011,37 @@ QVariantMap NativeController::channelInfoStream() const
     // stream.isPrivate) and `source_name` is the encryption-source witness.
     const auto sourceName = stream->security
         ? stream->security->source : QString{};
+    const bool canEditSummary = stream->viewer == m_session->user()
+        && (stream->role == "owner" || stream->role == "administrator");
     return {{"id", stream->uuid}, {"title", stream->name}, {"description", stream->description},
         {"color", color}, {"notificationMode", stream->notificationMode},
         {"owner", stream->role == "owner"}, {"private", stream->privateStream},
-        {"sourceName", sourceName}};
+        {"sourceName", sourceName},
+        {"canEditTopicSummary", canEditSummary},
+        {"canOpenSummarySettings", canEditSummary || m_session->canConfigureSummaryService()}};
+}
+
+QVariantList NativeController::channelInfoTopics() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream) return {};
+    QHash<QString, const Topic *> byId;
+    for (const auto &topic : m_topics) byId.insert(topic.uuid, &topic);
+    QSet<QString> mentions;
+    for (const auto &entry : m_unreadMentions)
+        if (entry.stream == stream->uuid) mentions.insert(entry.topic);
+    auto rows = topicRows(m_topics, stream);
+    for (auto &value : rows) {
+        auto row = value.toMap();
+        const auto id = row.value("id").toString();
+        const auto *topic = byId.value(id);
+        row.insert("hasUnreadPersonalMention", mentions.contains(id));
+        row.insert("summary", topic->summary);
+        row.insert("summaryEnabled", topic->summaryEnabled);
+        row.insert("summaryHasNewMessages", topic->summaryHasNewMessages);
+        value = row;
+    }
+    return rows;
 }
 
 QVariantList NativeController::channelInfoMembers() const
@@ -4121,6 +4148,66 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
         m_channelInfoMembers = accepted;
         m_channelInfoLoading = false;
         emit stateChanged();
+    });
+}
+
+void NativeController::applyChannelTopicAction(const QString &id, const QString &action, const QString &value)
+{
+    const auto *stream = channelInfoStreamRow();
+    const auto current = std::find_if(m_topics.cbegin(), m_topics.cend(),
+        [&](const Topic &row) { return row.uuid == id && row.stream == m_stream; });
+    if (!stream || !m_topicsVerified || current == m_topics.cend() || current->done) {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    QByteArray method = "POST";
+    QString path = messenger + "/stream_topics/" + id;
+    QJsonObject body;
+    if (action == "notifications" && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
+        path += "/actions/notifications/invoke";
+        body.insert("notification_mode", value);
+    } else if (action == "summary" && channelInfoStream().value("canEditTopicSummary").toBool()
+               && (value == "true" || value == "false")) {
+        path += "/actions/set_summary_prompt/invoke";
+        body.insert("summary_enabled", value == "true");
+    } else if (action == "read" || action == "toggle_done") {
+        path += "/actions/" + action + "/invoke";
+    } else if (action == "rename" && !value.trimmed().isEmpty()) {
+        method = "PUT";
+        body.insert("name", value.trimmed());
+    } else {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    const auto generation = m_api->generation();
+    const auto owner = ownerKey(), streamId = m_stream;
+    const auto key = QString::number(generation) + '/' + id;
+    if (m_channelTopicRequests.contains(key)) {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    m_channelTopicRequests.insert(key);
+    const auto revision = m_topicRevision;
+    request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
+        m_channelTopicRequests.remove(key);
+        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) return;
+        const auto dto = response.data.toObject();
+        const auto updated = parseTopic(dto, m_session->project(), streamId);
+        const bool accepted = response.ok() && updated && updated->uuid == id
+            && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
+        staleCache(NativeCache::Kind::Topics, streamId);
+        auto row = std::find_if(m_topics.begin(), m_topics.end(), [&](const Topic &t) { return t.uuid == id; });
+        if (accepted && row != m_topics.end() && revision == m_topicRevision) {
+            *row = *updated;
+            ++m_topicRevision;
+            if (action == "read") mentionIndexClearTopic(streamId, id);
+            emit topicsChanged();
+            emit stateChanged();
+        } else {
+            // A newer catalog or an uncertain write is reconciled by reading.
+            loadTopics();
+        }
+        emit channelTopicActionFinished(id, action, accepted);
     });
 }
 
@@ -9628,6 +9715,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit anchorChanged();
     });
 
+    connect(this, &NativeController::topicsChanged, this, &NativeController::channelInfoTopicsChanged);
+    connect(this, &NativeController::streamsChanged, this, &NativeController::channelInfoTopicsChanged);
+    connect(this, &NativeController::sidebarStreamsChanged, this, &NativeController::channelInfoTopicsChanged);
     connect(session, &Session::signedOut, this, &NativeController::reset);
     connect(session, &Session::error, this, [this](const QString &message) {
         // Remembering a verified session can fail independently of live sync.
@@ -11662,6 +11752,7 @@ void NativeController::logout()
 void NativeController::reset()
 {
     m_pollSendAttempts.clear();
+    m_channelTopicRequests.clear();
     closeEditSession();
     closeReplySession();
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
