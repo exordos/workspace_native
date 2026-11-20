@@ -146,6 +146,37 @@ private slots:
         QCOMPARE(f.model.text(), "Server draft"); QTest::qWait(50); QCOMPARE(backend.count("GET", true), 1);
     }
 
+    void refetchPreservesTheDraftExplicitlyOpenedInThisConversation()
+    {
+        QTemporaryDir directory;
+        Backend backend;
+        const QString oldest = returnedId;
+        const QString newest = QStringLiteral("78000000-0000-4000-8000-000000000001");
+        backend.rows[oldest] = draft("Older draft", oldest);
+        backend.rows[newest] = draft("Most recent", newest);
+        backend.rows[newest]["updated_at"] = QStringLiteral("2026-01-02T10:01:00.000Z");
+        Harness f(directory.path(), backend);
+        QVERIFY(f.boot());
+        QTRY_COMPARE(f.model.capture(streamId, topicId).uuid, newest);
+
+        f.model.showPage();
+        QTRY_COMPARE(f.model.page().value("rows").toList().size(), 2);
+        QVERIFY(f.model.actOnDraft(oldest, NativeDrafts::Action::Open));
+        QTRY_COMPARE(f.model.capture(streamId, topicId).uuid, oldest);
+        backend.rows[oldest] = draft("Remote edit to opened draft", oldest, 2);
+        f.model.refetchRemote();
+        QTRY_COMPARE(backend.count("GET", true), 2);
+        QTRY_VERIFY(!f.model.remoteStatus().busy);
+        QCOMPARE(f.model.capture(streamId, topicId).uuid, oldest);
+        QCOMPARE(f.model.text(), QStringLiteral("Remote edit to opened draft"));
+        QVERIFY(f.model.edit(streamId, topicId, "Edit only the opened draft"));
+        QTRY_COMPARE_WITH_TIMEOUT(backend.count("PUT"), 1, 4000);
+        QCOMPARE(backend.rows[oldest].value("payload").toObject().value("content").toString(),
+                 QStringLiteral("Edit only the opened draft"));
+        QCOMPARE(backend.rows[newest].value("payload").toObject().value("content").toString(),
+                 QStringLiteral("Most recent"));
+    }
+
     void ordinaryInputDebouncesThenKeepsExactLocalSpacing()
     {
         QTemporaryDir directory; Backend backend; Harness f(directory.path(), backend); QVERIFY(f.boot());
