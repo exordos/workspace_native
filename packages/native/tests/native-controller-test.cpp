@@ -14931,6 +14931,9 @@ private slots:
         const auto quote = QStringLiteral("[Sam](urn:quote:") + messageId + ")";
         QTest::newRow("plain") << QStringLiteral("Caption") << QStringLiteral("LINK\nCaption");
         QTest::newRow("existing") << QStringLiteral("Caption\nLINK") << QStringLiteral("Caption\nLINK");
+        QTest::newRow("linked-in-list") << QStringLiteral("- LINK") << QStringLiteral("- LINK");
+        QTest::newRow("code-span") << QStringLiteral("Example: `LINK`") << QStringLiteral("LINK\nExample: `LINK`");
+        QTest::newRow("escaped-markup") << QStringLiteral("Example: \\LINK") << QStringLiteral("LINK\nExample: \\LINK");
         QTest::newRow("quote-and-answer") << quote + "\n\nCaption" << quote + "\n\nLINK\n\nCaption";
         QTest::newRow("quote-only") << quote << quote + "\n\nLINK";
         QTest::newRow("continued-paragraph") << quote + "\nanswer" << "LINK\n" + quote + "\nanswer";

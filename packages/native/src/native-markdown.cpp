@@ -353,6 +353,26 @@ QString NativeMarkdown::prependEditAttachments(const QString &markdown, const QV
     return lines.join('\n') + '\n' + markdown;
 }
 
+QStringList NativeMarkdown::missingAttachmentLinks(const QString &markdown, const QStringList &links)
+{
+    QStringList missing;
+    QByteArray body;
+    for (const auto &link : links) {
+        if (markdown.contains(link)) {
+            if (body.isEmpty()) markdownHtml(markdown, body);
+            QByteArray fragment;
+            if (markdownHtml(link, fragment) && fragment.startsWith("<p>") && fragment.endsWith("</p>\n")) {
+                // Compare the rendered anchor or image, including inside lists and
+                // quotes. Code spans and escaped examples only render its text.
+                const auto element = QByteArrayView(fragment).sliced(3, fragment.size() - 8);
+                if (!element.isEmpty() && body.contains(element)) continue;
+            }
+        }
+        if (!missing.contains(link)) missing.append(link);
+    }
+    return missing;
+}
+
 bool NativeMarkdown::startsWithParagraph(const QString &markdown, const QString &paragraph)
 {
     QByteArray first, full;

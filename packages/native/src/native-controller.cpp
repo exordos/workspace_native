@@ -10051,12 +10051,6 @@ QStringList NativeController::readyUploadLinks(quint64 session) const
         if (entry.owner != owner || entry.task.conversation != conversationKey()
             || entry.task.editSession != session
             || entry.status != "ready" || links.contains(entry.markdown)) continue;
-        const auto alias = imageAlias(entry);
-        const QRegularExpression token(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()"));
-        bool inlineImage = !alias.isEmpty() && (draft().contains(entry.markdown) || draft().contains(token));
-        if (!alias.isEmpty()) for (const auto &tab : m_replyTabs)
-            inlineImage = inlineImage || tab.answer.contains(entry.markdown) || tab.answer.contains(token);
-        if (inlineImage) continue;
         links.append(entry.markdown);
     }
     return links;
@@ -13887,9 +13881,7 @@ QString prependUploadedLinks(const QString &body, const QStringList &attachments
 {
     if (attachments.isEmpty()) return body;
     const auto content = body.trimmed();
-    QStringList missing;
-    for (const auto &link : attachments)
-        if (!content.contains(link) && !missing.contains(link)) missing.append(link);
+    const auto missing = NativeMarkdown::missingAttachmentLinks(content, attachments);
     if (missing.isEmpty()) return content;
     const auto links = missing.join('\n');
     if (content.isEmpty()) return links;
