@@ -8695,6 +8695,7 @@ private slots:
 
     void aggregateVisibleReadCoalescesSeparatelyForEachActualTopic()
     {
+        QStringList notified;
         Fixture fixture; fixture.aggregateMessages = true; fixture.extraTopic = true;
         QMap<QString, QJsonObject> rows;
         for (int n = 1; n <= 5; ++n) {
@@ -8726,6 +8727,21 @@ private slots:
         QVERIFY(modelMessage(fixture.controller, a1).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(4).value("uuid").toString()).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(5).value("uuid").toString()).value("read").toBool());
+
+        // A queued anchor deleted before dispatch must also disappear from
+        // the snapshot last delivered to the visual read-request indicator.
+        connect(&fixture.controller, &NativeController::readRequestBoundariesChanged, &fixture.controller,
+            [&] { notified = fixture.controller.readRequestBoundaryIds(); });
+        const auto a5 = historyMessage(5).value("uuid").toString();
+        const auto b4 = historyMessage(4).value("uuid").toString();
+        fixture.controller.markMessagesReadUpTo(a5);
+        fixture.controller.markMessagesReadUpTo(b4);
+        QCOMPARE(notified.size(), 2);
+        rows.remove(b4);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted",
+            QJsonObject{{"uuid", b4}, {"stream_uuid", streamId}, {"topic_uuid", secondTopicId}})));
+        QTRY_VERIFY(fixture.controller.readRequestBoundaryIds().isEmpty());
+        QVERIFY(notified.isEmpty());
     }
 
     void aggregateLoadsActualTopicsAndRealtimeWithoutADefaultComposer()
@@ -14922,6 +14938,61 @@ private slots:
         fixture.controller.submitEditMessage(); QTest::qWait(100); QCOMPARE(puts, 0);
         fixture.controller.removeUpload(card); QTRY_COMPARE_WITH_TIMEOUT(deletes, 1, 2000);
         QCOMPARE(fixture.controller.draft().size(), 40000);
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody_data()
+    {
+        QTest::addColumn<QString>("body");
+        QTest::addColumn<QString>("expected");
+        const auto quote = QStringLiteral("[Sam](urn:quote:") + messageId + ")";
+        QTest::newRow("plain") << QStringLiteral("Caption") << QStringLiteral("LINK\nCaption");
+        QTest::newRow("existing") << QStringLiteral("Caption\nLINK") << QStringLiteral("Caption\nLINK");
+        QTest::newRow("linked-in-list") << QStringLiteral("- LINK") << QStringLiteral("- LINK");
+        QTest::newRow("code-span") << QStringLiteral("Example: `LINK`") << QStringLiteral("LINK\nExample: `LINK`");
+        QTest::newRow("escaped-markup") << QStringLiteral("Example: \\LINK") << QStringLiteral("LINK\nExample: \\LINK");
+        QTest::newRow("quote-and-answer") << quote + "\n\nCaption" << quote + "\n\nLINK\n\nCaption";
+        QTest::newRow("quote-only") << quote << quote + "\n\nLINK";
+        QTest::newRow("continued-paragraph") << quote + "\nanswer" << "LINK\n" + quote + "\nanswer";
+        QTest::newRow("list-starts-new-block") << quote + "\n- list item" << quote + "\n\nLINK\n\n- list item";
+        QTest::newRow("heading-starts-new-block") << quote + "\n# Heading" << quote + "\n\nLINK\n\n# Heading";
+        QTest::newRow("setext-title") << quote + "\n===" << "LINK\n" + quote + "\n===";
+        QTest::newRow("inline-quote") << quote + " text" << "LINK\n" + quote + " text";
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody()
+    {
+        QFETCH(QString, body);
+        QFETCH(QString, expected);
+        Fixture f;
+        FileClient files(&f.api);
+        f.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile file(directory.filePath("report.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("report"), 6);
+        file.close();
+        f.files = [](const Request &) { return Response{QJsonObject{
+            {"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+            {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        QString sent;
+        f.messages = [&](const Request &r) {
+            if (r.method == "POST") {
+                sent = r.body.value("payload").toObject().value("content").toString();
+                return Response{QJsonObject{}, 503};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(f.start());
+        f.controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!f.controller.fileBusy());
+        QCOMPARE(f.controller.uploadEntries().size(), 1);
+        const auto link = f.controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        f.controller.setDraft(body.replace("LINK", link));
+        f.controller.send();
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent, expected.replace("LINK", link));
     }
 
     void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
@@ -31763,6 +31834,96 @@ private slots:
         QCOMPARE(tray->toolTip(), QString("Workspace - In call: Call"));
         awareness.callEnded(); // releasing a cookie that was never held is a no-op
         QCOMPARE(tray->toolTip(), QString("Workspace"));
+    }
+
+    void joinedCallUpdatesTrayAndKeepsOneInhibitorThroughPip()
+    {
+        PowerBusFixture bus("joined-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+
+        CallAwareness awareness;
+        awareness.start(*fixture.controller.callWindow(), bus.watcherBus);
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        connect(&awareness, &CallAwareness::callStateChanged, &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        const auto idleTip = tray->toolTip();
+        auto *shell = fixture.controller.callWindow();
+        auto *bridge = fixture.controller.embedBridge();
+        fixture.controller.joinCall("https://meet.example.com/cassi-room");
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Loading);
+        shell->apiLoadFailed();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::LoadFailed);
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(tray->toolTip(), idleTip);
+        QCOMPARE(saver.inhibits.size(), 0);
+
+        shell->retry();
+        shell->apiLoadSucceeded();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Ready);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room"));
+        bridge->reportParticipantCount(3);
+        bridge->handleParticipantsJoined();
+        QCOMPARE(shell->participantCount(), 3);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (3 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Minimized);
+        bridge->reportParticipantCount(2);
+        bridge->handleParticipantsLeft();
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (2 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Expanded);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QVERIFY(saver.uninhibits.isEmpty());
+        shell->readyToClose();
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+        QVERIFY(!awareness.callActive());
+
+        fixture.controller.joinCall("https://meet.example.com/cassi-next");
+        shell->apiLoadSucceeded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.inhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-next"));
+        fixture.controller.calls()->closeCall();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+    }
+
+    void attachingToAReadyCallReleasesTheInhibitorWhenItsWindowIsDestroyed()
+    {
+        PowerBusFixture bus("ready-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        {
+            JitsiCallWindowController shell;
+            shell.setParticipantCountProvider([] { return 4; });
+            shell.open({{"meetingUrl", "https://meet.jit.si/cassi-ready"}});
+            shell.apiLoadSucceeded();
+            QCOMPARE(shell.participantCount(), 4);
+            QSignalSpy changes(&awareness, &CallAwareness::callStateChanged);
+            awareness.start(shell, bus.watcherBus);
+            QCOMPARE(awareness.activeRoom(), QString("cassi-ready"));
+            QCOMPARE(changes.last().at(1).toInt(), 4);
+            QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        }
+        QVERIFY(!awareness.callActive());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
     }
 
     void displaySleepInhibitIsAcquiredExactlyOncePerCall()

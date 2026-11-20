@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQml
 import QtQuick.Controls
+import QtQuick.Controls.impl as ControlsImpl
 import QtQuick.Layouts
 import QtQuick.Effects
 import QtQuick.Dialogs as NativeDialogs
@@ -6625,6 +6626,21 @@ component NativeMentionChip: Item {
                 // View-only preferences follow actual UUIDs through split/merge.
                 // Controller remains the sole canonical history collection.
                 property var messageSnapshot: []
+                readonly property var readRequestCoverage: {
+                    const boundaries = root.controller.readRequestBoundaryIds
+                    const covered = {}
+                    if (!boundaries.length) return covered
+                    const boundaryIds = {}, topics = {}
+                    for (const id of boundaries) boundaryIds[id] = true
+                    // The canonical snapshot is in Core order, including
+                    // microsecond timestamps and UUID tie breaks.
+                    for (let i = messageSnapshot.length - 1; i >= 0; --i) {
+                        const row = messageSnapshot[i]
+                        if (boundaryIds[row.id]) topics[row.topicId] = true
+                        if (topics[row.topicId]) covered[row.id] = true
+                    }
+                    return covered
+                }
                 property var serviceSession: ({ scope: "", ready: false, seen: {}, latest: null, preferences: {}, revision: 0, focusKey: "" })
                 property var serviceGroups: []
                 property var serviceAliases: ({})
@@ -8153,10 +8169,10 @@ component NativeMentionChip: Item {
                     readId: String(modelData.id)
                     readonly property bool own: Boolean(modelData.own)
                     // Issue #113 read-request pulse (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md):
-                    // the reference marks the bubble pending exactly when the server
-                    // message is inbound and not yet read
-                    // (workspace-message-bubble-presentation.ui.tsx:531-532).
+                    // The list passes boundary coverage to each unread peer bubble
+                    // (workspace-message-list.ui.tsx:661).
                     readonly property bool readRequestPending: !own && !Boolean(modelData.read)
+                        && !!messageList.readRequestCoverage[modelData.id]
                     readonly property bool lastInOwnGroup: groupLast
                     width: messageList.width - 24
                     height: bubbleOffset + (externalAuthor ? 24 : 0) + bubble.height + (groupLast && !keyControl ? 4 : 0)
@@ -10055,7 +10071,7 @@ component NativeMentionChip: Item {
                     // Reference ChatPageSelectionBar: only visible with a
                     // non-empty selection; a danger notice marker (4 px, 10 px
                     // vertical inset, rounded right edge), "Selected: N" in
-                    // text-sm medium text-primary, then Cancel + Forward.
+                    // text-sm medium text-primary, then Cancel, Reply and Forward.
                     // The 52 px keeps the native 40 px button inside the strip
                     // with the reference's 6 px vertical padding.
                     width: parent.width
@@ -10103,8 +10119,35 @@ component NativeMentionChip: Item {
                             text: qsTr("Cancel")
                             onClicked: root.clearMessageSelection()
                         }
-                        NativeButton {
+                        component SelectionActionButton: NativeButton {
+                            id: action
+                            icon.width: 28
+                            icon.height: 28
+                            icon.color: root.colors["text-primary"]
+                            contentItem: ControlsImpl.IconLabel {
+                                icon: action.icon
+                                text: action.text
+                                font: action.font
+                                color: root.colors["text-primary"]
+                                spacing: 6
+                                opacity: action.enabled ? 1 : 0.5
+                            }
+                        }
+                        SelectionActionButton {
+                            objectName: "selectionReplyButton"
+                            colors: root.colors
+                            text: qsTr("Reply")
+                            icon.source: "qrc:/workspace/icons/reply.svg"
+                            enabled: root.messageSelectionCount > 0 && root.composerAvailable
+                                && !root.encryptedConversation && !root.controller.busy && !root.controller.cacheStale
+                            onClicked: {
+                                if (root.controller.replyToSelection(root.messageSelectionIds))
+                                    root.clearMessageSelection()
+                            }
+                        }
+                        SelectionActionButton {
                             objectName: "selectionForwardButton"
+                            icon.source: "qrc:/workspace/icons/forward.svg"
                             colors: root.colors
                             text: qsTr("Forward")
                             // reference forwardDisabled = selectedCount === 0

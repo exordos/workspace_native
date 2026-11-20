@@ -10036,12 +10036,6 @@ QStringList NativeController::readyUploadLinks(quint64 session) const
         if (entry.owner != owner || entry.task.conversation != conversationKey()
             || entry.task.editSession != session
             || entry.status != "ready" || links.contains(entry.markdown)) continue;
-        const auto alias = imageAlias(entry);
-        const QRegularExpression token(QRegularExpression::escape(alias) + QStringLiteral("(?!\\()"));
-        bool inlineImage = !alias.isEmpty() && (draft().contains(entry.markdown) || draft().contains(token));
-        if (!alias.isEmpty()) for (const auto &tab : m_replyTabs)
-            inlineImage = inlineImage || tab.answer.contains(entry.markdown) || tab.answer.contains(token);
-        if (inlineImage) continue;
         links.append(entry.markdown);
     }
     return links;
@@ -13923,6 +13917,29 @@ std::optional<ParsedLeadingQuote> leadingQuoteReference(const QString &content)
     return parsed;
 }
 
+QString prependUploadedLinks(const QString &body, const QStringList &attachments)
+{
+    if (attachments.isEmpty()) return body;
+    const auto content = body.trimmed();
+    const auto missing = NativeMarkdown::missingAttachmentLinks(content, attachments);
+    if (missing.isEmpty()) return content;
+    const auto links = missing.join('\n');
+    if (content.isEmpty()) return links;
+
+    const auto newline = content.indexOf('\n');
+    const auto first = content.left(newline).trimmed();
+    if (leadingQuoteReference(first) && (newline < 0 || NativeMarkdown::startsWithParagraph(content, first))) {
+        auto result = first + QStringLiteral("\n\n") + links;
+        if (newline >= 0) {
+            auto rest = newline + 1;
+            while (rest < content.size() && (content[rest] == '\r' || content[rest] == '\n')) ++rest;
+            if (rest < content.size()) result += QStringLiteral("\n\n") + content.mid(rest);
+        }
+        return result;
+    }
+    return links + '\n' + content;
+}
+
 // Issue #202: mirrors restoreWorkspaceReplySessionFromMarkdown (workspace_ui
 // 61dacef workspace-reply-restore.lib.ts). A leading standalone
 // "[Name](urn:quote:...)" line restores one quote block; the legacy blockquote
@@ -15262,6 +15279,8 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
         m_topicOpening.routeStream = m_stream;
         m_topicOpening.routeTopic = m_topic;
         m_topicOpening.routeSecurity = topicOpeningSecurity(*currentStream());
+        // Publish the user's destination and its visible page in the same route change.
+        if (!m_restoringSidebarRoute) m_starredVisible = false;
     }
     const auto current = [&] {
         return guard && selection == m_selection
@@ -16120,16 +16139,13 @@ void NativeController::send()
             // same mention serialization.
             auto answer = (tab.id == m_replyActiveTab ? wire
                 : replaceImageAliases(serializeComposerMentions(tab.answer, mentionEntries), true)).trimmed();
-            if (blocks.isEmpty() && !attachments.isEmpty())
-                answer = attachments.join('\n') + (answer.isEmpty() ? QString{} : QStringLiteral("\n\n") + answer);
             blocks << (answer.isEmpty() ? quoteLine : quoteLine + QStringLiteral("\n\n") + answer);
         }
         auto body = blocks.join(QStringLiteral("\n\n"));
         while (!body.isEmpty() && body.back().isSpace()) body.chop(1); // reference trimEnd
         wire = body;
-    } else if (!attachments.isEmpty()) {
-        wire = attachments.join('\n') + (wire.trimmed().isEmpty() ? QString{} : QStringLiteral("\n") + wire.trimmed());
     }
+    wire = prependUploadedLinks(wire, attachments);
     if (!boundedText(wire, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;
@@ -17482,15 +17498,20 @@ void NativeController::pumpRowPreviewHydration()
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
-bool NativeController::beginReply(const QString &id, const QString &selectedText)
+const Message *NativeController::replyTarget(const QString &id) const
 {
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
-    // Same conversation guard as editableMessage (docs/NATIVE_DESKTOP_REPLIES.md);
-    // encrypted streams keep replies out of reach, as the shipped e2ee gate does.
     if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown"
-        || message->stream != m_stream || message->topic != m_topic) {
+        || message->kind != "markdown" || message->stream != m_stream || message->topic != m_topic)
+        return nullptr;
+    return message;
+}
+
+bool NativeController::beginReply(const QString &id, const QString &selectedText)
+{
+    const auto *message = replyTarget(id);
+    if (!message) {
         report(tr("This message can no longer be replied to."));
         return false;
     }
@@ -17527,30 +17548,49 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
 
 bool NativeController::addReplyTab(const QString &id, const QString &selectedText)
 {
-    const auto *stream = currentStream();
-    const auto *message = findMessage(id);
-    if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown"
-        || message->stream != m_stream || message->topic != m_topic) {
-        report(tr("This message can no longer be replied to."));
-        return false;
+    return appendReplyTabs({id}, selectedText, false);
+}
+
+bool NativeController::replyToSelection(const QStringList &ids)
+{
+    return appendReplyTabs(ids, {}, true);
+}
+
+bool NativeController::appendReplyTabs(const QStringList &ids, const QString &selectedText, bool keepRestoredEdit)
+{
+    if (ids.isEmpty()) return false;
+    // Resolve every selected quote before touching an existing edit or reply session.
+    QList<ReplyTab> tabs;
+    for (const auto &id : ids) {
+        const auto *message = replyTarget(id);
+        if (!message) {
+            report(tr("This message can no longer be replied to."));
+            return false;
+        }
+        ReplyTab tab;
+        tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        tab.message = id;
+        tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tabs.append(std::move(tab));
     }
-    if (!m_editingMessage.isEmpty()) closeEditSession();
-    // addWorkspaceReplyTab (workspace-reply.lib.ts:59-79) via the page wiring
-    // (chat-page-workspace.ui.tsx:4166-4181): append a fresh blank-answer tab and
-    // activate it; on an empty session the first tab inherits the composer text.
-    if (m_replyTabs.isEmpty()) return beginReply(id, selectedText);
-    ReplyTab tab;
-    tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    tab.message = id;
-    tab.selectedText = normalizedReplySelection(message->content, selectedText);
-    tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-    m_replyTabs.append(tab);
-    m_replyActiveTab = tab.id;
+
+    const QPointer<NativeController> guard(this);
+    const auto selection = m_selection;
+    if (!m_editingMessage.isEmpty() && !(keepRestoredEdit && m_editRestoresReply)) {
+        closeEditSession();
+        if (!guard || m_selection != selection || !authoritativeRoute()) return false;
+        for (const auto &id : ids) if (!replyTarget(id)) return false;
+    }
+    if (m_replyTabs.isEmpty()) tabs.first().answer = draft();
+    const auto active = tabs.last().id;
+    const auto answer = tabs.last().answer;
+    m_replyTabs.append(tabs);
+    m_replyActiveTab = active;
     m_replyRoute = conversationKey();
+    setDraft(answer);
+    if (!guard || m_selection != selection || m_replyActiveTab != active) return false;
     emit replySessionChanged();
-    // The composer mirrors the active tab's (empty) answer from now on.
-    setDraft(QString());
     return true;
 }
 
@@ -17964,8 +18004,17 @@ void NativeController::refreshQuoteOriginDecryptions()
     }
 }
 
+QStringList NativeController::readRequestBoundaryIds() const
+{
+    QStringList ids;
+    if (m_readBoundary) ids.append(m_readBoundary->uuid);
+    for (const auto &queued : m_queuedReadBoundaries) ids.append(queued.uuid);
+    return ids;
+}
+
 void NativeController::resetReadState()
 {
+    const bool hadBoundaries = m_readBoundary.has_value() || !m_queuedReadBoundaries.isEmpty();
     m_reactionRefreshes.clear();
     m_reactionRevisions.clear();
     m_ownReactions.clear();
@@ -17982,6 +18031,7 @@ void NativeController::resetReadState()
     m_readLoadedIds.clear();
     m_confirmedReadIds.clear();
     m_readPostRetries = m_readConfirmAttempts = 0;
+    if (hadBoundaries) emit readRequestBoundariesChanged();
 }
 
 static bool throughBoundary(const Message &message, const Message &boundary)
@@ -18044,11 +18094,13 @@ void NativeController::enqueueReadBoundary(const QString &id, bool allowReadAnch
         if (anchor->topic == m_readBoundary->topic && throughBoundary(*anchor, *m_readBoundary)) return;
         const auto queued = m_queuedReadBoundaries.constFind(anchor->topic);
         if (queued != m_queuedReadBoundaries.cend()) {
-            if (!throughBoundary(*anchor, queued.value())) m_queuedReadBoundaries[anchor->topic] = *anchor;
-        } else if (m_queuedReadBoundaries.size() < 256) {
+            if (throughBoundary(*anchor, queued.value())) return;
+        } else {
+            if (m_queuedReadBoundaries.size() >= 256) return;
             m_readTopics.enqueue(anchor->topic);
-            m_queuedReadBoundaries.insert(anchor->topic, *anchor);
         }
+        m_queuedReadBoundaries.insert(anchor->topic, *anchor);
+        emit readRequestBoundariesChanged();
         return;
     }
     m_readBoundary = *anchor;
@@ -18060,6 +18112,7 @@ void NativeController::enqueueReadBoundary(const QString &id, bool allowReadAnch
     m_readPostRetries = m_readConfirmAttempts = 0;
     ++m_readTicket;
     sendReadRequest(false);
+    emit readRequestBoundariesChanged();
 }
 
 void NativeController::sendReadRequest(bool confirmation)
@@ -18152,6 +18205,11 @@ void NativeController::finishReadRequest(bool success)
     m_readBoundary.reset();
     const auto selection = m_selection;
     const QPointer<NativeController> guard(this);
+    // A queued anchor may have been deleted before dispatch. Publish the
+    // remaining boundaries after the queue has skipped or started it.
+    const auto notifyBoundaries = qScopeGuard([guard] {
+        if (guard) emit guard->readRequestBoundariesChanged();
+    });
     emit stateChanged();
     if (!guard || selection != m_selection) return;
     while (!m_readTopics.isEmpty() && !m_readPending) {
@@ -18492,9 +18550,7 @@ void NativeController::submitEditMessage()
     text = replaceImageAliases(text, true);
     if (m_editRestoresReply && !m_replyTabs.isEmpty())
         text = NativeMarkdown::prependEditAttachments(text, m_editAttachments.value(QString()));
-    const auto newAttachments = readyUploadLinks(m_editSession);
-    if (!newAttachments.isEmpty())
-        text = newAttachments.join('\n') + (text.isEmpty() ? QString{} : QStringLiteral("\n") + text);
+    text = prependUploadedLinks(text, readyUploadLinks(m_editSession));
     if (text.size() > 40000 || !boundedText(text, 40000)) {
         report(tr("Message is too long (maximum 40,000 characters)."));
         return;

@@ -97,6 +97,14 @@ plain quote preview.
   (`packages/web/src/i18n/locales/en.json:720`, `ru.json:723`);
   `common.close` = "Close" / "Закрыть" (`en.json:1447`, `ru.json:1458`).
 
+### Reply from the selection bar
+
+The Reply button between Cancel and Forward quotes the complete selected messages
+in selection order. It validates the whole selection before changing the composer.
+Existing tabs keep their answers. When the session is empty, the first new tab
+inherits the composer text. The last new tab becomes active and a successful
+action clears the selection. A missing message leaves the selection available.
+
 ## Native plan
 
 All store work lands in `packages/native/src/native-controller.cpp/.h`
