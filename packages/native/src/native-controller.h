@@ -1488,7 +1488,7 @@ private:
     void staleReadConversation(const QString &stream, const QString &topic);
     void cachedCollection(const NativeCache::Key &key, const QString &path, const QUrlQuery &query,
                           std::function<bool(const QJsonArray &, bool)> done, bool forceNetwork = false,
-                          std::function<void()> failed = {});
+                          std::function<void()> failed = {}, quint64 selectedTopicRequest = 0);
     struct UploadTask {
         quint64 intent = 0;
         QString path;

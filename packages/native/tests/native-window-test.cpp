@@ -9624,6 +9624,7 @@ mv -Tf "$root/.current-new" "$root/current"
         std::function<void()> releaseUsers;
         QList<std::function<void()>> releaseTopicPages;
         bool holdTopicPages = true;
+        int secondTopicGets = 0;
         server.handler = [&](const Request &request) {
             const auto path = request.target.path();
             if (path.endsWith("/users/")) {
@@ -9637,6 +9638,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/")) {
                 const bool second = QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream;
                 Response response{second ? otherTopics : firstTopics};
+                if (second) ++secondTopicGets;
                 if (second && holdTopicPages)
                     response.defer = [&](auto send) { releaseTopicPages.append(std::move(send)); };
                 return response;
@@ -9678,6 +9680,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "topic-" + secondTopicId));
         // Select the cached topic while its server catalog is still in flight.
         QTRY_VERIFY(!releaseTopicPages.isEmpty());
+        const int getsBeforeTopicSelection = secondTopicGets;
         clickCurrentItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!pending.value(secondTopicId).isEmpty());
         QTRY_COMPARE(controller.messages().size(), 0);
@@ -9696,6 +9699,7 @@ mv -Tf "$root/.current-new" "$root/current"
         releaseUsers();
         QTRY_VERIFY(!controller.cacheStale());
         QTRY_VERIFY(!status->isVisible());
+        QCOMPARE(secondTopicGets, getsBeforeTopicSelection);
         cache.shutdown(); QTRY_VERIFY(cache.stopped());
     }
 
