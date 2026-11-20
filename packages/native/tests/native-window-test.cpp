@@ -6710,6 +6710,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *page = view("nativeFeedPage"); QVERIFY(page);
         auto *list = view("feedList"); QVERIFY(list);
         // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
         const auto atBottom = [list] {
@@ -6717,7 +6718,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 - list->property("contentY").toReal()
                 - list->property("height").toReal() <= 1.0;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("anchorRunning").toBool() && atBottom(), 5000);
         QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
         // Reaching the top fires exactly one marker request; the gated response
         // stays in flight while the user scrolls away and back: the armed flag
@@ -6737,10 +6738,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
         // The prepend restore keeps the visual position: contentY moved down by
         // the merged height instead of jumping to the top.
-        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 10.0, 3000);
         QCOMPARE(fixture.feedMarkerPages, 1);
         // Clicking the button returns to the bottom.
-        click(window, view("feedScrollToBottom"));
+        auto *bottom = view("feedScrollToBottom"); QVERIFY(bottom);
+        clickReadyItem(window, bottom);
         QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
     }
 

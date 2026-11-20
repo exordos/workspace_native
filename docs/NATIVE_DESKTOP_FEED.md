@@ -225,6 +225,9 @@ Row: `rounded-xl` 12 px radius, 1 px `border-subtle`, `bg-elevated` at 60 %,
   and message-list keyboard interaction are suspended without extra code.
   Opening a Feed row (or the close control) restores the conversation layout.
   Pinned by `feedPageHidesConversationAndOwnsContentWidth`.
+- Selecting the floating scroll-to-bottom button cancels a pending prepend
+  anchor. After the smooth scroll finishes, the list settles at the latest row
+  using the measured height of the newly added delegates.
 - Interrupted Feed requests settle (issue #356). Replacing the access token -
   a normal same-owner renewal - bumps the API generation, and the shared
   request wrapper drops every callback of the retired generation. The
