@@ -26642,11 +26642,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
             QTRY_COMPARE(controller.streams().size(), 1);
             preferences.setOwner(controller.ownerKey());
-            click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+            // This fixture exercises invalidated poll submissions. A fresh
+            // sign-in can publish its catalogue before the new sidebar row
+            // replaces the previous owner's delegate.
+            controller.selectStream(streamId);
+            QTRY_COMPARE(controller.selectedStream(), streamId);
             QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+            controller.selectTopic(topicId);
+            QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            click(window, visibleItem(window->contentItem(), "pollButton"));
+            QQuickItem *pollButton = nullptr;
+            QTRY_VERIFY((pollButton = visibleItem(window->contentItem(), "pollButton"))
+                        && pollButton->isEnabled() && pollButton->width() > 0 && pollButton->height() > 0);
+            clickReadyItem(window, pollButton);
         };
         loginAndOpen();
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
