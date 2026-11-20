@@ -886,8 +886,16 @@ private slots:
         resumed.stop();
     }
 
+    void signOutClearsPersistedCursorAndNextConnectStartsClean_data()
+    {
+        QTest::addColumn<bool>("rejectWrites");
+        QTest::newRow("healthy-store") << false;
+        QTest::newRow("temporarily-read-only-store") << true;
+    }
+
     void signOutClearsPersistedCursorAndNextConnectStartsClean()
     {
+        QFETCH(bool, rejectWrites);
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
         RealtimeCursorStore store(directory.path());
@@ -904,11 +912,11 @@ private slots:
         fixture.send(realtimeEvent(12));
         QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
         const auto key = RealtimeCursorStore::ownerKey(fixture.api.server(), projectId, userId);
-        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value() && store.read(key)->epoch == 12, 2000);
+        store.setFaultsForTest(rejectWrites, rejectWrites);
         fixture.events.clear();
         fixture.session.logout();
-        // The signed-out owner's position must not survive anywhere.
-        QVERIFY(!store.read(key).has_value());
+        QCOMPARE(store.read(key).has_value(), rejectWrites);
         // The next connect cannot resume it: fresh baseline plus snapshot,
         // and the socket carries the new baseline position, never 12.
         QVERIFY(fixture.login());
@@ -917,6 +925,8 @@ private slots:
         QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(10));
         const QUrlQuery cursor(fixture.sockets.last()->requestUrl());
         QCOMPARE(cursor.queryItemValue("last_epoch_version"), QString("10"));
+        store.setFaultsForTest(false, false);
+        QTRY_VERIFY_WITH_TIMEOUT(store.read(key).has_value() && store.read(key)->epoch == 10, 2000);
     }
 
     void durableCursorStoreIsOwnerScopedMonotonicAndValidating()
