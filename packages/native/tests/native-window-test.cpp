@@ -949,6 +949,27 @@ public:
     }
 };
 
+// Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): one body carrying a
+// regular mention urn, a silent mention urn and a plain-text mention with
+// no uuid (the reference degradation case).
+class WindowMentionFixture : public WindowChannelFixture {
+public:
+    static QString aliceUuid() { return QStringLiteral("a11ece11-1111-4111-8111-111111111111"); }
+    static QString silentUuid() { return QStringLiteral("511e5111-2222-4222-8222-222222222222"); }
+    WindowMentionFixture() {
+        const auto fallback = server.handler;
+        server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const auto body = QStringLiteral("Hi [Alice](urn:user:%1) and @Ghost and @Ghost2 and [Note](urn:user:%2 \"silent\")")
+                    .arg(aliceUuid(), silentUuid());
+                return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
+            }
+            return fallback(request);
+        };
+    }
+};
+
 // Query the displayed text's actual anchor geometry, then send mouse input.
 // The public linkActivated signal is the witness that the real link received it.
 static QPointF topicLinkPoint(QQuickItem *text, const QString &expected)
@@ -33989,6 +34010,62 @@ private slots:
         for (auto &send : *readGate) send();
         readGate->clear();
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): a body containing a
+    // mention urn renders a clickable message-mention-<urn-suffix> chip; a
+    // silent mention renders without the "@" prefix; a plain-text mention
+    // without a uuid stays unstyled; clicking the chip raises the existing
+    // profile-open path.
+    void mentionChipsRenderAndOpenProfile()
+    {
+        WindowMentionFixture fixture;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("mentions.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE_WITH_TIMEOUT(session.projects().size(), 1, 2000);
+        session.selectProject(projectId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
+        controller.setRealtimeMode(true);
+        controller.selectStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
+        const QString alice = WindowMentionFixture::aliceUuid();
+        const QString note = WindowMentionFixture::silentUuid();
+        // The regular mention gets a chip sized over the painted anchor.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + alice), 3000);
+        auto *chip = visibleItem("message-mention-" + alice);
+        QVERIFY(chip->isVisible());
+        QVERIFY2(chip->width() > 8 && chip->height() > 4,
+            qPrintable(QString("chip %1x%2").arg(chip->width()).arg(chip->height())));
+        // The silent mention gets a chip too.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + note), 3000);
+        // Painted text: "@Alice" inside the anchor, "Note" without the prefix,
+        // and the uuid-less "@Ghost" as plain text only.
+        auto *body = visibleItem("message-content-" + messageId);
+        QVERIFY(body);
+        const QString html = body->property("text").toString();
+        QVERIFY2(html.contains(QStringLiteral(">@Alice<")), qPrintable(html));
+        QVERIFY2(html.contains(QStringLiteral(">Note<")), qPrintable(html));
+        QVERIFY(!html.contains(QStringLiteral(">@Note<")));
+        QVERIFY(html.contains(QStringLiteral("@Ghost")));
+        // Only the two urn-backed mentions are anchors; @Ghost stayed plain.
+        const QStringList markers{QStringLiteral("<a href=\"urn:user:")};
+        QCOMPARE(html.count(markers.first()), 2);
+        // Clicking the chip opens the workspace profile drawer for that user.
+        click(window, chip);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
+        QVERIFY(visibleItem("profileLayer")->property("isSelf").toBool() == false);
+        if (!closeIncubatedTestWindow(engine, window))
+            QFAIL("mention chip scene teardown");
     }
 };
 
