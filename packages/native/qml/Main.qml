@@ -8377,6 +8377,7 @@ component NativeMentionChip: Item {
                             // place of the text body (issue #161, reference
                             // workspace-message-bubble-presentation.ui.tsx:543+906).
                             NativeJitsiCard {
+                                id: callCard
                                 objectName: "call-card-" + messageRow.modelData.id
                                 visible: messageRow.isCallCard && !messageRow.keyControl
                                 width: parent.width
@@ -8386,7 +8387,6 @@ component NativeMentionChip: Item {
                                 roomName: root.controller.callRoomName(messageRow.callUrl)
                                 locationName: ""
                                 authorName: String(messageRow.modelData.author || "")
-                                timeText: String(messageRow.modelData.time || "")
                                 onJoinRequested: meetingUrl => root.controller.joinCall(meetingUrl)
                             }
                             // Poll card (issue #216, docs/NATIVE_DESKTOP_POLLS_BUBBLE.md): the
@@ -9181,7 +9181,8 @@ component NativeMentionChip: Item {
                             }
                             Item {
                                 id: messageFooter
-                                visible: !messageRow.keyControl && !messageRow.inlineMeta && !messageRow.lockedInlineMeta
+                                visible: !messageRow.keyControl && (messageRow.isCallCard
+                                    ? reactionFlow.implicitHeight > 0 : !messageRow.inlineMeta && !messageRow.lockedInlineMeta)
                                 width: parent.width
                                 height: Math.max(reactionFlow.implicitHeight, messageTime.height)
                                 Flow {
@@ -9511,8 +9512,10 @@ component NativeMentionChip: Item {
                             id: messageTime
                             visible: !messageRow.keyControl
                             objectName: "message-time-" + messageRow.modelData.id
-                            x: bubble.width - 12 - implicitWidth
-                            y: messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
+                            parent: messageRow.isCallCard ? callCard.metadataRow : bubble
+                            x: parent.width - (messageRow.isCallCard ? 0 : 12) - implicitWidth
+                            y: messageRow.isCallCard ? (parent.height - height) / 2
+                                : messageRow.lockedInlineMeta ? bubble.height - 8 - height : bubbleContent.y + (messageRow.inlineMeta ? messageRow.hasInlineImages ? mediaMessageBody.y + mediaMessageBody.height : messageBody.y + messageBody.height : messageFooter.y + messageFooter.height) - height
                             height: 16
                             text: messageRow.modelData.time
                             textFormat: Text.PlainText
