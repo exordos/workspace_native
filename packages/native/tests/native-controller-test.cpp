@@ -30087,6 +30087,10 @@ private slots:
         // A vault row without any announcement in loaded history keeps "" and
         // the QML falls back to "Not found in loaded history". Seeded last, it
         // is the newest receivedAt row and sits right behind the current key.
+        const auto previousReceipt = QDateTime::fromString(
+            historical.value("addedAt").toString(), Qt::ISODateWithMs);
+        QVERIFY(previousReceipt.isValid());
+        QTRY_VERIFY(QDateTime::currentDateTimeUtc() > previousReceipt);
         f.seedKey(KeyManagementFixture::KeyOrphan);
         f.controller.refreshChatLocalKeys();
         QCOMPARE(f.inventoryRows().size(), 3);
