@@ -574,6 +574,7 @@ public:
     Session session{&api};
     NativeController controller{&api, &session};
     std::function<Response(const Request &)> messages;
+    std::function<Response(const Request &)> mentions;
     std::function<Response(const Request &)> users;
     std::function<Response(const Request &)> topics;
     std::function<Response(const Request &)> topicActions;
@@ -632,6 +633,8 @@ public:
             }
             if (path.contains("/messages/")) {
                 if (request.method == "GET" && path.endsWith("/messages/")) {
+                    if (QUrlQuery(request.target).hasQueryItem("mentioned"))
+                        return mentions ? mentions(request) : Response{QJsonArray{}};
                     if (QUrlQuery(request.target).hasQueryItem("topic_uuid")) ++topicHistoryGets;
                     else ++aggregateHistoryGets;
                 }
@@ -18226,7 +18229,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1, true)}, {2, mentionMessage(2)}, {3, mentionMessage(3)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18304,7 +18307,7 @@ private slots:
         for (int n = 1; n <= 60; ++n)
             rows->insert(n, mentionMessage(n, true)); // read=true keeps the index walk empty
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18331,6 +18334,74 @@ private slots:
         QVERIFY(!fixture.controller.mentionsPage().value("canLoadMore").toBool());
     }
 
+    void sidebarMentionBadgeUpdatesOnExactRemoval_data()
+    {
+        QTest::addColumn<bool>("deleted");
+        QTest::newRow("messages.read") << false;
+        QTest::newRow("message.deleted") << true;
+    }
+
+    void sidebarMentionBadgeUpdatesOnExactRemoval()
+    {
+        QFETCH(bool, deleted);
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        bool displayed = false;
+        // A sidebar delegate observes this notifier. Reading the projection only
+        // after the event would conceal a missing notification.
+        connect(&fixture.controller, &NativeController::sidebarStreamsChanged, this, [&] {
+            for (const auto &row : fixture.controller.sidebarStreams()) {
+                if (row.toMap().value("id").toString() == streamId)
+                    displayed = row.toMap().value("hasMention").toBool();
+            }
+        });
+        for (int n : {1, 2})
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", mentionMessage(n), n)));
+        QVERIFY(displayed);
+        for (int n : {1, 2}) {
+            const auto uuid = mentionMessage(n).value("uuid");
+            const auto kind = deleted ? QStringLiteral("message.deleted") : QStringLiteral("messages.read");
+            const QJsonObject payload = deleted
+                ? QJsonObject{{"kind", kind}, {"uuid", uuid}, {"stream_uuid", streamId}, {"topic_uuid", topicId}}
+                : QJsonObject{{"kind", kind}, {"project_id", projectId}, {"message_uuids", QJsonArray{uuid}}};
+            QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent(kind, payload, 2 + n)));
+            QCOMPARE(displayed, n == 1);
+        }
+    }
+
+    void sidebarMentionBootstrapPreservesConcurrentReadAndDelete_data()
+    {
+        QTest::addColumn<bool>("firstPageUnavailable");
+        QTest::newRow("delayed-page") << false;
+        QTest::newRow("temporary-failure") << true;
+    }
+
+    void sidebarMentionBootstrapPreservesConcurrentReadAndDelete()
+    {
+        QFETCH(bool, firstPageUnavailable);
+        int attempts = 0;
+        Fixture fixture;
+        std::function<void()> release;
+        fixture.mentions = [&](const Request &) {
+            if (++attempts == 1 && firstPageUnavailable) return Response{QJsonObject{}, 503};
+            Response result{QJsonArray{mentionMessage(1), mentionMessage(2), mentionMessage(3)}};
+            result.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return result;
+        };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(release);
+        const auto read = mentionMessage(1).value("uuid");
+        const auto deleted = mentionMessage(2).value("uuid");
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("messages.read",
+            {{"project_id", projectId}, {"message_uuids", QJsonArray{read}}}, 13)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted",
+            {{"uuid", deleted}, {"stream_uuid", streamId}, {"topic_uuid", topicId}}, 14)));
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", mentionMessage(4), 15)));
+        release();
+        QTRY_COMPARE(fixture.controller.activityMentionsCount(), 2);
+        QVERIFY(!fixture.controller.mentionsVisible());
+    }
+
     void activityMentionRealtimeMergesWithoutRefetch()
     {
         Fixture fixture;
@@ -18338,7 +18409,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1)}, {2, mentionMessage(2, false, true)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18417,7 +18488,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1)}, {2, mentionMessage(2)}, {3, mentionMessage(3, true)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18469,7 +18540,7 @@ private slots:
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(QMap<int, QJsonObject>{
             {1, mentionMessage(1)}, {2, mentionMessage(2)}, {3, mentionMessage(3, true)}});
         auto queries = std::make_shared<QVector<QUrlQuery>>();
-        fixture.messages = [rows, queries](const Request &request) {
+        fixture.mentions = [rows, queries](const Request &request) {
             queries->append(QUrlQuery(request.target));
             return mentionPageResponse(*rows, request);
         };
@@ -18498,7 +18569,7 @@ private slots:
             {1, mentionMessage(1)}, {2, mentionMessage(2, true)}});
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto released = std::make_shared<bool>(false);
-        fixture.messages = [rows, gates, released](const Request &request) {
+        fixture.mentions = [rows, gates, released](const Request &request) {
             const QUrlQuery query(request.target);
             // Hold the first All collection page in flight, frozen at the
             // pre-deletion snapshot that includes row 2.
@@ -18542,7 +18613,7 @@ private slots:
             {1, mentionMessage(1, true)}, {2, mentionMessage(2)}, {3, mentionMessage(3)}});
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto released = std::make_shared<bool>(false);
-        fixture.messages = [rows, gates, released](const Request &request) {
+        fixture.mentions = [rows, gates, released](const Request &request) {
             const auto query = QUrlQuery(request.target);
             if (!*released && query.queryItemValue("page_limit") == "100") {
                 Response response{QJsonArray{}, 200, 0, {}}; // authoritative index: nobody is unread
@@ -18579,7 +18650,7 @@ private slots:
             {1, mentionMessage(1)}});
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto released = std::make_shared<bool>(false);
-        fixture.messages = [rows, gates, released](const Request &request) {
+        fixture.mentions = [rows, gates, released](const Request &request) {
             const QUrlQuery query(request.target);
             if (!*released && query.hasQueryItem("mentioned")) {
                 Response response{QJsonArray{}, 200, 0, {}};
@@ -21211,7 +21282,7 @@ private slots:
         fixture.aggregateMessages = true;
         const auto rows = std::make_shared<QMap<int, QJsonObject>>(
             QMap<int, QJsonObject>{{1, mentionMessage(1, false)}});
-        fixture.messages = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
+        fixture.mentions = [rows](const Request &request) { return mentionPageResponse(*rows, request); };
         fixture.controller.useDrafts(&drafts);
         QVERIFY(fixture.start());
         QTRY_VERIFY(drafts.ready(streamId, topicId));
@@ -22837,7 +22908,7 @@ private slots:
         // The unread-mention index walk (mentioned=true&read=false) finds one unread
         // mention in the channel; ordinary history pages stay empty.
         test.aggregateMessages = true;
-        test.messages = [](const Request &request) {
+        test.mentions = [](const Request &request) {
             if (QUrlQuery(request.target).queryItemValue("mentioned") == QLatin1String("true"))
                 return Response{QJsonArray{mentionMessage(1)}};
             return Response{QJsonArray{}};
@@ -22871,12 +22942,9 @@ private slots:
         QCOMPARE(channel.value("displayedUnread").toInt(), 5);
         QVERIFY(!channel.value("unreadPassive").toBool());
         QVERIFY(!channel.value("pinned").toBool());
-        // The native unread-mention index walks with the mentions surface (the existing
-        // contract the activity rail encodes: nothing walks at bootstrap); opening and
-        // closing it must light the row badge exactly like the rail badge.
-        test.controller.showMentions();
-        QTRY_VERIFY_WITH_TIMEOUT(([&] { return rowOf(streamId).value("hasMention").toBool(); })(), 3000);
-        test.controller.closeMentions();
+        QVERIFY(!test.controller.mentionsVisible());
+        QTRY_COMPARE_WITH_TIMEOUT(test.controller.activityMentionsCount(), 1, 3000);
+        QVERIFY(rowOf(streamId).value("hasMention").toBool());
         QCOMPARE(channel.value("statusEmoji").toString(), QString{});
         QCOMPARE(channel.value("statusText").toString(), QString{});
         const auto alice = rowOf(direct);
@@ -31239,10 +31307,8 @@ private slots:
         FolderRailFixture f;
         QCOMPARE(f.controller.activityMentionsCount(), -1);
         QVERIFY(f.start());
-        // The unread-mentions index has not been walked for this owner yet,
-        // so the reference count stays null (sidebar-workspace-activity
-        // .ui.tsx owner-key gate): no badge before the first mentions load.
-        QCOMPARE(f.controller.activityMentionsCount(), -1);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.activityMentionsCount(), 0, 3000);
+        QVERIFY(!f.controller.mentionsVisible());
     }
 
     void activityOpenStatePersistsPerWorkspaceSession()

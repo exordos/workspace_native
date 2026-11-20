@@ -81,10 +81,8 @@ port of `sidebar-unread` used by the shipped unread badge), `notice-disable`,
 - `displayedUnread`, `unreadPassive` - the `resolveWorkspaceDisplayedUnread` port over the
   existing `activeUnread` / `passiveUnread` stream counters.
 - `hasMention` - stream present in `m_unreadMentions` (the native unread-mention index).
-  The index keeps its existing lazy contract: it walks when the mentions surface opens
-  (the activity-rail tests pin that no walk happens at bootstrap). The mention-index
-  mutation sites now also emit `streamsChanged` so rows re-bind (same rule as
-  `announceStreamRowPreviews`: any row-derived state must announce itself).
+  Each workspace session loads the index during bootstrap. Incoming mentions,
+  exact reads and deletions notify the sidebar when its projection changes.
 - `pinned` - the `FolderRow` learns which stream ids carry a `pinned_at` folder item;
   `sidebarStreams()` marks `pinned` when the selected folder's item is pinned. All /
   synthesized folders (no server items) resolve to false. No sort or pin-action behavior -
@@ -121,7 +119,7 @@ Window (`native-window-test.cpp`, `:33` xcb, inside `NativeWindowTest`):
 `sidebarDirectRowStatusPinMentionAndPassiveBadge` seeds via the `WindowChannelFixture`
 handler wrapper - the direct row renders emoji (legacy name mapped to its symbol) + status text (elided before
 the name keeps full width), pin shows only on the folder-pinned chat, the mention badge
-`@` appears after the mentions surface walks the index and closes, passive-only unread
+`@` appears when the workspace index loads, before visiting Mentions, passive-only unread
 renders `#989898` (blue-cold light `notice-disable`) while the active-unread channel keeps
 `#7087ff` (`badge-bg`).
 Both locales boot the window with the scene (ru fixture run asserts no translated strings
