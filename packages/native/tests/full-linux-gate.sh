@@ -54,4 +54,10 @@ cat > "$state/bus.conf" <<'EOF'
   </policy>
 </busconfig>
 EOF
-dbus-run-session --config-file "$state/bus.conf" -- ctest --test-dir "$build_dir" --parallel "$(nproc)" --output-on-failure --no-tests=error
+# The preferences suite exercises Qt's system color-scheme integration. The GTK
+# plugin supplies that integration; application windows use the bare X11 theme.
+ctest_args=(--test-dir "$build_dir" --parallel "$(nproc)" --output-on-failure --no-tests=error)
+QT_QPA_PLATFORMTHEME=gtk3 dbus-run-session --config-file "$state/bus.conf" -- \
+    ctest "${ctest_args[@]}" -R '^native-native-preferences$'
+QT_QPA_PLATFORMTHEME=generic dbus-run-session --config-file "$state/bus.conf" -- \
+    ctest "${ctest_args[@]}" -E '^native-native-preferences$'

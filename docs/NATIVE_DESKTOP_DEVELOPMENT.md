@@ -747,7 +747,8 @@ the original suites and retains the shared-display locks. Before creating a
 release tag, dispatch **Linux release artifacts** on the intended release commit
 and wait for the full Xvnc/Openbox gate. Tag builds repeat that gate before
 publishing. It uses a 1440×900 display, software Qt Quick rendering and an
-audio service for window tests that treat Qt warnings as failures.
+audio service for window tests that treat Qt warnings as failures. The Linux
+preferences suite uses the GTK3 platform theme to exercise OS color-scheme changes.
 
 Tests use synthetic fixtures. Physical HTTP tests permit only loopback addresses
 through an explicit C++ test constructor option; the application uses HTTPS-only
