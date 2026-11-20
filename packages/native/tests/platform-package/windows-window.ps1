@@ -29,6 +29,18 @@ using System.Runtime.InteropServices;
 public static class NativeWindow {
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
     [DllImport("kernel32.dll", SetLastError=true)] public static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
+    [DllImport("user32.dll")] public static extern IntPtr GetThreadDesktop(uint thread);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr OpenInputDesktop(uint flags,bool inherit,uint access);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern bool GetUserObjectInformation(IntPtr handle,int index,System.Text.StringBuilder name,uint length,out uint needed);
+    public static string DesktopName(IntPtr h) {
+      var buf=new System.Text.StringBuilder(128); uint size;
+      return h.ToString()+"/"+(GetUserObjectInformation(h,2,buf,256,out size)?buf.ToString():"unknown");
+    }
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int mode);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
@@ -108,7 +120,16 @@ try {
             } while ((Get-Date) -lt $deadline)
             if ($addresses.Count -ne 1) { throw "The accessible login address field could not be identified." }
             $field = $addresses[0]
+            $shell = New-Object -ComObject WScript.Shell
+            Write-Output "Desktop current $([NativeWindow]::DesktopName([NativeWindow]::GetThreadDesktop([NativeWindow]::GetCurrentThreadId()))) input $([NativeWindow]::DesktopName([NativeWindow]::OpenInputDesktop(0,$false,1))) foreground $([NativeWindow]::GetForegroundWindow()) target $window"
+            $activated = $shell.AppActivate($app.Id)
+            $didFocus = [NativeWindow]::SetForegroundWindow($window)
             $field.SetFocus()
+            $rect = $field.Current.BoundingRectangle
+            [void][NativeWindow]::SetCursorPos([int]($rect.X+$rect.Width/2),[int]($rect.Y+$rect.Height/2))
+            [NativeWindow]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+            [NativeWindow]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+            Write-Output "Activation $activated/$didFocus foreground $([NativeWindow]::GetForegroundWindow()) target $window focus $($field.Current.HasKeyboardFocus) bounds $rect"
             $pattern = $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
             $text = "Cassi clipboard | Привет"
             Set-Clipboard -Value $text
