@@ -402,6 +402,8 @@ if(BUILD_TESTING)
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 120)
         endif()
     endforeach()
+    # The markdown renderer has a 20 ms wall-clock guard for quadratic entity decoding.
+    set_tests_properties(native-native-markdown PROPERTIES RUN_SERIAL TRUE)
     add_test(NAME native-native-draft-workload COMMAND native-window-test)
     set_tests_properties(native-native-draft-workload PROPERTIES TIMEOUT 180
         ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")

@@ -3622,8 +3622,13 @@ private slots:
         Fixture f; f.stream = fullEncryptedStream(); f.stream["role"] = "administrator";
         addSourceRecipientBinding(f);
         const auto previous = f.http.handler;
-        f.http.handler = [previous, input](const Request &request) {
-            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/") return Response{input};
+        QList<QUrl> historyTargets;
+        f.http.handler = [previous, input, &historyTargets](const Request &request) {
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/") {
+                if (QUrlQuery(request.target).queryItemValue("mentioned") == "true") return Response{QJsonArray{}};
+                historyTargets.append(request.target);
+                return Response{input};
+            }
             return previous(request);
         };
         const auto restore = qScopeGuard([&] { f.http.handler = previous; });
@@ -3662,7 +3667,10 @@ private slots:
         QCOMPARE(row().value("status").toString(), expected);
         QVERIFY(!row().value("canGrant").toBool()); QVERIFY(!row().value("canReject").toBool());
         QCOMPARE(f.posts, 0); QCOMPARE(f.streamGets, 1); QCOMPARE(f.bindingGets, 1);
-        QCOMPARE(exactRequests(f, "GET", "/api/workspace/v1/messenger/messages/"), 1);
+        QCOMPARE(historyTargets.size(), 1);
+        const QUrlQuery history(historyTargets.first());
+        QCOMPARE(history.queryItemValue("stream_uuid"), streamId);
+        QVERIFY(!history.hasQueryItem("topic_uuid"));
     }
 
     void repeatedAuthorizedOutcomesDoNotConsumeTheRequestWindowAgain() {

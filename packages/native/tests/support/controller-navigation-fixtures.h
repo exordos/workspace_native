@@ -139,6 +139,7 @@ public:
             }
             if (path == "/api/workspace/v1/messenger/messages/") {
                 const QUrlQuery query(request.target);
+                if (query.queryItemValue("mentioned") == "true") return fallback(request);
                 historyTargets.append(request.target);
                 if (query.hasQueryItem("topic_uuid")) ++topicHistory; else ++aggregateHistory;
                 if (canonicalSeen && query.queryItemValue("stream_uuid") == resolved.value("stream_uuid").toString()
