@@ -471,6 +471,22 @@ private slots:
         QCOMPARE(fixture.client.acknowledgedEpoch(), quint64(29));
     }
 
+    void laterSubscribersSeeTheEnvelopeAfterImmediateAcknowledgement()
+    {
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        const auto event = realtimeEvent(12);
+        fixture.events.insert(12, event);
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &envelope) {
+            QVERIFY(fixture.client.acknowledge(envelope.value("uuid").toString()));
+        });
+        QSignalSpy observed(&fixture.client, &RealtimeClient::eventReceived);
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(observed.size(), 1);
+        QCOMPARE(observed.first().first().toJsonObject(), event);
+    }
+
     void reconnectResumesAcknowledgedCursor()
     {
         RealtimeFixture fixture;

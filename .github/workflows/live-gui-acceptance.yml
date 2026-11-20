@@ -51,12 +51,14 @@ jobs:
           set -euo pipefail
           output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$output"
-          if [[ ! -x "$FIXTURE_PROVIDER" || ! -r "$LIMITS" ]]; then
+          if [[ ! -x "$FIXTURE_PROVIDER" || ( "$MODE" != "controls" && ! -r "$LIMITS" ) ]]; then
             echo '{"status":"BLOCKED","blocked":["fixture-provider-or-reviewed-limits"]}' > "$output/report.json"
             exit 2
           fi
+          limits_args=()
+          if [[ -r "$LIMITS" ]]; then limits_args=(--limits "$LIMITS"); fi
           "$FIXTURE_PROVIDER" | python3 packages/native/scripts/live-workspace-acceptance.py \
-            --mode "$MODE" --package "$LIVE_PACKAGE" --limits "$LIMITS" --output "$output"
+            --mode "$MODE" --package "$LIVE_PACKAGE" "${limits_args[@]}" --output "$output"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -123,7 +123,7 @@ class Controls(unittest.TestCase):
         desktop.config = {"stream": "fixture"}
         runner["Desktop"].open_fixture_stream(desktop)
         self.assertEqual(
-            desktop.method_calls, [call.click("stream-fixture"), call.topic("a")]
+            desktop.method_calls, [call.sidebar_click("stream-fixture"), call.topic("a")]
         )
 
     def test_organization_preview_moving_next_allows_one_retry(self):

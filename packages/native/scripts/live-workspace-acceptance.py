@@ -93,7 +93,7 @@ class Desktop:
         self.env = env.copy()
         self.events = []
         self.lock = threading.Lock()
-        self.proc = self.compositor = self.keyring = self.pointer = None
+        self.proc = self.compositor = self.keyring = self.pointer = self.keyboard = None
         self.capture_stop = threading.Event()
         self.threads = []
         self.sequence = 0
@@ -363,6 +363,8 @@ class Desktop:
 
     def close_app(self, graceful=False):
         self.capture_stop.set()
+        stop(self.keyboard)
+        self.keyboard = None
         if graceful and self.proc and self.proc.poll() is None:
             command(["swaymsg", f"[pid={self.pid}]", "kill"], env=self.env)
             try:
@@ -410,9 +412,9 @@ class Desktop:
         # All lookup prefixes are fixed control names. Never publish fixture identifiers.
         raise Blocked("visible-control-unavailable-" + suffix.split("-", 1)[0])
 
-    def geometry(self, suffix, *, offscreen=False):
+    def geometry(self, suffix, *, offscreen=False, timeout=12):
         rect = (
-            self.lookup(suffix, offscreen=offscreen)
+            self.lookup(suffix, timeout=timeout, offscreen=offscreen)
             .get_component_iface()
             .get_extents(self.atspi.CoordType.WINDOW)
         )
@@ -500,25 +502,37 @@ class Desktop:
             raise Blocked("message-pane-outside-output")
         self.pane = rect
 
+    def sidebar_click(self, identifier, timeout=4):
+        for _ in range(30):
+            x, y, w, h = self.geometry(identifier, offscreen=True, timeout=timeout)
+            mid = y + h / 2
+            # At the top of this output the activity controls cover the scrolled-off sidebar.
+            if 180 <= mid <= 825 or (
+                identifier.startswith("stream-") and 135 <= mid <= 825
+            ):
+                self.position((x, y, w, h))
+                self.point("click")
+                return
+            self.point(f"move {max(5, min(1435, round(x + w / 2)))} 480")
+            self.point("wheel 18" if mid > 825 else "wheel -18")
+            time.sleep(0.12)
+        raise Blocked("sidebar-scroll-into-view")
+
     def topic(self, index):
         identifier = "topic-" + self.config["topic_" + index]
+        stream = self.config["stream"]
         try:
             self.lookup(identifier, 1.2, offscreen=True)
         except Blocked:
-            self.click("showMoreTopics-" + self.config["stream"])
-        for _ in range(24):
-            rect = self.geometry(identifier, offscreen=True)
-            x, y, w, h = rect
-            target_y = y + h / 2
-            if 105 <= target_y <= 845:
-                self.position(rect)
-                self.point("click")
-                break
-            self.point(f"move {max(5, min(1435, round(x + w / 2)))} 480")
-            self.point("wheel 18" if target_y > 845 else "wheel -18")
-            time.sleep(0.12)
-        else:
-            raise Blocked("topic-scroll-into-view")
+            try:
+                self.sidebar_click("showMoreTopics-" + stream, timeout=1.5)
+            except Blocked:
+                self.sidebar_click("stream-" + stream)
+                try:
+                    self.lookup(identifier, 1.2, offscreen=True)
+                except Blocked:
+                    self.sidebar_click("showMoreTopics-" + stream)
+        self.sidebar_click(identifier)
         self.observe_pane()
         self.until(
             lambda: (
@@ -529,7 +543,8 @@ class Desktop:
         )
 
     def scroll(self, kind, direction, bursts, on_input=None):
-        self.position(self.pane)
+        x, y, w, h = self.pane
+        self.position((x, y, 24, h) if kind == "paged-scroll" else (x, y, w, h))
         with self.action(
             kind, direction=direction, intent=self.latest("sample").get("intent", 0)
         ):
@@ -558,7 +573,7 @@ class Desktop:
 
     def open_fixture_stream(self):
         # Selecting the stream already expands its topic rows.
-        self.click("stream-" + self.config["stream"])
+        self.sidebar_click("stream-" + self.config["stream"])
         self.topic("a")
 
     def controls(self, limits):
@@ -661,14 +676,14 @@ class Desktop:
         try:
             self.lookup("topic-" + self.config["topic_b"], 0.7, offscreen=True)
         except Blocked:
-            self.click("stream-" + self.config["stream"])
+            self.sidebar_click("stream-" + self.config["stream"])
         for i in range(4 if extended else 2):
             target = "b" if i % 2 == 0 else "a"
             with self.action("warm-switch", target=target):
                 self.topic(target)
                 time.sleep(0.25)
         with self.action("aggregate", target="aggregate"):
-            self.click("stream-" + self.config["stream"])
+            self.sidebar_click("stream-" + self.config["stream"])
             time.sleep(0.35)
         self.topic("a")
         self.scroll("loaded-scroll", 1, 8)
@@ -712,7 +727,17 @@ class Desktop:
                     "type-start",
                     before=self.latest("picture").get("editorSignature", ""),
                 )
-                command(["wtype", "-"], env=self.env, data=b"acceptance draft")
+                # Keep the virtual keyboard present after typing, as on a real desktop.
+                # Removing the last keyboard withdraws Wayland focus from the entire window.
+                self.keyboard = subprocess.Popen(
+                    ["wtype", "-", "-s", "600000"],
+                    env=self.env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self.keyboard.stdin.write(b"acceptance draft")
+                self.keyboard.stdin.close()
                 self.until(
                     lambda: self.latest("sample").get("draftLength", 0) > 0,
                     "typing-not-observed",
@@ -726,12 +751,25 @@ class Desktop:
                 self.topic("b")
                 time.sleep(0.8)
         with self.action("reconnect"):
+            previous_connections = network.matched
             with network.disturb("disconnect"):
                 self.topic("a")
                 time.sleep(0.6)
-            self.until(
-                lambda: self.latest("sample").get("ready"), "revalidation-not-restored"
-            )
+            restored = clock()
+
+            def online():
+                return (
+                    network.matched > previous_connections
+                    and self.latest("sample").get("ready")
+                    and any(
+                        e["event"] == "response"
+                        and e["ms"] >= restored
+                        and 200 <= e.get("status", 0) < 300
+                        for e in list(self.events)
+                    )
+                )
+
+            self.until(online, "revalidation-not-restored", 30)
         for i in range(12 if extended else 3):
             target = "b" if i % 2 == 0 else "a"
             with self.action("repeated-navigation", target=target):

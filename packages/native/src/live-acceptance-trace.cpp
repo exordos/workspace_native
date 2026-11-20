@@ -16,6 +16,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
+#include <QSet>
 #include <QTimer>
 #include <QUrlQuery>
 #include <QWheelEvent>
@@ -123,6 +124,7 @@ public:
     const QString topicA = qEnvironmentVariable("WORKSPACE_NATIVE_ACCEPTANCE_TOPIC_A");
     const QString topicB = qEnvironmentVariable("WORKSPACE_NATIVE_ACCEPTANCE_TOPIC_B");
     QHash<QString, int> anchors;
+    QSet<QString> peerPlacements;
     QPointer<QQuickItem> list, editor;
     std::atomic<int> frames{0}, dropped{0};
 };
@@ -190,8 +192,15 @@ void observeLiveAcceptance(QQuickWindow *window, ApiClient &api, NativeControlle
         const auto payload = event.value("payload").toObject();
         const auto kind = payload.value("kind").toString();
         const auto serialized = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-        const bool peer = (!peerMessage.isEmpty() && serialized.contains(peerMessage))
+        const auto placement = payload.value("uuid").toString();
+        bool peer = (!peerMessage.isEmpty() && serialized.contains(peerMessage))
             || (!peerIdentity.isEmpty() && serialized.contains(peerIdentity));
+        if (peer && kind == QStringLiteral("message.created")
+                && payload.value("payload").toObject().value("content").toString() == QStringLiteral("Acceptance arrival"))
+            trace->peerPlacements.insert(placement);
+        peer |= trace->peerPlacements.contains(placement)
+            || trace->peerPlacements.contains(payload.value("message_uuid").toString());
+        if (kind == QStringLiteral("message.deleted")) trace->peerPlacements.remove(placement);
         trace->writeEvent("realtime", {{"peer", peer}, {"kind", kinds.contains(kind) ? kind : QStringLiteral("other")}});
     });
 }
