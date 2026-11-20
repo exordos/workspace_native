@@ -33,6 +33,7 @@ struct ApiResult {
     // (connection refused/reset/closed, or it timed out without completing):
     // reachability failed, not the server.
     bool transportFailed = false;
+    bool completedAfterTokenRenewal = false;
 
     bool ok() const { return status >= 200 && status < 300 && error.isEmpty(); }
 };
@@ -41,6 +42,7 @@ class ApiClient final : public QObject {
     Q_OBJECT
 
 public:
+    enum class TokenRenewal { Cancel, AwaitReply };
     using Callback = std::function<void(const ApiResult &)>;
 
     // Opaque C++-only identity for one JSON request. No reply pointer, origin or
@@ -63,7 +65,7 @@ public:
     bool setServer(const QUrl &origin, QString *error = nullptr);
     bool canSetServer(const QUrl &origin) const { return originAllowed(origin); }
     QUrl server() const { return m_server; }
-    void setAccessToken(const QByteArray &token);
+    void setAccessToken(const QByteArray &token, bool sameOwnerRenewal = false);
     void clearSession();
     quint64 generation() const { return m_generation; }
     bool openRealtimeSocket(QWebSocket *socket, const QUrlQuery &cursor);
@@ -81,17 +83,18 @@ public:
 
     RequestId request(const QByteArray &method, const QString &path, const QJsonValue &body,
                  const QUrlQuery &query, Callback callback, bool isPublic = false,
-                 const QMap<QByteArray, QByteArray> &headers = {});
+                 const QMap<QByteArray, QByteArray> &headers = {},
+                 TokenRenewal renewal = TokenRenewal::Cancel);
     bool cancelRequest(RequestId id);
 
 signals:
-    void sessionChanged(quint64 generation);
+    void sessionChanged(quint64 generation, bool sameOwnerRenewal);
     void requestDispatched(QNetworkReply *reply);
 
 private:
     struct Pending;
     bool originAllowed(const QUrl &origin) const;
-    void invalidateRequests();
+    void invalidateRequests(bool sameOwnerRenewal = false);
     void finish(QNetworkReply *reply);
     void reject(Callback callback, const QString &message);
     QNetworkReply *startFileRequest(const QString &uuid, QHttpMultiPart *body, bool metadata);

@@ -33060,12 +33060,21 @@ private slots:
     // stream that is not the selected one: one request per level change, a per-stream
     // busy slot that rejects repeats while in flight, same-level no-ops, and the
     // streams()/topics() row projection of the mute state.
+    void streamNotificationModeWritePathTargetsAnyStream_data()
+    {
+        QTest::addColumn<bool>("missingMode");
+        QTest::newRow("stored-mode") << false;
+        QTest::newRow("missing-mode") << true;
+    }
+
     void streamNotificationModeWritePathTargetsAnyStream()
     {
+        QFETCH(bool, missingMode);
         Fixture f;
         QJsonObject primary = creationChannel(streamId, "Muted board");
         primary["notification_mode"] = "muted";
         QJsonObject target = creationChannel(archiveId, "Silent channel");
+        if (missingMode) target.remove("notification_mode");
         QJsonArray served{primary, target};
         f.streams = [&served](const Request &) { return Response{served}; };
         QJsonObject defaultTopic = creationTopic(topicId, streamId, "Native topic");
@@ -33119,7 +33128,7 @@ private slots:
         // Invalid inputs send nothing: unknown mode, unknown stream, same level.
         c.setStreamNotificationMode(archiveId, "whisper");
         c.setStreamNotificationMode(QStringLiteral("00000000-0000-4000-8000-0000000000ee"), QStringLiteral("muted"));
-        c.setStreamNotificationMode(archiveId, QStringLiteral("all_messages"));
+        c.setStreamNotificationMode(archiveId, missingMode ? QStringLiteral("mentions_only") : QStringLiteral("all_messages"));
         QTest::qWait(200);
         QCOMPARE(posts, 0);
         // The unselected target stream gets exactly one held request; the busy slot
@@ -33140,6 +33149,109 @@ private slots:
         QTRY_COMPARE(streamRow(archiveId).value("notificationMode").toString(), QStringLiteral("muted"));
         QVERIFY(streamRow(archiveId).value("fullyMuted").toBool());
         QCOMPARE(streamRow(streamId).value("notificationMode").toString(), QStringLiteral("muted"));
+    }
+
+    void streamNotificationRetiresInterruptedWrites_data()
+    {
+        QTest::addColumn<bool>("drawer");
+        QTest::addColumn<bool>("committed");
+        QTest::addColumn<bool>("logout");
+        QTest::addColumn<bool>("lostResult");
+        QTest::addColumn<bool>("clearLocal");
+        QTest::newRow("sidebar-committed") << false << true << false << false << false;
+        QTest::newRow("drawer-uncommitted") << true << false << false << false << false;
+        QTest::newRow("committed-with-error-response") << true << true << false << true << false;
+        QTest::newRow("logout") << false << false << true << false << false;
+        QTest::newRow("renewed-write-after-local-reset") << true << false << false << false << true;
+    }
+
+    void streamNotificationRetiresInterruptedWrites()
+    {
+        QFETCH(bool, drawer); QFETCH(bool, committed); QFETCH(bool, logout); QFETCH(bool, lostResult);
+        QFETCH(bool, clearLocal);
+        auto stream = creationChannel(streamId);
+        QList<std::function<void()>> replies;
+        bool rotate = false;
+        Fixture f;
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        f.authentication = [&](const Request &r) {
+            if (rotate && r.target.path().endsWith("/actions/get_token/invoke"))
+                return Response{QJsonObject{{"access_token", "synthetic-renewed-notifications"},
+                    {"refresh_token", "synthetic-refresh"}, {"expires_in", 3600}}};
+            return sessionResponse(r);
+        };
+        const auto base = f.server.handler;
+        f.server.handler = [&, base](const Request &r) -> Response {
+            if (r.method != "POST" || !r.target.path().endsWith("/actions/notifications/invoke")) return base(r);
+            auto result = stream;
+            result["notification_mode"] = r.body.value("notification_mode");
+            const bool apply = committed || !replies.isEmpty();
+            const bool ok = apply && !(lostResult && replies.isEmpty());
+            return {result, ok ? 200 : 503, 0, {}, [&, result, apply](std::function<void()> send) {
+                replies.append([&, result, apply, send = std::move(send)] {
+                    // The server can commit only now, after the client renewed.
+                    if (apply) stream = result;
+                    send();
+                });
+            }};
+        };
+        QVERIFY(f.start());
+        auto &c = f.controller;
+        QTemporaryDir settings;
+        NativePreferences preferences(settings.filePath("settings.ini"));
+        if (clearLocal) c.usePreferences(&preferences);
+        if (drawer) c.setChannelInfoNotificationMode("muted");
+        else c.setStreamNotificationMode(streamId, "muted");
+        QTRY_COMPARE(replies.size(), 1);
+        QVERIFY(c.channelInfoNotificationBusy());
+        QVERIFY(c.streamNotificationBusy(streamId));
+        if (logout) {
+            c.logout();
+            QVERIFY(!c.streamNotificationBusy(streamId));
+            replies[0]();
+            return;
+        }
+        QSignalSpy renewed(&f.session, &Session::authenticated);
+        rotate = true;
+        f.session.requestRefresh();
+        QTRY_COMPARE(renewed.size(), 1);
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.channelInfoNotificationMode(), QString("all_messages"));
+        if (clearLocal) {
+            QPointer<QNetworkReply> held;
+            for (auto *reply : f.api.findChildren<QNetworkReply *>()) {
+                if (reply->url().path().endsWith("/actions/notifications/invoke")) held = reply;
+            }
+            QVERIFY(held);
+            c.clearLocalCache();
+            QTRY_VERIFY(!c.busy() && !c.streams().isEmpty());
+            QVERIFY(!c.streamNotificationBusy(streamId));
+            replies[0]();
+            QTRY_VERIFY(held.isNull());
+            const auto log = QJsonDocument::fromVariant(c.diagnosticsSessionLogEntries()).toJson();
+            QVERIFY2(!log.contains("/actions/notifications/invoke"), "An old HTTP failure entered the fresh session log");
+            return;
+        }
+        // A changed token cannot acknowledge or cancel an already accepted
+        // write on the server. Keep the original stream serialized until it
+        // completes; a premature second POST could commit before the first.
+        QVERIFY(c.channelInfoNotificationBusy());
+        c.setStreamNotificationMode(streamId, "mentions_only");
+        QCOMPARE(replies.size(), 1);
+        replies[0]();
+        QTRY_VERIFY(!c.channelInfoNotificationBusy());
+        QTRY_COMPARE(c.channelInfoNotificationMode(), committed ? QString("muted") : QString("all_messages"));
+        QVERIFY(!c.streamNotificationBusy(streamId));
+        c.setChannelInfoNotificationMode("mentions_only");
+        c.setStreamNotificationMode(streamId, "mentions_only");
+        QTRY_COMPARE(replies.size(), 2);
+        QVERIFY(c.channelInfoNotificationBusy());
+        QCOMPARE(c.channelInfoNotificationMode(), committed ? QString("muted") : QString("all_messages"));
+        replies[1]();
+        QTRY_COMPARE(c.channelInfoNotificationMode(), QString("mentions_only"));
+        QVERIFY(!c.streamNotificationBusy(streamId));
+        QCOMPARE(replies.size(), 2);
+        QCOMPARE(stream.value("notification_mode").toString(), QString("mentions_only"));
     }
 
     // Issue #438: the automatic member-page fetch follows the #434 scoping
