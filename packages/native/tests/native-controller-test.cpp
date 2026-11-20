@@ -26185,23 +26185,46 @@ private slots:
         QTRY_COMPARE(c.messages().size(), 150);
     }
 
+    void fastHistoryScrollPrefetchesBeforeItsMeasuredPageWait_data()
+    {
+        QTest::addColumn<bool>("returnToCachedTopic");
+        QTest::newRow("network-head") << false;
+        QTest::newRow("cached-head-after-topic-switch") << true;
+    }
+
     void fastHistoryScrollPrefetchesBeforeItsMeasuredPageWait()
     {
+        QFETCH(bool, returnToCachedTopic);
+        QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
         Fixture fixture;
+        fixture.extraTopic = returnToCachedTopic;
+        if (returnToCachedTopic) fixture.controller.useCache(&cache);
         QMap<int, QJsonObject> rows;
         for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
         int olderRequests = 0;
+        int topicHeadRequests = 0;
         fixture.messages = [&](const Request &request) {
             auto response = historyResponse(rows, request);
             const QUrlQuery query(request.target);
+            if (query.queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{}, 200, 500};
             if (query.hasQueryItem("topic_uuid")) {
                 response.delay = 500;
                 if (query.hasQueryItem("page_marker")) ++olderRequests;
+                else ++topicHeadRequests;
             }
             return response;
         };
         QVERIFY(fixture.start());
         auto &controller = fixture.controller;
+        if (returnToCachedTopic) {
+            controller.selectTopic(secondTopicId);
+            QTRY_VERIFY(!controller.busy());
+            controller.selectTopic(topicId);
+            QTRY_VERIFY(!controller.busy());
+            QCOMPARE(topicHeadRequests, 1);
+        }
         QCOMPARE(controller.messages().size(), 50);
         // The hosted trace consumes 100 px per wheel notch, about 25 ms apart.
         // At the old one-viewport threshold the top was reached before the response.
