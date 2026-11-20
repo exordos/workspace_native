@@ -26,8 +26,7 @@ func find(_ item: AXUIElement, _ name: String, _ role: String, _ depth: Int = 0)
             let label = value as! AXUIElement
             return (attr(label, kAXValueAttribute as CFString) ?? attr(label, kAXTitleAttribute as CFString)) as? String
         }
-        let secure = linkedLabel == name && name == "Password" && attr(item, kAXSubroleAttribute as CFString) as? String == kAXSecureTextFieldSubrole as String
-        if (labels.contains(name) || staticValue == name || secure), (attr(item, kAXEnabledAttribute as CFString) as? Bool) != false { return item }
+        if (labels.contains(name) || staticValue == name || linkedLabel == name), (attr(item, kAXEnabledAttribute as CFString) as? Bool) != false { return item }
     }
     for child in attr(item, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] {
         if let match = find(child, name, role, depth + 1) { return match }

@@ -14,6 +14,11 @@ on:
       - packages/native/src/native-desktop.*
       - packages/native/src/native-notifications.*
       - packages/native/src/native-updater-taskbar.*
+      - packages/native/src/native-updater.*
+      - packages/native/src/session.*
+      - packages/native/src/session-vault.*
+      - packages/native/qml/Main.qml
+      - packages/native/qml/NativeAboutDrawer.qml
   push:
     tags: ['[0-9]*']
 
