@@ -1,0 +1,67 @@
+name: Live Wayland acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Workload
+        type: choice
+        options: [smoke, extended, controls]
+        default: smoke
+  schedule:
+    - cron: '19 3 * * 1-6'
+    - cron: '19 3 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-workspace-acceptance
+  cancel-in-progress: false
+
+jobs:
+  live-wayland:
+    if: github.ref == 'refs/heads/master'
+    runs-on: [self-hosted, linux, x64, workspace-native-wayland]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check temporal fault controls
+        run: python3 packages/native/tests/live-workspace-acceptance-test.py -v
+      - name: Package the checked-out Linux client
+        shell: bash
+        run: |
+          set -euo pipefail
+          build="$RUNNER_TEMP/live-native-build"
+          output="$RUNNER_TEMP/live-native-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cmake -S packages/native -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build "$build" --target workspace-native --parallel 2
+          version=$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "$build/CMakeCache.txt")
+          python3 packages/native/scripts/package-linux.py --build-dir "$build" --output-dir "$output" --version "$version"
+          echo "LIVE_PACKAGE=$output/workspace-native-$version-linux-x86_64" >> "$GITHUB_ENV"
+      - name: Exercise the dedicated backend
+        shell: bash
+        env:
+          MODE: ${{ inputs.mode || (github.event.schedule == '19 3 * * 0' && 'extended' || 'smoke') }}
+          FIXTURE_PROVIDER: ${{ vars.WORKSPACE_NATIVE_FIXTURE_PROVIDER }}
+          LIMITS: ${{ vars.WORKSPACE_NATIVE_ACCEPTANCE_LIMITS }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/live-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$output"
+          if [[ ! -x "$FIXTURE_PROVIDER" || ! -r "$LIMITS" ]]; then
+            echo '{"status":"BLOCKED","blocked":["fixture-provider-or-reviewed-limits"]}' > "$output/report.json"
+            exit 2
+          fi
+          "$FIXTURE_PROVIDER" | python3 packages/native/scripts/live-workspace-acceptance.py \
+            --mode "$MODE" --package "$LIVE_PACKAGE" --limits "$LIMITS" --output "$output"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-wayland-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/report.json
+            ${{ runner.temp }}/live-report-${{ github.run_id }}-${{ github.run_attempt }}/timeline.jsonl
+          retention-days: 14

@@ -1,5 +1,8 @@
 # Warm-navigation and aggregate performance baselines (issue #13)
 
+The [live Wayland acceptance suite](NATIVE_DESKTOP_LIVE_ACCEPTANCE.md) exercises the packaged client against a deployed Workspace.
+
+
 `docs/NATIVE_DESKTOP_CACHE_BENCHMARK.md` records cache-component workload
 baselines with RSS sampling, and its Window226 paragraph reported a single
 warm-navigation observation: four topic selections needed two topic-history

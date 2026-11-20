@@ -188,6 +188,9 @@ qt_add_resources(workspace-native-ui native_app_icon PREFIX /workspace/brand
     BASE ../electron/resources FILES ../electron/resources/icon.png)
 
 qt_add_executable(workspace-native WIN32 MACOSX_BUNDLE src/main.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(workspace-native PRIVATE src/live-acceptance-trace.cpp)
+endif()
 target_compile_definitions(workspace-native PRIVATE WORKSPACE_NATIVE_VERSION="${PROJECT_VERSION}")
 # Optional compiled-in default-organization shortcut for the login wizard
 # (docs/NATIVE_DESKTOP_LOGIN.md). Empty keeps the block hidden, matching the

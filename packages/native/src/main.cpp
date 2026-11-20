@@ -1,4 +1,8 @@
 #include "api-client.h"
+#ifdef Q_OS_LINUX
+#include "live-acceptance-trace.h"
+#include <QQuickWindow>
+#endif
 #include "avatar-images.h"
 #include "message-images.h"
 #include "file-client.h"
@@ -95,6 +99,9 @@ int main(int argc, char **argv)
     }
     Q_INIT_RESOURCE(native_app_icon);
     QGuiApplication::setWindowIcon(QIcon(":/workspace/brand/icon.png"));
+#ifdef Q_OS_LINUX
+    workspace::configureLiveAcceptanceNetwork();
+#endif
     workspace::ApiClient api;
     workspace::SessionVault vault;
     workspace::Session session(&api);
@@ -146,6 +153,9 @@ int main(int argc, char **argv)
     if (engine.rootObjects().isEmpty())
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
+#ifdef Q_OS_LINUX
+    workspace::observeLiveAcceptance(qobject_cast<QQuickWindow *>(window), api, controller, cache, realtime);
+#endif
     workspace::NativeDesktop desktop(window);
     // The tray tooltip follows the call state (issue #86): the room with an
     // optional participant count while active, the bare app name when idle.
