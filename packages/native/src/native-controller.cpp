@@ -20398,13 +20398,18 @@ void NativeController::addPollOption(const QString &messageUuid, const QString &
 }
 
 void NativeController::loadPollVoters(const QString &messageUuid, const QString &questionUuid,
-    const QString &optionUuid, const QString &pageMarker, int pageLimit)
+    const QString &optionUuid, const QString &pageMarker, int pageLimit, const QString &requestTag)
 {
     // The callback may outlive this call frame: own copies of the arguments,
     // never references to the caller's QString objects (issue #214 review).
-    const auto done = [this, messageUuid, questionUuid, optionUuid](const QVariantList &voters,
+    if (!requestTag.isEmpty()) {
+        if (m_pollVoterRequests.contains(requestTag)) return;
+        m_pollVoterRequests.insert(requestTag, {});
+    }
+    const auto done = [this, messageUuid, questionUuid, optionUuid, requestTag](const QVariantList &voters,
                           const QString &marker, const QString &error) {
-        emit pollVotersLoaded(messageUuid, questionUuid, optionUuid, voters, marker, error);
+        if (!requestTag.isEmpty()) m_pollVoterRequests.remove(requestTag);
+        emit pollVotersLoaded(messageUuid, questionUuid, optionUuid, voters, marker, error, requestTag);
     };
     if (!authenticated() || !isUuid(messageUuid) || !isUuid(questionUuid)
         || !isUuid(optionUuid)) {
@@ -20420,9 +20425,13 @@ void NativeController::loadPollVoters(const QString &messageUuid, const QString 
     if (!pageMarker.isEmpty()) query.addQueryItem(QStringLiteral("page_marker"), pageMarker);
     const auto generation = m_api->generation();
     const QPointer<NativeController> guard(this);
-    request("GET", messenger + "/messages/" + messageUuid + "/poll_voters/", {}, query,
-        [this, guard, messageUuid, questionUuid, optionUuid, generation, done](const ApiResult &result) {
-        if (!guard || generation != m_api->generation()) return;
+    const auto handle = request("GET", messenger + "/messages/" + messageUuid + "/poll_voters/", {}, query,
+        [this, guard, requestTag, generation, done](const ApiResult &result) {
+        if (!guard || (!requestTag.isEmpty() && !m_pollVoterRequests.contains(requestTag))) return;
+        if (generation != m_api->generation()) {
+            m_pollVoterRequests.remove(requestTag);
+            return;
+        }
         if (!result.ok() || !result.data.isArray()) {
             done({}, QString(), result.ok() ? QStringLiteral("invalid-response")
                 : QStringLiteral("http-%1").arg(result.status));
@@ -20434,10 +20443,16 @@ void NativeController::loadPollVoters(const QString &messageUuid, const QString 
                 ? value.toObject().value(QStringLiteral("uuid")).toString() : QString();
             // Strict list: one malformed item rejects the whole page.
             if (!isUuid(voterUuid)) { done({}, QString(), QStringLiteral("invalid-response")); return; }
-            voters.append(voterUuid);
+            if (!voters.contains(voterUuid)) voters.append(voterUuid);
         }
         done(voters, QString::fromUtf8(result.nextMarker), QString());
     });
+    if (m_pollVoterRequests.contains(requestTag)) m_pollVoterRequests[requestTag] = handle;
+}
+
+void NativeController::cancelPollVoterRequest(const QString &requestTag)
+{
+    if (!requestTag.isEmpty()) m_api->cancelRequest(m_pollVoterRequests.take(requestTag));
 }
 
 QString NativeController::formatPollDate(const QString &isoDateTime) const

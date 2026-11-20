@@ -22005,7 +22005,10 @@ private slots:
                         {"username", "author-x"}, {"first_name", "X"},
                         {"updated_at", "2026-01-02T10:00:00Z"}}, 12)));
         const auto first = incomingDto(historyMessage(500), notificationAuthor);
-        const auto second = incomingDto(historyMessage(501), notificationAuthor);
+        auto second = incomingDto(historyMessage(501), notificationAuthor);
+        const auto target = QStringLiteral("urn:secret:v1:%1:%2:YWJj").arg(streamId, messageId);
+        second["payload"] = QJsonObject{{"kind", "markdown"},
+            {"content", QStringLiteral("Message 501: [private label](%1)").arg(target)}};
         QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", first, 13)));
         QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", second, 14)));
         const QString mid = QString::fromUtf8(" \xC2\xB7 ");
@@ -22014,7 +22017,7 @@ private slots:
         QCOMPARE(sent.shows[0].title, QStringLiteral("X") + mid + place);
         QCOMPARE(sent.shows[0].body, QStringLiteral("Message 500"));
         QCOMPARE(sent.shows[1].title, QStringLiteral("2 messages from X") + mid + place);
-        QCOMPARE(sent.shows[1].body, QStringLiteral("Message 501"));
+        QCOMPARE(sent.shows[1].body, QStringLiteral("Message 501: Encrypted fragment"));
         QCOMPARE(sent.shows[1].tag, sent.shows[0].tag);
         // Re-delivering the same event changes nothing (processed marker + dedup).
         QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.created", first, 15)));
@@ -27995,7 +27998,7 @@ private slots:
                 const QJsonObject row{{QStringLiteral("uuid"), voter}};
                 const QMap<QByteArray, QByteArray> headers{
                     {QByteArray("X-Pagination-Marker"), QByteArray("next-marker")}};
-                return Response{QJsonArray{row}, 200, 0, headers};
+                return Response{QJsonArray{row, row}, 200, 0, headers};
             }
             return Response{QJsonArray{pollMessageDto(id, 5, false)}, 200, 0, {}};
         };
