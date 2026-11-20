@@ -322,6 +322,22 @@
             <translation>Копировать ссылку</translation>
         </message>
         <message>
+            <source>Copy</source>
+            <translation>Копировать</translation>
+        </message>
+        <message>
+            <source>Copy message link</source>
+            <translation>Скопировать ссылку</translation>
+        </message>
+        <message>
+            <source>Copied</source>
+            <translation>Скопировано</translation>
+        </message>
+        <message>
+            <source>Failed to copy</source>
+            <translation>Не удалось скопировать</translation>
+        </message>
+        <message>
             <source>Updating disk cache…</source>
             <translation>Обновление дискового кэша…</translation>
         </message>

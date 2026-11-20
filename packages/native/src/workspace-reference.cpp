@@ -337,7 +337,14 @@ std::optional<WorkspaceReference> parseWorkspaceReference(const QString &target,
     for (const auto character : external)
         if (jsWhitespace(character) || character.unicode() < 0x20 || character.unicode() == 0x7f) return {};
     const QUrl url(external, QUrl::StrictMode);
-    if (!url.isValid() || (url.scheme() != "https" && url.scheme() != "http") || url.host().isEmpty() || !url.userInfo().isEmpty()) return {};
+    if (!url.isValid() || !url.userInfo().isEmpty()) return {};
+    // The reference admits the SAFE_LINK_PROTOCOL_PATTERN family (https?|mailto,
+    // workspace-message-render.lib.ts:53); a mailto anchor carries its address in
+    // the URL path and has no host (issue #110).
+    const auto scheme = url.scheme();
+    if (scheme == "https" || scheme == "http") { if (url.host().isEmpty()) return {}; }
+    else if (scheme.compare(QLatin1String("mailto"), Qt::CaseInsensitive) != 0 || !url.host().isEmpty()
+        || url.path(QUrl::FullyEncoded).isEmpty()) return {};
     result.kind = WorkspaceReferenceKind::External;
     result.url = url.toString(QUrl::FullyEncoded);
     return result;

@@ -56,7 +56,8 @@ QString htmlBody(const QString &html)
     return start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : QString{};
 }
 
-QVariantMap textPart(MessageDocument &document, int first, int last)
+QVariantMap textPart(MessageDocument &document, int first, int last,
+    const QVariantList &codeBlocks, const QVector<int> &codeTails)
 {
     if (last <= first) return {};
     QTextCursor cursor(&document);
@@ -68,10 +69,26 @@ QVariantMap textPart(MessageDocument &document, int first, int last)
     const auto tail = part.lastBlock();
     auto format = tail.blockFormat(); format.setBottomMargin(0);
     QTextCursor(tail).setBlockFormat(format);
-    return {{"kind", "text"}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
+    QVariantMap result{{"kind", "text"}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
+    // Issue #110 review r3 (finding 4639247928): the copy targets a media-split
+    // body renders per text part. The part document re-imports the exported
+    // fragment 1:1 (one element per block), so a block entirely inside this
+    // range keeps its shape at (start - first) in the part document.
+    QVariantList partBlocks;
+    for (qsizetype i = 0; i < codeBlocks.size(); ++i)
+    {
+        const auto blockMap = codeBlocks.at(i).toMap();
+        const auto blockStart = blockMap.value("start").toInt();
+        if (blockStart < first || blockStart > last || codeTails.at(i) > last) continue;
+        partBlocks.append(QVariantMap{{"start", blockStart - first},
+            {"text", blockMap.value("text").toString()}});
+    }
+    if (!partBlocks.isEmpty()) result.insert("codeBlocks", partBlocks);
+    return result;
 }
 
-QVariantList orderedImageParts(MessageDocument &document)
+QVariantList orderedImageParts(MessageDocument &document,
+    const QVariantList &codeBlocks, const QVector<int> &codeTails)
 {
     QVariantList parts;
     int first = 0;
@@ -84,13 +101,13 @@ QVariantList orderedImageParts(MessageDocument &document)
             if (!image.isEmpty()) break;
         }
         if (image.isEmpty()) continue;
-        const auto before = textPart(document, first, block.position() - 1);
+        const auto before = textPart(document, first, block.position() - 1, codeBlocks, codeTails);
         if (!before.isEmpty()) parts.append(before);
         parts.append(image); hasImage = true;
         first = block.position() + block.length();
     }
     if (!hasImage) return {};
-    const auto after = textPart(document, first, document.characterCount() - 1);
+    const auto after = textPart(document, first, document.characterCount() - 1, codeBlocks, codeTails);
     if (!after.isEmpty()) parts.append(after);
     return parts;
 }
@@ -628,6 +645,67 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
         cursor.setPosition(it->position + it->length, QTextCursor::KeepAnchor);
         cursor.insertText(text, format);
     }
+    // Issue #110 (docs/NATIVE_DESKTOP_BODY_COPY_AFFORDANCES.md): the bubble
+    // mounts a copy button into every fenced block (reference
+    // workspace-message-body-interactions.hook.ts:137-214). Fenced code arrives
+    // as consecutive nonBreakableLines blocks (the same marker the containedCodeBlocks
+    // re-tag targets), and the exporter reproduces each block 1:1, so the start
+    // offsets carry over when the message view re-imports the exported html.
+    QVariantList codeBlocks;
+    QVector<int> codeBlockTails;
+    {
+        // Each md4c <pre><code> element is one fenced block; the importer
+        // turns its N content lines into N nonBreakableLines blocks (an empty
+        // fence into none), so the per-element line counts of the generated
+        // html partition the collected blocks back into their fenced elements
+        // (review r3: adjacent fences would otherwise merge into one target)
+        // while the line flag below keeps blank lines' separators (review r3:
+        // leading blank lines would otherwise vanish from the copy payload).
+        static const QRegularExpression fencePattern(
+            QStringLiteral("<pre><code[^>]*>(.*?)</code></pre>"),
+            QRegularExpression::DotMatchesEverythingOption);
+        QList<int> fenceLines;
+        for (auto fence = fencePattern.globalMatch(QString::fromUtf8(generated)); fence.hasNext();)
+        {
+            const auto content = fence.next().captured(1);
+            fenceLines.append(content.isEmpty() ? 0 : content.count(QLatin1Char('\n')) + 1);
+        }
+        QString pending;
+        bool lineCollected = false;
+        int start = -1;
+        int tail = -1;
+        int fenceIndex = 0;
+        int fenceRemaining = 0;
+        auto flushCodeBlock = [&]() {
+            if (start >= 0)
+            {
+                codeBlocks.append(QVariantMap{{"start", start}, {"text", pending}});
+                codeBlockTails.append(tail);
+            }
+            pending.clear(); lineCollected = false; start = -1; tail = -1;
+        };
+        for (auto block = document.begin(); block.isValid(); block = block.next())
+        {
+            if (!block.blockFormat().nonBreakableLines())
+            {
+                flushCodeBlock(); fenceRemaining = 0; continue;
+            }
+            while (fenceIndex < fenceLines.size() && fenceLines.at(fenceIndex) == 0) ++fenceIndex;
+            if (fenceRemaining == 0)
+            {
+                flushCodeBlock();
+                start = block.position();
+                if (fenceIndex < fenceLines.size()) { fenceRemaining = fenceLines.at(fenceIndex); ++fenceIndex; }
+                else fenceRemaining = -1; // unmatched non-breakable blocks: one trailing group
+            }
+            if (fenceRemaining > 0) --fenceRemaining;
+            if (lineCollected) pending += QLatin1Char('\n');
+            pending += block.text();
+            lineCollected = true;
+            tail = block.position();
+        }
+        flushCodeBlock();
+    }
     auto html = document.toHtml();
     // Round-4 review N4 (cid 4641051847): plain-text copies of a mention
     // label can appear earlier in the same body, so the view must locate
@@ -672,7 +750,8 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
-                             {"parts", orderedImageParts(document)}, {"mentions", mentionUrns},
+                             {"parts", orderedImageParts(document, codeBlocks, codeBlockTails)},
+                             {"codeBlocks", codeBlocks}, {"mentions", mentionUrns},
                              {"mentionSpans", mentionSpans},
                              // Issue #109 reviews F4/F6: the visible plain text of every
                              // mention occurrence (with the same "@" prefix rules the
