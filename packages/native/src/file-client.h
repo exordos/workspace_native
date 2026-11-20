@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QObject>
 #include <QPointer>
+#include <QSize>
 #include <QString>
 
 #include <functional>
@@ -22,6 +23,7 @@ struct FileMetadata {
     QString contentType;
     qint64 sizeBytes = 0;
     QByteArray sha256; // Empty when the server supplies no digest.
+    QSize dimensions;
 
     FileKind kind() const;
     QString urn() const;
@@ -61,7 +63,7 @@ public:
     // with status 0; destruction suppresses callbacks and removes staged files.
     // Lightweight admission validation; upload rechecks its immutable snapshot
     // because the selected file can change while it is queued.
-    static QString validateUpload(const QString &path, const QString &streamUuid, const QString &name);
+    static QString validateUpload(const QString &path, const QString &streamUuid, const QString &name, QString *imageName = nullptr);
     quint64 upload(const QString &path, const QString &streamUuid, const QString &name,
                    Completion completion, Progress progress = {});
     quint64 download(const QString &uuid, const QString &destination, Completion completion,
@@ -76,6 +78,7 @@ private:
     quint64 begin(Completion completion);
     void fail(quint64 operation, const QString &error, int status = 0);
     void complete(quint64 operation, FileResult result);
+    void startUpload(quint64 id, const QSize &dimensions = {});
     void readMetadata(quint64 operation);
     void finishMetadata(quint64 operation);
     void startDownload(quint64 operation);

@@ -9771,8 +9771,11 @@ void NativeController::validateQueuedUpload(quint64 intent, quint64 epoch)
     });
     if (row == m_uploadEntries.end()) return;
     const auto task = row->task;
-    const auto error = FileClient::validateUpload(task.path, task.stream, task.uploadName);
+    QString imageName;
+    const auto error = FileClient::validateUpload(task.path, task.stream, task.uploadName, &imageName);
     if (error.isEmpty()) {
+        // Reserve the label before concurrent uploads can finish out of order.
+        reserveImageAlias(*row, imageName);
         row->status = "queued";
         m_uploadQueue.enqueue(task);
     } else {
@@ -10041,6 +10044,26 @@ QStringList NativeController::readyUploadLinks(quint64 session) const
     return links;
 }
 
+void NativeController::reserveImageAlias(UploadEntry &entry, const QString &name)
+{
+    if (!entry.alias.isEmpty() || name.isEmpty()) return;
+    QSet<QString> used;
+    for (const auto &other : std::as_const(m_uploadEntries)) {
+        if (other.owner == entry.owner && other.task.conversation == entry.task.conversation
+            && other.task.editSession == entry.task.editSession)
+            used.insert(other.alias);
+    }
+    for (int count = 1; ; ++count) {
+        auto label = count == 1 ? name : name + QStringLiteral(" (%1)").arg(count);
+        label.replace('\\', "\\\\"); label.replace(']', "\\]");
+        const auto alias = QStringLiteral("![") + label + ']';
+        if (!used.contains(alias)) {
+            entry.alias = alias;
+            return;
+        }
+    }
+}
+
 QString NativeController::imageAlias(const UploadEntry &entry) const
 {
     return entry.status == "ready" ? entry.alias : QString{};
@@ -10305,19 +10328,10 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
         auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
         if (row != m_uploadEntries.end()) {
             row->status = "ready"; row->markdown = attachment;
-            if (result.metadata.kind() == FileKind::Image) {
-                auto name = result.metadata.name.trimmed(); if (name.isEmpty()) name = QStringLiteral("image");
-                QSet<QString> used;
-                for (const auto &entry : std::as_const(m_uploadEntries))
-                    if (entry.owner == row->owner && entry.task.conversation == task.conversation && entry.task.editSession == task.editSession)
-                        used.insert(entry.alias);
-                int count = 1;
-                do {
-                    auto candidate = name + (count == 1 ? QString{} : QStringLiteral(" (%1)").arg(count));
-                    candidate.replace('\\', "\\\\"); candidate.replace(']', "\\]");
-                    row->alias = QStringLiteral("![") + candidate + ']'; ++count;
-                } while (used.contains(row->alias));
-            }
+            if (result.metadata.kind() == FileKind::Image)
+                reserveImageAlias(*row, result.metadata.name);
+            else
+                row->alias.clear();
             if (result.checksumVerified)
                 row->fileUuid = result.metadata.uuid;
         }

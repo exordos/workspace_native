@@ -87,4 +87,6 @@ When reopening an edited reply, native extracts standalone attachments before
 restoring quote tabs, matching the source composer. It preserves the original
 attachment prefix when the user saves the restored reply again.
 
+Image and video uploads include their intrinsic pixel width and height in the Markdown URL when the local decoder reports both within 300 ms. Binary files and unreadable media keep the existing URL. The probe uses the uploaded bytes and completes without opening the file again.
+
 A link shown as a Markdown code example or escaped text keeps its literal form. The ready upload still inserts an actionable link.
