@@ -1,6 +1,7 @@
 #include "native-desktop.h"
 
 #include <QApplication>
+#include <QPainter>
 #include <QScopeGuard>
 #include <QScreen>
 #include <QSystemTrayIcon>
@@ -8,6 +9,7 @@
 #include <QTranslator>
 #include <QWindow>
 #include <qt_windows.h>
+#include <shellapi.h>
 #include <algorithm>
 
 namespace {
@@ -22,6 +24,37 @@ public:
         return translated;
     }
 };
+
+// The window owns a distinctive icon so Explorer can finish inserting its exact
+// taskbar button before we compare any progress or overlay pixels.
+QIcon acceptanceIcon()
+{
+    QPixmap icon(32, 32);
+    icon.fill(Qt::transparent);
+    QPainter painter(&icon);
+    painter.fillRect(6, 13, 20, 6, QColor(241, 0, 239));
+    painter.fillRect(13, 6, 6, 20, QColor(241, 0, 239));
+    painter.end();
+    return QIcon(icon);
+}
+
+bool explorerHasTrayIcon()
+{
+    HWND window = nullptr;
+    while ((window = FindWindowExW(nullptr, window, nullptr, L"QTrayIconMessageWindow"))) {
+        DWORD process = 0;
+        GetWindowThreadProcessId(window, &process);
+        if (process != GetCurrentProcessId()) continue;
+        NOTIFYICONIDENTIFIER id{};
+        id.cbSize = sizeof(id);
+        id.hWnd = window;
+        // Qt registers icon ID zero. Explorer returns S_FALSE when that
+        // registered icon is in the overflow area.
+        RECT icon{};
+        return SUCCEEDED(Shell_NotifyIconGetRect(&id, &icon));
+    }
+    return false;
+}
 
 QImage taskbarPixels()
 {
@@ -43,9 +76,20 @@ QImage taskbarPixels()
     RECT buttonRect{}, taskbarRect{};
     if (!GetWindowRect(buttons, &buttonRect) || !GetWindowRect(taskbar, &taskbarRect)) return {};
     const auto taskbarImage = screen->grabWindow(reinterpret_cast<WId>(taskbar)).toImage();
-    return taskbarImage.copy(buttonRect.left - taskbarRect.left, buttonRect.top - taskbarRect.top,
+    const auto image = taskbarImage.copy(buttonRect.left - taskbarRect.left, buttonRect.top - taskbarRect.top,
                              buttonRect.right - buttonRect.left, buttonRect.bottom - buttonRect.top)
         .convertToFormat(QImage::Format_RGB32);
+    QRect mark;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x) {
+            const auto p = image.pixel(x, y);
+            if (qRed(p) > 185 && qGreen(p) < 50 && qBlue(p) > 185)
+                mark |= QRect(x, y, 1, 1);
+        }
+    if (mark.width() < 3 || mark.height() < 3) return {};
+    // Retain the full height of our button, including a lower-corner overlay.
+    const int half = image.height() / 2;
+    return image.copy(QRect(mark.center().x() - half, 0, 2 * half, image.height()).intersected(image.rect()));
 }
 
 bool orange(QRgb pixel)
@@ -88,17 +132,17 @@ private slots:
         QWindow window;
         window.setTitle("Workspace desktop acceptance");
         window.resize(640, 400);
+        window.setIcon(acceptanceIcon());
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         workspace::NativeDesktop desktop(&window);
         auto *tray = desktop.findChild<QSystemTrayIcon *>();
         QVERIFY(tray && tray->isVisible());
-        // The Windows Qt backend asks Explorer's Shell_NotifyIconGetRect.
-        QTRY_VERIFY_WITH_TIMEOUT(tray->geometry().isValid(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(explorerHasTrayIcon(), 5000);
         const auto normal = tray->icon().pixmap(32, 32).toImage();
         QVERIFY(!normal.isNull());
-        const auto before = taskbarPixels();
-        QVERIFY2(!before.isNull(), "The smoke runner requires an interactive Explorer taskbar.");
+        QImage before;
+        QTRY_VERIFY_WITH_TIMEOUT(!(before = taskbarPixels()).isNull(), 10000);
         translator.lastDescription.clear();
         desktop.setUnreadCount(7);
         if (russian)
