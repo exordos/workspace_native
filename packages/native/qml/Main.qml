@@ -12163,6 +12163,10 @@ component NativeMentionChip: Item {
                                     asset: "composer-add-link.svg"
                                     help: qsTr("Link")
                                     focusPolicy: Qt.StrongFocus
+                                    Keys.onBacktabPressed: event => {
+                                        composerText.forceActiveFocus(Qt.BacktabFocusReason);
+                                        event.accepted = true;
+                                    }
                                     enabled: composerText.enabled
                                     implicitWidth: 32
                                     implicitHeight: 32
