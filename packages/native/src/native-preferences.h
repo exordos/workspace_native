@@ -120,6 +120,7 @@ public:
     void setMode(const QString &mode);
     void setLocale(const QString &locale);
     void setCacheLimitGb(int gigabytes);
+    bool resetLocalSettings();
     void reportCacheError(const QString &error);
     void reportCacheStatus(bool busy, bool available, qint64 appliedLimitBytes, qint64 usageBytes);
     void setSidebarPreferredWidth(qreal width);

@@ -73,6 +73,7 @@ class NativeCacheService final : public QObject
                          const QSet<QString> &ids, QObject *receiver = nullptr, Completion done = {});
     bool projectMessage(const Lease &lease, const QJsonObject &canonical, ProjectionFields fields,
                         QObject *receiver = nullptr, Completion done = {});
+    bool clearAll(const QUrl &server, const QString &project, const QString &user, QObject *receiver, Completion done);
     bool clearOwner(const Lease &lease, QObject *receiver = nullptr, Completion done = {});
     bool forgetAccount(const QUrl &server, const QString &project, const QString &user,
                        QObject *receiver = nullptr, Completion done = {});
@@ -89,6 +90,8 @@ class NativeCacheService final : public QObject
     void shutdownFinished();
 
   private:
+    bool enqueueErasure(const QUrl &server, const QString &project, const QString &user,
+                        bool allOwners, QObject *receiver, Completion done);
     bool eraseMessageCopies(const Lease &lease, const QString &uuid, const QString &stream,
                            const QString &topic, NativeCache::Removal reason, QObject *receiver, Completion done);
     struct Private;

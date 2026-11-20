@@ -3393,7 +3393,8 @@ component NativeMentionChip: Item {
         id: accountPopup
         x: root.width - width - 16
         y: topBar.height - 4
-        width: 260
+        width: 315
+        height: Math.min(accountActions.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
         padding: 12
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
@@ -3401,8 +3402,60 @@ component NativeMentionChip: Item {
             border.color: root.colors["border-subtle"]
             radius: 10
         }
-        contentItem: ColumnLayout {
+        contentItem: Flickable {
+            id: accountScroll
+            objectName: "accountMenuScroll"
+            clip: true
+            contentWidth: width
+            contentHeight: accountActions.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+        }
+        ColumnLayout {
+            id: accountActions
+            parent: accountScroll.contentItem
+            width: accountScroll.width
             spacing: 8
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 4
+                Layout.rightMargin: 4
+                spacing: 8
+                Image {
+                    Layout.preferredWidth: 32
+                    Layout.preferredHeight: 32
+                    source: "qrc:/workspace/icons/dashboard_customize.svg"
+                    sourceSize: Qt.size(22, 22)
+                    fillMode: Image.Pad
+                    Accessible.ignored: true
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Current server")
+                        font.weight: Font.Medium
+                        color: root.colors["text-primary"]
+                    }
+                    Label {
+                        objectName: "currentServerLabel"
+                        Layout.fillWidth: true
+                        text: root.controller.account.serverLabel || ""
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: root.colors["text-muted"]
+                    }
+                    Label {
+                        objectName: "currentServerLogin"
+                        Layout.fillWidth: true
+                        text: root.controller.account.login || ""
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: root.colors["text-muted"]
+                    }
+                }
+            }
             NativeButton {
                 objectName: "ownStatusAction"
                 colors: root.colors
@@ -3630,6 +3683,42 @@ component NativeMentionChip: Item {
                 Layout.fillWidth: true
                 Accessible.role: Accessible.AlertMessage
             }
+            ItemDelegate {
+                objectName: "clearLocalCacheAction"
+                Layout.fillWidth: true
+                text: qsTr("Clear cache")
+                Accessible.description: qsTr("Message cache, local settings, then reload")
+                enabled: root.controller.authenticated && !root.controller.busy
+                contentItem: RowLayout {
+                    spacing: 8
+                    Image {
+                        source: "qrc:/workspace/icons/delete.svg"
+                        sourceSize: Qt.size(22, 22)
+                        Accessible.ignored: true
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        Label { text: qsTr("Clear cache"); color: root.colors["text-primary"] }
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Message cache, local settings, then reload")
+                            color: root.colors["text-muted"]
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 12
+                        }
+                    }
+                    Image {
+                        source: "qrc:/workspace/icons/chevron-right.svg"
+                        sourceSize: Qt.size(16, 16)
+                        Accessible.ignored: true
+                    }
+                }
+                onClicked: {
+                    clearLocalCacheDialog.owner = root.controller.ownerKey
+                    clearLocalCacheDialog.open()
+                }
+            }
             NativeButton {
                 objectName: "refreshButton"
                 colors: root.colors
@@ -3651,6 +3740,30 @@ component NativeMentionChip: Item {
                     root.controller.closeDrafts();
                     root.controller.logout();
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: clearLocalCacheDialog
+        objectName: "clearLocalCacheDialog"
+        property string owner: ""
+        anchors.centerIn: parent
+        width: Math.min(root.width - 48, 440)
+        modal: true
+        focus: true
+        title: qsTr("Clear cache")
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        contentItem: Label {
+            objectName: "clearLocalCacheConfirmation"
+            text: qsTr("Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.")
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+        }
+        onAccepted: {
+            if (root.controller.authenticated && root.controller.ownerKey === owner) {
+                accountPopup.close()
+                root.controller.clearLocalCache()
             }
         }
     }
