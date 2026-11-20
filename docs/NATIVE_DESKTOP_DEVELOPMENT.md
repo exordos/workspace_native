@@ -808,6 +808,35 @@ GPU-less stand), so budget about 900 seconds or scope the run with
 only looks like a stall after the last printed PASS; it is not test-order
 coupling (issue #17).
 
+### Linux pull-request and release gates
+
+On Linux each CTest group carries exactly one display label. List the groups
+with `ctest --test-dir build/headless -N -L headless` or `-L gui`. For the
+same display-free gate as pull requests, run from the repository root:
+
+```sh
+cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON -DWORKSPACE_NATIVE_QUICK_GATE=ON
+cmake --build build/headless --target native-headless-tests --parallel
+env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- \
+  ctest --test-dir build/headless -LE gui --parallel 12 --output-on-failure
+```
+
+The quick configuration schedules all 24 controller suites independently. It
+distributes the encrypted-read suite across processes using its current QtTest
+function/data inventory. Its extra headless group runs
+the two 100 ms encrypted-read responsiveness checks with exclusive CTest access.
+The full configuration runs the original suites and retains the shared-display
+locks. Before tagging, run the full gate on the intended release commit. A
+manual **Linux release artifacts** workflow runs it on a private display. A
+locally configured full build can use
+`bash packages/native/tests/full-linux-gate.sh BUILD_DIR` on a host with
+Xvnc, Openbox, xauth, x11-utils, PulseAudio with a synthetic microphone, the Qt WebEngine and WebChannel QML modules, Mesa, Noto Color Emoji, the Qt GTK platform theme
+and the GTK desktop portal.
+Tag builds repeat the full gate before publishing. It uses a 1440×900 display and Mesa software OpenGL for pixel checks. The GTK3
+platform theme and portal provide system color schemes and keyboard activation.
+Controller fixtures receive a separate session bus so they can own their synthetic
+desktop service names.
+
 ### Updater metadata transport
 
 The updater's real-wire Linux regressions use separate QCore drivers with Node's

@@ -294,6 +294,10 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(BUILD_TESTING)
+    option(WORKSPACE_NATIVE_QUICK_GATE "Use independent QtTest processes for headless Linux CI" OFF)
+    if(WORKSPACE_NATIVE_QUICK_GATE)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    endif()
     find_package(Qt6 REQUIRED COMPONENTS Test DBus)
     add_executable(native-updater-test tests/native-updater-test.cpp src/native-updater.cpp src/native-updater.h
         src/native-updater-taskbar.cpp src/native-updater-taskbar.h)
@@ -392,9 +396,10 @@ if(BUILD_TESTING)
             # with no case failed at the kill point, under -j6 and on an empty
             # machine alike. The longest inter-case gap stayed at 12s, so this
             # is accumulated group size, not one slow case.
-            # 1500s = worst measured runtime plus the usual headroom
-            # (#16/#103, issue #413).
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 1500)
+            # With nearly 1,000 rows the hosted desktop took 1455s. A concurrent
+            # local run reached only 655 rows in 1500s. Give the entire group
+            # time to finish while QtTest keeps enforcing each case's deadlines.
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 3000)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
@@ -428,6 +433,15 @@ if(BUILD_TESTING)
         add_test(NAME "native-controller-${area}" COMMAND ${target})
         set_tests_properties("native-controller-${area}" PROPERTIES LABELS controller TIMEOUT 300)
     endforeach()
+    if(WORKSPACE_NATIVE_QUICK_GATE)
+        # Start the measured longest headless suites early on fresh CI runners.
+        set_tests_properties(native-controller-history native-controller-channels PROPERTIES COST 150)
+        set_tests_properties(native-controller-profiles native-controller-replies native-controller-direct-chat PROPERTIES COST 90)
+        set_tests_properties(native-controller-sidebar native-controller-navigation native-controller-encrypted-channels PROPERTIES COST 75)
+        set_tests_properties(native-controller-sessions PROPERTIES COST 50)
+        set_tests_properties(native-controller-outbox native-controller-topics native-controller-transfers
+            native-controller-notifications native-native-drafts native-realtime-client PROPERTIES COST 40)
+    endif()
     # These suites share the real desktop clipboard or window focus on the full gate.
     set_tests_properties(native-controller-media native-controller-navigation
         native-controller-notifications native-controller-transfers PROPERTIES RESOURCE_LOCK xdisplay)
@@ -479,7 +493,22 @@ if(BUILD_TESTING)
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}"
         WORKSPACE_NATIVE_E2EE_PEER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tests/e2ee-peer/peer.mjs")
     set_target_properties(native-e2ee-read-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
-    add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
+    if(WORKSPACE_NATIVE_QUICK_GATE)
+        # The 100ms responsiveness assertions measure scheduling delay; run them
+        # with the original oracle and without competing CTest processes.
+        set(e2ee_pulse_cases fiveHundredAnnouncementsStayBoundedAndYield
+            preparedFiveHundredRowsYieldAndOversizedWindowDropsAll)
+        add_test(NAME native-native-e2ee-pulse COMMAND native-e2ee-read-test ${e2ee_pulse_cases})
+        set_tests_properties(native-native-e2ee-pulse PROPERTIES RUN_SERIAL TRUE TIMEOUT 45)
+        add_test(NAME native-native-e2ee-read COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:native-e2ee-read-test>"
+            --jobs 6 --separate ${e2ee_pulse_cases})
+        # A fresh CI directory has no CTestCostData.txt. Start the longest
+        # headless suite early so its TLS peer waits overlap other tests.
+        set_property(TEST native-native-e2ee-read PROPERTY COST 1000)
+    else()
+        add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
+    endif()
     # Original189 cases plus42 additive observer/resolver/lifecycle/disclosure data.
     # Measured old suite359.164s + new42 focus130.768s + RT control17.018s;
     # 25% headroom rounded up to30s:660s. Individual waits stay unchanged.
@@ -603,7 +632,7 @@ if(BUILD_TESTING)
     # gui label: suites that need a real window manager (Xvnc + openbox) because
     # they measure window geometry, palette resolution or drive real input.
     # The headless quick gate runs everything else in parallel offscreen:
-    #   QT_QPA_PLATFORM=offscreen ctest -j 8 -LE gui
+    #   QT_QPA_PLATFORM=offscreen ctest -j 12 -LE gui
     # RESOURCE_LOCK "xdisplay": window-driving suites must never overlap on a
     # shared display (focus and keyboard-grab races), so a parallel pre-release
     # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
@@ -612,6 +641,37 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")
+
+    if(WORKSPACE_NATIVE_QUICK_GATE AND TEST native-updater-http2-deadline)
+        set_tests_properties(native-updater-http2-deadline PROPERTIES COST 30)
+    endif()
+
+    get_property(registered_tests DIRECTORY PROPERTY TESTS)
+    foreach(test IN LISTS registered_tests)
+        get_property(labels TEST "${test}" PROPERTY LABELS)
+        if(NOT "gui" IN_LIST labels)
+            set_property(TEST "${test}" APPEND PROPERTY LABELS headless)
+            if(WORKSPACE_NATIVE_QUICK_GATE)
+                get_property(locks TEST "${test}" PROPERTY RESOURCE_LOCK)
+                list(REMOVE_ITEM locks xdisplay)
+                set_property(TEST "${test}" PROPERTY RESOURCE_LOCK "${locks}")
+            endif()
+        endif()
+    endforeach()
+
+    # Only skip binaries with exclusively window-driven tests. The Python HTTP2
+    # and clipboard cases additionally invoke driver executables and preload helpers.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_custom_target(native-headless-tests)
+        get_property(native_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(target IN LISTS native_targets)
+            if(target MATCHES "(-test|-driver)$" AND NOT
+                    target MATCHES "^(native-window|native-e2ee-ui|native-preferences)-test$")
+                add_dependencies(native-headless-tests "${target}")
+            endif()
+        endforeach()
+        add_dependencies(native-headless-tests native-clipboard-slow-read native-clipboard-path-race)
+    endif()
 endif()
 
 # Throwaway Jitsi embed spike for docs/NATIVE_DESKTOP_CALL_STACK.md (#160).
