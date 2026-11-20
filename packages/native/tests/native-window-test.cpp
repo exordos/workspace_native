@@ -33551,11 +33551,17 @@ private slots:
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.selectStream(streamId);
         QTRY_COMPARE(controller.messages().size(), 2);
-        // 2026-05-13 stores a Wednesday while the first of that month is a
-        // Friday, so a selected-weekday leading count shifts the whole grid.
+        // A UTC-noon-based instant, so every possible local zone sees a date
+        // within May 12-14, 2026 - never the 1st. The first of that month is
+        // a Friday, so the local stored weekday is always a different
+        // weekday, exposing any selected-weekday leading-count shift. All
+        // expectations below DERIVE from the converted local date (review
+        // 4638356192): in UTC+12 or later this instant is local May 14.
         const auto stored = QDateTime::fromString("2026-05-13T12:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
-        QVERIFY(stored.date() == QDate(2026, 5, 13));
-        QVERIFY(QDate(2026, 5, 1).dayOfWeek() != stored.date().dayOfWeek());
+        const QDate localDate = stored.date();
+        const QDate monthStart(localDate.year(), localDate.month(), 1);
+        QVERIFY(monthStart.day() != localDate.day());
+        QVERIFY(monthStart.dayOfWeek() != localDate.dayOfWeek());
         openTimestampPanelViaReference(window, QStringLiteral("urn:time:2026-05-13T12:02:03.456Z"));
         const QLocale uiLocale(locale == "ru" ? QLocale::Russian : QLocale::English);
         const auto columnOf = [](QQuickItem *cell, QQuickItem *grid) {
@@ -33564,16 +33570,16 @@ private slots:
         auto *grid = visibleItem("messageTimePanelGrid"); QVERIFY(grid);
         auto *firstDay = visibleItem("messageTimePanelDay-1"); QVERIFY(firstDay);
         auto *selectedDay = visibleItem("messageTimePanelSelectedDay"); QVERIFY(selectedDay);
-        QCOMPARE(selectedDay->property("text").toString(), QStringLiteral("13"));
-        const int firstColumn = (QDate(2026, 5, 1).dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
-        const int storedColumn = (stored.date().dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
+        QCOMPARE(selectedDay->property("text").toString(), QString::number(localDate.day()));
+        const int firstColumn = (monthStart.dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
+        const int storedColumn = (localDate.dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
         // QQuickGrid settles delegate positions asynchronously after open.
         QTRY_COMPARE(columnOf(firstDay, grid), firstColumn);
         QTRY_COMPARE(columnOf(selectedDay, grid), storedColumn);
         // The weekday header directly above the day-1 cell names the first of
         // the month's weekday.
         auto *weekdays = visibleItem("messageTimePanelWeekdays"); QVERIFY(weekdays);
-        const QString expectedHeader = uiLocale.dayName(QDate(2026, 5, 1).dayOfWeek(), QLocale::NarrowFormat);
+        const QString expectedHeader = uiLocale.dayName(monthStart.dayOfWeek(), QLocale::NarrowFormat);
         auto headerAboveFirstDay = [&]() {
             QString name;
             for (auto *child : weekdays->childItems())
@@ -33637,7 +33643,7 @@ private slots:
         const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
         QCOMPARE(timeText->property("text").toString(), stored.toString("HH:mm:ss"));
         auto *selected = visibleItem("messageTimePanelSelectedDay"); QVERIFY(selected);
-        QCOMPARE(selected->property("text").toString(), QStringLiteral("2"));
+        QCOMPARE(selected->property("text").toString(), QString::number(stored.date().day()));
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!panel->property("visible").toBool());
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
@@ -33680,7 +33686,7 @@ private slots:
         auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
         auto *timeLabel = visibleItem("messageTimePanelTimeLabel"); QVERIFY(timeLabel);
         QCOMPARE(accessibleName(dateText), QLocale(QLocale::English).toString(stored.date(), "MMMM yyyy"));
-        QCOMPARE(accessibleName(selected), QStringLiteral("2"));
+        QCOMPARE(accessibleName(selected), QString::number(stored.date().day()));
         QCOMPARE(accessibleName(timeLabel), QStringLiteral("Time"));
         QCOMPARE(accessibleName(timeText), stored.toString("HH:mm:ss"));
         QTest::keyClick(window, Qt::Key_Escape);
