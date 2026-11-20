@@ -47,6 +47,13 @@ switch ($Mode) {
         Press 'Next'
         Press 'Login'
     }
+    'update' {
+        Press 'Profile'
+        Press 'App version'
+        Press 'Check for updates'
+        [void](Control 'Updates are not available for this platform.' ([System.Windows.Automation.ControlType]::Text))
+        Press 'Close'
+    }
     'logout' {
         Press 'Profile'
         Press 'Sign out'

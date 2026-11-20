@@ -18,7 +18,8 @@ func find(_ item: AXUIElement, _ name: String, _ role: String, _ depth: Int = 0)
     if attr(item, kAXRoleAttribute as CFString) as? String == role {
         let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute]
             .compactMap { attr(item, $0 as CFString) as? String }
-        if labels.contains(name), (attr(item, kAXEnabledAttribute as CFString) as? Bool) != false { return item }
+        let staticValue = role == kAXStaticTextRole as String ? attr(item, kAXValueAttribute as CFString) as? String : nil
+        if (labels.contains(name) || staticValue == name), (attr(item, kAXEnabledAttribute as CFString) as? Bool) != false { return item }
     }
     for child in attr(item, kAXChildrenAttribute as CFString) as? [AXUIElement] ?? [] {
         if let match = find(child, name, role, depth + 1) { return match }
@@ -74,6 +75,12 @@ case "login":
     try fill("Password", "package-demo")
     try press("Next")
     try press("Login")
+case "update":
+    try press("Profile")
+    try press("App version")
+    try press("Check for updates")
+    _ = try control("Updates are not available for this platform.", kAXStaticTextRole as String)
+    try press("Close")
 case "logout":
     try press("Profile")
     try press("Sign out")

@@ -190,11 +190,16 @@ def scenario(executable):
                             else:
                                 wait_for(lambda: fixture.introspect_count >= 2, "Restart did not authenticate using the stored refresh token")
                                 check(fixture.login_count == 1 and fixture.refresh_count >= 2, "Restore used unexpected credentials")
+                                drive(app.pid, "update", origin)
+                                print("The installed application reported its unsupported update channel in App version.", flush=True)
                                 drive(app.pid, "logout", origin)
                                 wait_for(lambda: not stored(record), "Signing out did not remove the OS credential")
                                 print("The restarted package restored the rotated session, then sign-out removed the OS credential.", flush=True)
                             drive(app.pid, "quit", origin)
                             check(app.wait(timeout=20) == 0, "The package did not quit normally")
+                        except Exception:
+                            print(f"Observed login/refresh/introspection counts: {fixture.login_count}/{fixture.refresh_count}/{fixture.introspect_count}", flush=True)
+                            raise
                         finally:
                             if app.poll() is None:
                                 app.kill()
