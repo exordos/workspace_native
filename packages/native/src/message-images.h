@@ -9,6 +9,7 @@
 #include <memory>
 
 class QQuickImageProvider;
+class QTimer;
 
 namespace workspace {
 class ApiClient;
@@ -58,12 +59,13 @@ signals:
 private:
     enum class Phase { Queued, Network, Decode, Ready, Failed, TransportFailed };
     struct Entry { Phase phase = Phase::Queued; int consumers = 0; quint64 order = 0, touched = 0, job = 0;
-        QSize naturalSize; qint64 previewBytes = 0; };
+        QSize naturalSize; qint64 previewBytes = 0; QTimer *handoff = nullptr; };
     enum class JobPhase { Network, Decode };
     struct Job { QString scope, uuid; quint64 transfer = 0; JobPhase phase = JobPhase::Network; };
     QByteArray currentOwner() const;
     bool scopeCurrent() const;
     void refreshScope();
+    void releaseConsumer(const QString &uuid);
     void drain();
     void downloaded(const QString &scope, quint64 job, const FileResult &result);
     void decoded(const QString &scope, quint64 job, const QImage &image, const QSize &naturalSize);

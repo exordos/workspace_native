@@ -292,3 +292,7 @@ when the pointer hovers over it or the keyboard focuses it. The 24 px pill
 overlaps the top edge by 12 px, inset 12 px from the author's side. It quotes
 the selected text from that bubble when present and otherwise quotes the whole
 message. An open reply session appends the quote as a new tab.
+
+In a topic where both actions are available, Tab moves from the focused
+bubble to Reply, then to Quick reactions. Escape closes the reaction choices
+and keeps keyboard focus on their control.

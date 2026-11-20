@@ -2061,6 +2061,7 @@ private:
     MentionCollection &mentionCollection(const QString &filter);
     void loadMentionCollection(const QString &filter, bool append);
     void loadMentionIndex();
+    void resetMentionIndex();
     QVariantList mentionRows(const QString &filter) const;
     bool mentionUnread(const Message &message) const;
     QString mentionPreview(const Message &message) const;
@@ -2110,6 +2111,9 @@ private:
     // stream/topic/created_at are needed for the read-boundary and scope clears
     // of activity-realtime-applier.lib.ts:55-105.
     struct MentionIndexEntry { QString stream, topic; qint64 createdMicros = 0; };
+    using MentionIndex = QHash<QString, MentionIndexEntry>;
+    using MentionMutation = std::function<bool(MentionIndex &)>;
+    bool mutateMentionIndex(MentionMutation mutation);
     bool mentionIndexRemove(const QString &uuid);
     bool mentionIndexUpsert(const Message &message);
     bool mentionIndexBoundary(const Message &message);
@@ -2124,12 +2128,16 @@ private:
     bool m_mentionsVisible = false;
     QString m_mentionsFilter = QStringLiteral("all");
     QHash<QString, MentionCollection> m_mentionsCollections;
-    QHash<QString, MentionIndexEntry> m_unreadMentions;
+    MentionIndex m_unreadMentions;
+    MentionIndex m_fetchedMentions;
+    QList<MentionMutation> m_mentionWalkMutations;
     QVector<Message> m_liveMentions;
     QSet<QString> m_deletedMentionIds;
     QStringList m_deletedMentionOrder;
     bool m_mentionIndexReady = false;
     bool m_mentionIndexWalking = false;
+    QTimer m_mentionIndexRetry;
+    int m_mentionRetryCount = 0;
     QByteArray m_mentionIndexMarker;
     QSet<QByteArray> m_mentionIndexMarkers;
     // Inbox page (#44, docs/NATIVE_DESKTOP_INBOX.md): the catalog already
