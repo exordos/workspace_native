@@ -33355,17 +33355,30 @@ private:
         }
     };
 
+    // Reference contract (workspace-message-time-view.ui.test.tsx:19-20): the
+    // panel renders zero role=button/spinbutton elements. Scrolling viewports
+    // internally use mouse areas (Flickable, scrollbars) which are not
+    // editable controls, so only button/spinbutton markers count.
     static bool hasInteractivePanelDescendant(QQuickItem *root)
     {
         for (auto *child : root->childItems()) {
             const auto name = QString::fromLatin1(child->metaObject()->className());
-            for (const auto *marker : {"Button", "SpinBox", "Slider", "MouseArea", "TextEdit", "TextField", "Switch"})
+            for (const auto *marker : {"Button", "SpinBox"})
                 if (name.contains(marker))
                     return true;
             if (hasInteractivePanelDescendant(child))
                 return true;
         }
         return false;
+    }
+
+    static void openTimestampPanelViaReference(QQuickWindow *window, const QString &urn)
+    {
+        QVariant result;
+        QVERIFY(QMetaObject::invokeMethod(window, "openReference", Qt::DirectConnection,
+            Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, urn), Q_ARG(QVariant, QVariant(false))));
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
     }
 
 private slots:
@@ -33503,6 +33516,167 @@ private slots:
         auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
         QCOMPARE(timeText->property("text").toString(), stored.toString("HH:mm:ss"));
         QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    // Review finding 4638145277: the grid leading slots must be derived from
+    // the weekday of the FIRST day of the month, not the selected date, so
+    // every day cell sits under its true weekday column (reference: the grid
+    // iterates week-aligned cells, workspace-message-time-view.ui.tsx:40-56).
+    void messageTimePanelAlignsDaysUnderWeekdays_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QString("en");
+        QTest::newRow("ru") << QString("ru");
+    }
+    void messageTimePanelAlignsDaysUnderWeekdays()
+    {
+        QFETCH(QString, locale);
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        TimestampWindowFixture fixture;
+        NativePreferences preferences(directory.filePath("timestamp-weekday.ini"));
+        preferences.setLocale(locale); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Timestamp weekday alignment teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        // 2026-05-13 stores a Wednesday while the first of that month is a
+        // Friday, so a selected-weekday leading count shifts the whole grid.
+        const auto stored = QDateTime::fromString("2026-05-13T12:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
+        QVERIFY(stored.date() == QDate(2026, 5, 13));
+        QVERIFY(QDate(2026, 5, 1).dayOfWeek() != stored.date().dayOfWeek());
+        openTimestampPanelViaReference(window, QStringLiteral("urn:time:2026-05-13T12:02:03.456Z"));
+        const QLocale uiLocale(locale == "ru" ? QLocale::Russian : QLocale::English);
+        const auto columnOf = [](QQuickItem *cell, QQuickItem *grid) {
+            return int(qRound(cell->mapToItem(grid, QPointF(0, 0)).x() / 48.0));
+        };
+        auto *grid = visibleItem("messageTimePanelGrid"); QVERIFY(grid);
+        auto *firstDay = visibleItem("messageTimePanelDay-1"); QVERIFY(firstDay);
+        auto *selectedDay = visibleItem("messageTimePanelSelectedDay"); QVERIFY(selectedDay);
+        QCOMPARE(selectedDay->property("text").toString(), QStringLiteral("13"));
+        const int firstColumn = (QDate(2026, 5, 1).dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
+        const int storedColumn = (stored.date().dayOfWeek() - uiLocale.firstDayOfWeek() + 7) % 7;
+        QCOMPARE(columnOf(firstDay, grid), firstColumn);
+        QCOMPARE(columnOf(selectedDay, grid), storedColumn);
+        // The weekday header directly above the day-1 cell names the first of
+        // the month's weekday.
+        auto *weekdays = visibleItem("messageTimePanelWeekdays"); QVERIFY(weekdays);
+        QString headerAboveFirstDay;
+        for (auto *child : weekdays->childItems())
+            if (!child->property("text").toString().isEmpty()
+                && int(qRound(child->x() / 48.0)) == firstColumn)
+                headerAboveFirstDay = child->property("text").toString();
+        QCOMPARE(headerAboveFirstDay, uiLocale.dayName(QDate(2026, 5, 1).dayOfWeek(), QLocale::NarrowFormat));
+        QTest::keyClick(window, Qt::Key_Escape);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    // Review finding 4638145296: when the viewport cap (maxHeight
+    // calc(100dvh - 16px), reference :67) shortens the panel, the day/time
+    // content must stay reachable through a scrollable viewport.
+    void messageTimePanelContentScrollsWhenHeightIsCapped()
+    {
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        TimestampWindowFixture fixture;
+        NativePreferences preferences(directory.filePath("timestamp-scroll.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Timestamp scroll teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        // Short window: the viewer must still offer the whole stored instant.
+        window->resize(window->width(), window->minimumHeight());
+        QTRY_VERIFY(window->height() <= window->minimumHeight() + 1);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        openTimestampPanelViaReference(window, QStringLiteral("urn:time:2026-01-02T10:02:03.456Z"));
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+        window->resize(window->width(), 320);
+        QTRY_VERIFY(panel->property("height").toReal() <= window->height() + 1.0);
+        // Force the capped state directly: viewport shorter than the panel.
+        panel->setProperty("height", 200.0);
+        QTRY_VERIFY(panel->property("height").toReal() <= 200.0 + 1.0);
+        auto *scroll = window->findChild<QObject *>("messageTimePanelScroll");
+        QVERIFY2(scroll, "A height-capped timestamp panel must expose a scrollable viewport");
+        auto *scrollItem = qobject_cast<QQuickItem *>(scroll); QVERIFY(scrollItem);
+        QVERIFY(scroll->property("contentHeight").toReal() > scroll->property("height").toReal() + 1.0);
+        scroll->setProperty("contentY", scroll->property("contentHeight").toReal() - scroll->property("height").toReal());
+        auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
+        QTRY_VERIFY2(timeText->mapToItem(scrollItem, QPointF(0, 0)).y() + timeText->height() <= scrollItem->height() + 1.0,
+            "Time row must be reachable after scrolling the capped panel");
+        const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
+        QCOMPARE(timeText->property("text").toString(), stored.toString("HH:mm:ss"));
+        auto *selected = visibleItem("messageTimePanelSelectedDay"); QVERIFY(selected);
+        QCOMPARE(selected->property("text").toString(), QStringLiteral("2"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
+    // Review finding 4638145299: a screen reader must be able to read the
+    // dialog contents (month caption, highlighted day, HH:mm[:ss]), not just
+    // the dialog name.
+    void messageTimePanelExposesTimestampToScreenReaders()
+    {
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        TimestampWindowFixture fixture;
+        NativePreferences preferences(directory.filePath("timestamp-a11y.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Timestamp a11y teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        openTimestampPanelViaReference(window, QStringLiteral("urn:time:2026-01-02T10:02:03.456Z"));
+        const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
+        auto *panelContent = visibleItem("messageTimePanelContent"); QVERIFY(panelContent);
+        auto *dialog = QAccessible::queryAccessibleInterface(panelContent); QVERIFY(dialog);
+        QCOMPARE(dialog->text(QAccessible::Name), QStringLiteral("Date and time"));
+        auto accessibleName = [](QQuickItem *item) -> QString {
+            auto *iface = QAccessible::queryAccessibleInterface(item);
+            return iface ? iface->text(QAccessible::Name) : QString();
+        };
+        auto *dateText = visibleItem("messageTimePanelDate"); QVERIFY(dateText);
+        auto *selected = visibleItem("messageTimePanelSelectedDay"); QVERIFY(selected);
+        auto *timeText = visibleItem("messageTimePanelTime"); QVERIFY(timeText);
+        auto *timeLabel = visibleItem("messageTimePanelTimeLabel"); QVERIFY(timeLabel);
+        QCOMPARE(accessibleName(dateText), QLocale(QLocale::English).toString(stored.date(), "MMMM yyyy"));
+        QCOMPARE(accessibleName(selected), QStringLiteral("2"));
+        QCOMPARE(accessibleName(timeLabel), QStringLiteral("Time"));
+        QCOMPARE(accessibleName(timeText), stored.toString("HH:mm:ss"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
         QTRY_VERIFY(!panel->property("visible").toBool());
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
