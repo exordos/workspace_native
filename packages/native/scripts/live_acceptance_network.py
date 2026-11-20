@@ -73,7 +73,7 @@ class NetworkConditions:
                         # Delay the response stream once per fault window, not once per chunk.
                         last_delay = self.fault_generation
                         self.effects[self.mode] += 1
-                        await asyncio.sleep(0.75)
+                        await asyncio.sleep(2)
                     dst.write(chunk)
                     await dst.drain()
 

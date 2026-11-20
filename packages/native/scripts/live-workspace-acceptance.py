@@ -839,14 +839,28 @@ class Desktop:
             )
         except Blocked:
             self.record("peer-removal-unverified")
+        # Removing the receipt marker can invalidate topic B's cached page. Warm
+        # the exact route again before measuring a distinct delayed revalidation.
+        self.topic("b")
+        self.until(
+            lambda: self.latest("sample").get("ready")
+            and self.latest("sample").get("view") == "b",
+            "delay-target-not-ready",
+        )
+        self.sidebar_click("stream-" + self.config["stream"])
+        self.until(
+            lambda: self.latest("sample").get("view") == "aggregate",
+            "delay-source-not-selected",
+        )
         # Invalidate only the warmed target's history through a real peer arrival.
         with peer.temporary_message("b", str(uuid4())) as create:
             create()
             with self.action("warm-delayed"), network.disturb("delay"):
                 self.topic("b", wait_for_content=False)
                 self.position(self.pane)
-                for _ in range(16):
-                    self.point("wheel -12")
+                for index in range(32):
+                    # The cache can restore either end of a previous viewport.
+                    self.point("wheel 12" if (index // 4) % 2 == 0 else "wheel -12")
                     time.sleep(0.08)
                 time.sleep(0.2)
         with self.action("reconnect"):
