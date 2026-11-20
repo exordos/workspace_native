@@ -1,3 +1,4 @@
+#include "native-auth-guard.h"
 #include "support/native-test-harness.h"
 #include "support/controller-identity-fixtures.h"
 #include "support/controller-realtime-fixtures.h"

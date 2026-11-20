@@ -397,8 +397,8 @@ if(BUILD_TESTING)
     target_compile_definitions(native-controller-test-support PUBLIC
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}")
     set(native_controller_suites
-        activity calls creation diagnostics feed forward history inbox keys media mentions
-        navigation notifications outbox polls profiles reactions replies sessions sidebar transfers)
+        activity calls channels diagnostics direct-chat encrypted-channels feed forward history inbox keys media mentions
+        navigation notifications outbox polls profiles reactions replies sessions sidebar topics transfers)
     foreach(area IN LISTS native_controller_suites)
         set(target "native-controller-${area}-test")
         add_executable(${target} "tests/${target}.cpp")
@@ -410,7 +410,7 @@ if(BUILD_TESTING)
     # These suites share the real desktop clipboard or window focus on the full gate.
     set_tests_properties(native-controller-media native-controller-navigation
         native-controller-notifications native-controller-transfers PROPERTIES RESOURCE_LOCK xdisplay)
-    target_compile_definitions(native-controller-creation-test PRIVATE
+    target_compile_definitions(native-controller-encrypted-channels-test PRIVATE
         WORKSPACE_NATIVE_MAIN_QML_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml")
     target_compile_definitions(native-controller-diagnostics-test PRIVATE
         WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/native-logging.cpp")

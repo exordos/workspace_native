@@ -726,13 +726,16 @@ git diff --check
 
 ### Controller suite selectors
 
-The old `native-native-controller` CTest entry is now 21 functional suites labeled
-`controller`. The default Linux inventory grew from 58 to 78 groups. Run
+The old `native-native-controller` CTest entry is now 24 functional suites labeled
+`controller`. The default Linux inventory grew from 58 to 81 groups. Run
 `ctest --test-dir packages/native/build -N -L controller` to list them or
 `ctest --test-dir packages/native/build -L controller -j4 --output-on-failure` to
 run them. The full gate still uses unfiltered CTest. A toolkit that previously
 selected `^native-native-controller$` can use `-L controller` for the same scenarios.
-The additional clipboard preload cases retain their existing CTest names.
+The portable toolkit discovers these names through CTest. Its
+`native-toolkit.py tests --build BUILD_DIR --regex "^native-controller-"`
+selection lists all 24 groups. The additional clipboard preload cases retain their
+existing CTest names.
 
 Each area below is both its source-file and executable suffix. For example,
 `native-controller-inbox-test -functions` lists the inbox cases. Pass an old
@@ -740,12 +743,13 @@ QtTest function or `function:row` selector unchanged to its area's executable.
 Find a case from an older feature document with
 `git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
 substituting the function name. At migration the Linux `-datatags` inventories
-contained the same 1,617 function/data-row entries across all 21 executables.
+contained the same 1,617 function/data-row entries across all 24 executables.
 
 | Test areas | Coverage |
 | --- | --- |
 | `navigation`, `history`, `inbox`, `sidebar` | Startup, deep links, realtime history, cache, read markers, folders and archive |
-| `creation`, `profiles`, `sessions`, `keys` | Chat creation, identity, authentication, switching accounts and key management |
+| `channels`, `encrypted-channels`, `direct-chat`, `topics` | Chat and topic creation, membership and recovery |
+| `profiles`, `sessions`, `keys` | Identity, authentication, switching accounts and key management |
 | `replies`, `mentions`, `outbox`, `reactions`, `polls`, `forward` | Composition, durable sending and message interactions |
 | `transfers`, `media` | Attachments, clipboard, downloads and the media viewer |
 | `activity`, `feed`, `notifications`, `calls`, `diagnostics` | Cross-chat views, desktop notifications, call integration and diagnostics |
