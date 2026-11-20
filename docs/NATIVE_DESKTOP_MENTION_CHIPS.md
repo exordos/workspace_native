@@ -68,6 +68,16 @@ the reference rules above.
   anchor itself - pixel-identical to the reference inline button style.
 - The click keeps the established profile-open path: `openReference` already
   routes `urn:user` to `rightDrawer.openWorkspaceUserProfile(uuid)` (#134).
+- Keyboard parity (round 5): the reference chip is a real `<button>`, so it
+  is part of the browser tab order. The native overlay chip sets
+  `activeFocusOnTab: true` and therefore joins the window tab chain: Tab /
+  Shift+Tab reach it without any pointer interaction, Enter and Space
+  activate the same `openReference` path, and a visible focus ring marks the
+  focused chip. An earlier revision kept `activeFocusOnTab: false` to avoid
+  perturbing the pinned focus orders; review thread `discussion_r4639284120`
+  rejected that (a keyboard-only user could then never reach the chip), and
+  the reaction focus-order cases pin no mention chips, so the tab stop is
+  the correct deviation point.
 
 ## Tests (native-native-window, `tests/native-window-test.cpp`)
 
@@ -78,6 +88,11 @@ the reference rules above.
   contains `@Ghost` and no chip item exists for it.
 - Clicking the chip raises the profile-open path: the workspace profile layer
   (`profileLayer`) opens for the mentioned uuid.
+- Keyboard-only reach (`mentionChipsReachedByTabWithoutPointer`,
+  `mentionChipsSpaceActivationFromTabFocus`): driving the window with Tab and
+  Shift+Tab only (no QTest mouse event, no `forceActiveFocus`), the focus
+  chain lands on the chip, Shift+Tab leaves it, Tab returns, and Enter
+  respectively Space then opens `profileLayer`.
 
 ## Live verification
 

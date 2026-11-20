@@ -34354,8 +34354,10 @@ private slots:
     }
 
     // Issue #109 review F3 (cid 4639284120): a mention chip must expose an
-    // accessible name and activate with the keyboard, without joining the tab
-    // chain (the bubble's pinned focus order stays unchanged).
+    // accessible name and activate with the keyboard. Round 5 re-check: the
+    // chip must ALSO be a tab stop, otherwise keyboard users cannot reach it
+    // without a pointer; the focus-chain walk itself is witnessed by
+    // mentionChipsReachedByTabWithoutPointer.
     void mentionChipsActivateByKeyboardAndExposeName()
     {
         WindowMentionFixture fixture;
@@ -34387,8 +34389,8 @@ private slots:
             problems << QStringLiteral("chip has no accessible interface");
         else if (iface->text(QAccessible::Name).isEmpty())
             problems << QStringLiteral("chip exposes no accessible name");
-        if (chip->property("activeFocusOnTab").toBool())
-            problems << QStringLiteral("chip stays a tab stop");
+        if (!chip->property("activeFocusOnTab").toBool())
+            problems << QStringLiteral("chip is not a tab stop");
         QCOMPARE(problems, QStringList{});
         chip->forceActiveFocus();
         QTRY_VERIFY_WITH_TIMEOUT(chip->hasActiveFocus(), 2000);

@@ -1511,12 +1511,13 @@ ApplicationWindow {
             });
     }
 
-// Issue #109 review F3 (cid 4639284120): the chip exposes
-// an accessible name and Enter/Space activation. It is
-// focusable on demand (press or programmatic focus) but
-// keeps activeFocusOnTab false, so the bubble's tab chain
-// and the pinned keyboard focus-order expectations of
-// existing window cases stay unchanged.
+// Issue #109 review F3 (cid 4639284120), round 5: the reference chip is a
+// real <button> (workspace-message-render.lib.ts:342-352), so a browser
+// user reaches it with Tab and activates it with Enter/Space
+// (workspace-message-body-interactions.hook.ts:490-496). The chip here is
+// an overlay item, so it joins the window tab chain explicitly
+// (activeFocusOnTab true) and exposes an accessible name plus Enter/Space
+// activation; no pointer is needed to reach or use it.
 component NativeMentionChip: Item {
     required property var modelData
     objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
@@ -1525,7 +1526,7 @@ component NativeMentionChip: Item {
     width: modelData.w
     height: modelData.h
     visible: modelData.w > 0 && modelData.h > 0
-    activeFocusOnTab: false
+    activeFocusOnTab: true
     Accessible.role: Accessible.Button
     Accessible.name: qsTr("Open profile for %1")
         .arg(String(modelData.label || modelData.urn).replace("urn:user:", ""))
