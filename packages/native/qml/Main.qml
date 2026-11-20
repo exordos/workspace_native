@@ -4893,6 +4893,7 @@ component NativeMentionChip: Item {
                 x: 0
                 width: parent.width
                 y: (root.normalizedSidebarQuery.length ? 60 : 104) + sidebar.folderRailInset
+                    + sidebarActivityPanel.expandedDelta
                 height: Math.max(sidebarLoadingCard.visible ? sidebarLoadingCard.y + sidebarLoadingCard.height + 16 : 0,
                     sidebarErrorCard.visible ? sidebarErrorCard.y + sidebarErrorCard.height + 16 : 0,
                     sidebarEmptyCard.visible ? sidebarEmptyCard.y + sidebarEmptyCard.height + 16 : 0,
@@ -5681,7 +5682,8 @@ component NativeMentionChip: Item {
                                                 rotation: streamDelegate.expanded ? 180 : 0
                                                 help: streamDelegate.expanded ? qsTr("Collapse topics") : qsTr("Expand topics")
                                                 visible: !root.normalizedSidebarQuery.length && Boolean(streamDelegate.sidebarTopicState.known) && Number(streamDelegate.sidebarTopicState.count) > 0
-                                                    && (streamButton.hovered || streamButton.activeFocus || activeFocus || hovered)
+                                                    && (streamButton.hovered || hovered || streamButton.activeFocus
+                                                        || streamAvatarLink.activeFocus || activeFocus)
                                                 onClicked: {
                                                     if (streamDelegate.expanded) root.setSidebarTopicReveal(streamDelegate.modelData.id, "collapsed");
                                                     root.controller.toggleSidebarStream(streamDelegate.modelData.id);

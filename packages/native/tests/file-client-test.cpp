@@ -10,6 +10,7 @@
 #include <QHttpMultiPart>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMediaPlayer>
 #include <QMimeDatabase>
 #include <QPointer>
 #include <QProcess>
@@ -213,6 +214,8 @@ void FileClientTest::uploadDimensions_data()
         << QStringLiteral("&w=1&h=1");
     QTest::newRow("webm") << QStringLiteral("clip.webm") << read(QFINDTESTDATA("fixtures/upload-24x16.webm"))
         << QStringLiteral("&w=24&h=16");
+    QTest::newRow("cold-video-backend") << QStringLiteral("clip.webm")
+        << read(QFINDTESTDATA("fixtures/upload-24x16.webm")) << QStringLiteral("&w=24&h=16");
     QTest::newRow("file") << QStringLiteral("note.txt") << QByteArray("caption") << QString();
     QTest::newRow("unreadable-image") << QStringLiteral("bad.png")
         << QByteArray::fromHex("89504e470d0a1a0a") << QString();
@@ -233,8 +236,24 @@ void FileClientTest::uploadDimensions()
     QTemporaryDir dir;
     const auto file = dir.filePath(name); write(file, bytes);
     FileResult result; bool done = false;
+    // Delay local player construction before it receives any media. The metadata
+    // timeout starts when the player is asked to inspect the actual source.
+    struct SlowVideoSetup final : QObject {
+        bool delayed = false;
+        bool eventFilter(QObject *watched, QEvent *event) override
+        {
+            if (!delayed && event->type() == QEvent::ChildAdded && qobject_cast<QMediaPlayer *>(watched)) {
+                delayed = true;
+                QTest::qSleep(400);
+            }
+            return false;
+        }
+    } setup;
+    const bool coldVideo = QByteArray(QTest::currentDataTag()) == "cold-video-backend";
+    if (coldVideo) QCoreApplication::instance()->installEventFilter(&setup);
     client.upload(file, StreamUuid, name, [&](const FileResult &r) { result = r; done = true; });
     QTRY_VERIFY(done);
+    if (coldVideo) QVERIFY(setup.delayed);
     QVERIFY2(result.ok(), qPrintable(result.error));
     const auto urn = result.metadata.urn();
     QCOMPARE(urn.contains("&w="), !dimensions.isEmpty());

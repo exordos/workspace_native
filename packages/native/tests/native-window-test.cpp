@@ -168,6 +168,21 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+static void checkSidebarCardBelowExpandedActivity(QQuickWindow *window, const QString &cardName)
+{
+    auto *root = window->contentItem();
+    clickCurrentItem(window, "activityExpandButton");
+    QTRY_VERIFY(visibleItem(root, "activityHeader"));
+    auto *panel = visibleItem(root, "sidebarActivityPanel"); QVERIFY(panel);
+    auto *card = visibleItem(root, cardName); QVERIFY(card);
+    QTRY_VERIFY(panel->height() > 32);
+    const auto panelBounds = panel->mapRectToItem(root, QRectF(QPointF{}, panel->size()));
+    const auto cardBounds = card->mapRectToItem(root, QRectF(QPointF{}, card->size()));
+    QVERIFY2(!cardBounds.intersects(panelBounds) && cardBounds.top() >= panelBounds.bottom(),
+        qPrintable(QStringLiteral("card top %1, expanded Activity bottom %2")
+            .arg(cardBounds.top()).arg(panelBounds.bottom())));
+}
+
 // Issue #420: QtTest warns on any mouse event outside the window and window
 // warnings fail cases, so a click on a control inside a scrolling page body
 // must be gated on a real viewport reachability check. True when the item's
@@ -9611,7 +9626,9 @@ mv -Tf "$root/.current-new" "$root/current"
         const QJsonArray users{QJsonObject{{"uuid", userId}, {"project_id", projectId},
             {"username", "synthetic-user"}, {"first_name", "Synthetic"}, {"email", "synthetic@example.invalid"}}};
         {
-            NativeCache seed(directory.path(), {}, true);
+            // The saved history must require a refresh even if the first topic catalog arrives early.
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
             QVERIFY(seed.open(server.origin(), projectId, userId));
             QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Users, {}, {}, {}}, users));
             QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
@@ -9624,6 +9641,7 @@ mv -Tf "$root/.current-new" "$root/current"
         std::function<void()> releaseUsers;
         QList<std::function<void()>> releaseTopicPages;
         bool holdTopicPages = true;
+        int secondTopicGets = 0;
         server.handler = [&](const Request &request) {
             const auto path = request.target.path();
             if (path.endsWith("/users/")) {
@@ -9637,6 +9655,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/")) {
                 const bool second = QUrlQuery(request.target).queryItemValue("stream_uuid") == otherStream;
                 Response response{second ? otherTopics : firstTopics};
+                if (second) ++secondTopicGets;
                 if (second && holdTopicPages)
                     response.defer = [&](auto send) { releaseTopicPages.append(std::move(send)); };
                 return response;
@@ -9668,6 +9687,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *content = window->contentItem();
         auto *status = item(content, "cacheStatus"); QVERIFY(status);
         clickCurrentItem(window, "stream-" + streamId);
+        QTRY_VERIFY(controller.topicsComplete());
         QTRY_VERIFY(item(content, "topic-" + topicId));
         clickCurrentItem(window, "topic-" + topicId);
         QTRY_VERIFY(!pending.value(topicId).isEmpty());
@@ -9678,6 +9698,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(item(content, "topic-" + secondTopicId));
         // Select the cached topic while its server catalog is still in flight.
         QTRY_VERIFY(!releaseTopicPages.isEmpty());
+        const int getsBeforeTopicSelection = secondTopicGets;
         clickCurrentItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!pending.value(secondTopicId).isEmpty());
         QTRY_COMPARE(controller.messages().size(), 0);
@@ -9696,6 +9717,7 @@ mv -Tf "$root/.current-new" "$root/current"
         releaseUsers();
         QTRY_VERIFY(!controller.cacheStale());
         QTRY_VERIFY(!status->isVisible());
+        QCOMPARE(secondTopicGets, getsBeforeTopicSelection);
         cache.shutdown(); QTRY_VERIFY(cache.stopped());
     }
 
@@ -11136,8 +11158,23 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void sidebarExpandsUnselectedStreamWithoutNavigating_data()
+    {
+        QTest::addColumn<QString>("action");
+        QTest::addColumn<QString>("density");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("pointer") << QString() << "normal" << "light";
+        QTest::newRow("keyboard-stream") << "stream" << "normal" << "light";
+        QTest::newRow("keyboard-latest-topic") << "latestTopic" << "normal" << "light";
+        QTest::newRow("keyboard-dark") << "stream" << "normal" << "dark";
+        QTest::newRow("keyboard-compact-avatar") << "latestTopic" << "compact" << "dark";
+    }
+
     void sidebarExpandsUnselectedStreamWithoutNavigating()
     {
+        QFETCH(QString, action);
+        QFETCH(QString, density);
+        QFETCH(QString, mode);
         WindowChannelFixture fixture;
         const QString otherStream = "91000000-0000-4000-8000-000000000001";
         const QString otherTopic = "91000000-0000-4000-8000-000000000002";
@@ -11156,6 +11193,9 @@ mv -Tf "$root/.current-new" "$root/current"
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("sidebar-expand.ini"));
+        preferences.setChatClickAction(action);
+        preferences.setChatListDensity(density);
+        preferences.setMode(mode);
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
@@ -11172,13 +11212,60 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!controller.busy() && controller.topics().size() == 1);
         QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
         auto *row = visibleItem(window->contentItem(), "stream-" + streamId);
-        QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
-        QTRY_VERIFY2(visibleItem(window->contentItem(), "expandTopics-" + streamId),
-                     "An unselected channel with topics must expose an expansion control on hover");
-        click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        if (action.isEmpty()) {
+            QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+            QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+            click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        } else {
+            controller.requestSidebarTopics(streamId);
+            QTRY_VERIFY(controller.sidebarTopicState(streamId, false).value("count").toInt() > 0);
+            QTRY_VERIFY(controller.expandedSidebarStreams().contains(otherStream));
+            auto *avatar = visibleItem(window->contentItem(), "streamAvatar-" + streamId);
+            QVERIFY(avatar);
+            QCOMPARE(row->height(), density == "compact" ? 44.0 : 60.0);
+            QCOMPARE(avatar->width(), density == "compact" ? 32.0 : 40.0);
+            QTest::mouseMove(window, QPoint(window->width() - 1, window->height() - 1));
+            QTRY_VERIFY(!row->property("hovered").toBool());
+            for (int tab = 0; tab < 120 && !row->hasActiveFocus(); ++tab)
+                QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY2(row->hasActiveFocus(), "Tab must reach the row body");
+            QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_VERIFY(avatar->hasActiveFocus());
+            auto *chevron = visibleItem(window->contentItem(), "expandTopics-" + streamId);
+            QVERIFY2(chevron, "The chevron must stay visible while the avatar has keyboard focus");
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_VERIFY(chevron->hasActiveFocus());
+            QVERIFY(chevron->property("visualFocus").toBool());
+            auto *background = chevron->property("background").value<QQuickItem *>();
+            QVERIFY(background);
+            QCOMPARE(QQmlProperty::read(background, "border.width").toInt(), 1);
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_VERIFY(avatar->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_VERIFY(row->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_VERIFY(chevron->hasActiveFocus());
+            for (const auto key : {Qt::Key_Space, Qt::Key_Return, Qt::Key_Space}) {
+                const bool expanded = controller.expandedSidebarStreams().contains(streamId);
+                QTest::keyClick(window, key);
+                QTRY_COMPARE(controller.expandedSidebarStreams().contains(streamId), !expanded);
+                QVERIFY(controller.expandedSidebarStreams().contains(otherStream));
+                QCOMPARE(controller.selectedStream(), otherStream);
+                QVERIFY(controller.selectedTopic().isEmpty());
+            }
+        }
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
         QCOMPARE(controller.selectedStream(), otherStream);
         QVERIFY(controller.selectedTopic().isEmpty());
+        if (!action.isEmpty()) {
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_VERIFY(visibleItem(window->contentItem(), "streamAvatar-" + streamId)->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_Space);
+            QTRY_COMPARE(controller.selectedStream(), streamId);
+            QVERIFY(controller.selectedTopic().isEmpty());
+        }
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
     }
 
@@ -30504,6 +30591,7 @@ private slots:
         QVERIFY(!visibleItem("sidebarEmptyCard"));
         QVERIFY(!visibleItem("sidebarPartialBanner"));
         QVERIFY(!visibleItem("stream-"+streamId));
+        checkSidebarCardBelowExpandedActivity(window, "sidebarErrorCard");
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
@@ -30673,6 +30761,8 @@ private slots:
         if (stateCase == "workspace") QVERIFY(controller.streams().isEmpty());
         if (stateCase == "personal" || stateCase == "channels" || stateCase == "folder")
             QVERIFY(controller.sidebarStreams().isEmpty());
+        if (stateCase == "search") QVERIFY(!visibleItem("sidebarActivityPanel"));
+        else checkSidebarCardBelowExpandedActivity(window, "sidebarEmptyCard");
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
@@ -30680,8 +30770,16 @@ private slots:
     // the empty card together (a query that matches nothing while a catalog
     // refresh failed). The card must stack below the banner, never paint over
     // it (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md stacking rule).
+    void sidebarPartialErrorStacksEmptyCardBelowBanner_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QStringLiteral("en");
+        QTest::newRow("ru") << QStringLiteral("ru");
+    }
+
     void sidebarPartialErrorStacksEmptyCardBelowBanner()
     {
+        QFETCH(QString, locale);
         WindowChannelFixture fixture;
         bool failCatalog = false;
         const auto fallback = fixture.server.handler;
@@ -30693,7 +30791,7 @@ private slots:
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("sidebar-partial-empty.ini"));
-        preferences.setLocale("en"); preferences.setMode("light");
+        preferences.setLocale(locale); preferences.setMode("light");
         ApiClient api(nullptr,true); Session session(&api);
         NativeController controller(&api,&session);
         QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
@@ -30711,6 +30809,7 @@ private slots:
         failCatalog = true;
         controller.refresh();
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarPartialBanner"),5000);
+        checkSidebarCardBelowExpandedActivity(window, "sidebarPartialBanner");
         // A query that matches nothing on top of the failed refresh keeps the
         // banner AND surfaces the empty card: both states are active together.
         window->setProperty("sidebarQuery","nothing-matches");

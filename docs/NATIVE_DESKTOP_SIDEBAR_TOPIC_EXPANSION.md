@@ -4,7 +4,8 @@ Issue #95 follows `workspace_ui` master at `75bd21f37de94728e2ebe100acfea24ac9c1
 `sidebar-workspace.ui.tsx`, `sidebar-chat-row-meta.ui.tsx`,
 `sidebar-topic-collapse.{lib,hook}.ts`, `sidebar-topic-show-more.ui.tsx` and
 `sidebar-chat-row-layout.lib.ts`. Its normal-density action slot overlays the
-unread badge on hover or keyboard focus. The chevron toggles a stream without
+unread badge on hover or when keyboard focus is on the row, its avatar, or its
+expansion control. The chevron toggles a stream without
 navigating, independently of the other expanded streams. Selecting a stream or
 topic keeps only that stream expanded. Expansion is scoped to the current server,
 project and user and stored using the existing native preferences mechanism.
