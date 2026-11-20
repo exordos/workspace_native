@@ -9611,7 +9611,9 @@ mv -Tf "$root/.current-new" "$root/current"
         const QJsonArray users{QJsonObject{{"uuid", userId}, {"project_id", projectId},
             {"username", "synthetic-user"}, {"first_name", "Synthetic"}, {"email", "synthetic@example.invalid"}}};
         {
-            NativeCache seed(directory.path(), {}, true);
+            // The saved history must require a refresh even if the first topic catalog arrives early.
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
             QVERIFY(seed.open(server.origin(), projectId, userId));
             QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Users, {}, {}, {}}, users));
             QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
@@ -9670,6 +9672,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *content = window->contentItem();
         auto *status = item(content, "cacheStatus"); QVERIFY(status);
         clickCurrentItem(window, "stream-" + streamId);
+        QTRY_VERIFY(controller.topicsComplete());
         QTRY_VERIFY(item(content, "topic-" + topicId));
         clickCurrentItem(window, "topic-" + topicId);
         QTRY_VERIFY(!pending.value(topicId).isEmpty());
