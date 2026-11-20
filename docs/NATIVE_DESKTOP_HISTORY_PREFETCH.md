@@ -174,3 +174,14 @@ topic rows and preserve the viewport assertions.
   coalescing, re-arm and end-of-history assertions intact.
 - Scrollbar drags remain unattributable (recorded under #106); the reserve
   trigger is driven by the same wheel/drag/fling attribution as before.
+
+
+### Sustained input on a slow history request
+
+For each selected conversation the controller measures the last successful
+history page request. Two consecutive upward scroll samples project how far the
+reader will travel while the next page is in flight. Prefetch keeps that
+distance in addition to the normal viewport reserve, capped at four viewports
+in total. A pause, a layout jump, switching routes or restoring an anchor
+discards the velocity estimate. Programmatic restoration only rearms the next
+user scroll. The original request coalescing and end marker still apply.
