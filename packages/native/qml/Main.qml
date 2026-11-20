@@ -8417,6 +8417,8 @@ component NativeMentionChip: Item {
                     }
                     Rectangle {
                         id: bubble
+                        readonly property bool actionsFocused: activeFocus || quickReply.visualFocus || quickReactions.hasFocus
+                            || messageBody.activeFocus || bodyMentionOverlay.activeFocus || mediaMentionOverlay.activeFocus
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
                         width: messageRow.keyControl ? messageRow.width : messageRow.hasPoll
@@ -8483,9 +8485,7 @@ component NativeMentionChip: Item {
                             visible: root.composerAvailable && !root.controller.topicClosed && !root.encryptedConversation
                                 && messageRow.modelData.kind === "markdown" && !root.controller.cacheStale
                                 && root.messageSelectionCount === 0 && !root.aggregateConversation
-                                && (messageHover.hovered || bubble.activeFocus || visualFocus || hovered
-                                    || quickReactions.hasFocus || messageBody.activeFocus
-                                    || bodyMentionOverlay.activeFocus || mediaMentionOverlay.activeFocus)
+                                && (messageHover.hovered || hovered || bubble.actionsFocused)
                             enabled: visible && !root.controller.busy
                             font.pixelSize: 12
                             contentItem: Text {
@@ -9492,7 +9492,7 @@ component NativeMentionChip: Item {
                             emojiPixelSize: Qt.platform.os === "linux" && fullReactionPicker.emojiFamily === "Noto Color Emoji" ? 28 : 24
                             x: messageRow.own ? 0 : parent.width
                             y: parent.height + 4
-                            visible: messageHover.hovered || bubble.activeFocus || hasFocus || expanded
+                            visible: messageHover.hovered || bubble.actionsFocused || expanded
                             onAboutToOpen: {
                                 root.quickUsage = root.preferences.quickReactionUsage;
                                 quickReactions.availableHeight = Math.max(40, quickReactions.mapToItem(messageList, 0, 0).y - 4);
