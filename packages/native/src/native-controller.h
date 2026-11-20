@@ -912,6 +912,10 @@ public:
     // name, then locale order; membership marks carry "outsideChannel".
     static QVariantList rankMentionSuggestions(const QString &query, const QVariantList &candidates,
         const MentionRankingContext &context);
+    Q_INVOKABLE QVariantList composerReferences(const QString &query) const;
+    QString replaceComposerReferenceLinks(const QString &text) const;
+    Q_INVOKABLE QString composerReferenceClipboardText() const;
+    Q_INVOKABLE void openStreamReference(const QString &id);
     Q_INVOKABLE QVariantList mentionSuggestions(const QString &query) const;
     Q_INVOKABLE bool composerMentionsEnabled() const;
     Q_INVOKABLE void recordMentionPick(const QString &userUuid);

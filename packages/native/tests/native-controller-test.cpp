@@ -24681,6 +24681,31 @@ private slots:
             (QStringList{bob}));
     }
 
+    void composerHashReferencesUseCatalogAndNormalizeOnlyKnownLinks()
+    {
+        Fixture f;
+        QVERIFY(f.start());
+        const auto rows = f.controller.composerReferences({});
+        QVERIFY(rows.size() >= 2);
+        const auto stream = rows.first().toMap();
+        const auto topic = rows.last().toMap();
+        QCOMPARE(stream.value("kind").toString(), QStringLiteral("stream"));
+        QCOMPARE(topic.value("kind").toString(), QStringLiteral("topic"));
+        QCOMPARE(stream.value("stream").toString(), streamId);
+        QCOMPARE(topic.value("topic").toString(), topicId);
+        const auto streamMd = "[" + stream.value("displayName").toString() + "](urn:stream:" + streamId + ")";
+        const auto topicMd = "[" + topic.value("displayName").toString() + "](urn:topic:" + topicId + ")";
+        QCOMPARE(stream.value("markdown").toString(), streamMd);
+        QCOMPARE(topic.value("markdown").toString(), topicMd);
+        QVERIFY(f.controller.composerReferences(QStringLiteral("zzzzmissing")).isEmpty());
+        const auto origin = f.server.origin();
+        const auto path = "/org/" + orgRouteIdFromOrigin(origin) + "/project/" + projectId + "/stream/" + streamId;
+        const auto foreign = "https://other.example.invalid" + path;
+        const auto unknown = origin.toString() + path + "/topic/" + userId;
+        const auto links = origin.toString() + path + ", ew://open" + path + "/topic/" + topicId + "! " + foreign + " " + unknown;
+        QCOMPARE(f.controller.replaceComposerReferenceLinks(links), streamMd + ", " + topicMd + "! " + foreign + " " + unknown);
+    }
+
     void mentionRankTriggerRequiresBoundaryBeforeAt()
     {
         // ComposerMentionTrigger.REMINDER in the reference: a mention token only
