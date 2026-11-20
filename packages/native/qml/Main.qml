@@ -575,12 +575,35 @@ ApplicationWindow {
             composerEmojiPicker.close();
     }
 
-    function positionComposerEmojiPicker() {
-        const point = composerEmojiButton.mapToItem(root.contentItem, 0, 0);
-        const width = composerEmojiPicker.width, height = composerEmojiPicker.height;
-        composerEmojiPicker.x = Math.max(8, Math.min(root.width - width - 8, point.x + composerEmojiButton.width / 2 - width / 2));
-        const above = point.y - height - 8;
-        composerEmojiPicker.y = above >= 8 ? above : Math.max(8, Math.min(root.height - height - 8, point.y + composerEmojiButton.height + 8));
+    function positionComposerTool(popup, button) {
+        const point = button.mapToItem(root.contentItem, 0, 0);
+        popup.x = Math.max(8, Math.min(root.width - popup.width - 8, point.x + (button.width - popup.width) / 2));
+        const above = point.y - popup.height - 8;
+        popup.y = above >= 8 ? above : Math.max(8, Math.min(root.height - popup.height - 8, point.y + button.height + 8));
+    }
+    function positionComposerEmojiPicker() { positionComposerTool(composerEmojiPicker, composerEmojiButton); }
+    function toggleComposerTool(popup, button) {
+        if (popup.visible) {
+            popup.close();
+            return;
+        }
+        if (!root.composerAvailable || !composerText.enabled || messageComposerShell.preview) return;
+        composerEmojiPicker.close();
+        composerMentionPopup.close();
+        composerAiNotice.close();
+        if (popup === composerTimePicker) {
+            composerSnippets.close();
+            popup.openingDraft = composerText.text;
+            popup.selectionStart = composerText.selectionStart;
+            popup.selectionEnd = composerText.selectionEnd;
+            popup.reset();
+        } else {
+            composerTimePicker.close();
+            popup.reset(composerText.text);
+        }
+        popup.openingContext = messageComposerShell.previewContext;
+        root.positionComposerTool(popup, button);
+        popup.open();
     }
     // ---- Issue #123 composer @mention popup (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
     // ComposerMentionTrigger.REMINDER: "@query" only counts as a mention token at
@@ -639,6 +662,12 @@ ApplicationWindow {
         root.composerEmojiStream = root.controller.selectedStream;
         root.composerEmojiTopic = root.controller.selectedTopic;
         root.composerEmojiKind = root.controller.conversationKind;
+        composerTimePicker.close();
+        composerSnippets.close();
+        composerAiNotice.close();
+        composerMentionPopup.close();
+        composerEmojiPicker.showingStickers = false;
+        composerStickerPanel.reset();
         composerEmojiChoices.reset();
         root.positionComposerEmojiPicker();
         composerEmojiPicker.open();
@@ -648,9 +677,11 @@ ApplicationWindow {
             return;
         const entry = composerEmojiChoices.byName[name];
         const unicode = entry && entry.pickerEligible ? String(entry.pickerUnicode || "").trim() : "";
-        if (!unicode.length)
-            return;
-        root.controller.draft = String(root.controller.draft) + unicode;
+        root.appendComposerMedia(unicode);
+    }
+    function appendComposerMedia(markdown) {
+        if (!markdown.length || !root.composerEmojiAllowed || !composerText.enabled) return;
+        root.controller.draft = String(root.controller.draft) + markdown;
         if (!root.composerEmojiAllowed)
             return;
         composerText.forceActiveFocus(Qt.OtherFocusReason);
@@ -10365,7 +10396,11 @@ component NativeMentionChip: Item {
                 property bool preview: false
                 readonly property string previewContext: root.controller.ownStatusContextKey + "/"
                     + root.controller.selectedStream + "/" + root.controller.selectedTopic + "/" + root.controller.editingMessageId
-                onPreviewContextChanged: preview = false
+                onPreviewContextChanged: {
+                    preview = false;
+                    if (composerTimePicker) composerTimePicker.close();
+                    if (composerSnippets) composerSnippets.close();
+                }
                 onVisibleChanged: if (!visible) preview = false
                 visible: root.encryptedConversation ? root.encryptedComposerHasKey : !root.controller.topicClosed && !root.aggregateConversation
                 Layout.fillWidth: true
@@ -11752,6 +11787,38 @@ component NativeMentionChip: Item {
                                 }
                             }
                             NativeIconButton {
+                                id: composerTimeButton
+                                objectName: "composerTimeButton"
+                                colors: root.colors
+                                help: qsTranslate("ComposerTools", "Insert date and time")
+                                asset: "composer-schedule.svg"
+                                visible: !messageComposerShell.preview
+                                enabled: root.composerAvailable && composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                focusPolicy: Qt.StrongFocus
+                                Accessible.checkable: true
+                                Accessible.checked: composerTimePicker.visible
+                                onClicked: root.toggleComposerTool(composerTimePicker, composerTimeButton)
+                                onVisibleChanged: if (!visible && composerTimePicker) composerTimePicker.close()
+                            }
+                            NativeIconButton {
+                                id: composerSnippetsButton
+                                objectName: "composerSnippetsButton"
+                                colors: root.colors
+                                help: qsTranslate("ComposerTools", "Saved snippets")
+                                asset: "composer-chat.svg"
+                                visible: !messageComposerShell.preview && !root.controller.editingMessageId.length
+                                enabled: root.composerAvailable && composerText.enabled
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                focusPolicy: Qt.StrongFocus
+                                Accessible.checkable: true
+                                Accessible.checked: composerSnippets.visible
+                                onClicked: root.toggleComposerTool(composerSnippets, composerSnippetsButton)
+                                onVisibleChanged: if (!visible && composerSnippets) composerSnippets.close()
+                            }
+                            NativeIconButton {
                                 id: composerAiButton
                                 objectName: "composerAiButton"
                                 colors: root.colors
@@ -11778,6 +11845,8 @@ component NativeMentionChip: Item {
                                     } else {
                                         composerEmojiPicker.close();
                                         composerMentionPopup.close();
+                                        composerTimePicker.close();
+                                        composerSnippets.close();
                                         composerAiNotice.open();
                                     }
                                 }
@@ -12220,12 +12289,50 @@ component NativeMentionChip: Item {
         }
     }
 
+    NativeComposerTimePicker {
+        id: composerTimePicker
+        parent: Overlay.overlay
+        colors: root.colors
+        localeName: root.preferences.locale
+        property string openingContext
+        property string openingDraft
+        property int selectionStart
+        property int selectionEnd
+        readonly property bool current: openingContext === messageComposerShell.previewContext
+            && root.composerAvailable && composerText.enabled && !messageComposerShell.preview
+        onInserted: markdown => {
+            if (current && composerText.text === openingDraft) {
+                const start = selectionStart;
+                root.controller.draft = openingDraft.slice(0, start) + markdown + openingDraft.slice(selectionEnd);
+                selectionStart = start + markdown.length;
+                selectionEnd = selectionStart;
+                openingDraft = root.controller.draft;
+            }
+            close();
+        }
+        onClosed: {
+            if (current && composerText.text === openingDraft) {
+                composerText.forceActiveFocus(Qt.PopupFocusReason);
+                composerText.select(selectionStart, selectionEnd);
+            }
+        }
+    }
+    NativeComposerSnippets {
+        id: composerSnippets
+        parent: Overlay.overlay
+        colors: root.colors
+        property string openingContext
+        onClosed: if (openingContext === messageComposerShell.previewContext && composerText.enabled && !messageComposerShell.preview)
+            composerText.forceActiveFocus(Qt.PopupFocusReason)
+    }
+
     Popup {
         id: composerEmojiPicker
         objectName: "composerEmojiPicker"
         parent: Overlay.overlay
-        width: Math.min(320, root.width - 16)
-        height: Math.min(322, root.height - 16)
+        property bool showingStickers: false
+        width: Math.min(showingStickers ? 340 : 320, root.width - 16)
+        height: Math.min(360, root.height - 16)
         padding: 1
         modal: false
         dim: false
@@ -12245,14 +12352,50 @@ component NativeMentionChip: Item {
             radius: 12
             border.color: root.colors["border-subtle"]
         }
-        contentItem: NativeReactionPicker {
-            id: composerEmojiChoices
-            choices: root.controller.reactionChoices
-            suggested: root.preferences.suggestedReactions
-            dark: theme.dark
-            active: composerEmojiPicker.visible
-            allowed: root.composerEmojiAllowed && composerText.enabled
-            onChosen: name => root.pickComposerEmoji(name)
+        contentItem: ColumnLayout {
+            spacing: 0
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 38
+                spacing: 0
+                TabButton {
+                    Layout.fillWidth: true
+                    text: qsTranslate("ComposerTools", "Emoji")
+                    checked: !composerEmojiPicker.showingStickers
+                    onClicked: { composerEmojiPicker.showingStickers = false; composerEmojiChoices.focusSearch(); }
+                }
+                TabButton {
+                    objectName: "composerStickersTab"
+                    Layout.fillWidth: true
+                    text: qsTranslate("ComposerTools", "Stickers")
+                    checked: composerEmojiPicker.showingStickers
+                    onClicked: { composerEmojiPicker.showingStickers = true; composerStickerPanel.focusSearch(); }
+                }
+            }
+            NativeReactionPicker {
+                id: composerEmojiChoices
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: !composerEmojiPicker.showingStickers
+                choices: root.controller.reactionChoices
+                suggested: root.preferences.suggestedReactions
+                dark: theme.dark
+                active: composerEmojiPicker.visible && visible
+                allowed: root.composerEmojiAllowed && composerText.enabled
+                onChosen: name => root.pickComposerEmoji(name)
+            }
+            NativeComposerStickerPicker {
+                id: composerStickerPanel
+                objectName: "composerStickerPanel"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: composerEmojiPicker.showingStickers
+                colors: root.colors
+                onPicked: markdown => {
+                    root.appendComposerMedia(markdown);
+                    composerEmojiPicker.close();
+                }
+            }
         }
     }
     Connections {

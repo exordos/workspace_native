@@ -21179,6 +21179,102 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerToolPopoversUseTheCurrentDraft_data()
+    {
+        QTest::addColumn<QString>("surface"); QTest::addColumn<QString>("locale");
+        for (const auto &surface : {QString("media"), QString("time"), QString("snippets")})
+            for (const auto &locale : {QString("en"), QString("ru")})
+                QTest::newRow(qPrintable(surface + '-' + locale)) << surface << locale;
+    }
+
+    void composerToolPopoversUseTheCurrentDraft()
+    {
+        QFETCH(QString, surface); QFETCH(QString, locale);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QString posted;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                return {message(posted, request.body.value("uuid").toString()), 201};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("tools.ini"));
+        preferences.setLocale(locale); preferences.setMode(locale == "ru" ? "dark" : "light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *editor = view("messageComposer"); QVERIFY(editor);
+        click(window, view("composerToolbarExpand"));
+        const QString original = "Meet old date here";
+        controller.setDraft(original);
+        if (surface == "media") {
+            click(window, view("composerEmojiButton"));
+            auto *tab = view("composerStickersTab"); QVERIFY(tab);
+            click(window, tab);
+            QTRY_VERIFY(view("composerStickerEmpty"));
+            auto *picker = window->findChild<QObject *>("composerEmojiPicker"); QVERIFY(picker);
+            QCOMPARE(picker->property("width").toInt(), 340);
+            auto *stickers = view("composerStickerPanel"); QVERIFY(stickers);
+            const auto url = fixture.server.origin().resolved(QUrl("/fixture/sticker.png")).toString();
+            const QVariantMap sticker{{"id", "wave"}, {"emoji", "hi"}, {"alt", "Wave"}, {"url", url},
+                                      {"thumbnailUrl", "qrc:/workspace/icons/smile.svg"}};
+            const QVariantMap pack{{"id", "greetings"}, {"title", "Greetings"}, {"stickers", QVariantList{sticker}}};
+            QVERIFY(stickers->setProperty("packs", QVariantList{pack}));
+            QTRY_VERIFY(view("composerSticker-greetings-wave"));
+            click(window, view("composerSticker-greetings-wave"));
+            QTRY_COMPARE(controller.draft(), original + "[sticker:greetings:wave](" + url + ")");
+            QTRY_VERIFY(!picker->property("visible").toBool());
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), controller.draft().size());
+        } else if (surface == "time") {
+            auto *button = view("composerTimeButton"); QVERIFY(button);
+            click(window, editor);
+            QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 5), Q_ARG(int, 13)));
+            click(window, button);
+            QTRY_VERIFY(view("composerTimeInsert"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(editor->hasActiveFocus()); QCOMPARE(controller.draft(), original);
+            QCOMPARE(editor->property("selectedText").toString(), QString("old date"));
+            const auto opened = QDateTime::currentDateTimeUtc();
+            click(window, button); QTRY_VERIFY(view("composerTimeInsert"));
+            click(window, view("composerTimeInsert"));
+            const auto text = controller.draft();
+            const auto match = QRegularExpression("^Meet urn:time:(.{19}Z) here$").match(text);
+            QVERIFY2(match.hasMatch(), qPrintable(text));
+            const auto selected = QDateTime::fromString(match.captured(1), Qt::ISODate);
+            QVERIFY(selected > opened && opened.secsTo(selected) <= 61);
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), text.size() - 5);
+            click(window, view("composerPreviewToggle")); QTRY_VERIFY(view("composerPreviewMarkdown"));
+            QCOMPARE(view("composerPreviewMarkdown")->property("sourceMarkdown").toString(), text);
+            click(window, view("sendButton")); QTRY_COMPARE(posted, text);
+        } else {
+            auto *button = view("composerSnippetsButton"); QVERIFY(button);
+            click(window, button);
+            QTRY_VERIFY(view("composerSnippetFilter"));
+            QTest::keyClick(window, Qt::Key_A);
+            QCOMPARE(view("composerSnippetFilter")->property("text").toString(), QString("a"));
+            QVERIFY(view("composerSnippetEmpty"));
+            click(window, view("composerSnippetCreate"));
+            QTRY_VERIFY(view("composerSnippetTitle"));
+            QTest::keyClick(window, Qt::Key_X);
+            click(window, view("composerSnippetSave"));
+            QTRY_VERIFY(view("composerSnippetUnsupported"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(!view("composerSnippetFilter") && !view("composerSnippetUnsupported"));
+            QCOMPARE(controller.draft(), original);
+            for (const auto &request : fixture.server.requests)
+                QVERIFY(!request.target.path().contains("snippet", Qt::CaseInsensitive));
+        }
+    }
+
     void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
     {
         QTest::addColumn<QString>("locale");
