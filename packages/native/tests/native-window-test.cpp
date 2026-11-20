@@ -19386,17 +19386,33 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(image->scale(), 1.14);
         wheel({}, QPoint(0, 4800));
         QCOMPARE(image->scale(), 3.0);
+        // The enlarged picture extends above the media area's original top margin.
+        const QPoint overflow(window->width() / 2, 44);
+        QTest::mouseClick(window, Qt::LeftButton, {}, overflow);
+        QVERIFY(viewer->open());
+        QWheelEvent outside(overflow, window->mapToGlobal(overflow), {}, QPoint(0, -120),
+                            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &outside);
+        QCOMPARE(image->scale(), 2.88);
         wheel({}, QPoint(0, -4800));
         QCOMPARE(image->scale(), 0.5);
         QCOMPARE(list->property("contentY").toReal(), historyY);
         click(window, visibleItem(content, "mediaViewer-next"));
         QCOMPARE(viewer->index(), 1);
         QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
         wheel({}, QPoint(0, 120));
         QCOMPARE(image->scale(), 1.12);
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
+
+        wheel({}, QPoint(0, 120));
+        QCOMPARE(image->scale(), 1.12);
+        QVERIFY(viewer->openFromMessages(controller.messages(), fileA));
+        QCOMPARE(viewer->index(), 0);
+        QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
 
         // 48x48 nav circles 16 px from the edges, vertically centered
         // (media-viewer-controls.ui.tsx:6-7); 40x40 toolbar buttons top-right
@@ -19767,6 +19783,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
         const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString fileC = QStringLiteral("9f000000-0000-4000-8000-00000000000c");
+        const QString third = QStringLiteral("9e000000-0000-4000-8000-000000000003");
         const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
         const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
         const QByteArray png = avatarProbePng(false);
@@ -19785,13 +19803,15 @@ mv -Tf "$root/.current-new" "$root/current"
                 metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
                 return Response{metadata};
             }
-            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)
+                || path.startsWith("/api/workspace/v1/messenger/files/" + fileC)) {
                 if (path.endsWith("/actions/download")) {
                     Response failure{QJsonObject{}, 500};
                     failure.defer = [&](std::function<void()> send) { pendingDownloads.append(std::move(send)); };
                     return failure;
                 }
-                auto metadata = avatarProbeMetadata(fileB, video ? mp4 : png);
+                const QString file = path.contains(fileC) ? fileC : fileB;
+                auto metadata = avatarProbeMetadata(file, video ? mp4 : png);
                 metadata["stream_uuid"] = streamId;
                 metadata["name"] = video ? "clip.mp4" : "shot.png";
                 metadata["content_type"] = video ? "video/mp4" : "image/png";
@@ -19799,9 +19819,12 @@ mv -Tf "$root/.current-new" "$root/current"
             }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 ++fixture.historyGets;
-                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
-                                           video ? mediaViewerVideoRow(second, fileB, mp4.size())
-                                                 : mediaViewerRow(second, fileB, png.size())}};
+                QJsonArray rows{mediaViewerRow(first, fileA, png.size()),
+                                video ? mediaViewerVideoRow(second, fileB, mp4.size())
+                                      : mediaViewerRow(second, fileB, png.size())};
+                if (!video)
+                    rows.append(mediaViewerRow(third, fileC, png.size()));
+                return Response{rows};
             }
             return fallback(request);
         };
@@ -19826,7 +19849,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(content, "topic-" + topicId));
         QTRY_COMPARE(controller.selectedTopic(), topicId);
-        QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_COMPARE(controller.messages().size(), video ? 2 : 3);
         auto *viewer = controller.mediaViewer();
         click(window, visibleItem(content, "inline-image-" + first));
         QTRY_VERIFY(viewer->open());
@@ -19866,6 +19889,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(accessible->role(), QAccessible::AlertMessage);
         QCOMPARE(accessible->text(QAccessible::Name), expected);
         QTRY_VERIFY(announcements.contains(qMakePair(expected, Politeness::Assertive)));
+        if (!video) {
+            QTRY_COMPARE(viewer->items().last().toMap()["state"].toString(), QStringLiteral("load-error"));
+            const auto before = announcements.count(qMakePair(expected, Politeness::Assertive));
+            click(window, visibleItem(content, "mediaViewer-next"));
+            QCOMPARE(viewer->index(), 2);
+            QTRY_COMPARE(announcements.count(qMakePair(expected, Politeness::Assertive)), before + 1);
+        }
         // Toolbar actions stay unusable for a broken slot
         // (media-viewer-actions.lib.ts:71-79).
         QVERIFY(!visibleItem(content, "mediaViewer-download")->property("enabled").toBool());

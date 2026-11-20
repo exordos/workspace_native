@@ -21,7 +21,10 @@ Popup {
     readonly property bool gallery: viewer.count > 1
     property real zoom: 1
     readonly property int selectedSlot: viewer.open ? viewer.index : -1
-    onSelectedSlotChanged: zoom = 1
+    onSelectedSlotChanged: {
+        zoom = 1;
+        Qt.callLater(statusLabel.announceStatus);
+    }
 
     function zoomByWheel(wheel) {
         const delta = wheel.pixelDelta.y || wheel.angleDelta.y;
