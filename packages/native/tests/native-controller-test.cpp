@@ -8057,7 +8057,14 @@ private slots:
         QTRY_VERIFY(test.fixture.api.findChildren<QNetworkReply *>().isEmpty());
         QVERIFY(controller.channelCreationForm().isEmpty()); QCOMPARE(controller.channelCreationPhase(), "idle");
         QCOMPARE(done.size(), 0); QCOMPARE(test.posts, 1);
-        test.fixture.server.handler = fallback;
+        std::function<void()> releaseDirectory;
+        test.fixture.server.handler = [fallback, &releaseDirectory](const Request &request) {
+            auto response = fallback(request);
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/users/") {
+                response.defer = [&releaseDirectory](auto send) { releaseDirectory = std::move(send); };
+            }
+            return response;
+        };
         controller.login(test.fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
         QTRY_COMPARE(controller.projects().size(), 1); controller.openProject(projectId);
         QTRY_VERIFY(controller.authenticated()); QTRY_COMPARE(controller.streams().size(), 2);
@@ -8065,6 +8072,10 @@ private slots:
         QCOMPARE(controller.channelCreationForm().value("attemptId"), form.value("attemptId"));
         QCOMPARE(controller.channelCreationForm().value("memberUuids"), form.value("memberUuids"));
         test.postDelay = test.getDelay = test.topicDelay = test.addDelay = test.bindingDelay = test.catalogDelay = 0;
+        QTRY_VERIFY(static_cast<bool>(releaseDirectory));
+        QVERIFY(!controller.canCheckChannelCreation());
+        releaseDirectory();
+        QTRY_VERIFY(controller.canCheckChannelCreation());
         controller.checkChannelCreation(); QTRY_VERIFY(!controller.channelCreationBusy());
         QCOMPARE(test.posts, 1);
         if (stage == "members" || stage == "catalog") QCOMPARE(done.size(), 1);
