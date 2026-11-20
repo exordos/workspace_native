@@ -30193,11 +30193,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
         scene.start();
         auto *card = pollVisibleItem(scene.content(),
             pollBubbleName("poll-card", scene.fixture.messageUuid));
-        QVERIFY(card);
+        QVERIFY(card && card->parentItem());
+        // The Loader owns the size of its live card.
+        const QPointer<QQuickItem> cardHost = card->parentItem();
         // Sweep from just under the reference 336 px column down to a
         // pathological bubble width.
         for (const qreal width : {320.0, 280.0, 240.0, 200.0, 160.0, 120.0, 96.0}) {
-            card->setWidth(width);
+            QVERIFY(cardHost);
+            cardHost->setWidth(width);
             QTest::qWait(120); // positioners re-polish on the next frame
             auto *sizedCard = pollVisibleItem(scene.content(),
                 pollBubbleName("poll-card", scene.fixture.messageUuid));
