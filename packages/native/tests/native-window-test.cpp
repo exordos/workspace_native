@@ -28659,6 +28659,75 @@ private slots:
         QCOMPARE(column->mapToItem(shell, QPointF{}).y(), 9.0);
     }
 
+    void bubbleReplyQuickAction_data()
+    {
+        QTest::addColumn<bool>("keyboard");
+        QTest::addColumn<bool>("own");
+        QTest::newRow("peer-pointer") << false << false;
+        QTest::newRow("own-pointer") << false << true;
+        QTest::newRow("peer-keyboard") << true << false;
+        QTest::newRow("own-keyboard") << true << true;
+    }
+
+    void bubbleReplyQuickAction()
+    {
+        QFETCH(bool, keyboard);
+        QFETCH(bool, own);
+        ForwardWindowFixture fixture;
+        fixture.firstNote["is_own"] = own;
+        fixture.firstNote["author_uuid"] = own ? userId : channelPeer;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        preferences.setLocale(keyboard ? "ru" : "en");
+        preferences.setMode(keyboard ? "dark" : "light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *bubble = visibleItem("message-" + messageId);
+        QVERIFY(bubble);
+        QTest::mouseMove(window, QPoint(5, 5));
+        const auto control = [&] { return visibleItem("quickReply-" + messageId); };
+        QVERIFY(!control());
+        if (keyboard)
+            bubble->forceActiveFocus(Qt::TabFocusReason);
+        else
+            QTest::mouseMove(window, bubble->mapToScene(QPointF(bubble->width()/2, bubble->height()/2)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(control(), 2000);
+        const auto label = QAccessible::queryAccessibleInterface(control());
+        QVERIFY(label);
+        QCOMPARE(label->text(QAccessible::Name), keyboard ? QStringLiteral("Ответить") : QStringLiteral("Reply"));
+        QCOMPARE(control()->height(), 24);
+        if (keyboard) {
+            for (int i = 0; i < 20 && control() && !control()->hasActiveFocus(); ++i)
+                QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY(control() && control()->hasActiveFocus());
+            QTest::keyClick(window, Qt::Key_Space);
+        } else {
+            click(window, control());
+        }
+        QTRY_COMPARE(controller.replyMessageId(), messageId);
+        QTRY_VERIFY(visibleItem("replyNotice"));
+        QCOMPARE(fixture.posts, 0);
+    }
+
     void forwardModalSendsSelectedBatchOnceAndClearsSelection()
     {
         QTest::failOnWarning();
