@@ -5004,6 +5004,7 @@
     </context>
 <context>
     <name>NativeAccountPreferences</name>
+        <message><source>Keyboard shortcuts</source><translation>Горячие клавиши</translation></message>
     <message><source>Theme settings</source><translation>Настройки темы</translation></message>
     <message><source>Stream and topic order</source><translation>Порядок стримов и топиков</translation></message>
     <message><source>Last message</source><translation>По последнему сообщению</translation></message>

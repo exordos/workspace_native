@@ -76,5 +76,5 @@ private slots:
         QVERIFY(NativeHotkeys::fromEvent(altgr).isEmpty());
     }
 };
-QTEST_MAIN(NativeHotkeysTest)
+QTEST_GUILESS_MAIN(NativeHotkeysTest)
 #include "native-hotkeys-test.moc"

@@ -642,7 +642,7 @@ if(BUILD_TESTING)
     # shared display (focus and keyboard-grab races), so a parallel pre-release
     # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
     # remaining suites concurrently.
-    set_tests_properties(native-native-window native-native-draft-workload native-native-e2ee-ui native-native-preferences
+    set_tests_properties(native-native-window native-hotkeys-ui native-native-draft-workload native-native-e2ee-ui native-native-preferences
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")

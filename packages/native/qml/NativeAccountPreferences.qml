@@ -8,6 +8,7 @@ ScrollView {
     id: panel
     required property var preferences
     required property var colors
+    signal shortcutsRequested()
     required property bool appearance
     clip: true
     contentWidth: availableWidth
@@ -128,6 +129,14 @@ ScrollView {
                     }
                 }
             }
+        }
+        NativeButton {
+            objectName: "accountKeyboardShortcuts"
+            visible: !panel.appearance
+            width: panel.availableWidth
+            colors: panel.colors
+            text: qsTr("Keyboard shortcuts")
+            onClicked: panel.shortcutsRequested()
         }
     }
 }

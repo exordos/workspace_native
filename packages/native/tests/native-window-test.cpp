@@ -7405,9 +7405,18 @@ mv -Tf "$root/.current-new" "$root/current"
         window->contentItem()->forceActiveFocus();
         QTest::keyClick(window,Qt::Key_Slash,Qt::ControlModifier);
         QTRY_VERIFY(help->property("visible").toBool());
+        QTRY_VERIFY(visibleItem("shortcut-composer.bold"));
+        QVERIFY(!visibleItem("shortcut-navigation.calendar"));
+        for (const auto &id : {"cancel", "focus", "send", "editing", "focusZones"})
+            QVERIFY(visibleItem("shortcut-fixed." + QString::fromLatin1(id)));
         QTest::keyClick(window,Qt::Key_Escape);
         QTRY_VERIFY(!help->property("visible").toBool());
-        QVERIFY(QMetaObject::invokeMethod(settings, "open"));
+        QTRY_VERIFY(visibleItem("accountMenuButton"));
+        click(window,visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(window,visibleItem("accountSettingsAction"));
+        QTRY_VERIFY(visibleItem("accountKeyboardShortcuts"));
+        click(window,visibleItem("accountKeyboardShortcuts"));
         QTRY_VERIFY(settings->property("visible").toBool());
         auto find=[&](const QString &name) { return item(window->contentItem(), name); };
         auto *search=find("shortcutsSearch"); QVERIFY(search);

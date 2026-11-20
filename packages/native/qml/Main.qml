@@ -136,7 +136,12 @@ ApplicationWindow {
             anchors.fill: parent
             active: rightDrawer.preferenceScreen && rightDrawer.drawerOpen
             sourceComponent: Component {
-                NativeAccountPreferences { preferences: root.preferences; colors: root.colors; appearance: rightDrawer.currentAccountScreen === "appearance" }
+                NativeAccountPreferences {
+                    preferences: root.preferences
+                    colors: root.colors
+                    appearance: rightDrawer.currentAccountScreen === "appearance"
+                    onShortcutsRequested: shortcutsDialog.open()
+                }
             }
         }
         NativeChannelInfo {
