@@ -1481,6 +1481,8 @@
         <source>Are you sure you want to delete &quot;%1&quot;?</source>
         <translation>Вы уверены, что хотите удалить «%1»?</translation>
     </message>
+    <message><source>Settings</source><translation>Настройки</translation></message>
+    <message><source>Appearance</source><translation>Оформление</translation></message>
 </context>
     <context>
         <name>NativeQuickReactions</name>
@@ -5072,4 +5074,46 @@
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
     </context>
+<context>
+    <name>NativeAccountPreferences</name>
+    <message><source>Theme settings</source><translation>Настройки темы</translation></message>
+    <message><source>Stream and topic order</source><translation>Порядок стримов и топиков</translation></message>
+    <message><source>Last message</source><translation>По последнему сообщению</translation></message>
+    <message><source>Unread first</source><translation>Непрочитанные</translation></message>
+    <message><source>By name</source><translation>По имени</translation></message>
+    <message><source>Folder layout</source><translation>Отображение папок</translation></message>
+    <message><source>Vertical rail</source><translation>Вертикальная панель</translation></message>
+    <message><source>Horizontal tabs</source><translation>Горизонтальные вкладки</translation></message>
+    <message><source>Chat list density</source><translation>Плотность списка чатов</translation></message>
+    <message><source>Standard</source><translation>Стандартная</translation></message>
+    <message><source>Compact</source><translation>Компактная</translation></message>
+    <message><source>Chat click</source><translation>Клик по чату</translation></message>
+    <message><source>What to open when clicking a chat</source><translation>Что открывать при клике на чат</translation></message>
+    <message><source>General chat and topics</source><translation>Общий чат и топики</translation></message>
+    <message><source>Latest topic</source><translation>Последний топик</translation></message>
+    <message><source>Click the avatar to open the general chat</source><translation>Клик по аватару откроет общий чат</translation></message>
+    <message><source>Notification sound</source><translation>Звуки уведомлений</translation></message>
+    <message><source>Default</source><translation>По умолчанию</translation></message>
+    <message><source>Subtle</source><translation>Тихий</translation></message>
+    <message><source>Digital</source><translation>Цифровой</translation></message>
+    <message><source>Glass</source><translation>Стекло</translation></message>
+    <message><source>Pulse</source><translation>Пульс</translation></message>
+    <message><source>Off</source><translation>Без звука</translation></message>
+    <message><source>Language</source><translation>Язык</translation></message>
+    <message><source>Auto sign-out</source><translation>Автовыход</translation></message>
+    <message><source>After inactivity</source><translation>После неактивности</translation></message>
+    <message><source>6 hours</source><translation>6 часов</translation></message>
+    <message><source>12 hours</source><translation>12 часов</translation></message>
+    <message><source>24 hours</source><translation>24 часа</translation></message>
+    <message><source>3 days</source><translation>3 дня</translation></message>
+    <message><source>7 days</source><translation>7 дней</translation></message>
+    <message><source>Never</source><translation>Никогда</translation></message>
+    <message><source>Light</source><translation>Светлая</translation></message>
+    <message><source>Dark</source><translation>Тёмная</translation></message>
+    <message><source>System</source><translation>Системная</translation></message>
+    <message><source>Warm orange</source><translation>Тёплый оранжевый</translation></message>
+    <message><source>Cold blue</source><translation>Холодный синий</translation></message>
+    <message><source>Blue mist</source><translation>Синий туман</translation></message>
+    <message><source>Emerald chat</source><translation>Изумрудный чат</translation></message>
+</context>
 </TS>

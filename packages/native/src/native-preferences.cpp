@@ -46,6 +46,18 @@ QString validPalette(const QString &palette)
     return QStringLiteral("blue-cold");
 }
 
+QString validNotificationSound(const QString &value)
+{
+    for (const auto *preset : {"subtle", "digital", "glass", "pulse", "none"})
+        if (value == QLatin1String(preset)) return value;
+    return QStringLiteral("default");
+}
+
+QString validSortMode(const QString &value)
+{
+    return value == "alphabetical" || value == "unread_first" ? value : QStringLiteral("last_message");
+}
+
 QString validMode(const QString &mode)
 {
     return mode == "light" || mode == "dark" || mode == "system" ? mode : QStringLiteral("system");
@@ -407,6 +419,10 @@ void NativePreferences::loadAuthIdleTimeout()
 // settings blob (deviation D2), unlike the per-owner authIdleTimeout scope.
 void NativePreferences::loadChatLayout()
 {
+    const auto sound = validNotificationSound(m_settings.value("settings/app/notificationSound").toString());
+    const auto sortMode = validSortMode(m_settings.value("settings/app/sidebarSortMode").toString());
+    if (sound != m_notificationSound) { m_notificationSound = sound; emit notificationSoundChanged(); }
+    if (sortMode != m_sidebarSortMode) { m_sidebarSortMode = sortMode; emit sidebarSortModeChanged(); }
     const auto density = m_settings.value("settings/app/chatListDensity").toString();
     const auto action = m_settings.value("settings/app/chatClickAction").toString();
     const auto nextDensity = density == QLatin1String("compact")
@@ -421,6 +437,31 @@ void NativePreferences::loadChatLayout()
         m_chatClickAction = nextAction;
         emit chatClickActionChanged();
     }
+}
+
+void NativePreferences::setNotificationSound(const QString &preset)
+{
+    const auto value = validNotificationSound(preset);
+    if (m_notificationSound == value) return;
+    m_notificationSound = value;
+    m_settings.setValue("settings/app/notificationSound", value);
+    m_settings.sync();
+    emit notificationSoundChanged();
+}
+
+void NativePreferences::previewNotificationSound()
+{
+    if (m_notificationSound != "none") emit notificationSoundRequested(m_notificationSound);
+}
+
+void NativePreferences::setSidebarSortMode(const QString &mode)
+{
+    const auto value = validSortMode(mode);
+    if (m_sidebarSortMode == value) return;
+    m_sidebarSortMode = value;
+    m_settings.setValue("settings/app/sidebarSortMode", value);
+    m_settings.sync();
+    emit sidebarSortModeChanged();
 }
 
 void NativePreferences::setChatListDensity(const QString &density)
