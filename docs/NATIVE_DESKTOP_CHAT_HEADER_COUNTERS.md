@@ -181,7 +181,9 @@ Fix (same scoping discipline as #434's NOTIFY gate, applied to the fetch):
   `selectedDeletedTopic...(selected-deletion-opens-owned-canonical-topic)`,
   zero elsewhere; `globalChannelCreationUsesVerifiedHttp` expects the one
   read of the created channel (`bindingGets - initialBindings == 1`). The
-  pinned `native-native-e2ee-ui` budgets were not touched.
+  encryption-authority request budgets still apply. For an ordinary channel
+  opened before the window mounts, the initial header reads one membership
+  page. Opening or collapsing a service message adds zero membership reads.
 - Regression coverage: `chatHeaderCountersFetchFollowsVisibleSelectionEdges`
   (controller) pins headless silence, a single first-mount request, one page per new
   visible selection, no refetch on re-activation, direct clear without a
