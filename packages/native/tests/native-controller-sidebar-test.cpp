@@ -886,7 +886,7 @@ private slots:
         // The unread-mention index walk (mentioned=true&read=false) finds one unread
         // mention in the channel; ordinary history pages stay empty.
         test.aggregateMessages = true;
-        test.messages = [](const Request &request) {
+        test.mentions = [](const Request &request) {
             if (QUrlQuery(request.target).queryItemValue("mentioned") == QLatin1String("true"))
                 return Response{QJsonArray{mentionMessage(1)}};
             return Response{QJsonArray{}};
@@ -920,12 +920,9 @@ private slots:
         QCOMPARE(channel.value("displayedUnread").toInt(), 5);
         QVERIFY(!channel.value("unreadPassive").toBool());
         QVERIFY(!channel.value("pinned").toBool());
-        // The native unread-mention index walks with the mentions surface (the existing
-        // contract the activity rail encodes: nothing walks at bootstrap); opening and
-        // closing it must light the row badge exactly like the rail badge.
-        test.controller.showMentions();
-        QTRY_VERIFY_WITH_TIMEOUT(([&] { return rowOf(streamId).value("hasMention").toBool(); })(), 3000);
-        test.controller.closeMentions();
+        QVERIFY(!test.controller.mentionsVisible());
+        QTRY_COMPARE_WITH_TIMEOUT(test.controller.activityMentionsCount(), 1, 3000);
+        QVERIFY(rowOf(streamId).value("hasMention").toBool());
         QCOMPARE(channel.value("statusEmoji").toString(), QString{});
         QCOMPARE(channel.value("statusText").toString(), QString{});
         const auto alice = rowOf(direct);

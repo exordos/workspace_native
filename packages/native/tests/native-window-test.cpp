@@ -440,6 +440,8 @@ public:
     {
         server.handler = [this](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/messages/") && QUrlQuery(request.target).hasQueryItem("mentioned"))
+                return {QJsonArray{}};
             if (path.endsWith("/streams/") && request.method == "POST") {
                 ++posts;
                 streamBody = request.body;
@@ -11272,15 +11274,8 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *pin = visibleItem("streamPin-"+direct); QVERIFY(pin);
         QCOMPARE(pin->width(), 12.);
         QVERIFY(!visibleItem("streamPin-"+streamId));
-        // The unread personal mention surfaces as the @ badge on the direct row once the
-        // unread-mention index has walked; natively that walk rides the mentions surface
-        // (the same contract the activity rail encodes), so open and close it first.
-        QTRY_VERIFY(visibleItem("activity-mentions"));
-        click(window, visibleItem("activity-mentions"));
-        QTRY_VERIFY(controller.mentionsVisible());
-        QTRY_VERIFY_WITH_TIMEOUT(controller.activityMentionsCount() == 1, 5000);
-        click(window, visibleItem("mentionsCloseButton"));
-        QTRY_VERIFY(!controller.mentionsVisible());
+        QVERIFY(!controller.mentionsVisible());
+        QTRY_COMPARE_WITH_TIMEOUT(controller.activityMentionsCount(), 1, 5000);
         auto *mention = visibleItem("streamMention-"+direct); QVERIFY(mention);
         QCOMPARE(mention->property("color").value<QColor>(), QColor("#7087ff"));
         auto *glyph = item(window->contentItem(), "streamMentionGlyph-"+direct);
@@ -16299,6 +16294,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QJsonObject postedRequest, canonical;
         int uploads = 0, messagePosts = 0, canonicalGets = 0, historyGets = 0;
         int metadataGets = 0, binaryGets = 0, fileWrites = 0;
+        std::function<void()> releaseMetadata;
         bool uploadHeadersOkay = true, fileHeadersOkay = true, postContractOkay = true;
         WindowChannelFixture fixture;
         const auto fallback = fixture.server.handler;
@@ -16344,7 +16340,12 @@ mv -Tf "$root/.current-new" "$root/current"
                     && request.headers.value("authorization") == QByteArray("Bearer synthetic-project-token")
                     && request.headers.value("cookie").isEmpty();
                 if (request.method != "GET") { ++fileWrites; return Response{QJsonObject{}, 405}; }
-                if (path == filePath) { ++metadataGets; return Response{metadata}; }
+                if (path == filePath) {
+                    Response response{metadata};
+                    if (++metadataGets == 1)
+                        response.defer = [&](auto send) { releaseMetadata = std::move(send); };
+                    return response;
+                }
                 if (path == filePath + "/actions/download") {
                     ++binaryGets; Response result; result.rawBody = png; result.rawContentType = "image/png";
                     return result;
@@ -16447,6 +16448,13 @@ mv -Tf "$root/.current-new" "$root/current"
                 && row.value("authorId").toString() == userId && row.value("own").toBool();
         };
         QTRY_VERIFY(canonicalLoaded());
+        QTRY_VERIFY(bool(releaseMetadata));
+        auto refreshed = canonical;
+        refreshed["kind"] = "message.updated";
+        refreshed["updated_at"] = "2026-01-02T13:00:00Z";
+        QVERIFY(controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", refreshed}}));
+        releaseMetadata();
         QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
         QCOMPARE(visibleItem(window->contentItem(), "messageComposer")->property("text").toString(), QString{});
         const auto ownId = canonical.value("uuid").toString();
@@ -31280,14 +31288,12 @@ private slots:
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         QTRY_VERIFY(view("activity-mentions"));
-        // The unread-mentions index has not been walked yet: count is null,
-        // so no badge may render on the compact rail (badges hide at zero).
-        QVERIFY(!view("activityBadge-mentions"));
-        click(window, view("activity-mentions"));
-        QTRY_VERIFY(controller.mentionsVisible());
-        QTRY_VERIFY_WITH_TIMEOUT(controller.activityMentionsCount() == 1, 5000);
+        QVERIFY(!controller.mentionsVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(view("activityBadge-mentions"), 5000);
         auto *badge = view("activityBadge-mentions"); QVERIFY(badge);
         QCOMPARE(badge->childItems().first()->property("text").toString(), QStringLiteral("1"));
+        click(window, view("activity-mentions"));
+        QTRY_VERIFY(controller.mentionsVisible());
         click(window, view("mentionsCloseButton"));
         QTRY_VERIFY(!controller.mentionsVisible());
         QVERIFY(view("activityBadge-mentions")); // badge survives page close
