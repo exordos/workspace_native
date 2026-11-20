@@ -82,10 +82,6 @@ add_library(workspace-native-core STATIC
     src/native-hotkeys.cpp src/native-hotkeys.h
     src/composer-references.cpp)
 target_include_directories(workspace-native-core PUBLIC src)
-if(MSVC)
-    # ARM64 emits more sections for the controller than a standard COFF object can hold.
-    set_property(SOURCE src/native-controller.cpp APPEND PROPERTY COMPILE_OPTIONS /bigobj)
-endif()
 # Incoming invite UI variant, the native counterpart of the reference
 # VITE_CALL_INCOMING_MODAL_VARIANT build flag (shared/lib/env.ts:132-135):
 # "large" (default) or "compact"; invalid values fall back to "large" at
@@ -277,6 +273,11 @@ foreach(default_login_org IN ITEMS URL NAME)
     endif()
 endforeach()
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
+if(APPLE)
+    # QML loads the SVG image reader at runtime. macdeployqt discovers that
+    # plugin from the app's QtSvg framework dependency.
+    target_link_libraries(workspace-native PRIVATE "$<LINK_LIBRARY:NEEDED_FRAMEWORK,Qt6::Svg>")
+endif()
 qt_add_qml_module(workspace-native
     URI Exordos.Workspace.Native
     RESOURCE_PREFIX /workspace/qml
@@ -303,7 +304,8 @@ endif()
 
 foreach(target workspace-native-core workspace-native-ui workspace-native-desktop workspace-native)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /utf-8)
+        # ARM64 controller and Qt-generated QML sources exceed standard COFF section counts.
+        target_compile_options(${target} PRIVATE /W4 /utf-8 /bigobj)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
@@ -586,6 +588,7 @@ if(BUILD_TESTING)
         uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
         uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
         encryptedConversationPresentsItsFirstPreparedWindow
+        encryptedSidebarPreviewsFollowTheLocalPresentation
         uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
         uiSecretFragmentTracksRequestAndVaultRemoval
         uiSecretRequestVerifiesTheReferencedStream

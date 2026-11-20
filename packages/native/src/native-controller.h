@@ -1142,6 +1142,8 @@ private:
     void processChatControls(quint64 epoch, quint64 selection, quint64 work);
     void scheduleChatPreparation();
     void prepareChatSlice(quint64 epoch, quint64 selection, quint64 preparation, qsizetype offset);
+    const PreparedChatMessage *currentChatPresentation(const Message &message) const;
+    QString chatPresentationState(bool allowed, const PreparedChatMessage *prepared) const;
     PreparedChatMessage decryptChatMessageRow(const Message &message);
     QSet<QString> m_chatDecryptRetries;
     ChatAuthority m_chatAuthority;
@@ -1653,6 +1655,7 @@ private:
     };
     static QStringList uniqueForwardUuids(const QStringList &messageUuids);
     bool forwardOwned(const ForwardIntent &intent) const;
+    void interruptForward(bool sameOwnerRenewal);
     void clearForwardIntent();
     void failForward(const QString &error);
     QString forwardDestinationRefusal(const QString &streamUuid) const;
@@ -1955,7 +1958,8 @@ private:
         QString text;
         QString author;
         bool own = false;
-        bool locked = false;
+        QString state = QStringLiteral("ready");
+        QString kind;
         QDateTime created;
         // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the topic the previewed
         // message lives in - the reference stream.preview?.route input for the
@@ -1963,7 +1967,8 @@ private:
         QString topic;
     };
     std::optional<RowPreview> rowPreview(const QString &uuid) const;
-    std::optional<RowPreview> rowPreviewOf(const Message &message) const;
+    std::optional<RowPreview> rowPreviewOf(const Message &message, bool active = false) const;
+    void refreshEncryptedSidebarPreviews();
     void storeRowPreview(const QString &uuid, const std::optional<RowPreview> &preview) const;
     void scheduleRowPreviewHydration() const;
     void pumpRowPreviewHydration();
@@ -1984,6 +1989,7 @@ private:
     // paths and the sign-out reset mutate these fields, always on the GUI thread.
     static constexpr int rowPreviewCacheLimit = 512;
     static constexpr int rowPreviewHydrationBatch = 8;
+    QHash<QString, QString> m_visibleEncryptedPreviewStates;
     mutable QHash<QString, RowPreview> m_rowPreviews;
     mutable QQueue<QString> m_rowPreviewOrder;
     mutable QSet<QString> m_rowPreviewPending;
@@ -2440,7 +2446,8 @@ private:
     // re-armed by a note at or above the reserve, a fresh window commit, a
     // failed history request, and reset().
     bool m_olderPrefetchArmed = true;
-    quint64 m_historyTimingSelection = 0;
+    quint64 m_historyTimingGeneration = 0;
+    quint64 m_scrollSampleSelection = 0;
     qint64 m_historyPageWaitMs = 0;
     QElapsedTimer m_scrollSampleClock;
     qreal m_previousTopDistance = 0;

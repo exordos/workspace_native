@@ -27,7 +27,8 @@ Popup {
     focus: true
     // Close is blocked while a batch is submitting (reference
     // workspace-forward-message.model.ts:46-54 blocks close during submit).
-    closePolicy: root.controller && root.controller.forwardPending
+    readonly property bool requestInFlight: controller && controller.forwardPending && !controller.forwardAwaitingCheck
+    closePolicy: requestInFlight
         ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
     Overlay.modal: Rectangle { color: "#80000000" }
     background: Rectangle {
@@ -145,7 +146,7 @@ Popup {
                         colors: root.colors
                         asset: "close.svg"
                         help: qsTr("Close")
-                        enabled: !root.controller.forwardPending
+                        enabled: !root.requestInFlight
                         background: null
                         onClicked: root.close()
                     }
@@ -238,7 +239,7 @@ Popup {
                     // (awaiting-check) notice; it clears itself when the error
                     // does, so an in-flight batch that still owes an answer
                     // keeps its notice visible next to Check.
-                    visible: root.submitAttempted
+                    visible: (root.submitAttempted || root.controller.forwardAwaitingCheck)
                         && root.controller.forwardError.length > 0
                     height: visible ? forwardErrorText.implicitHeight + 16 : 0
                     radius: 8
@@ -287,7 +288,7 @@ Popup {
                         objectName: "forwardCancelButton"
                         colors: root.colors
                         text: qsTr("Cancel")
-                        enabled: !root.controller.forwardPending
+                        enabled: !root.requestInFlight
                         onClicked: root.close()
                     }
                     NativeButton {

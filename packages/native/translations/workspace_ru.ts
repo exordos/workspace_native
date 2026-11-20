@@ -1066,6 +1066,10 @@
             <translation>Расшифровка сообщения</translation>
         </message>
         <message>
+            <source>Decrypting message…</source>
+            <translation>Расшифровка сообщения…</translation>
+        </message>
+        <message>
             <source>Encrypted key grant received</source>
             <translation>Получен зашифрованный ключ</translation>
         </message>
@@ -2848,6 +2852,10 @@
         <translation>Не удалось отправить пересылку. %1</translation>
     </message>
     <message>
+        <source>Forwarding was interrupted by a session change.</source>
+        <translation>Пересылка прервана из-за смены сеанса.</translation>
+    </message>
+    <message>
         <source>Forwarding was not confirmed. Check does not send it again.</source>
         <translation>Пересылка не подтверждена. Проверка не отправляет её повторно.</translation>
     </message>
@@ -2864,8 +2872,8 @@
         <translation>Пересылка в неизвестное назначение не поддерживается.</translation>
     </message>
     <message>
-        <source>Only text messages can be forwarded.</source>
-        <translation>Пересылать можно только текстовые сообщения.</translation>
+        <source>Only text messages and polls can be forwarded.</source>
+        <translation>Пересылать можно только текстовые сообщения и опросы.</translation>
     </message>
     <message>
         <source>Could not create folder</source>

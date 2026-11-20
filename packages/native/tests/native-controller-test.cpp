@@ -1,3 +1,4 @@
+#include "workspace-reference.h"
 #include "native-controller.h"
 #include "native-deeplink.h"
 #include "clipboard-snapshot-budget.h"
@@ -22928,8 +22929,18 @@ private slots:
 
     // A hydrated last message gives the row its sender, the summary and the row time; the
     // own-message sender is common.you (workspace_ui messenger-topic-list.lib.ts:169-172).
+    void sidebarRowsExposePreviewAndRowTime_data()
+    {
+        QTest::addColumn<QString>("kind");
+        QTest::addColumn<QString>("expected");
+        QTest::newRow("markdown") << QString("markdown") << QString("Alpha line second line");
+        QTest::newRow("poll") << QString("poll") << QStringLiteral("Which day? • Monday (1) • Tuesday (2) Where? • Office (3) • Online (0)");
+    }
+
     void sidebarRowsExposePreviewAndRowTime()
     {
+        QFETCH(QString, kind);
+        QFETCH(QString, expected);
         Fixture test;
         const auto last = QStringLiteral("88888888-8888-4888-8888-000000000abc");
         test.streams = [&](const Request &request) {
@@ -22951,14 +22962,16 @@ private slots:
                 {"updated_at", "2026-01-02T10:00:05Z"}}}};
         };
         test.messages = [&](const Request &) {
-            auto row = message("Alpha   line\n\nsecond line", last);
+            auto row = kind == "poll" ? pollMessageDto(last, 3, true) : message("Alpha   line\n\nsecond line", last);
             row["created_at"] = "2026-01-02T10:00:05.000Z";
             return Response{QJsonArray{row}};
         };
         QVERIFY(test.start());
         const auto topicRow = test.controller.topics().first().toMap();
         QCOMPARE(topicRow.value("previewSender").toString(), QStringLiteral("You"));
-        QCOMPARE(topicRow.value("previewText").toString(), QStringLiteral("Alpha line second line"));
+        QCOMPARE(topicRow.value("previewText").toString(), expected);
+        QCOMPARE(topicRow.value("previewKind").toString(), kind);
+        QCOMPARE(topicRow.value("previewState").toString(), QStringLiteral("ready"));
         QVERIFY(!topicRow.value("previewLocked").toBool());
         // The row time is the last-message instant under the same formatter the contract
         // case pins; asserting against the current date keeps this case locale-correct.
@@ -22966,7 +22979,7 @@ private slots:
             QDateTime(QDate(2026, 1, 2), QTime(10, 0, 5), Qt::UTC), QLocale::system(),
             QDate::currentDate(), QStringLiteral("Yesterday")));
         const auto streamRow = test.controller.streams().first().toMap();
-        QCOMPARE(streamRow.value("previewText").toString(), QStringLiteral("Alpha line second line"));
+        QCOMPARE(streamRow.value("previewText").toString(), expected);
         QCOMPARE(streamRow.value("rowTime").toString(), topicRow.value("rowTime").toString());
     }
 
@@ -23022,6 +23035,8 @@ private slots:
         QVERIFY(test.start());
         const auto row = test.controller.topics().first().toMap();
         QVERIFY2(row.value("previewLocked").toBool(), qPrintable(row.value("previewText").toString()));
+        QCOMPARE(row.value("previewState").toString(), QStringLiteral("locked"));
+        QCOMPARE(row.value("previewKind").toString(), QStringLiteral("e2ee"));
         QVERIFY2(!row.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
             qPrintable(row.value("previewText").toString()));
     }
@@ -26184,23 +26199,46 @@ private slots:
         QTRY_COMPARE(c.messages().size(), 150);
     }
 
+    void fastHistoryScrollPrefetchesBeforeItsMeasuredPageWait_data()
+    {
+        QTest::addColumn<bool>("returnToCachedTopic");
+        QTest::newRow("network-head") << false;
+        QTest::newRow("cached-head-after-topic-switch") << true;
+    }
+
     void fastHistoryScrollPrefetchesBeforeItsMeasuredPageWait()
     {
+        QFETCH(bool, returnToCachedTopic);
+        QTemporaryDir directory;
+        NativeCacheService cache(directory.path(), {}, true);
         Fixture fixture;
+        fixture.extraTopic = returnToCachedTopic;
+        if (returnToCachedTopic) fixture.controller.useCache(&cache);
         QMap<int, QJsonObject> rows;
         for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
         int olderRequests = 0;
+        int topicHeadRequests = 0;
         fixture.messages = [&](const Request &request) {
             auto response = historyResponse(rows, request);
             const QUrlQuery query(request.target);
+            if (query.queryItemValue("topic_uuid") == secondTopicId)
+                return Response{QJsonArray{}, 200, 500};
             if (query.hasQueryItem("topic_uuid")) {
                 response.delay = 500;
                 if (query.hasQueryItem("page_marker")) ++olderRequests;
+                else ++topicHeadRequests;
             }
             return response;
         };
         QVERIFY(fixture.start());
         auto &controller = fixture.controller;
+        if (returnToCachedTopic) {
+            controller.selectTopic(secondTopicId);
+            QTRY_VERIFY(!controller.busy());
+            controller.selectTopic(topicId);
+            QTRY_VERIFY(!controller.busy());
+            QCOMPARE(topicHeadRequests, 1);
+        }
         QCOMPARE(controller.messages().size(), 50);
         // The hosted trace consumes 100 px per wheel notch, about 25 ms apart.
         // At the old one-viewport threshold the top was reached before the response.
@@ -27236,6 +27274,102 @@ private slots:
     }
 
     // ---- Issue #214 polls foundation ----
+
+    void pollSnapshotCountsInQuotedMessages_data()
+    {
+        QTest::addColumn<QString>("visibility");
+        QTest::addColumn<bool>("closed");
+        QTest::addColumn<bool>("voted");
+        QTest::addColumn<QString>("deadline");
+        QTest::addColumn<bool>("fetched");
+        QTest::addColumn<QString>("expected");
+        const QString hidden = "Which day?\n• Monday\n• Tuesday\n\nWhere?\n• Office\n• Online";
+        const QString first = "Which day?\n• Monday (1)\n• Tuesday (2)\n\nWhere?\n• Office\n• Online";
+        const QString all = "Which day?\n• Monday (1)\n• Tuesday (2)\n\nWhere?\n• Office (3)\n• Online (0)";
+        QTest::newRow("hidden") << QString("after_vote") << false << false << QString() << false << hidden;
+        QTest::newRow("one-question-voted") << QString("after_vote") << false << true
+            << QString("2099-01-01T00:00:00Z") << true << first;
+        QTest::newRow("always") << QString("always") << false << false << QString() << false << all;
+        QTest::newRow("closed") << QString("after_vote") << true << false << QString() << true << all;
+        QTest::newRow("expired") << QString("after_vote") << false << false
+            << QString("2000-01-01T00:00:00Z") << false << all;
+    }
+
+    void pollSnapshotCountsInQuotedMessages()
+    {
+        QFETCH(QString, visibility); QFETCH(bool, closed); QFETCH(bool, voted);
+        QFETCH(QString, deadline); QFETCH(bool, fetched); QFETCH(QString, expected);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto id = pollFixtureUuid(54);
+        auto poll = pollMessageDto(id, 2, closed, "Which day?", voted);
+        auto payload = poll.value("payload").toObject();
+        payload["results_visibility"] = visibility;
+        payload["closes_at"] = deadline.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(deadline);
+        poll["payload"] = payload;
+        int pollLookups = 0;
+        const auto reply = message(buildWorkspaceQuoteReference("Peer", id) + "\n\nreply", returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("uuid") == id) {
+                ++pollLookups;
+                return {QJsonArray{poll}};
+            }
+            return {fetched ? QJsonArray{reply} : QJsonArray{poll, reply}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_COMPARE_WITH_TIMEOUT(modelMessage(fixture.controller, returnedId).value("quoteContent").toString(),
+            expected, 2000);
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(pollLookups, fetched ? 1 : 0);
+    }
+
+    void pollSnapshotSkipsMissingQuestionStateAndCountsMissingOptionsAsZero()
+    {
+        auto poll = parseMessage(pollMessageDto(pollFixtureUuid(56), 3, true), projectId);
+        QVERIFY(poll && poll->pollState);
+        poll->pollState->questions.removeFirst();
+        poll->pollState->questions.first().optionCounts.remove(pollOptionThree);
+        QCOMPARE(pollTextSnapshot(*poll), QString("Which day?\n• Monday\n• Tuesday\n\nWhere?\n• Office (0)\n• Online (0)"));
+    }
+
+    void pollComposerEmbedsPlainSummaryAndForwardStoresIt()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto id = pollFixtureUuid(55);
+        auto poll = pollMessageDto(id, 5, false, "**Day?**");
+        auto payload = poll.value("payload").toObject();
+        payload["closes_at"] = QJsonValue::Null;
+        poll["payload"] = payload;
+        const QString summary = "**Day?**\n• Monday\n• Tuesday\n\nWhere?\n• Office\n• Online";
+        QJsonObject posted;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") {
+                posted = request.body;
+                return {message(posted["payload"].toObject()["content"].toString(), returnedId), 201};
+            }
+            if (request.target.path().endsWith("/messages/")) return {QJsonArray{poll}};
+            return {message(posted["payload"].toObject()["content"].toString(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginReply(id, "Monday"));
+        QCOMPARE(fixture.controller.replyExcerpt(), summary.simplified());
+        fixture.controller.setDraft("Answer");
+        fixture.controller.send();
+        QTRY_VERIFY(!posted.isEmpty());
+        const auto quoteWire = posted["payload"].toObject()["content"].toString();
+        QVERIFY(quoteWire.contains(buildWorkspaceQuoteUrn(id, summary)));
+        QTRY_VERIFY(fixture.controller.replyMessageId().isEmpty());
+        posted = {};
+        fixture.controller.forwardMessages({id}, streamId, topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(!posted.isEmpty(), 2000);
+        const auto wire = posted["payload"].toObject()["content"].toString();
+        const auto start = wire.indexOf("(urn:forward:");
+        QVERIFY(start >= 0 && wire.endsWith(')'));
+        const auto ref = parseWorkspaceReference(wire.mid(start + 1, wire.size() - start - 2));
+        QVERIFY(ref && ref->plainSnapshot);
+        QCOMPARE(ref->snapshotMarkdown, summary);
+    }
 
     void pollManagementUsesVerifiedAuthorAndRejectsPeerActions_data()
     {
@@ -31140,6 +31274,7 @@ private slots:
         bool serverKept = false;
         QJsonObject postedBody;
         QString echoUuid;
+        QByteArray checkAuthorization;
         fixture.messages = [&](const Request &request) {
             const auto query = QUrlQuery(request.target);
             if (request.method == "GET" && query.hasQueryItem(QStringLiteral("uuid"))) {
@@ -31156,6 +31291,7 @@ private slots:
             if (request.method == "GET" && !echoUuid.isEmpty()
                 && request.target.path() == "/api/workspace/v1/messenger/messages/" + echoUuid) {
                 ++checkGets;
+                checkAuthorization = request.headers.value("authorization");
                 if (serverKept) return Response{forwardEchoDto(postedBody, echoUuid)};
                 return Response{QJsonObject{}, 404, 0, {}};
             }
@@ -31174,12 +31310,75 @@ private slots:
         QCOMPARE(posts, 1);
         // When the server actually committed it (the 5xx lied), Check confirms
         // with the GET read-back alone - still exactly one POST.
+        fixture.api.setAccessToken("renewed-member-token", true);
         serverKept = true;
         fixture.controller.checkForwardStatus();
         QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
         QVERIFY(fixture.controller.error().isEmpty());
         QCOMPARE(posts, 1);
-        QVERIFY(checkGets >= 2);
+        QCOMPARE(checkGets, 2);
+        QCOMPARE(checkAuthorization, QByteArray("Bearer renewed-member-token"));
+    }
+
+
+    void sessionChangeSettlesActiveForward_data()
+    {
+        QTest::addColumn<bool>("holdPost");
+        QTest::addColumn<bool>("sameOwner");
+        QTest::newRow("renew-during-source-read") << false << true;
+        QTest::newRow("renew-during-post") << true << true;
+        QTest::newRow("replace-session-during-source-read") << false << false;
+        QTest::newRow("replace-session-during-post") << true << false;
+    }
+
+    void sessionChangeSettlesActiveForward()
+    {
+        QFETCH(bool, holdPost);
+        QFETCH(bool, sameOwner);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const QString source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString targetStream = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const QString targetTopic = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        catalogTargetStream(fixture, targetStream);
+        std::function<void()> release;
+        int posts = 0, checks = 0;
+        QString publicId;
+        QJsonObject posted;
+        fixture.messages = [&](const Request &request) {
+            const bool sourceRead = request.method == "GET" && QUrlQuery(request.target).hasQueryItem("uuid");
+            Response response{QJsonArray{}};
+            if (sourceRead) {
+                response.data = QJsonArray{message("Forward source", source)};
+            } else if (request.method == "POST") {
+                ++posts;
+                posted = request.body;
+                publicId = QUuid::createUuidV5(QUuid(targetTopic), posted.value("uuid").toString().toUtf8())
+                    .toString(QUuid::WithoutBraces);
+                response.data = forwardEchoDto(posted, publicId);
+            } else if (!publicId.isEmpty() && request.target.path().endsWith("/" + publicId)) {
+                ++checks;
+                response.data = forwardEchoDto(posted, publicId);
+            }
+            if ((sourceRead && !holdPost) || (request.method == "POST" && holdPost))
+                response.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            return response;
+        };
+        QVERIFY(fixture.start({}, 2));
+        fixture.controller.forwardMessages({source}, targetStream, targetTopic);
+        QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 3000);
+        QVERIFY(fixture.controller.forwardPending());
+        QVERIFY(!fixture.controller.forwardAwaitingCheck());
+        fixture.api.setAccessToken("replacement-member-token", sameOwner);
+        QCOMPARE(fixture.controller.forwardAwaitingCheck(), sameOwner && holdPost);
+        QCOMPARE(fixture.controller.forwardPending(), sameOwner && holdPost);
+        QVERIFY(!fixture.controller.forwardError().isEmpty());
+        release();
+        fixture.controller.checkForwardStatus();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.forwardPending(), 3000);
+        QCOMPARE(posts, holdPost ? 1 : 0);
+        QCOMPARE(checks, sameOwner && holdPost ? 1 : 0);
+        QVERIFY(fixture.controller.canForwardMessages());
     }
 
     void forwardMessagesRejectsEmptyAndInvalidBatches()
@@ -31557,7 +31756,11 @@ private slots:
                 for (const auto &item : query.queryItems()) {
                     if (item.first != QLatin1String("uuid")) continue;
                     if (item.second == sourceA) rows.append(message("First source", sourceA));
-                    if (item.second == sourceB) rows.append(pollMessageDto(sourceB, 1, false));
+                    if (item.second == sourceB) {
+                        auto encrypted = message({}, sourceB);
+                        encrypted["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", sourceB}, {"content", "opaque"}};
+                        rows.append(encrypted);
+                    }
                 }
                 return Response{rows};
             }

@@ -10246,6 +10246,85 @@ private slots:
         QCOMPARE(f.posts, 1);
     }
 
+    void encryptedSidebarPreviewsFollowTheLocalPresentation_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void encryptedSidebarPreviewsFollowTheLocalPresentation()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        Fixture f;
+        f.stream = fullEncryptedStream();
+        f.stream["last_message_uuid"] = messageId;
+        const auto previous = f.http.handler;
+        f.http.handler = [&](const Request &request) {
+            auto response = previous(request);
+            if (request.target.path() == "/api/workspace/v1/messenger/stream_topics/") {
+                auto topics = response.data.toArray();
+                auto topic = topics.first().toObject();
+                topic["last_message_uuid"] = messageId;
+                topics[0] = topic;
+                response.data = topics;
+            }
+            return response;
+        };
+        const auto restore = qScopeGuard([&] { f.http.handler = previous; });
+        auto key = NativeChatCrypto::createGroupKey();
+        auto wrong = NativeChatCrypto::createGroupKey();
+        QVERIFY(key && wrong);
+        const auto wipe = qScopeGuard([&] { key.bytes.fill(0); wrong.bytes.fill(0); });
+        const auto sealed = NativeChatCrypto::encryptMessage(key.bytes, "**Sidebar** summary", {streamId, returnedId});
+        QVERIFY(sealed);
+        f.cipher["payload"] = QJsonObject{{"kind", "e2ee"}, {"key_uuid", returnedId},
+            {"content", QString::fromLatin1(sealed.bytes.toBase64())}};
+        QVERIFY(f.start());
+        f.controller.useChatKeys(nullptr);
+        NativePreferences preferences(f.directory.filePath("previews.ini"));
+        preferences.setOwner(f.controller.ownerKey());
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &f.controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([window] { closeEncryptedVisualWindow(window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        if (!f.controller.expandedSidebarStreams().contains(streamId)) f.controller.toggleSidebarStream(streamId);
+        QTRY_VERIFY(f.controller.expandedSidebarStreams().contains(streamId));
+        const auto previews = [&] {
+            QStringList labels;
+            for (const auto &name : {QString("streamPreviewText-") + streamId, QString("topicPreviewText-") + topicId})
+                if (auto *label = encryptedUiItem(window, name)) labels << label->property("text").toString();
+            return labels;
+        };
+        const auto twice = [](const QString &text) { return QStringList{text, text}; };
+        QTRY_COMPARE(previews(), twice(locale == "ru" ? QStringLiteral("Нужен ключ") : QStringLiteral("Key required")));
+        bool preparing = false;
+        const auto observe = connect(&f.controller, &NativeController::topicsChanged, this, [&] {
+            if (f.controller.streams().first().toMap().value("previewState") != "preparing") return;
+            const auto expected = locale == "ru" ? QStringLiteral("Расшифровка сообщения…") : QStringLiteral("Decrypting message…");
+            preparing |= previews() == twice(expected);
+        });
+        const auto disconnectObserver = qScopeGuard([&] { disconnect(observe); });
+        const NativeChatKeyVault::Address address{streamId, returnedId};
+        QCOMPARE(f.vault.put(f.vault.lease(), address, wrong.bytes, 0), NativeChatKeyVault::Failure::None);
+        f.controller.useChatKeys(&f.vault);
+        QTRY_COMPARE(previews(), twice(locale == "ru" ? QStringLiteral("Не удалось расшифровать") : QStringLiteral("Could not decrypt message")));
+        QVERIFY2(preparing, "The stream and topic both publish the in-flight preview");
+        QCOMPARE(f.vault.remove(f.vault.lease(), address), NativeChatKeyVault::Failure::None);
+        const auto deleted = f.vault.read(f.vault.lease(), address);
+        QCOMPARE(f.vault.put(f.vault.lease(), address, key.bytes, deleted.value.deletionRevision), NativeChatKeyVault::Failure::None);
+        QTRY_COMPARE(previews(), twice(QStringLiteral("Sidebar summary")));
+        f.controller.useChatKeys(nullptr);
+        QTRY_COMPARE(previews(), twice(locale == "ru" ? QStringLiteral("Нужен ключ") : QStringLiteral("Key required")));
+        QVERIFY(f.controller.streams().first().toMap().value("previewText").toString().isEmpty());
+    }
+
     void uiEncryptedMessageDecryptRetryRowCyclesAndRepairs_data() {
         QTest::addColumn<QString>("locale");
         QTest::newRow("en") << QString("en"); QTest::newRow("ru") << QString("ru");
