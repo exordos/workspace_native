@@ -463,9 +463,9 @@ if(BUILD_TESTING)
             # with no case failed at the kill point, under -j6 and on an empty
             # machine alike. The longest inter-case gap stayed at 12s, so this
             # is accumulated group size, not one slow case.
-            # With nearly 1,000 rows the hosted desktop took 1455s. A concurrent
-            # local run reached only 655 rows in 1500s. Give the entire group
-            # time to finish while QtTest keeps enforcing each case's deadlines.
+            # The hosted desktop took 1455s. A Release VM took 1491s for
+            # 1132 rows and a loaded local host reached only 655 rows in 1500s.
+            # QtTest keeps enforcing its per-case deadlines inside this group.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 3000)
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
