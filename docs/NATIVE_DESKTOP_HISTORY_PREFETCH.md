@@ -204,3 +204,9 @@ visible row is present. Quote layout still settles before restoring the
 message anchor. The window regressions exercise a burst of notches and inspect
 the instantiated controls on a plain message after paging. The packaged
 Wayland acceptance run measures the resulting frames and input latency.
+
+An incoming message strictly after the loaded tail can arrive while an older
+HTTP page is in flight. The controller merges both into the current window.
+It still discards stale responses after edits, deletions, route changes and
+other overlapping mutations. Refreshing the latest window also observes tail
+arrivals, since that response can contain the same messages.
