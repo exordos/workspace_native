@@ -1422,8 +1422,11 @@ ApplicationWindow {
         if (!root.messageTimeValid)
             return []
         const firstWeekday = Qt.locale(root.preferences.locale).firstDayOfWeek
+        const monthStart = new Date(messageTimeDate.getFullYear(), messageTimeDate.getMonth(), 1)
         const daysInMonth = new Date(messageTimeDate.getFullYear(), messageTimeDate.getMonth() + 1, 0).getDate()
-        const leading = ((messageTimeDate.getDay() + 6) % 7 - (firstWeekday - 1) + 7) % 7
+        // Week alignment comes from the month's first weekday, not the
+        // selected day (review finding 4638145277).
+        const leading = ((monthStart.getDay() + 6) % 7 - (firstWeekday - 1) + 7) % 7
         const cells = []
         for (let index = 0; index < leading; ++index)
             cells.push(0)
@@ -11256,10 +11259,21 @@ ApplicationWindow {
             if (anchor != null)
                 anchor.forceActiveFocus(Qt.OtherFocusReason)
         }
-        contentItem: Column {
+        contentItem: Flickable {
+            objectName: "messageTimePanelScroll"
+            // Review finding 4638145296: when the viewport cap (reference
+            // maxHeight calc(100dvh - 16px), :67) shortens the panel, the
+            // calendar/time content stays reachable through this viewport.
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            contentHeight: messageTimePanelContent.implicitHeight
+            implicitHeight: messageTimePanelContent.implicitHeight
+            implicitWidth: messageTimePanelContent.implicitWidth
+            Column {
+            id: messageTimePanelContent
             objectName: "messageTimePanelContent"
             x: 16
-            width: messageTimePanel.availableWidth - 32
+            width: parent.width - 32
             spacing: 0
             // role=dialog named by dateTimePicker.label (reference dialog contract).
             Accessible.role: Accessible.Dialog
@@ -11273,7 +11287,10 @@ ApplicationWindow {
                 font.pixelSize: 14
                 font.weight: Font.Medium
                 color: root.colors["text-primary"]
-                Accessible.ignored: true
+                // Review finding 4638145299: a screen reader must read the
+                // month caption, the highlighted day and the time value.
+                Accessible.role: Accessible.StaticText
+                Accessible.name: root.messageTimeMonthCaption
             }
             Grid {
                 objectName: "messageTimePanelWeekdays"
@@ -11286,7 +11303,7 @@ ApplicationWindow {
                         required property int index
                         width: 48
                         horizontalAlignment: Text.AlignHCenter
-                        text: Qt.locale(root.preferences.locale).dayName(((index + Qt.locale(root.preferences.locale).firstDayOfWeek - 1) % 7) + 1, Locale.NarrowDay)
+                        text: Qt.locale(root.preferences.locale).dayName(((index + Qt.locale(root.preferences.locale).firstDayOfWeek - 1) % 7) + 1, Locale.NarrowFormat)
                         textFormat: Text.PlainText
                         font.pixelSize: 12
                         color: root.colors["text-muted"]
@@ -11327,7 +11344,12 @@ ApplicationWindow {
                             font.pixelSize: 13
                             color: Number(messageTimeDayCell.modelData) === root.messageTimeSelectedDay
                                 ? root.colors["bg-elevated"] : root.colors["text-primary"]
-                            Accessible.ignored: true
+                            // Only the highlighted day is announced (finding
+                            // 4638145299); blank and unselected cells stay out
+                            // of the accessibility tree.
+                            Accessible.ignored: Number(messageTimeDayCell.modelData) !== root.messageTimeSelectedDay
+                            Accessible.role: Accessible.StaticText
+                            Accessible.name: text
                         }
                     }
                 }
@@ -11349,7 +11371,8 @@ ApplicationWindow {
                     textFormat: Text.PlainText
                     font.pixelSize: 13
                     color: root.colors["text-muted"]
-                    Accessible.ignored: true
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: qsTr("Time")
                 }
                 Text {
                     objectName: "messageTimePanelTime"
@@ -11358,8 +11381,11 @@ ApplicationWindow {
                     font.pixelSize: 14
                     font.weight: Font.Medium
                     color: root.colors["text-primary"]
-                    Accessible.ignored: true
+                    // Review finding 4638145299: expose the stored time value.
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: root.messageTimeClock(root.messageTimeInstant)
                 }
+            }
             }
         }
     }
