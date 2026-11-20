@@ -437,6 +437,8 @@ if(BUILD_TESTING)
         set_tests_properties(native-controller-profiles native-controller-replies native-controller-direct-chat PROPERTIES COST 90)
         set_tests_properties(native-controller-sidebar native-controller-navigation native-controller-encrypted-channels PROPERTIES COST 75)
         set_tests_properties(native-controller-sessions PROPERTIES COST 50)
+        set_tests_properties(native-controller-outbox native-controller-topics native-controller-transfers
+            native-controller-notifications native-native-drafts native-realtime-client PROPERTIES COST 40)
     endif()
     # These suites share the real desktop clipboard or window focus on the full gate.
     set_tests_properties(native-controller-media native-controller-navigation
@@ -628,7 +630,7 @@ if(BUILD_TESTING)
     # gui label: suites that need a real window manager (Xvnc + openbox) because
     # they measure window geometry, palette resolution or drive real input.
     # The headless quick gate runs everything else in parallel offscreen:
-    #   QT_QPA_PLATFORM=offscreen ctest -j 8 -LE gui
+    #   QT_QPA_PLATFORM=offscreen ctest -j 12 -LE gui
     # RESOURCE_LOCK "xdisplay": window-driving suites must never overlap on a
     # shared display (focus and keyboard-grab races), so a parallel pre-release
     # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
@@ -637,6 +639,10 @@ if(BUILD_TESTING)
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")
+
+    if(WORKSPACE_NATIVE_QUICK_GATE AND TEST native-updater-http2-deadline)
+        set_tests_properties(native-updater-http2-deadline PROPERTIES COST 30)
+    endif()
 
     get_property(registered_tests DIRECTORY PROPERTY TESTS)
     foreach(test IN LISTS registered_tests)

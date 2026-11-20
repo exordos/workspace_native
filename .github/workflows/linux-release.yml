@@ -267,4 +267,4 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: >-
           env -u DISPLAY -u WAYLAND_DISPLAY dbus-run-session --
-          ctest --test-dir build/headless -LE gui --parallel 8 --output-on-failure --no-tests=error
+          ctest --test-dir build/headless -LE gui --parallel 12 --output-on-failure --no-tests=error

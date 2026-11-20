@@ -818,7 +818,7 @@ same display-free gate as pull requests, run from the repository root:
 cmake -S packages/native -B build/headless -G Ninja -DBUILD_TESTING=ON -DWORKSPACE_NATIVE_QUICK_GATE=ON
 cmake --build build/headless --target native-headless-tests --parallel
 env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen dbus-run-session -- \
-  ctest --test-dir build/headless -LE gui --parallel 8 --output-on-failure
+  ctest --test-dir build/headless -LE gui --parallel 12 --output-on-failure
 ```
 
 The quick configuration schedules all 24 controller suites independently. It
