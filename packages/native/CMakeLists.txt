@@ -31,6 +31,7 @@ add_library(workspace-native-core STATIC
     src/native-deeplink.cpp src/native-deeplink.h
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
+    src/native-external-accounts.cpp src/native-external-accounts.h
     src/native-preferences.cpp src/native-preferences.h
     src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
@@ -159,16 +160,18 @@ qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses
 qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
     BASE qml/web FILES qml/web/qwebchannel.js qml/web/workspace-call-events.js)
 set(native_qml_files
+qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeDownloadCenter.qml
+qml/NativeUserSearch.qml
 qml/messages/time/MessageTimeView.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
 qml/NativeCachedMessageSearch.qml qml/NativeForwardDialog.qml
 qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qml qml/NativeCallWebEngineView.qml
 qml/SessionSwitcher.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicSummary.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml)
 
 foreach(qml_file IN LISTS native_qml_files)
     string(REGEX REPLACE "^qml/" "" qml_name "${qml_file}")
@@ -181,10 +184,11 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     composer-inline-code composer-visibility
     composer-emoji composer-attach-compact attachment-retry attachment-upload-error side_panel phone chevron-down close check
     call_incoming_video_toggle
+    zulip-external-account links_compact more build
     reply forward copy pen delete plus star logout search new_window mail_activity_compact home marker_outline alternate_email drafts_compact chat_lock info warning download chevron-right
     # Activity panel expanded list chips and header (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md).
     mail_activity home_filled marker drafts chevron-up
-    at bell bell_off person_add
+    at bell bell_off person_add settings
     stylus images files border_color links business_center handshake account_circle group
     globe_location_pin schedule calendar_month celebration videos poll send block
     # Session log viewer modal (issue #51, docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md).

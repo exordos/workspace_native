@@ -863,8 +863,7 @@ class Desktop:
             "delay-source-not-selected",
         )
         # Invalidate only the warmed target's history through a real peer arrival.
-        with peer.temporary_message("b", str(uuid4())) as create:
-            create()
+        with peer.invalidate_warmed_topic(self):
             with self.action("warm-delayed"), network.disturb("delay"):
                 self.topic("b", wait_for_content=False)
                 self.position(self.pane)
@@ -967,6 +966,18 @@ class Peer:
         finally:
             if item:
                 self.request("DELETE", item)
+
+    @contextlib.contextmanager
+    def invalidate_warmed_topic(self, desktop):
+        marker = "Acceptance revalidation " + self.message
+        with self.temporary_message("b", str(uuid4()), marker) as create:
+            create()
+            desktop.until(
+                lambda: any(e.get("revalidation") for e in list(desktop.events)),
+                "peer-invalidation-not-received",
+                15,
+            )
+            yield
 
     def session_receipt(self, desktop):
         # Workspace delivers personal read-state changes to the reader's own sessions.

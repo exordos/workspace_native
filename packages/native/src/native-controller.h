@@ -1,4 +1,5 @@
 #pragma once
+#include "native-external-accounts.h"
 
 #include "media-viewer.h"
 #include "clipboard-file-identity.h"
@@ -45,6 +46,7 @@ struct FileResult;
 class NativeController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool authenticated READ authenticated NOTIFY stateChanged)
+    Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
@@ -102,6 +104,7 @@ class NativeController final : public QObject {
     // Issue #132 channel info drawer content for the selected stream
     // (docs/NATIVE_DESKTOP_CHANNEL_INFO.md): member projection, notification
     // store mode and the three member/notification mutations.
+    Q_PROPERTY(QVariantList channelInfoTopics READ channelInfoTopics NOTIFY channelInfoTopicsChanged)
     Q_PROPERTY(QVariantMap channelInfoStream READ channelInfoStream NOTIFY stateChanged)
     Q_PROPERTY(QVariantList channelInfoMembers READ channelInfoMembers NOTIFY stateChanged)
     Q_PROPERTY(int channelInfoMemberCount READ channelInfoMemberCount NOTIFY stateChanged)
@@ -375,6 +378,7 @@ public:
     bool canCreateChannel() const;
     QVariantList channelMemberChoices() const;
     QVariantList chatPickerChoices() const;
+    Q_INVOKABLE QVariantList searchWorkspaceUsers(const QString &query) const;
     bool channelMembersVerified() const;
     QString channelCreationContextKey() const;
     QString channelCreationPhase() const;
@@ -386,6 +390,7 @@ public:
     bool canCheckChannelCreation() const;
     bool canRetryChannelMembers() const;
     QVariantMap channelInfoStream() const;
+    QVariantList channelInfoTopics() const;
     QVariantList channelInfoMembers() const;
     int channelInfoMemberCount() const { return channelInfoStream().isEmpty() ? 0 : int(m_channelInfoMembers.size()); }
     int channelInfoOnlineCount() const;
@@ -594,6 +599,7 @@ public:
     // minimized as hidden (fix-round-2, cid 4576526934).
     Q_INVOKABLE void setWindowVisible(bool visible);
     Q_INVOKABLE void setWindowMinimized(bool minimized);
+    NativeExternalAccounts *externalAccounts() const { return m_externalAccounts; }
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
     // Reference bootstrap error banner Retry (bootstrapRetryNonce analogue):
@@ -732,6 +738,8 @@ public:
     // non-direct stream for the header caption; other selections clear the
     // projection instead.
     Q_INVOKABLE void refreshChatHeaderMembers();
+    Q_INVOKABLE void applyChannelTopicAction(const QString &id, const QString &action,
+                                             const QString &value = {});
     Q_INVOKABLE void setChannelInfoNotificationMode(const QString &mode);
     Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);
     Q_INVOKABLE void addChannelInfoMembers(const QStringList &userUuids);
@@ -945,6 +953,8 @@ public:
 signals:
     void cachedSearchAvailabilityChanged();
     void cachedSearchChanged();
+    void channelInfoTopicsChanged();
+    void channelTopicActionFinished(const QString &id, const QString &action, bool success);
     void otpCodeRejected();
     void sidebarExpansionChanged();
     void activityOpenChanged();
@@ -1721,6 +1731,7 @@ private:
     void offerNotificationCandidate(const Message &message);
     QString conversationKey() const { return m_stream + "/" + m_topic; }
 
+    NativeExternalAccounts *m_externalAccounts;
     ApiClient *m_api;
     // Per-saved-account background projection facts keyed by saved account id
     // (issue #144); unread badges for remembered sessions derive from these.
@@ -1839,6 +1850,7 @@ private:
     void loadChannelInfoPage(const QString &marker, quint64 ticket, const QString &stream,
                              QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers);
     QString m_channelInfoStreamId;
+    QSet<QString> m_channelTopicRequests;
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
     bool m_channelInfoLoading = false;
@@ -1995,6 +2007,7 @@ private:
     void rememberConversation();
     void interruptOwnStatusUpdate();
     QMap<QString, QVariantMap> m_channelChoices;
+    QStringList m_directoryUserOrder;
     QVariantMap m_mentionSelfChoice;
     QString m_channelDirectoryOwner;
     bool m_channelDirectoryValid = false;

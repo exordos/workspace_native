@@ -492,6 +492,7 @@ std::optional<Stream> parseStream(const QJsonObject &json, const QString &projec
     const auto color = json.value("color").toDouble(-1);
     if (json.value("color").isDouble() && std::isfinite(color) && color >= 0 && color <= 0xffffff && std::floor(color) == color)
         stream.color = quint32(color);
+    stream.viewer = json.value("user_uuid").toString();
     if (json.value("default_topic_uuid").isString()) stream.defaultTopic = json.value("default_topic_uuid").toString();
     return stream;
 }
@@ -538,7 +539,9 @@ std::optional<Topic> parseTopic(const QJsonObject &json, const QString &project,
     return Topic{id, stream, json.value("name").toString(), *unread,
                  json.value("is_done").toBool(), json.value("is_default").toBool(),
                  *active, *passive, json.value("last_message_uuid").toString(),
-                 json.value("notification_mode").toString("default"), *updated};
+                 json.value("notification_mode").toString("default"), *updated,
+                 json.value("summary").toString(), json.value("summary_enabled").toBool(true),
+                 json.value("summary_has_new_messages").toBool()};
 }
 
 std::optional<Message> parseMessage(const QJsonObject &json, const QString &project)

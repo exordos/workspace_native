@@ -142,6 +142,7 @@ ApplicationWindow {
         }
         NativeChannelInfo {
             id: channelInfoLayer
+            onReferenceActivated: link => root.openReference(link)
             objectName: "channelInfoLayer"
             colors: root.colors
             controller: root.controller
@@ -2785,6 +2786,15 @@ component NativeMentionChip: Item {
             anchors.verticalCenter: sectionButtons.verticalCenter
             anchors.alignWhenCentered: false
             spacing: 12
+            NativeIconButton {
+                objectName: "globalUserSearchButton"
+                colors: root.colors
+                width: 40; height: 40; glyphSize: 20
+                anchors.verticalCenter: parent.verticalCenter
+                asset: "search.svg"
+                help: qsTr("Search")
+                onClicked: userSearch.open()
+            }
             NativeDownloadCenter {
                 controller: root.controller
                 colors: root.colors
@@ -3387,7 +3397,7 @@ component NativeMentionChip: Item {
         width: 315
         height: Math.min(accountActions.implicitHeight + 8 + signOutFooter.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
         padding: 12
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        closePolicy: externalAccountsBlock.formOpen ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
             color: root.colors["bg-elevated"]
             border.color: root.colors["border-subtle"]
@@ -3466,6 +3476,14 @@ component NativeMentionChip: Item {
                         color: root.colors["text-muted"]
                     }
                 }
+            }
+            NativeExternalAccountBlock {
+                id: externalAccountsBlock
+                Layout.fillWidth: true
+                visible: root.controller.authenticated
+                directory: root.controller.externalAccounts
+                colors: root.colors
+                menuOpen: accountPopup.visible
             }
             NativeButton {
                 objectName: "ownStatusAction"
@@ -6198,6 +6216,18 @@ component NativeMentionChip: Item {
             Rectangle {
                 id: chatHeaderRoot
                 objectName: "conversationHeader"
+                readonly property bool infoAvailable: root.controller.authenticated && root.controller.hasConversation
+                    && !root.controller.favoritesVisible
+                readonly property string infoLabel: root.controller.isDirectConversation ? qsTr("Partner info") : qsTr("Channel info")
+                function openInformation() {
+                    if (!infoAvailable) return
+                    if (root.controller.isDirectConversation) {
+                        const peer = String(root.controller.directPeer.id || "")
+                        if (peer) rightDrawer.openWorkspaceUserProfile(peer)
+                    } else {
+                        rightDrawer.openInfo()
+                    }
+                }
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.controller.isDirectConversation ? 56 : root.encryptedConversation ? 62 : 54
                 radius: 6
@@ -6237,6 +6267,7 @@ component NativeMentionChip: Item {
                     elide: Text.ElideRight
                 }
                 RowLayout {
+                    id: channelHeaderTitleRow
                     visible: !root.controller.isDirectConversation && !root.encryptedConversation
                         && !root.controller.favoritesVisible
                     x: 20
@@ -6263,6 +6294,20 @@ component NativeMentionChip: Item {
                         font.pixelSize: 14
                         elide: Text.ElideRight
                     }
+                }
+                AbstractButton {
+                    id: channelHeaderInfoAction
+                    objectName: "channelHeaderInfoAction"
+                    anchors.fill: channelHeaderTitleRow
+                    visible: channelHeaderTitleRow.visible && chatHeaderRoot.infoAvailable
+                    focusPolicy: Qt.StrongFocus
+                    Accessible.name: chatHeaderRoot.infoLabel
+                    background: Rectangle {
+                        color: "transparent"; radius: 6
+                        border.width: channelHeaderInfoAction.visualFocus ? 2 : 0
+                        border.color: root.colors["accent-soft"]
+                    }
+                    onClicked: chatHeaderRoot.openInformation()
                 }
                 Text {
                     objectName: "chatHeaderCounters"
@@ -6651,19 +6696,12 @@ component NativeMentionChip: Item {
                     }
                     NativeIconButton {
                         colors: root.colors
+                        objectName: "conversationInfoAction"
                         asset: "side_panel.svg"
                         glyphSize: 20
-                        // Issue #134: on direct chats the affordance opens the
-                        // partner profile; ordinary channels keep the placeholder.
-                        enabled: String(root.controller.directPeer.id || "").length > 0
-                        help: String(root.controller.directPeer.id || "").length > 0
-                            ? qsTr("Information")
-                            : qsTr("Conversation information is not implemented yet")
-                        onClicked: {
-                            const peer = String(root.controller.directPeer.id || "")
-                            if (peer.length > 0)
-                                rightDrawer.openWorkspaceUserProfile(peer)
-                        }
+                        enabled: chatHeaderRoot.infoAvailable
+                        help: chatHeaderRoot.infoLabel
+                        onClicked: chatHeaderRoot.openInformation()
                     }
                 }
             }
@@ -7386,27 +7424,45 @@ component NativeMentionChip: Item {
                     visibleReadTimer.stop();
                     pendingViewport = snapshot;
                     displayedRoute = route;
-                    for (let i = 0; i < projection.length; ++i) {
+                    const added = projection.length - renderedMessages.count;
+                    let firstExisting = 0;
+                    if (sameRoute && added > 0 && renderedMessages.count > 0) {
+                        // A normal history page extends the front. Insert it as one
+                        // range so the view can keep the existing row delegates.
+                        let keepsSuffix = true;
+                        for (let i = 0; i < renderedMessages.count; ++i) {
+                            if (String(projection[added + i].entry.id) !== String(renderedMessages.get(i).entry.id)) {
+                                keepsSuffix = false;
+                                break;
+                            }
+                        }
+                        if (keepsSuffix) {
+                            renderedMessages.insert(0, projection.slice(0, added));
+                            firstExisting = added;
+                        }
+                    }
+                    for (let i = firstExisting; i < projection.length; ++i) {
+                        if (i >= renderedMessages.count) {
+                            renderedMessages.append(projection.slice(i));
+                            break;
+                        }
                         const model = projection[i];
                         const id = String(model.entry.id);
-                        if (i >= renderedMessages.count) {
-                            renderedMessages.append(model);
-                        } else {
-                            if (String(renderedMessages.get(i).entry.id) !== id) {
-                                let previous = -1;
-                                for (let j = i + 1; j < renderedMessages.count; ++j) {
-                                    if (String(renderedMessages.get(j).entry.id) === id) {
-                                        previous = j;
-                                        break;
-                                    }
+                        if (String(renderedMessages.get(i).entry.id) !== id) {
+                            let previous = -1;
+                            for (let j = i + 1; j < renderedMessages.count; ++j) {
+                                if (String(renderedMessages.get(j).entry.id) === id) {
+                                    previous = j;
+                                    break;
                                 }
-                                if (previous >= 0)
-                                    renderedMessages.move(previous, i, 1);
-                                else
-                                    renderedMessages.insert(i, model);
                             }
-                            renderedMessages.set(i, model);
+                            if (previous < 0) {
+                                renderedMessages.insert(i, model);
+                                continue;
+                            }
+                            renderedMessages.move(previous, i, 1);
                         }
+                        renderedMessages.set(i, model);
                     }
                     if (renderedMessages.count > projection.length)
                         renderedMessages.remove(projection.length, renderedMessages.count - projection.length);
@@ -12872,6 +12928,12 @@ component NativeMentionChip: Item {
     // only the selection it was submitted with (review round 1, cid
     // 4586012848): a Check that lands after the modal went away must leave a
     // newer selection alone.
+    NativeUserSearch {
+        id: userSearch
+        colors: root.colors
+        controller: root.controller
+    }
+
     NativeForwardDialog {
         id: forwardDialog
         colors: root.colors

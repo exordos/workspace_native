@@ -3323,7 +3323,7 @@ void NativeController::saveOwnStatus(const QString &text, const QString &emoji, 
         const auto name = directoryViewerName(row);
         // A single owned canonical response cannot adopt somebody else's directory.
         if (m_channelDirectoryOwner != owner) {
-            m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryValid = false;
+            m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryValid = false;
             m_channelDirectoryOwner = owner;
         }
         m_names.insert(user, makeUserPresentation(name, row, true, m_names.value(user)));
@@ -3930,6 +3930,30 @@ QVariantList NativeController::chatPickerChoices() const
     return result;
 }
 
+QVariantList NativeController::searchWorkspaceUsers(const QString &query) const
+{
+    const auto needle = query.trimmed();
+    QVariantList matches;
+    if (needle.isEmpty() || !authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return matches;
+    auto addMatch = [&](QVariantMap choice) {
+        if (choice.isEmpty()) return;
+        const auto person = m_names.constFind(choice.value("id").toString());
+        const auto contains = [&](const QString &value) { return value.contains(needle, Qt::CaseInsensitive); };
+        if (!contains(choice.value("displayName").toString()) && !contains(choice.value("username").toString())
+            && !contains(choice.value("email").toString())
+            && (person == m_names.cend() || (!contains(person->statusText) && !contains(person->statusEmoji)))) return;
+        choice["presence"] = person == m_names.cend() ? QString{} : person->presence;
+        choice["statusLabel"] = person == m_names.cend() ? QString{} : person->statusLabel;
+        matches.append(choice);
+    };
+    const auto self = m_session->user();
+    for (const auto &id : m_directoryUserOrder) {
+        addMatch(id == self ? m_mentionSelfChoice : m_channelChoices.value(id));
+        if (matches.size() == 20) break;
+    }
+    return matches;
+}
+
 bool NativeController::channelMembersVerified() const
 {
     return authenticated() && m_usersVerified && m_channelDirectoryValid
@@ -4012,10 +4036,37 @@ QVariantMap NativeController::channelInfoStream() const
     // stream.isPrivate) and `source_name` is the encryption-source witness.
     const auto sourceName = stream->security
         ? stream->security->source : QString{};
+    const bool canEditSummary = stream->viewer == m_session->user()
+        && (stream->role == "owner" || stream->role == "administrator");
     return {{"id", stream->uuid}, {"title", stream->name}, {"description", stream->description},
         {"color", color}, {"notificationMode", stream->notificationMode},
         {"owner", stream->role == "owner"}, {"private", stream->privateStream},
-        {"sourceName", sourceName}};
+        {"sourceName", sourceName},
+        {"canEditTopicSummary", canEditSummary},
+        {"canOpenSummarySettings", canEditSummary || m_session->canConfigureSummaryService()}};
+}
+
+QVariantList NativeController::channelInfoTopics() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream) return {};
+    QHash<QString, const Topic *> byId;
+    for (const auto &topic : m_topics) byId.insert(topic.uuid, &topic);
+    QSet<QString> mentions;
+    for (const auto &entry : m_unreadMentions)
+        if (entry.stream == stream->uuid) mentions.insert(entry.topic);
+    auto rows = topicRows(m_topics, stream);
+    for (auto &value : rows) {
+        auto row = value.toMap();
+        const auto id = row.value("id").toString();
+        const auto *topic = byId.value(id);
+        row.insert("hasUnreadPersonalMention", mentions.contains(id));
+        row.insert("summary", topic->summary);
+        row.insert("summaryEnabled", topic->summaryEnabled);
+        row.insert("summaryHasNewMessages", topic->summaryHasNewMessages);
+        value = row;
+    }
+    return rows;
 }
 
 QVariantList NativeController::channelInfoMembers() const
@@ -4122,6 +4173,66 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
         m_channelInfoMembers = accepted;
         m_channelInfoLoading = false;
         emit stateChanged();
+    });
+}
+
+void NativeController::applyChannelTopicAction(const QString &id, const QString &action, const QString &value)
+{
+    const auto *stream = channelInfoStreamRow();
+    const auto current = std::find_if(m_topics.cbegin(), m_topics.cend(),
+        [&](const Topic &row) { return row.uuid == id && row.stream == m_stream; });
+    if (!stream || !m_topicsVerified || current == m_topics.cend() || current->done) {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    QByteArray method = "POST";
+    QString path = messenger + "/stream_topics/" + id;
+    QJsonObject body;
+    if (action == "notifications" && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
+        path += "/actions/notifications/invoke";
+        body.insert("notification_mode", value);
+    } else if (action == "summary" && channelInfoStream().value("canEditTopicSummary").toBool()
+               && (value == "true" || value == "false")) {
+        path += "/actions/set_summary_prompt/invoke";
+        body.insert("summary_enabled", value == "true");
+    } else if (action == "read" || action == "toggle_done") {
+        path += "/actions/" + action + "/invoke";
+    } else if (action == "rename" && !value.trimmed().isEmpty()) {
+        method = "PUT";
+        body.insert("name", value.trimmed());
+    } else {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    const auto generation = m_api->generation();
+    const auto owner = ownerKey(), streamId = m_stream;
+    const auto key = QString::number(generation) + '/' + id;
+    if (m_channelTopicRequests.contains(key)) {
+        emit channelTopicActionFinished(id, action, false);
+        return;
+    }
+    m_channelTopicRequests.insert(key);
+    const auto revision = m_topicRevision;
+    request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
+        m_channelTopicRequests.remove(key);
+        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) return;
+        const auto dto = response.data.toObject();
+        const auto updated = parseTopic(dto, m_session->project(), streamId);
+        const bool accepted = response.ok() && updated && updated->uuid == id
+            && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
+        staleCache(NativeCache::Kind::Topics, streamId);
+        auto row = std::find_if(m_topics.begin(), m_topics.end(), [&](const Topic &t) { return t.uuid == id; });
+        if (accepted && row != m_topics.end() && revision == m_topicRevision) {
+            *row = *updated;
+            ++m_topicRevision;
+            if (action == "read") mentionIndexClearTopic(streamId, id);
+            emit topicsChanged();
+            emit stateChanged();
+        } else {
+            // A newer catalog or an uncertain write is reconciled by reading.
+            loadTopics();
+        }
+        emit channelTopicActionFinished(id, action, accepted);
     });
 }
 
@@ -5088,6 +5199,7 @@ void NativeController::navigateProfileDirect(const ProfileDirectNavigation &navi
 void NativeController::updateChannelDirectory(const QJsonArray &rows, bool authoritative)
 {
     QMap<QString, QVariantMap> choices;
+    QStringList userOrder;
     QVariantMap selfChoice;
     bool valid = rows.size() <= 100000;
     for (const auto &value : rows) {
@@ -5095,9 +5207,15 @@ void NativeController::updateChannelDirectory(const QJsonArray &rows, bool autho
         if (!choice) { valid = false; break; }
         const auto id = choice->value("id").toString();
         if (id == m_session->user()) {
-            if (selfChoice.isEmpty()) selfChoice = *choice;
-        } else if (!choices.contains(id)) choices.insert(id, *choice);
+            if (!selfChoice.isEmpty()) continue;
+            selfChoice = *choice;
+        } else {
+            if (choices.contains(id)) continue;
+            choices.insert(id, *choice);
+        }
+        userOrder.append(id);
     }
+    m_directoryUserOrder = valid ? std::move(userOrder) : QStringList{};
     m_mentionSelfChoice = valid ? selfChoice : QVariantMap{};
     m_channelChoices = valid ? choices : QMap<QString, QVariantMap>{};
     m_channelDirectoryOwner = creationOwnerKey();
@@ -9348,6 +9466,7 @@ void NativeController::refreshReactions(const QString &id)
 NativeController::NativeController(ApiClient *api, Session *session, QObject *parent)
     : QObject(parent), m_api(api), m_session(session)
 {
+    m_externalAccounts = new NativeExternalAccounts(api, session, this);
     m_mediaViewer = new MediaViewerModel(this, this);
     // Issue #51: the log viewer modal subscribes to the ring buffer like the
     // reference subscribeLogHistory (logger.ts), so forward every change.
@@ -9614,6 +9733,9 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         emit anchorChanged();
     });
 
+    connect(this, &NativeController::topicsChanged, this, &NativeController::channelInfoTopicsChanged);
+    connect(this, &NativeController::streamsChanged, this, &NativeController::channelInfoTopicsChanged);
+    connect(this, &NativeController::sidebarStreamsChanged, this, &NativeController::channelInfoTopicsChanged);
     connect(session, &Session::signedOut, this, &NativeController::reset);
     connect(session, &Session::error, this, [this](const QString &message) {
         // Remembering a verified session can fail independently of live sync.
@@ -11648,6 +11770,7 @@ void NativeController::logout()
 void NativeController::reset()
 {
     m_pollSendAttempts.clear();
+    m_channelTopicRequests.clear();
     closeEditSession();
     closeReplySession();
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
@@ -11736,7 +11859,7 @@ void NativeController::reset()
     m_ownProfileError.clear(); m_ownAvatarError.clear();
     m_ownProfileLoading = m_ownProfileSaving = m_ownProfileRefresh = m_ownAvatarBusy = false;
     m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
-    m_channelChoices.clear(); m_mentionSelfChoice.clear();
+    m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear();
     m_channelDirectoryOwner.clear();
     m_channelDirectoryValid = false;
     // Issue #293: no stage check may survive the owner it was running for.
@@ -12548,8 +12671,14 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         const auto choice = channelDirectoryChoice(payload, m_session->project());
         if (!choice) m_channelDirectoryValid = false;
         else if (m_channelDirectoryOwner == creationOwnerKey() && m_channelDirectoryValid) {
-            if (id == m_session->user()) m_mentionSelfChoice = *choice;
-            else m_channelChoices.insert(id.toLower(), *choice);
+            const auto user = id.toLower();
+            if (user == m_session->user()) {
+                if (m_mentionSelfChoice.isEmpty()) m_directoryUserOrder.append(user);
+                m_mentionSelfChoice = *choice;
+            } else {
+                if (!m_channelChoices.contains(user)) m_directoryUserOrder.append(user);
+                m_channelChoices.insert(user, *choice);
+            }
         }
         staleCache(NativeCache::Kind::Users);
         if (!current()) return true;
@@ -17137,7 +17266,7 @@ void NativeController::openProfileShareLink(const QString &user)
                 valid = valid && validCreationDate(row.value(field));
             if (valid) {
                 if (m_channelDirectoryOwner != owner) {
-                    m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryOwner = owner;
+                    m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryOwner = owner;
                     m_channelDirectoryValid = false;
                 }
                 m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, true, m_names.value(user)));
@@ -17179,7 +17308,7 @@ void NativeController::openProfileShareLink(const QString &user)
             if (row.value("uuid").toString().toLower() != user
                 || !channelDirectoryChoice(row, m_session->project())) continue;
             if (m_channelDirectoryOwner != owner) {
-                m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryOwner = owner;
+                m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryOwner = owner;
                 m_channelDirectoryValid = false;
             }
             m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, false, {}));

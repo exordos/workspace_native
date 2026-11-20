@@ -191,3 +191,16 @@ The window test covers the server and login lines, the localized confirmation,
 cancellation, and confirmation with a populated cache and nondefault preferences.
 It holds the refreshed history response so it can observe an empty cache before
 new server data arrives.
+
+## Entry from the conversation header
+
+The channel title and information button both open the channel root. Selecting
+the header while viewing a nested profile returns to the channel information.
+Opening it over account settings leaves that settings layer beneath the chat
+layer, so Close restores it. A direct chat uses the partner profile identified
+by its verified peer. Both title and icon are keyboard accessible. Workspace group
+conversations with no individual direct peer open their channel information. The Favorites header
+keeps its title-only presentation.
+
+The original Workspace under the primary account opened the named partner from
+the direct-chat header. Closing the profile returned to the same conversation.

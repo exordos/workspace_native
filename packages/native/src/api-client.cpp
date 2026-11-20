@@ -428,7 +428,9 @@ ApiClient::RequestId ApiClient::request(const QByteArray &method, const QString 
             reply->abort();
         }
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply] { finish(reply); });
+    // A consumer may destroy the client and the network manager in its callback.
+    // Deliver completion after Qt returns from the reply's network signal.
+    connect(reply, &QNetworkReply::finished, this, [this, reply] { finish(reply); }, Qt::QueuedConnection);
     timer->start(RequestTimeoutMs);
     return RequestId(serial);
 }
@@ -439,8 +441,7 @@ bool ApiClient::cancelRequest(RequestId id)
     auto *pending = reply ? m_pending.value(reply, nullptr) : nullptr;
     if (!pending)
         return false;
-    // Retire the handle before abort: finished/callback can be synchronous,
-    // reenter the transport, or destroy it. Do not access members after abort.
+    // Retire the handle before abort so a repeated cancellation is rejected.
     pending->callerCancelled = true;
     reply->abort();
     return true;
