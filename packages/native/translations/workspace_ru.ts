@@ -63,6 +63,20 @@
     <context>
         <name>Main</name>
         <message>
+            <source>Preview</source>
+            <comment>composer mode</comment>
+            <translation>Предпросмотр</translation>
+        </message>
+        <message>
+            <source>Write</source>
+            <comment>composer mode</comment>
+            <translation>Написание</translation>
+        </message>
+        <message>
+            <source>Nothing to preview yet</source>
+            <translation>Пока нечего предпросматривать</translation>
+        </message>
+        <message>
             <source>AI assistant</source>
             <translation>AI assistant</translation>
         </message>

@@ -182,6 +182,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QString selectedStream READ selectedStream NOTIFY stateChanged)
     Q_PROPERTY(QString selectedTopic READ selectedTopic NOTIFY stateChanged)
     Q_PROPERTY(QString draft READ draft WRITE setDraft NOTIFY draftChanged)
+    Q_PROPERTY(QString composerPreviewBody READ composerPreviewBody NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap outgoingSend READ outgoingSend NOTIFY stateChanged)
     Q_PROPERTY(QString editingMessageId READ editingMessageId NOTIFY editSessionChanged)
     Q_PROPERTY(QString editSessionKey READ editSessionKey NOTIFY editSessionChanged)
@@ -455,6 +456,7 @@ public:
     QVariantMap conversationOpening() const;
     QString draft() const;
     void setDraft(const QString &text);
+    QString composerPreviewBody() const;
     bool canCompose() const;
     bool canSend() const;
     bool canLoadOlder() const { return !m_before.isEmpty() && !m_loading && !m_snapshotActive
@@ -1536,6 +1538,8 @@ private:
     QString clipboardUploadName(const QString &extension, bool image) const;
     void validateQueuedUpload(quint64 intent, quint64 epoch);
     QStringList readyUploadLinks(quint64 session) const;
+    std::optional<QString> composeSendBody() const;
+    std::optional<QString> composeEditBody() const;
     void reserveImageAlias(UploadEntry &entry, const QString &name);
     QString imageAlias(const UploadEntry &entry) const;
     QString replaceImageAliases(const QString &text, bool serialize) const;

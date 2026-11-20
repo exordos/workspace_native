@@ -26,8 +26,9 @@ from that tree with `git show <sha>:<path>`.
   (`aria-expanded`, label `composer.collapseToolbar`, `disabled={mode === "preview"}`);
   collapsed state keeps a single expand toggle in the input row
   (`compactInline` placement, `message-composer.ui.tsx:1925-1939`). The native
-  client has no Write/Preview mode tabs yet (sibling issue), so the
-  preview-mode disable rule is recorded but not native-testable today.
+  client disables collapse while Preview is active. See
+  [Composer preview](NATIVE_DESKTOP_COMPOSER_PREVIEW.md) for outgoing body
+  composition and viewport sizing.
 
 The composer shell reserves the toolbar's preferred height and the column gap
 while the row is visible. Without that space, an empty or one-line draft left
@@ -48,7 +49,7 @@ local Linux Qt Quick fixture checks, not live-service or other-platform acceptan
 The AI control is visible while composing a new message or reply. Editing an
 existing message hides the control.
 
-Order in the expanded toolbar: toggle, AI, separator, [link, bold, italic,
+Order in the expanded toolbar: collapse, Write/Preview, AI, separator, [link, bold, italic,
 strikethrough] (flush group), separator, [numbered list, bulleted list],
 separator, [quote, code block, inline code, spoiler]. File/emoji/time/schedule
 triggers are out of native scope today; the native groups follow the same
