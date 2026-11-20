@@ -3405,10 +3405,25 @@ private slots:
         QCOMPARE(visibleItem(root, "currentServerLogin")->property("text").toString(), QString("example-member"));
         auto *action = visibleItem(root, "clearLocalCacheAction"); QVERIFY(action);
         auto *scroll = visibleItem(root, "accountMenuScroll"); QVERIFY(scroll);
-        scroll->setProperty("contentY", std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height()));
-        click(window, action);
         auto *dialog = window->findChild<QObject *>("clearLocalCacheDialog"); QVERIFY(dialog);
-        QTRY_VERIFY(dialog->property("opened").toBool());
+        const auto openConfirmation = [&] {
+            QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+            window->update();
+            QTRY_VERIFY([&] {
+                const auto bottom = std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height());
+                if (qAbs(scroll->property("contentY").toReal() - bottom) > 1) {
+                    scroll->setProperty("contentY", bottom);
+                    painted.clear();
+                    window->update();
+                    return false;
+                }
+                const auto point = action->mapToItem(scroll, action->boundingRect().center());
+                return !painted.isEmpty() && action->isEnabled() && scroll->contains(point);
+            }());
+            clickReadyItem(window, action);
+            QTRY_VERIFY(dialog->property("opened").toBool());
+        };
+        openConfirmation();
         const QString confirmation = locale == "en"
             ? QStringLiteral("Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.")
             : QStringLiteral("Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.");
@@ -3419,8 +3434,7 @@ private slots:
         QVERIFY(cache.stats().entries > 1);
         const int catalog = fixture.catalogGets;
         holdBootstrap = true;
-        click(window, action);
-        QTRY_VERIFY(dialog->property("opened").toBool());
+        openConfirmation();
         QQmlExpression ok(qmlContext(dialog), dialog, "standardButton(Dialog.Ok)");
         auto *button = qobject_cast<QQuickItem *>(ok.evaluate().value<QObject *>());
         QVERIFY2(button, qPrintable(ok.error().toString()));
