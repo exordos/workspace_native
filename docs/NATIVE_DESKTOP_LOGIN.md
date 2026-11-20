@@ -225,7 +225,7 @@ field only on first step), 162 (persisted suggestions after remount), 180
 
 ## Geometry and color oracles
 
-All values in this document are measured from the reference sha above. Window
+The reference source above provides the original design measurements. Window
 tests assert structural facts (mounted/hidden, exact copy, token-resolved
 colors via the palette maps) and avoid host font-metric pixel oracles per the
 rule in issue #16.
@@ -249,3 +249,18 @@ and a Next action.
 The credentials form accepts Enter from the username or password field. An
 empty submission keeps the form open and asks the user to fill in all fields.
 Discovery and credential errors appear in the form above the submit button.
+
+## Paired Linux visual check
+
+A 1440 × 900 Wayland desktop and a 1440 × 900 Chromium viewport at scale 1
+show the same four steps on the deployed sign-in route. The reference check
+used English and Russian with the Blue Cold palette in both light and dark
+mode. Each session completed its real OTP challenge and selected the intended
+project. Password and OTP fields were empty in all captures of those steps.
+
+The reference column is 448 px wide. Its Organization link is 20 px high,
+the realm card with a logo and name is 102 px high, and the primary and Back
+actions are 36 px high. Credential inputs are 46 px high on the elevated
+surface and leave 22 px before the next field or action. The native login
+window tests exercise these measurements, centering when registration is
+unavailable, the visible empty OTP hint and the unfilled project Back action.

@@ -75,6 +75,8 @@ patterns already used by `historyPage`).
    `stateChanged`), which lets `reanchorFromWindow` find the anchor and start
    the 2.5 s highlight. Rows equal to the anchor or outside the conversation
    are skipped; an empty page marker on either side means that end is reached.
+   When the source conversation finishes loading during a message-link lookup,
+   paging waits for the lookup to identify the destination stream and topic.
    The existing bounded 8-page older walk stays as the fallback for any
    around-window failure (non-2xx, wrong selection after landing), which also
    keeps every #55 test path intact.

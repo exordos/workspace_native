@@ -62,6 +62,14 @@
     </context>
     <context>
         <name>Main</name>
+    <message>
+        <source>Profile is still loading. Try again in a moment.</source>
+        <translation>Профиль ещё загружается. Попробуйте через пару секунд.</translation>
+    </message>
+    <message>
+        <source>Could not create chat. Try again.</source>
+        <translation>Не удалось создать чат. Попробуйте ещё раз.</translation>
+    </message>
         <!-- Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the stream
              menu Notifications section, measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
              packages/web/src/i18n/locales/ru.json (channel.* keys). -->

@@ -19,9 +19,10 @@ If project discovery fails after an accepted code, temporary tokens are cleared
 and the same owned challenge remains available for an explicit retry.
 The code form accepts at most six ASCII digits, enables confirmation only for a
 complete code, clears a rejected code, and offers Back to credentials. EN and RU
-copy follows the pinned reference. The 50 px input, 36 px actions, 16 px form
-gaps, 8 px corners and notice colors follow its layout tokens; Back is below
-Confirm. Font rasterization and full-shell geometry remain platform dependent.
+copy follows the pinned reference. On the deployed 1440 × 900 Linux login form,
+the code field measures 47 px and both actions measure 36 px. Its centered
+six-digit hint stays visible when the empty field receives focus. Back follows
+Confirm with a 16 px gap.
 The test transport uses synthetic credentials.
 
 Session tests exercise actual loopback HTTP for a 401, rejected code and success,
