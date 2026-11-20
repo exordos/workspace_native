@@ -1780,7 +1780,10 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             enabled: !root.controller.busy && !root.controller.organizationLoading
                             text: root.controller.organizationRealm
-                            onTextChanged: root.controller.organizationInputChanged(text)
+                            onTextChanged: {
+                                if (text !== root.controller.organizationRealm)
+                                    root.controller.organizationInputChanged(text)
+                            }
                             placeholderText: qsTr("Server address")
                             inputMethodHints: Qt.ImhUrlCharactersOnly
                             Accessible.name: qsTr("Server address")
