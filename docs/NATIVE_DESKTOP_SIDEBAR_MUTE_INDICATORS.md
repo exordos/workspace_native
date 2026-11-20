@@ -84,6 +84,12 @@ Direct-private streams render `DIRECT_PRIVATE_STREAM_NOTIFICATION_OPTIONS`
 (`bell_off`) and `subscribed` (`bell`) - DMs already notify on every inbound message, so
 the mentions-only level is not offered (lib.ts:66-72).
 
+If an older stream row omits `notification_mode`, the sidebar selects
+`mentions_only` for a channel and accepts a change to a different level.
+Direct chats display their mentions-only default as subscribed, matching
+the reference's direct-chat mapping. The drawer keeps its unsupported
+fallback until the stream provides a mode.
+
 Selection semantics (switch `handleSelect` + `handleSetNotificationMode`): a disabled
 segment or a click on the current level sends nothing; a change closes the menu first,
 then fires one update; while pending the switch is disabled.
@@ -96,7 +102,9 @@ then fires one update; while pending the switch is disabled.
 canonical stream DTO and the store value becomes the response value. The native
 controller already implements exactly this contract for the chat-info panel
 (`NativeController::setChannelInfoNotificationMode`, canonical-response admission,
-per-stream in-flight token, no optimistic write). The sidebar menu reuses the same
+per-stream in-flight token, no optimistic write). A same-account token renewal
+keeps the original notification POST alive, so a later write cannot overtake
+it. Sign-out or replacing the account discards the old slot and response. The sidebar menu reuses the same
 endpoint, payload and guards; it must also work for streams that are not the selected one
 (chat-info only answers for the currently open stream).
 
@@ -223,3 +231,5 @@ accessible interface and the Press action after every async phase (each handle i
 taken immediately before use). The pinned #396 assertions themselves - TabFocus
 policy, Press action presence, accessible and keyboard activation semantics - are
 unchanged.
+
+Clearing local data retires pending mode writes before the refreshed catalog opens. A reply from a token renewed before the reset can neither reoccupy the stream slot nor enter the fresh session’s diagnostics.

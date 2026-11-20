@@ -74,6 +74,7 @@
     <context>
         <name>Main</name>
         <message><source>Folder list</source><translation>Список папок</translation></message>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>
             <source>Nothing to preview yet</source>
@@ -103,6 +104,8 @@
             <source>Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.</source>
             <translation>Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.</translation>
         </message>
+    <message><source>Poll settings</source><translation>Настройки опроса</translation></message>
+    <message><source>Close poll</source><translation>Завершить опрос</translation></message>
     <message>
         <source>Profile is still loading. Try again in a moment.</source>
         <translation>Профиль ещё загружается. Попробуйте через пару секунд.</translation>
@@ -1845,6 +1848,24 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message><source>Retry</source><translation>Повторить</translation></message>
+    <message>
+        <source>Could not send the key. Requests to retry: %1.</source>
+        <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
+    </message>
+    <message>
+        <source>The request could not be rejected.</source>
+        <translation>Не удалось отклонить запрос.</translation>
+    </message>
+    <message>
+        <source>This request has not been sent.</source>
+        <translation>Этот запрос ещё не отправлен.</translation>
+    </message>
+    <message>
+        <source>The key could not be sent to this device.</source>
+        <translation>Не удалось отправить ключ на это устройство.</translation>
+    </message>
+
         <message>
             <source>Show spoiler</source>
             <translation>Показать спойлер</translation>
@@ -2865,6 +2886,10 @@
 </context>
     <context>
         <name>workspace::NativeDesktop</name>
+        <message>
+            <source>Unread messages</source>
+            <translation>Непрочитанные сообщения</translation>
+        </message>
         <message>
             <source>Check for updates</source>
             <translation>Проверить обновления</translation>
@@ -4375,6 +4400,23 @@
             <translation>%1 звонит</translation>
         </message>
     </context>
+<context>
+    <name>NativePollManagementDialog</name>
+    <message><source>Close poll?</source><translation>Завершить опрос?</translation></message>
+    <message><source>Edit poll</source><translation>Изменить опрос</translation></message>
+    <message><source>Participants will no longer be able to vote or change their answers.</source><translation>Участники больше не смогут голосовать или менять свои ответы.</translation></message>
+    <message><source>Poll closing date</source><translation>Дата завершения опроса</translation></message>
+    <message><source>Remove deadline</source><translation>Убрать дату</translation></message>
+    <message><source>Set a deadline</source><translation>Установить дату</translation></message>
+    <message><source>Time</source><translation>Время</translation></message>
+    <message><source>Choose a future date</source><translation>Выберите дату в будущем</translation></message>
+    <message><source>Allow adding options</source><translation>Разрешить добавление вариантов</translation></message>
+    <message><source>Participants can add answer options</source><translation>Участники могут добавлять варианты ответов</translation></message>
+    <message><source>Could not save the change. Please try again.</source><translation>Не удалось сохранить изменение. Попробуйте ещё раз.</translation></message>
+    <message><source>Cancel</source><translation>Отмена</translation></message>
+    <message><source>Close poll</source><translation>Завершить опрос</translation></message>
+    <message><source>Save</source><translation>Сохранить</translation></message>
+</context>
     <context>
         <name>NativePollDialog</name>
         <message>
@@ -4981,7 +5023,24 @@
         <message><source>Open Source Licenses</source><translation>Open Source лицензии</translation></message>
     </context>
     <context>
+        <name>NativeSupportReport</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
+        <message><source>Describe what you expected, what happened, when it happened and how to reproduce it. This description is kept separate from the diagnostic file.</source><translation>Опишите, что вы ожидали, что и когда произошло и как это воспроизвести. Описание сохраняется отдельно от файла диагностики.</translation></message>
+        <message><source>Problem description</source><translation>Описание проблемы</translation></message>
+        <message><source>Copy description</source><translation>Скопировать описание</translation></message>
+        <message><source>Include session counts and response times</source><translation>Включить счётчики событий и время ответа за сессию</translation></message>
+        <message><source>Preparing report…</source><translation>Подготовка отчёта…</translation></message>
+        <message><source>Prepare report</source><translation>Подготовить отчёт</translation></message>
+        <message><source>Diagnostic file preview</source><translation>Предпросмотр файла диагностики</translation></message>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Save report</source><translation>Сохранить отчёт</translation></message>
+        <message><source>JSON files (*.json)</source><translation>Файлы JSON (*.json)</translation></message>
+        <message><source>Report saved</source><translation>Отчёт сохранён</translation></message>
+        <message><source>Could not save the report</source><translation>Не удалось сохранить отчёт</translation></message>
+    </context>
+    <context>
         <name>NativeDiagnosticsPage</name>
+        <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Diagnostics</source><translation>Диагностика</translation></message>
         <message><source>Full runtime diagnostics with searchable session logs.</source><translation>Полная диагностика рантайма и сессионных логов с поиском.</translation></message>
         <message><source>Memory</source><translation>Память</translation></message>
@@ -5075,6 +5134,61 @@
         <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
         <message><source>Try again</source><translation>Попробовать снова</translation></message>
     </context>
+<context>
+    <name>NativeKeyRequests</name>
+    <message>
+        <source>Sending response</source>
+        <translation>Отправляется ответ</translation>
+    </message>
+    <message>
+        <source>Security key requests (%1)</source>
+        <translation>Запросы ключа безопасности (%1)</translation>
+    </message>
+    <message>
+        <source>Showing loaded history.</source>
+        <translation>Показаны данные из загруженной истории.</translation>
+    </message>
+    <message>
+        <source>No key requests</source>
+        <translation>Нет запросов ключа</translation>
+    </message>
+    <message>
+        <source>Incoming requests (%1)</source>
+        <translation>Входящие запросы (%1)</translation>
+    </message>
+    <message>
+        <source>Granted keys (%1)</source>
+        <translation>Выданные ключи (%1)</translation>
+    </message>
+    <message>
+        <source>Rejected requests (%1)</source>
+        <translation>Отклонённые запросы (%1)</translation>
+    </message>
+    <message>
+        <source>Grant all</source>
+        <translation>Выдать всем</translation>
+    </message>
+    <message>
+        <source>Grant access to %1</source>
+        <translation>Выдать доступ: %1</translation>
+    </message>
+    <message>
+        <source>Reject request from %1</source>
+        <translation>Отклонить запрос: %1</translation>
+    </message>
+    <message>
+        <source>Check</source>
+        <translation>Проверить</translation>
+    </message>
+    <message>
+        <source>Retry</source>
+        <translation>Повторить</translation>
+    </message>
+    <message>
+        <source>Could not send the key. Requests to retry: %1.</source>
+        <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
+    </message>
+</context>
     <context>
         <name>NativeCachedMessageSearch</name>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
@@ -5092,6 +5206,43 @@
         <message><source>Resize message editor</source><translation>Изменить высоту поля сообщения</translation></message>
         <message><source>Expand message editor</source><translation>Развернуть поле сообщения</translation></message>
         <message><source>Collapse message editor</source><translation>Свернуть поле сообщения</translation></message>
+    </context>
+    <context>
+        <name>NativeComposerTimePicker</name>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Hours</source><translation>Часы</translation></message>
+        <message><source>Insert</source><translation>Вставить</translation></message>
+        <message><source>Insert date and time</source><translation>Вставить дату и время</translation></message>
+        <message><source>Minutes</source><translation>Минуты</translation></message>
+        <message><source>Next month</source><translation>Следующий месяц</translation></message>
+        <message><source>Previous month</source><translation>Предыдущий месяц</translation></message>
+        <message><source>Seconds</source><translation>Секунды</translation></message>
+    </context>
+    <context>
+        <name>NativeComposerSnippets</name>
+        <message><source>Cancel</source><translation>Отмена</translation></message>
+        <message><source>Create new saved snippet</source><translation>Создать шаблон</translation></message>
+        <message><source>Filter</source><translation>Фильтр</translation></message>
+        <message><source>Filter snippets</source><translation>Фильтр шаблонов</translation></message>
+        <message><source>No saved snippets</source><translation>Нет сохранённых шаблонов</translation></message>
+        <message><source>Save</source><translation>Сохранить</translation></message>
+        <message><source>Saved snippets</source><translation>Сохранённые шаблоны</translation></message>
+        <message><source>Saved snippets are not connected yet.</source><translation>Сохранённые шаблоны пока недоступны.</translation></message>
+        <message><source>Snippet content</source><translation>Содержимое шаблона</translation></message>
+        <message><source>Snippet title</source><translation>Название шаблона</translation></message>
+    </context>
+    <context>
+        <name>NativeComposerStickerPicker</name>
+        <message><source>No sticker packs installed yet.</source><translation>Наборы стикеров пока не установлены.</translation></message>
+        <message><source>No stickers found</source><translation>Стикеры не найдены</translation></message>
+        <message><source>Search stickers</source><translation>Найти стикер</translation></message>
+    </context>
+    <context>
+        <name>ComposerTools</name>
+        <message><source>Emoji</source><translation>Эмодзи</translation></message>
+        <message><source>Insert date and time</source><translation>Вставить дату и время</translation></message>
+        <message><source>Saved snippets</source><translation>Сохранённые шаблоны</translation></message>
+        <message><source>Stickers</source><translation>Стикеры</translation></message>
     </context>
 <context>
     <name>NativeAccountPreferences</name>

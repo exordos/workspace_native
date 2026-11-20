@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -175,6 +176,34 @@ static void clickActiveInlineImage(QQuickWindow *window, const QString &message)
     const auto image = [&] { return visibleItem(window->contentItem(), "inline-image-" + message); };
     QTRY_VERIFY(image() && image()->isVisible() && image()->property("loadActive").toBool());
     clickReadyItem(window, image());
+}
+
+// Account controls remain visible QQuickItems when the scroll viewport clips
+// them. Bring the physical click point inside the viewport and wait for paint.
+static void clickAccountMenuControl(QQuickWindow *window, QQuickItem *target)
+{
+    auto *scroll = visibleItem(window->contentItem(), "accountMenuScroll");
+    QVERIFY(scroll && target);
+    QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+    window->update();
+    QTRY_VERIFY([&] {
+        if (!target->isEnabled() || !target->isVisible())
+            return false;
+        const auto center = target->mapToItem(scroll, QPointF(target->width() / 2, target->height() / 2));
+        if (!scroll->contains(center)) {
+            const qreal top = scroll->property("contentY").toReal();
+            const qreal bottom = std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height());
+            const qreal next = std::clamp(top + center.y() - scroll->height() / 2, 0.0, bottom);
+            if (qAbs(next - top) > 0.5) {
+                scroll->setProperty("contentY", next);
+                painted.clear();
+                window->update();
+            }
+            return false;
+        }
+        return !painted.isEmpty();
+    }());
+    clickReadyItem(window, target);
 }
 
 static void checkSidebarCardBelowExpandedActivity(QQuickWindow *window, const QString &cardName)
@@ -1479,6 +1508,11 @@ public:
     QString messageUuidTwo = QStringLiteral("8d000000-0000-4000-8000-000000000002");
     QString streamSource = "native";
     bool streamEncrypted = false;
+    bool ownPoll = false;
+    int closePosts = 0, managementStatus = 200;
+    bool holdManagement = false;
+    QJsonObject lastSettings;
+    std::function<void()> releaseManagement;
     bool secondPollOnPage = false;
     // Poll config (reference defaults per the polls contract).
     bool multipleAnswers = true;
@@ -1557,7 +1591,7 @@ public:
     QJsonObject row(const QString &id, const QString &questionText) const
     {
         return {{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
-            {"topic_uuid", topicId}, {"author_uuid", channelPeer}, {"is_own", false},
+            {"topic_uuid", topicId}, {"author_uuid", ownPoll ? userId : channelPeer}, {"is_own", ownPoll},
             {"read", true}, {"starred", false},
             {"created_at", QStringLiteral("2026-01-02T10:00:30.000Z")},
             {"payload", payload(questionText)}, {"poll_state", state()}};
@@ -1648,12 +1682,25 @@ public:
                 }
                 return response;
             }
-            if (path == actions + "update_settings/invoke") {
-                // Another actor changes the poll: a revision bump with no
-                // vote or option effects (issue #216 round-3 lock case).
-                ++settingsPosts;
-                ++revision;
-                return {row(), 200};
+            if (path == actions + "update_settings/invoke" || path == actions + "close_poll/invoke") {
+                if (path == actions + "close_poll/invoke") {
+                    ++closePosts;
+                    if (managementStatus == 200) closed = true;
+                } else {
+                    ++settingsPosts;
+                    lastSettings = request.body.value("settings").toObject();
+                    if (managementStatus == 200) {
+                        allowAddingOptions = lastSettings.value("allow_adding_options").toBool();
+                        closesAt = lastSettings.value("closes_at").toString();
+                    }
+                }
+                if (managementStatus == 200) ++revision;
+                Response response{row(), managementStatus};
+                if (holdManagement) {
+                    holdManagement = false;
+                    response.defer = [this](std::function<void()> send) { releaseManagement = std::move(send); };
+                }
+                return response;
             }
             if (path.endsWith("/streams/") && request.method == "GET") {
                 auto stream = windowChannel(streamId, QStringLiteral("Product team"));
@@ -1686,6 +1733,7 @@ public:
     {
         if (releaseVote) releaseVote();
         if (releaseAddOption) releaseAddOption();
+        if (releaseManagement) releaseManagement();
     }
 };
 
@@ -2116,8 +2164,8 @@ public:
                 notifBody = request.body;
                 // streams/{uuid}/actions/notifications/invoke: the invoke
                 // answers with the canonical DTO of the stream it addressed.
-                auto row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
-                row["notification_mode"] = request.body.value("notification_mode");
+                auto &row = path.contains(secondStreamId) ? secondStreamRow : streamRow;
+                if (notifStatus == 200) row["notification_mode"] = request.body.value("notification_mode");
                 return {row, notifStatus, notifStatus == 200 ? 180 : 160};
             }
             if (request.method == "DELETE" && path.contains("/stream_bindings/")) {
@@ -3410,11 +3458,12 @@ private slots:
         QCOMPARE(visibleItem(root, "currentServerLabel")->property("text").toString(), fixture.server.origin().host());
         QCOMPARE(visibleItem(root, "currentServerLogin")->property("text").toString(), QString("example-member"));
         auto *action = visibleItem(root, "clearLocalCacheAction"); QVERIFY(action);
-        auto *scroll = visibleItem(root, "accountMenuScroll"); QVERIFY(scroll);
-        scroll->setProperty("contentY", std::max<qreal>(0, scroll->property("contentHeight").toReal() - scroll->height()));
-        click(window, action);
         auto *dialog = window->findChild<QObject *>("clearLocalCacheDialog"); QVERIFY(dialog);
-        QTRY_VERIFY(dialog->property("opened").toBool());
+        const auto openConfirmation = [&] {
+            clickAccountMenuControl(window, action);
+            QTRY_VERIFY(dialog->property("opened").toBool());
+        };
+        openConfirmation();
         const QString confirmation = locale == "en"
             ? QStringLiteral("Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.")
             : QStringLiteral("Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.");
@@ -3425,8 +3474,7 @@ private slots:
         QVERIFY(cache.stats().entries > 1);
         const int catalog = fixture.catalogGets;
         holdBootstrap = true;
-        click(window, action);
-        QTRY_VERIFY(dialog->property("opened").toBool());
+        openConfirmation();
         QQmlExpression ok(qmlContext(dialog), dialog, "standardButton(Dialog.Ok)");
         auto *button = qobject_cast<QQuickItem *>(ok.evaluate().value<QObject *>());
         QVERIFY2(button, qPrintable(ok.error().toString()));
@@ -5974,8 +6022,16 @@ mv -Tf "$root/.current-new" "$root/current"
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
+    void activityStarredScrollPaginationFollowsMarkerAndRearm_data()
+    {
+        QTest::addColumn<bool>("closeBeforeNextFrame");
+        QTest::newRow("scroll") << false;
+        QTest::newRow("leave-page") << true;
+    }
+
     void activityStarredScrollPaginationFollowsMarkerAndRearm()
     {
+        QFETCH(bool, closeBeforeNextFrame);
         class WindowStarredPageFixture final : public WindowChannelFixture {
         public:
             int starredPages = 0;
@@ -6050,10 +6106,32 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(list->property("contentHeight").toReal()
             > list->height() + 96.0, 5000);
         QCOMPARE(fixture.starredPages, 1);
+        // Opening or resizing the page can report an underfilled viewport
+        // before the final list geometry arrives in the same layout pass.
+        // The overflowing page must keep its marker until someone scrolls.
+        auto *page = view("nativeStarredPage"); QVERIFY(page);
+        const qreal settledHeight = page->height();
+        page->setHeight(settledHeight + list->property("contentHeight").toReal());
+        QVERIFY(list->height() > list->property("contentHeight").toReal());
+        page->setHeight(settledHeight);
+        QVERIFY(list->height() + 96 < list->property("contentHeight").toReal());
+        QVERIFY(controller.starredPage().value("canLoadMore").toBool());
         // Moving within 64 px of the bottom fires exactly one request with
         // the exact marker, and it does not re-fire while still down there.
         const auto travel = list->property("contentHeight").toReal() - list->height();
         list->setProperty("contentY", travel - 50.0);
+        if (closeBeforeNextFrame) {
+            controller.closeStarred();
+            QVERIFY(!list->isVisible());
+            // Let the queued pagination check return before inspecting the
+            // controller. An HTTP request may still be travelling to the fixture.
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+            const auto closedPage = controller.starredPage();
+            QCOMPARE(closedPage.value("rows").toList().size(), 12);
+            QVERIFY(closedPage.value("canLoadMore").toBool());
+            QCOMPARE(fixture.starredPages, 1);
+            return;
+        }
         QTRY_VERIFY_WITH_TIMEOUT(fixture.starredPages == 2, 3000);
         QCOMPARE(fixture.lastMarker, QStringLiteral("page2"));
         QTRY_VERIFY_WITH_TIMEOUT(controller.starredPage().value("rows").toList().size() == 14, 5000);
@@ -6917,6 +6995,7 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         controller.showFeed();
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 50, 5000);
+        auto *page = view("nativeFeedPage"); QVERIFY(page);
         auto *list = view("feedList"); QVERIFY(list);
         // Initial load anchors at the newest messages (feed-page.ui.test.tsx:534).
         const auto atBottom = [list] {
@@ -6924,7 +7003,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 - list->property("contentY").toReal()
                 - list->property("height").toReal() <= 1.0;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!page->property("anchorRunning").toBool() && atBottom(), 5000);
         QVERIFY(!view("feedScrollToBottom")); // hidden within 80 px of bottom
         // Reaching the top fires exactly one marker request; the gated response
         // stays in flight while the user scrolls away and back: the armed flag
@@ -6944,10 +7023,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY_WITH_TIMEOUT(controller.feedPage().value("rows").toList().size() == 60, 5000);
         // The prepend restore keeps the visual position: contentY moved down by
         // the merged height instead of jumping to the top.
-        QVERIFY(list->property("contentY").toReal() > 10.0);
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 10.0, 3000);
         QCOMPARE(fixture.feedMarkerPages, 1);
         // Clicking the button returns to the bottom.
-        click(window, view("feedScrollToBottom"));
+        auto *bottom = view("feedScrollToBottom"); QVERIFY(bottom);
+        clickReadyItem(window, bottom);
         QTRY_VERIFY_WITH_TIMEOUT(atBottom(), 3000);
     }
 
@@ -8431,6 +8511,42 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(visibleItem(window->contentItem(), "streamRenameAction"));
         QVERIFY(visibleItem(window->contentItem(), "streamArchiveAction"));
         QVERIFY(visibleItem(window->contentItem(), "streamNewTopicAction"));
+    }
+
+    void cancelledSidebarButtonSizingCompletesQmlCreation()
+    {
+        // A fresh sidebar model can retire a delegate after layout asks for
+        // its width and before Qt Quick finishes creating the control.
+        QQmlIncubationController creation;
+        QQmlEngine engine;
+        engine.setIncubationController(&creation);
+        std::atomic<bool> keepCreating{true};
+        // This isolated engine uses Qt.quit() as the signal to pause incubation.
+        connect(&engine, &QQmlEngine::quit, &engine, [&] { keepCreating.store(false); });
+        QQmlComponent component(&engine);
+        component.setData(
+            "import QtQuick\n"
+            "NativeButton {\n"
+            "    colors: ({'on-accent':'white','text-primary':'black','accent':'blue',"
+            "'card-bg-active':'gray','card-bg':'white','border-subtle':'gray'})\n"
+            "    text: 'A sufficiently wide sidebar label'\n"
+            "    onImplicitWidthChanged: if (implicitWidth >= 80) Qt.quit()\n"
+            "}\n", QUrl("qrc:/workspace/qml/InterruptedSidebarButton.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQmlIncubator pending;
+        component.create(pending);
+        creation.incubateWhile(&keepCreating, 2000);
+        QVERIFY(!keepCreating.load());
+        QVERIFY(pending.isLoading());
+        pending.clear();
+        QCOMPARE(creation.incubatingObjectCount(), 0);
+
+        // The next delegate still obtains its full natural size once complete.
+        QScopedPointer<QObject> replacement(component.create());
+        QVERIFY2(replacement, qPrintable(component.errorString()));
+        const auto contentWidth = replacement->property("implicitContentWidth").toReal();
+        QVERIFY(contentWidth > 52);
+        QCOMPARE(replacement->property("implicitWidth").toReal(), contentWidth + 28);
     }
 
     void sidebarFullActionCapacityKeepsArchiveIndependent()
@@ -15115,6 +15231,14 @@ mv -Tf "$root/.current-new" "$root/current"
                 QCOMPARE(inserted.size(), 1);
                 QCOMPARE(inserted.first().at(1).toInt(), 0);
                 QCOMPARE(inserted.first().at(2).toInt(), 49);
+                const auto pagedAnchor = firstVisible().first;
+                QVERIFY(!pagedAnchor.isEmpty());
+                for (const auto &prefix : {"call-card-", "poll-card-", "keyRequestService-",
+                                          "keyServiceResponse-", "keyAnnouncementService-",
+                                          "message-quote-", "serviceGroupHeader-"}) {
+                    const auto control = QString::fromLatin1(prefix) + pagedAnchor;
+                    QVERIFY2(!item(list, control), qPrintable("Plain history instantiated " + control));
+                }
                 QTest::wheelEvent(window, center, QPoint(0, -120));
                 QVERIFY(settleWheel());
             }
@@ -16383,7 +16507,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *limit = item(content, "cacheLimitGb");
         QVERIFY(limit && limit->isEnabled());
         auto *field = limit->property("contentItem").value<QQuickItem *>();
-        click(window, field);
+        clickAccountMenuControl(window, field);
         QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
         QTest::keyClick(window, Qt::Key_1);
         QTest::keyClick(window, Qt::Key_Tab);
@@ -16445,11 +16569,11 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(preferences.mode(), QString("dark"));
             click(window, item(content, "palette-emerald-chat"));
             QCOMPARE(preferences.paletteId(), QString("emerald-chat"));
-            click(window, item(content, "languageSetting"));
-            click(window, item(content, "language-ru"));
+            clickAccountMenuControl(window, item(content, "languageSetting"));
+            clickAccountMenuControl(window, item(content, "language-ru"));
             QCOMPARE(preferences.locale(), QString("ru"));
             QTRY_COMPARE(item(content, "refreshButton")->property("text").toString(), QString::fromUtf8("Обновить"));
-            click(window, item(content, "language-en"));
+            clickAccountMenuControl(window, item(content, "language-en"));
             QCOMPARE(preferences.locale(), QString("en"));
             QTRY_COMPARE(item(content, "refreshButton")->property("text").toString(), QString("Refresh"));
             auto *limit = item(content, "cacheLimitGb");
@@ -16457,7 +16581,7 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(limit->property("value").toInt(), 10);
             auto *field = limit->property("contentItem").value<QQuickItem *>();
             QVERIFY(field);
-            click(window, field);
+            clickAccountMenuControl(window, field);
             QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
             QTest::keyClick(window, Qt::Key_2);
             QTest::keyClick(window, Qt::Key_4);
@@ -19464,9 +19588,8 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *quote = item(window->contentItem(), "message-quote-" + returnedId);
         QTRY_VERIFY(quote && quote->isVisible());
         QTRY_VERIFY(!quote->property("quoteHtml").toString().isEmpty());
-        auto *bubble = quote->parentItem()->parentItem();
-        auto *row = bubble->parentItem();
-        QVERIFY(row->metaObject()->indexOfMethod("settleGeometry()") >= 0);
+        auto *row = item(window->contentItem(), "serviceViewRow-" + returnedId);
+        QVERIFY(row);
         // The restoration helper promises measured geometry synchronously.
         // Change the quote's available width in this turn, then compare its
         // published height with its actual visible children before any event
@@ -21463,6 +21586,153 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    void composerTimePickerPreservesBothFallBackInstants()
+    {
+        if (!qEnvironmentVariableIsSet("WORKSPACE_COMPOSER_TIME_FOLD")) {
+            QProcess child;
+            auto environment = QProcessEnvironment::systemEnvironment();
+            environment.insert("TZ", "America/New_York");
+            environment.insert("WORKSPACE_COMPOSER_TIME_FOLD", "1");
+            child.setProcessEnvironment(environment);
+            child.setProcessChannelMode(QProcess::MergedChannels);
+            child.start(QCoreApplication::applicationFilePath(),
+                        {"composerTimePickerPreservesBothFallBackInstants", "-o", "-,txt"});
+            QVERIFY(child.waitForFinished(30000));
+            const QByteArray output = child.readAll();
+            QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, output.constData());
+            return;
+        }
+        // The second 01:30 on the November transition is 06:30 UTC.
+        // Both UTC instants have the same local hour, minute and second.
+        const auto second = QDateTime::fromString("2026-11-01T06:30:00Z", Qt::ISODate);
+        QCOMPARE(second.toLocalTime().time(), QTime(1, 30));
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl("qrc:/workspace/qml/NativeComposerTimePicker.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QQuickWindow window;
+        window.resize(640, 480);
+        const QVariantMap colors{{"bg-elevated", "white"}, {"border-subtle", "gray"},
+            {"text-primary", "black"}, {"text-muted", "gray"}};
+        std::unique_ptr<QObject> picker(component.createWithInitialProperties({
+            {"parent", QVariant::fromValue(window.contentItem())}, {"colors", colors}, {"localeName", "en"}}));
+        QVERIFY2(picker, qPrintable(component.errorString()));
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(QMetaObject::invokeMethod(picker.get(), "open"));
+        auto *hours = picker->findChild<QObject *>("composerTimeHours");
+        auto *minutes = picker->findChild<QObject *>("composerTimeMinutes");
+        auto *seconds = picker->findChild<QObject *>("composerTimeSeconds");
+        auto *insert = picker->findChild<QObject *>("composerTimeInsert");
+        QVERIFY(hours && minutes && seconds && insert);
+        for (const auto &expected : {second.addSecs(-3600), second}) {
+            picker->setProperty("openedAt", expected.addSecs(-60));
+            picker->setProperty("selectedDay", expected);
+            hours->setProperty("value", 1); minutes->setProperty("value", 30); seconds->setProperty("value", 0);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+            QVERIFY(insert->property("enabled").toBool());
+            picker->setProperty("month", expected);
+            QQuickItem *day = nullptr;
+            QTRY_VERIFY((day = visibleItem(window.contentItem(), "composerCalendarDay-1")));
+            click(&window, day);
+            QCOMPARE(picker->property("instant").toDateTime().toUTC(), expected);
+        }
+    }
+
+    void composerToolPopoversUseTheCurrentDraft_data()
+    {
+        QTest::addColumn<QString>("surface"); QTest::addColumn<QString>("locale");
+        for (const auto &surface : {QString("media"), QString("time"), QString("snippets")})
+            for (const auto &locale : {QString("en"), QString("ru")})
+                QTest::newRow(qPrintable(surface + '-' + locale)) << surface << locale;
+    }
+
+    void composerToolPopoversUseTheCurrentDraft()
+    {
+        QFETCH(QString, surface); QFETCH(QString, locale);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QString posted;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) {
+                posted = request.body.value("payload").toObject().value("content").toString();
+                return {message(posted, request.body.value("uuid").toString()), 201};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; NativePreferences preferences(directory.filePath("tools.ini"));
+        preferences.setLocale(locale); preferences.setMode(locale == "ru" ? "dark" : "light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &id) { return visibleItem(window->contentItem(), id); };
+        auto *editor = view("messageComposer"); QVERIFY(editor);
+        click(window, view("composerToolbarExpand"));
+        const QString original = "Meet old date here";
+        controller.setDraft(original);
+        if (surface == "media") {
+            click(window, view("composerEmojiButton"));
+            auto *tab = view("composerStickersTab"); QVERIFY(tab);
+            click(window, tab);
+            QTRY_VERIFY(view("composerStickerEmpty"));
+            auto *picker = window->findChild<QObject *>("composerEmojiPicker"); QVERIFY(picker);
+            QCOMPARE(picker->property("width").toInt(), 340);
+            auto *stickers = view("composerStickerPanel"); QVERIFY(stickers);
+            const auto url = fixture.server.origin().resolved(QUrl("/fixture/sticker.png")).toString();
+            const QVariantMap sticker{{"id", "wave"}, {"emoji", "hi"}, {"alt", "Wave"}, {"url", url},
+                                      {"thumbnailUrl", "qrc:/workspace/icons/smile.svg"}};
+            const QVariantMap pack{{"id", "greetings"}, {"title", "Greetings"}, {"stickers", QVariantList{sticker}}};
+            QVERIFY(stickers->setProperty("packs", QVariantList{pack}));
+            QTRY_VERIFY(view("composerSticker-greetings-wave"));
+            click(window, view("composerSticker-greetings-wave"));
+            QTRY_COMPARE(controller.draft(), original + "[sticker:greetings:wave](" + url + ")");
+            QTRY_VERIFY(!picker->property("visible").toBool());
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), controller.draft().size());
+        } else if (surface == "time") {
+            auto *button = view("composerTimeButton"); QVERIFY(button);
+            click(window, editor);
+            QVERIFY(QMetaObject::invokeMethod(editor, "select", Q_ARG(int, 5), Q_ARG(int, 13)));
+            click(window, button);
+            QTRY_VERIFY(view("composerTimeInsert"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(editor->hasActiveFocus()); QCOMPARE(controller.draft(), original);
+            QCOMPARE(editor->property("selectedText").toString(), QString("old date"));
+            const auto opened = QDateTime::currentDateTimeUtc();
+            click(window, button); QTRY_VERIFY(view("composerTimeInsert"));
+            click(window, view("composerTimeInsert"));
+            const auto text = controller.draft();
+            const auto match = QRegularExpression("^Meet urn:time:(.{19}Z) here$").match(text);
+            QVERIFY2(match.hasMatch(), qPrintable(text));
+            const auto selected = QDateTime::fromString(match.captured(1), Qt::ISODate);
+            QVERIFY(selected > opened && opened.secsTo(selected) <= 61);
+            QTRY_COMPARE(editor->property("cursorPosition").toInt(), text.size() - 5);
+            click(window, view("composerPreviewToggle")); QTRY_VERIFY(view("composerPreviewMarkdown"));
+            QCOMPARE(view("composerPreviewMarkdown")->property("sourceMarkdown").toString(), text);
+            click(window, view("sendButton")); QTRY_COMPARE(posted, text);
+        } else {
+            auto *button = view("composerSnippetsButton"); QVERIFY(button);
+            click(window, button);
+            QTRY_VERIFY(view("composerSnippetFilter"));
+            QTest::keyClick(window, Qt::Key_A);
+            QCOMPARE(view("composerSnippetFilter")->property("text").toString(), QString("a"));
+            QVERIFY(view("composerSnippetEmpty"));
+            click(window, view("composerSnippetCreate"));
+            QTRY_VERIFY(view("composerSnippetTitle"));
+            QTest::keyClick(window, Qt::Key_X);
+            click(window, view("composerSnippetSave"));
+            QTRY_VERIFY(view("composerSnippetUnsupported"));
+            QTest::keyClick(window, Qt::Key_Escape);
+            QTRY_VERIFY(!view("composerSnippetFilter") && !view("composerSnippetUnsupported"));
+            QCOMPARE(controller.draft(), original);
+            for (const auto &request : fixture.server.requests)
+                QVERIFY(!request.target.path().contains("snippet", Qt::CaseInsensitive));
+        }
+    }
+
     void composerHeightFollowsContentDragKeyboardAndFullHeight_data()
     {
         QTest::addColumn<QString>("locale");
@@ -21594,6 +21864,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerPreviewShowsTheBodyItSends()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         QFETCH(bool, inlineFile);
@@ -21716,6 +21991,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(posted, outgoing);
         QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
         QTRY_VERIFY(controller.draft().isEmpty());
+        QVERIFY(!accessible->state().checked);
 
         QVERIFY(controller.beginEditMessage(messageId));
         const QString revision = "Edited **reply source**";
@@ -21741,6 +22017,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerAiNoticeTracksItsTriggerAndOtherPickers()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         WindowChannelFixture fixture;
@@ -21819,6 +22100,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(send && send->isEnabled());
         click(window, send);
         QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
         QCOMPARE(sent.size(), 0);
         click(window, ai);
         QTRY_VERIFY(open(notice));
@@ -21918,6 +22200,9 @@ mv -Tf "$root/.current-new" "$root/current"
                         QTest::newRow(qPrintable(locale + '-' + mode + '-' + QString::number(key)
                             + (suffix.isEmpty() ? "-short" : "-multiline")))
                             << locale << mode << int(key) << suffix;
+        QTest::newRow("both-height-controls")
+            << QString("en") << QString("light") << int(Qt::Key_Return)
+            << QString("\nsecond line\nthird line\nfourth line\nfifth line");
     }
 
     void composerToolbarKeyboardNavigationPreservesSelection()
@@ -21974,6 +22259,8 @@ mv -Tf "$root/.current-new" "$root/current"
                 QCOMPARE(controller.draft(), draft);
             }
             if (actionIndex == 0) {
+                if (!suffix.isEmpty()) QVERIFY(view("composerResizeHandle"));
+                if (suffix.count('\n') >= 4) QVERIFY(view("composerHeightButton"));
                 QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
                 QCOMPARE(window->activeFocusItem(), composer);
                 QCOMPARE(composer->property("selectedText").toString(), QString("word"));
@@ -22007,6 +22294,17 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(next && next != view(actions.last()) && next->isVisible() && next->isEnabled());
             QVERIFY(QRectF(0, 0, window->width(), window->height()).contains(
                 next->mapRectToScene(QRectF(0, 0, next->width(), next->height()))));
+            if (suffix.count('\n') >= 4) {
+                auto *grip = view("composerResizeHandle"); QVERIFY(grip);
+                QSet<QQuickItem *> visited;
+                while (window->activeFocusItem() != grip && !visited.contains(window->activeFocusItem())) {
+                    visited.insert(window->activeFocusItem());
+                    QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+                }
+                QVERIFY(grip->hasActiveFocus());
+                QTest::keyClick(window, Qt::Key_Tab);
+                QCOMPARE(window->activeFocusItem(), view("composerHeightButton"));
+            }
             preferences.setComposerToolbarExpanded(false);
             QTRY_VERIFY(!view("composerToolbarRow"));
             click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
@@ -23186,6 +23484,70 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(scene.fixture.notifPosts, 1);
         QCOMPARE(scene.evaluate("controller.channelInfoNotificationMode").toString(),
             QStringLiteral("muted"));
+    }
+
+    void windowChannelNotificationLevelsAndUnsupportedFallback_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("en-dark") << QString("en") << QString("dark");
+        QTest::newRow("ru-light") << QString("ru") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void windowChannelNotificationLevelsAndUnsupportedFallback()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale(locale);
+        scene.preferences.setMode(mode);
+        scene.openChannelInfo();
+        auto *control = visibleItem("channelInfoNotificationSwitch"); QVERIFY(control);
+        auto *group = QAccessible::queryAccessibleInterface(control); QVERIFY(group);
+        QCOMPARE(group->role(), QAccessible::Grouping);
+        QCOMPARE(group->text(QAccessible::Name), locale == "ru" ? QString("Уведомления") : QString("Notifications"));
+        const QStringList segments{"channelInfoNotifSubscribed", "channelInfoNotifDefault", "channelInfoNotifMuted"};
+        const QStringList modes{"all_messages", "mentions_only", "muted"};
+        const QStringList labels = locale == "ru"
+            ? QStringList{"Все сообщения", "Только при упоминаниях", "Без уведомлений"}
+            : QStringList{"All messages", "Mentions only", "Muted"};
+        for (int i = 0; i < segments.size(); ++i) {
+            auto *segment = visibleItem(segments[i]); QVERIFY(segment);
+            QTRY_COMPARE(segment->height(), qreal(36));
+            auto *choice = QAccessible::queryAccessibleInterface(segment); QVERIFY(choice);
+            QCOMPARE(choice->role(), QAccessible::RadioButton);
+            QVERIFY(choice->state().checkable);
+            QCOMPARE(choice->text(QAccessible::Name), labels[i]);
+            if (i == 1) {
+                auto *actions = choice->actionInterface(); QVERIFY(actions);
+                const auto toggle = QAccessibleActionInterface::toggleAction();
+                QVERIFY(actions->actionNames().contains(toggle));
+                actions->doAction(toggle);
+            } else if (i == 2) {
+                click(scene.window, segment);
+            }
+            QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), modes[i]);
+            for (int j = 0; j < segments.size(); ++j) {
+                const auto *option = QAccessible::queryAccessibleInterface(visibleItem(segments[j])); QVERIFY(option);
+                QCOMPARE(option->state().checked, i == j);
+            }
+        }
+        QTRY_VERIFY(visibleItem("streamNotif-" + streamId));
+        QCOMPARE(scene.fixture.notifPosts, 2);
+        scene.controller.refresh();
+        QTRY_VERIFY(!scene.controller.busy());
+        QTRY_COMPARE(scene.controller.channelInfoNotificationMode(), QString("muted"));
+
+        scene.fixture.streamRow.remove("notification_mode");
+        scene.controller.refresh();
+        QTRY_VERIFY(scene.controller.channelInfoNotificationMode().isEmpty());
+        QTRY_VERIFY(!visibleItem("channelInfoNotificationSwitch"));
+        auto *fallback = visibleItem("channelInfoNotificationUnsupported"); QVERIFY(fallback);
+        QVERIFY(!fallback->childItems().isEmpty());
+        QCOMPARE(fallback->childItems().first()->property("text").toString(), locale == "ru"
+            ? QString("Это действие пока недоступно в этом чате.")
+            : QString("This action is not available in this conversation yet."));
     }
 
     // Issue #132: a failed level update keeps the previous mode and surfaces
@@ -25742,10 +26104,14 @@ private:
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
-        window->resize(1280, 800); QTRY_COMPARE(window->width(), 1280);
+        window->resize(1280, 800);
+        // The call snapshots the default PiP bounds when the user joins.
+        QTRY_COMPARE(controller.callWindow()->bounds(), QRect(32, 32, 1216, 736));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         // Join from the card: the store opens the shell expanded in a scrim.
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        const auto callCard = QStringLiteral("call-card-") + messageId;
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
+        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
         auto *surface = visibleItem(window->contentItem(), QStringLiteral("callWindowSurface"));
@@ -25792,7 +26158,7 @@ private:
         };
         auto assertPipBounds = [&window](QQuickWindow *pip, const QRect &expected) {
             QVERIFY(pip);
-            QCOMPARE(QRect(pip->x(), pip->y(), pip->width(), pip->height()), expected);
+            QTRY_COMPARE_WITH_TIMEOUT(QRect(pip->x(), pip->y(), pip->width(), pip->height()), expected, 2000);
             QVERIFY(pip->contentItem());
             QVERIFY(visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         };
@@ -26224,7 +26590,19 @@ private:
         // (Main.qml: item.controller = root.controller.callWindow); the
         // controller itself is never poked from C++ here.
         QTemporaryDir directory; QVERIFY(directory.isValid());
-        WindowCallFixture fixture; fixture.meetConfigured = true;
+        WindowCallFixture fixture;
+        fixture.meetConfigured = true;
+        fixture.localMeeting = true;
+        const auto serve = fixture.server.handler;
+        fixture.server.handler = [serve](const Request &request) {
+            auto reply = serve(request);
+            if (request.method == "GET" && request.target.path() == "/workspace-call-room") {
+                // This case delivers the load callbacks from QML. Keep the
+                // actual page pending until the view closes or retries it.
+                reply.defer = [](auto) {};
+            }
+            return reply;
+        };
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
@@ -26237,7 +26615,7 @@ private:
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
-        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.meetHost(), fixture.server.origin().toString(), 2000);
 
         // The production view file is the caller: the very qrc source the
         // embed Loader instantiates must invoke both lifecycle slots through
@@ -26248,7 +26626,9 @@ private:
         QVERIFY(viewSource.contains("host.controller.apiLoadSucceeded()"));
         QVERIFY(viewSource.contains("host.controller.apiLoadFailed()"));
 
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        const auto callCard = [window] { return visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId); };
+        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
+        clickReadyItem(window, callCard());
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
 
@@ -26280,7 +26660,8 @@ private:
         qmlCall(QStringLiteral("nativeController.callWindow.close()"), &error);
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        QTRY_VERIFY_WITH_TIMEOUT(callCard(), 5000);
+        clickReadyItem(window, callCard());
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         qmlCall(QStringLiteral("nativeController.callWindow.apiLoadFailed()"), &error);
@@ -26478,7 +26859,9 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        const auto callCard = QStringLiteral("call-card-") + messageId;
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
+        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *button = visibleItem(window->contentItem(), QStringLiteral("callWindowFullscreenButton"));
         QVERIFY(button);
@@ -26765,6 +27148,13 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
 
+    void callEmbedRetryRecoversWhenTheViewUrlDivergesFromMeetingUrl_data()
+    {
+        QTest::addColumn<bool>("redirect");
+        QTest::newRow("meeting") << false;
+        QTest::newRow("redirected-meeting") << true;
+    }
+
     void callEmbedRetryRecoversWhenTheViewUrlDivergesFromMeetingUrl()
     {
         // PR #264 review (medium): the LoadFailed -> Loading retry edge also
@@ -26778,6 +27168,7 @@ private:
         // TypeError and started no load at all, leaving the controller stuck
         // in Loading forever. This case desynchronizes the live view after
         // LoadFailed, then retries and requires recovery to Ready.
+        QFETCH(bool, redirect);
         QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
         QTemporaryDir directory; QVERIFY(directory.isValid());
         WindowCallFixture fixture; fixture.meetConfigured = true; fixture.localMeeting = true;
@@ -26834,10 +27225,36 @@ private:
         }
         QVERIFY(engineView);
         const QUrl decoy = fixture.server.origin().toString() + QStringLiteral("/pip-mismatch-decoy");
+        auto previousLoad = engine.newObject();
+        const auto viewObject = engine.newQObject(engineView);
+        const auto observe = engine.evaluate(QStringLiteral(R"JS(
+            (view, url, saved) => view.loadingChanged.connect(info => {
+                if (info.status === 3 && info.url.toString() === url)
+                    saved.failure = info
+            })
+        )JS"));
+        QVERIFY(!observe.call({viewObject, decoy.toString(), previousLoad}).isError());
+        std::function<void()> finishMeeting;
+        const auto handle = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto response = handle(request);
+            if (request.target.path() == QStringLiteral("/workspace-call-room")) {
+                if (redirect) {
+                    response.status = 302;
+                    response.headers.insert("Location", "/redirected-meeting");
+                }
+                response.defer = [&](auto finish) { finishMeeting = std::move(finish); };
+            } else if (request.target.path() == QStringLiteral("/redirected-meeting")) {
+                response.status = 200;
+                response.rawBody = embedMeetingPage();
+                response.rawContentType = "text/html; charset=utf-8";
+            }
+            return response;
+        };
+        const auto restoreHandler = qScopeGuard([&] { fixture.server.handler = handle; });
         engineView->setProperty("url", decoy);
         QVERIFY(QTest::qWaitFor([&] {
-            return engineView->property("url").toUrl() == decoy
-                && !engineView->property("loading").toBool();
+            return engineView->property("url").toUrl() == decoy && previousLoad.hasProperty("failure");
         }, 20000));
         QVERIFY(controller.callWindow()->embedUrl() != decoy.toString());
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::LoadFailed));
@@ -26851,10 +27268,18 @@ private:
         // failOnWarning above), no load ever started, and the controller
         // stayed in Loading - the Ready timeout below fails in that state.
         fixture.breakMeetingLoads = 0;
-        click(window, retry);
+        clickReadyItem(window, retry);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(finishMeeting), 5000);
+        // Chromium may post the preceding terminal event after the physical
+        // Retry. Replay that actual 404 while the new HTTP response is held.
+        const auto deliver = engine.evaluate(QStringLiteral("(view, info) => view.loadingChanged(info)"));
+        QVERIFY(!deliver.call({viewObject, previousLoad.property("failure")}).isError());
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+        finishMeeting();
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::Ready), 20000);
+        QCOMPARE(engineView->property("url").toUrl().path(),
+                 redirect ? QStringLiteral("/redirected-meeting") : QStringLiteral("/workspace-call-room"));
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
@@ -27454,11 +27879,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
             QTRY_COMPARE(controller.streams().size(), 1);
             preferences.setOwner(controller.ownerKey());
-            click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+            // This fixture exercises invalidated poll submissions. A fresh
+            // sign-in can publish its catalogue before the new sidebar row
+            // replaces the previous owner's delegate.
+            controller.selectStream(streamId);
+            QTRY_COMPARE(controller.selectedStream(), streamId);
             QTRY_COMPARE(controller.topics().size(), 1);
-            click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+            controller.selectTopic(topicId);
+            QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            click(window, visibleItem(window->contentItem(), "pollButton"));
+            QQuickItem *pollButton = nullptr;
+            QTRY_VERIFY((pollButton = visibleItem(window->contentItem(), "pollButton"))
+                        && pollButton->isEnabled() && pollButton->width() > 0 && pollButton->height() > 0);
+            clickReadyItem(window, pollButton);
         };
         loginAndOpen();
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -28260,6 +28693,30 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY2(qAbs(second - first) <= 1.0, qPrintable(QStringLiteral(
             "notch distances drifted (%1 vs %2) instead of staying "
             "cadence-independent").arg(first).arg(second)));
+        if (target == QLatin1String("messageList")) {
+            const auto beforeBurst = list->property("contentY").toReal();
+            QSignalSpy moved(list, SIGNAL(contentYChanged()));
+            for (const int angle : {notchAngle, notchAngle, -notchAngle}) {
+                QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, angle),
+                    Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(window, &wheel);
+            }
+            QCOMPARE(moved.size(), 0);
+            QVERIFY(settle());
+            QVERIFY(qAbs(list->property("contentY").toReal() - beforeBurst - first) <= 1.0);
+            // Start real list inertia, then reverse a wheel notch in the same turn.
+            QVERIFY(QMetaObject::invokeMethod(list, "flick", Q_ARG(qreal, 0), Q_ARG(qreal, 900)));
+            QVERIFY(list->property("flicking").toBool());
+            const auto flickStart = list->property("contentY").toReal();
+            for (const int angle : {notchAngle, -notchAngle}) {
+                QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, angle),
+                    Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(window, &wheel);
+            }
+            QVERIFY(settle());
+            QVERIFY2(qAbs(list->property("contentY").toReal() - flickStart) <= 1.0,
+                     "A balanced wheel reversal must stop previously active inertia");
+        }
         QVERIFY(qAbs(other->property("contentY").toReal() - otherStart) <= 0.01);
     }
 
@@ -28978,6 +29435,171 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!avatarProbeCircle(card, 20));
     }
 
+    void pollManagementMenuTracksActorAndState_data()
+    {
+        QTest::addColumn<bool>("own"); QTest::addColumn<bool>("closed");
+        QTest::addColumn<bool>("expired"); QTest::addColumn<bool>("readOnly");
+        QTest::newRow("author") << true << false << false << false;
+        QTest::newRow("peer") << false << false << false << false;
+        QTest::newRow("closed") << true << true << false << false;
+        QTest::newRow("expired") << true << false << true << false;
+        QTest::newRow("encrypted") << true << false << false << true;
+    }
+
+    void pollManagementMenuTracksActorAndState()
+    {
+        QFETCH(bool, own); QFETCH(bool, closed); QFETCH(bool, expired); QFETCH(bool, readOnly);
+        PollBubbleScene scene;
+        scene.fixture.ownPoll = own; scene.fixture.closed = closed;
+        scene.fixture.closesAt = expired ? "2000-01-01T00:00:00Z" : "";
+        scene.fixture.streamEncrypted = readOnly;
+        scene.start();
+        auto *bubble = visibleItem(scene.content(), "message-" + scene.fixture.messageUuid);
+        QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        auto *menu = scene.window->findChild<QObject *>("messageMenu");
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->property("visible").toBool());
+        for (const auto &name : {"pollSettingsAction", "pollCloseAction"}) {
+            auto *action = scene.window->findChild<QObject *>(name);
+            QVERIFY(action);
+            QCOMPARE(action->property("visible").toBool(), own && !closed && !expired && !readOnly);
+        }
+    }
+
+    void pollManagementAcceptsAnUnchangedDeadlineLaterThisMinute()
+    {
+        PollBubbleScene scene;
+        auto &fixture = scene.fixture;
+        fixture.ownPoll = true;
+        fixture.closesAt.clear();
+        scene.start();
+        // Set the fixture after the window is ready and allow enough time for
+        // an actual click before the final instant of the current minute.
+        QTRY_VERIFY_WITH_TIMEOUT(QTime::currentTime().second() < 45, 20000);
+        auto deadline = QDateTime::currentDateTimeUtc();
+        deadline.setTime(QTime(deadline.time().hour(), deadline.time().minute(), 59, 938));
+        fixture.closesAt = deadline.toString(Qt::ISODateWithMs);
+        ++fixture.revision;
+        auto updated = fixture.row();
+        updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        auto *bubble = visibleItem(scene.content(), "message-" + fixture.messageUuid);
+        QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        QTRY_VERIFY(visibleItem(scene.content(), "pollSettingsAction"));
+        scene.click(visibleItem(scene.content(), "pollSettingsAction"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        scene.click(visibleItem(scene.content(), "poll-management-add-options"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_VERIFY(fixture.settingsPosts == 1 || visibleItem(scene.content(), "poll-management-invalid"));
+        QCOMPARE(fixture.settingsPosts, 1);
+        QCOMPARE(fixture.lastSettings.value("closes_at").toString(), deadline.toString(Qt::ISODateWithMs));
+    }
+
+    void pollManagementClosesWhenItsSourceIsDeleted()
+    {
+        PollBubbleScene scene;
+        scene.fixture.ownPoll = true;
+        scene.fixture.closesAt.clear();
+        scene.start();
+        const auto id = scene.fixture.messageUuid;
+        auto *bubble = visibleItem(scene.content(), "message-" + id); QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        QTRY_VERIFY(visibleItem(scene.content(), "pollSettingsAction"));
+        scene.click(visibleItem(scene.content(), "pollSettingsAction"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", QJsonObject{{"kind", "message.deleted"}, {"uuid", id},
+                {"stream_uuid", streamId}, {"topic_uuid", topicId}}}}));
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        QCOMPARE(scene.fixture.settingsPosts, 0);
+    }
+
+    void pollManagementCloseHoldAndRetryAndSettingsPayload_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void pollManagementCloseHoldAndRetryAndSettingsPayload()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        PollBubbleScene scene;
+        scene.preferences.setLocale(locale); scene.preferences.setMode(mode);
+        auto &fixture = scene.fixture;
+        fixture.ownPoll = true; fixture.closesAt.clear();
+        scene.start();
+        const auto openAction = [&](const QString &name) {
+            auto *bubble = visibleItem(scene.content(), "message-" + fixture.messageUuid);
+            QVERIFY(bubble);
+            QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+                bubble->mapToScene(QPointF(10, 12)).toPoint());
+            QTRY_VERIFY(visibleItem(scene.content(), name));
+            scene.click(visibleItem(scene.content(), name));
+        };
+        openAction("pollSettingsAction");
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QCOMPARE(pollItemText(scene.content(), "poll-management-title"), locale == "ru" ? QString("Изменить опрос") : QString("Edit poll"));
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        auto *date = visibleItem(scene.content(), "poll-management-date"); QVERIFY(date);
+        date->setProperty("text", "2000-01-01");
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-invalid"));
+        QCOMPARE(fixture.settingsPosts, 0);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        openAction("pollSettingsAction");
+        QVERIFY(!visibleItem(scene.content(), "poll-management-date"));
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        date = visibleItem(scene.content(), "poll-management-date"); QVERIFY(date);
+        date->setProperty("text", "2099-11-15");
+        visibleItem(scene.content(), "poll-management-time")->setProperty("text", "12:30");
+        scene.click(visibleItem(scene.content(), "poll-management-add-options"));
+        fixture.holdManagement = true; fixture.managementStatus = 503;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 1);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QVERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(!visibleItem(scene.content(), "poll-management-submit")->isEnabled());
+        auto releaseSettings = std::move(fixture.releaseManagement); QVERIFY(releaseSettings); releaseSettings();
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-error"));
+        fixture.managementStatus = 200;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 2);
+        QVERIFY(!fixture.lastSettings.value("allow_adding_options").toBool());
+        QVERIFY(QDateTime::fromString(fixture.lastSettings.value("closes_at").toString(), Qt::ISODateWithMs).isValid());
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        openAction("pollSettingsAction");
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 3);
+        QVERIFY(fixture.lastSettings.value("closes_at").isNull());
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        fixture.managementStatus = 503;
+        fixture.holdManagement = true;
+        openAction("pollCloseAction");
+        QCOMPARE(pollItemText(scene.content(), "poll-management-title"), locale == "ru" ? QString("Завершить опрос?") : QString("Close poll?"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.closePosts, 1);
+        QVERIFY(!visibleItem(scene.content(), "poll-management-submit")->isEnabled());
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QVERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        auto releaseClose = std::move(fixture.releaseManagement); QVERIFY(releaseClose); releaseClose();
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-error"));
+        fixture.managementStatus = 200;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.closePosts, 2);
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(fixture.closed);
+    }
+
     void pollBubbleClosedShowsResultsAndNoControls()
     {
         PollBubbleScene scene;
@@ -29201,8 +29823,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
             "poll-option-0-1-" + scene.fixture.messageUuid));
         // Another actor changes the poll settings: the poll revision bumps
         // while our vote request is still waiting for its own response.
-        scene.controller.updatePollSettings(scene.fixture.messageUuid, QString(), true);
-        QTRY_COMPARE(scene.fixture.settingsPosts, 1);
+        ++scene.fixture.revision;
+        auto updated = scene.fixture.row();
+        updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        QTRY_COMPARE(scene.controller.messages().first().toMap().value("poll").toMap().value("state")
+            .toMap().value("revision").toLongLong(), scene.fixture.revision);
         QTest::qWait(150);
         QVERIFY2(pollItemDisabled(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid),
@@ -36134,6 +36761,70 @@ private slots:
     // open, narrows through level/source/search filters with the reference
     // "x of y entries" label, resets, clears back to the empty state and
     // exports the snapshot JSON through the save dialog.
+    void supportReportBeforeLoginAndFromDiagnostics_data()
+    {
+        QTest::addColumn<bool>("authenticated");
+        QTest::newRow("sign-in") << false;
+        QTest::newRow("diagnostics") << true;
+    }
+
+    void supportReportBeforeLoginAndFromDiagnostics()
+    {
+        QFETCH(bool, authenticated);
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("report.ini"));
+        WindowOwnStatusFixture fixture;
+        for (int i = 0; i < 24; ++i)
+            controller.appendSessionLog("error", "app", "Synthetic pre-login failure");
+        if (authenticated) QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (authenticated) {
+            click(window, visibleItem("accountMenuButton"));
+            QTRY_VERIFY(visibleItem("diagnosticsAction"));
+            click(window, visibleItem("diagnosticsAction"));
+        }
+        const auto entry = authenticated ? "diagnosticsSupportAction" : "loginSupportAction";
+        QTRY_VERIFY(visibleItem(entry));
+        click(window, visibleItem(entry));
+        QTRY_VERIFY(visibleItem("supportPrepare"));
+        auto *save = visibleItem("supportSave");
+        QVERIFY(save && !save->isEnabled());
+        auto *description = visibleItem("supportDescription");
+        QVERIFY(description);
+        description->setProperty("text", QStringLiteral("private-test-description"));
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        auto *preview = visibleItem("supportPreview");
+        QVERIFY(preview);
+        const auto bytes = preview->property("text").toString().toUtf8();
+        QVERIFY(!bytes.contains("private-test-description"));
+        QVERIFY(QJsonDocument::fromJson(bytes).object()["eventCounts"].isNull());
+        click(window, visibleItem("supportIncludeCounts"));
+        QTRY_VERIFY(!save->isEnabled());
+        click(window, visibleItem("supportPrepare"));
+        QTRY_VERIFY(save->isEnabled());
+        const auto report = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object();
+        const auto counts = report["eventCounts"].toObject();
+        const auto classes = report["eventClasses"].toObject();
+        if (authenticated) QVERIFY(classes["other"].toInt() < 24);
+        else QCOMPARE(classes["other"].toInt(), 24);
+        QVERIFY(counts.contains("error"));
+        if (authenticated) QVERIFY(counts["error"].toInt() < 24);
+        else QCOMPARE(counts["error"].toInt(), 24);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("supportPrepare"));
+    }
+
     void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
     {
         QAccessible::setActive(true);
@@ -36820,8 +37511,15 @@ private slots:
     // Selecting a level closes the menu and posts {notification_mode} against
     // streams/{id}/actions/notifications/invoke; the canonical response flips the
     // sidebar row (indicator + 0.7 dim) and a same-level repeat sends nothing.
+    void windowStreamContextMenuNotificationSwitch_data()
+    {
+        QTest::addColumn<bool>("missingMode");
+        QTest::newRow("all-messages") << false;
+        QTest::newRow("missing-means-mentions") << true;
+    }
     void windowStreamContextMenuNotificationSwitch()
     {
+        QFETCH(bool, missingMode);
         WindowChannelFixture fixture;
         const QString direct = QStringLiteral("97000000-0000-4000-8000-970000000002");
         int notifPosts = 0; QJsonObject notifBody; QString notifPath;
@@ -36838,7 +37536,13 @@ private slots:
             if (request.method == "GET" && path.endsWith("/streams/")) {
                 auto response = fallback(request);
                 auto rows = response.data.toArray();
+                if (missingMode) {
+                    auto channel = rows.first().toObject();
+                    channel.remove("notification_mode");
+                    rows.replace(0, channel);
+                }
                 auto directRow = windowChannel(direct, "Alice Adams");
+                if (missingMode) directRow.remove("notification_mode");
                 directRow["private"] = true; directRow["direct_user_uuid"] = channelPeer;
                 rows.append(directRow);
                 response.data = rows;
@@ -36875,6 +37579,8 @@ private slots:
         QVERIFY(visibleItem("streamMenuNotifMuted"));
         QVERIFY(visibleItem("streamMenuNotifSubscribed"));
         // Switching to Muted closes the menu and persists through the invoke endpoint.
+        QVERIFY(visibleItem(missingMode ? "streamMenuNotifDefault" : "streamMenuNotifSubscribed")
+            ->property("isCurrent").toBool());
         click(window, visibleItem("streamMenuNotifMuted"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 1);
@@ -36892,7 +37598,7 @@ private slots:
         openMenu("stream-" + direct);
         QVERIFY(!visibleItem("streamMenuNotifDefault"));
         QVERIFY(visibleItem("streamMenuNotifMuted"));
-        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        QVERIFY(visibleItem("streamMenuNotifSubscribed")->property("isCurrent").toBool());
         menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
         menu->setProperty("visible", false);
     }
@@ -36904,18 +37610,30 @@ private slots:
     // three levels inactive, a press on a disabled level posts no second
     // request, another stream's menu stays interactive, and the switch
     // re-enables live (menu still open) the moment the held response settles.
+    void windowStreamContextMenuNotificationSwitchDisabledWhileBusy_data()
+    {
+        QTest::addColumn<bool>("renewSession");
+        QTest::newRow("settled-post") << false;
+        QTest::newRow("renewed-session") << true;
+    }
+
     void windowStreamContextMenuNotificationSwitchDisabledWhileBusy()
     {
+        QFETCH(bool, renewSession);
         WindowChannelFixture fixture;
         const QString other = QStringLiteral("97000000-0000-4000-8000-970000000003");
         int notifPosts = 0; QJsonObject notifBody;
         bool deferNext = false;
+        bool renewToken = false;
         std::vector<std::function<void()>> releases;
         const auto fallback = fixture.server.handler;
         auto gate = qScopeGuard([&]{ fixture.server.handler = fallback;
             for (auto &release : releases) if (release) release(); });
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (renewToken && path.endsWith("/actions/get_token/invoke"))
+                return {QJsonObject{{"access_token", "synthetic-renewed-menu"}, {"refresh_token", "synthetic-refresh"},
+                    {"expires_in", 3600}}};
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke")) {
                 ++notifPosts; notifBody = request.body;
                 auto row = windowChannel(streamId, "Product team");
@@ -36923,6 +37641,7 @@ private slots:
                 row["updated_at"] = "2026-01-02T11:00:00Z";
                 Response response{row};
                 if (deferNext) {
+                    if (renewSession) response.status = 503;
                     deferNext = false;
                     response.defer = [&releases](std::function<void()> send)
                     { releases.push_back(std::move(send)); };
@@ -36991,16 +37710,28 @@ private slots:
         // Back on A: disabled again while its write is still held.
         openMenu("stream-" + streamId);
         QVERIFY(!levelEnabled("streamMenuNotifMuted"));
-        // Releasing the held response releases the slot live: the still-open
-        // menu's switch re-enables without reopening.
+        // A changed token retires the held reply; the catalog fixture still
+        // reports the original all-messages mode. A normally settled POST
+        // instead confirms muted.
+        if (renewSession) {
+            QSignalSpy renewed(&session, &Session::authenticated);
+            renewToken = true;
+            session.requestRefresh();
+            QTRY_COMPARE(renewed.size(), 1);
+            QTRY_VERIFY(!controller.busy());
+            QVERIFY(controller.streamNotificationBusy(streamId));
+        }
         releases[0](); releases[0] = {};
         QTRY_VERIFY(!controller.streamNotificationBusy(streamId));
+        if (!menu->property("opened").toBool()) openMenu("stream-" + streamId);
         QTRY_VERIFY(levelEnabled("streamMenuNotifMuted"));
-        // Interactive again: the next level change goes through normally.
-        click(window, visibleItem("streamMenuNotifSubscribed"));
+        const auto current = renewSession ? "streamMenuNotifSubscribed" : "streamMenuNotifMuted";
+        QTRY_VERIFY(visibleItem(current)->property("isCurrent").toBool());
+        // An interaction on this same stream sends a second write.
+        click(window, visibleItem("streamMenuNotifDefault"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 2);
-        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("all_messages"));
+        QCOMPARE(notifBody.value("notification_mode").toString(), QStringLiteral("mentions_only"));
     }
 
     // Issue #438 review (finding 4633233517): a selection edge skipped while
@@ -37673,6 +38404,49 @@ private:
     }
 
 private slots:
+    void messageTimeViewOpensWithoutApplicationServices()
+    {
+        QTest::failOnWarning();
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import "qrc:/workspace/qml/messages/time" as MessageTime
+            Window {
+                id: win
+                width: 800
+                height: 480
+                visible: true
+                Item {
+                    id: history
+                    x: 200; y: 35; width: 600; height: 430
+                    Item { id: chip; x: 120; y: 30; width: 44; height: 20 }
+                }
+                MessageTime.MessageTimeView {
+                    historyViewport: history
+                    windowContent: win.contentItem
+                    language: "en"
+                    colors: ({"accent": "blue", "bg-elevated": "white", "border-subtle": "gray",
+                              "text-primary": "black", "text-muted": "gray"})
+                    Component.onCompleted: showInstant("2026-01-02T10:02:03", chip)
+                }
+            }
+        )", QUrl("qrc:/tests/isolated-message-time.qml"));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 2000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+        auto *panel = window->findChild<QObject *>("messageTimePanel");
+        QVERIFY(panel);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        QCOMPARE(panel->property("selectedDay").toInt(), 2);
+        const auto panelCenter = [&] { return panel->property("x").toReal() + panel->property("width").toReal() / 2; };
+        QTRY_VERIFY(qAbs(panelCenter() - 342.0) < 1.0);
+        QCOMPARE(panel->property("y").toReal(), 93.0);
+        QVERIFY(QMetaObject::invokeMethod(panel, "close"));
+        QTRY_VERIFY(!panel->property("visible").toBool());
+    }
+
     void messageTimeChipOpensReadOnlyTimestampPanel_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");

@@ -40,6 +40,23 @@ NativeLogging *g_messageLogSink = nullptr;
 // 1 thread 4575150370).
 QReadWriteLock g_sinkLock(QReadWriteLock::Recursive);
 
+// Qt and plugins may put paths, server replies or message text in a diagnostic.
+QString persistentDiagnostic(const QMessageLogContext &context, const QString &message)
+{
+    if (message == QStringLiteral("The updated application could not be started.")
+        || message == QStringLiteral("Default topic missing for existing direct stream before call"))
+        return message;
+    using namespace Qt::StringLiterals;
+    const QLatin1StringView category(context.category ? context.category : "");
+    if (category == "qt.network"_L1 || category.startsWith("qt.network."_L1))
+        return QStringLiteral("Network diagnostic");
+    if (category == "qt.qml"_L1 || category.startsWith("qt.qml."_L1))
+        return QStringLiteral("QML diagnostic");
+    if (category == "qt.qpa"_L1 || category.startsWith("qt.qpa."_L1))
+        return QStringLiteral("Platform diagnostic");
+    return QStringLiteral("Qt diagnostic");
+}
+
 // qInstallMessageHandler replaces Qt's default handler, so the console output
 // is reproduced explicitly (stderr, like the Qt default) instead of chained.
 // The console reproduction is best-effort: a stderr failure never gates the
@@ -47,7 +64,6 @@ QReadWriteLock g_sinkLock(QReadWriteLock::Recursive);
 void nativeMessageHandler(QtMsgType type, const QMessageLogContext &context,
                           const QString &message)
 {
-    Q_UNUSED(context);
     QReadLocker locker(&g_sinkLock);
     NativeLogging *sink = g_messageLogSink;
     const QString line = NativeLogging::formatMessageLine(type, message);
@@ -56,7 +72,7 @@ void nativeMessageHandler(QtMsgType type, const QMessageLogContext &context,
         fputc('\n', stderr);
     (void)fflush(stderr);
     if (sink)
-        sink->appendLogLine(line);
+        sink->appendLogLine(NativeLogging::formatMessageLine(type, persistentDiagnostic(context, message)));
 }
 
 [[maybe_unused]] qint64 parseProcKbValue(const QByteArray &contents, const QByteArray &key)

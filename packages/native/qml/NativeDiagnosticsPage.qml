@@ -28,6 +28,7 @@ import QtCore
 // unavailable sources render the reference empty/unavailable text.
 FocusScope {
     id: page
+    signal supportRequested()
     objectName: "nativeDiagnosticsPage"
     required property var controller
     required property var colors
@@ -615,6 +616,13 @@ FocusScope {
             y: 8
             width: content.width - 16
             spacing: 8
+
+            NativeButton {
+                objectName: "diagnosticsSupportAction"
+                colors: page.colors
+                text: qsTr("Report a problem")
+                onClicked: page.supportRequested()
+            }
 
             // Memory panel (issue #52, reference logs-page-memory.ui.tsx;
             // docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel").

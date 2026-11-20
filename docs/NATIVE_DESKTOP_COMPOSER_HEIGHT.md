@@ -24,3 +24,8 @@ observed conversation area measured 766 px and the expanded shell 762 px.
 The source contract is the pinned Workspace UI composer resize hook, layout
 and constants in `packages/web/src/widgets/message-composer/` at
 `61dacef78dab2f5d0be76f283bebf49fe29b84af`.
+
+With the formatting toolbar expanded, Tab from the editor reaches Link and
+Shift+Tab from Link returns to the same text selection. This route holds when
+the resize grip or both height controls are visible. With the toolbar
+collapsed, Tab from a multiline editor reaches the resize grip.

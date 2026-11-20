@@ -4,8 +4,10 @@ The existing [rotating log provider](../NATIVE_DESKTOP_DIAGNOSTICS.md) keeps
 the active file and one previous file, with a 1 MiB rotation threshold and a
 32,768-character line limit. The [diagnostics page](../NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md)
 has a separate 500-entry session ring. Reuse their counters for support work.
-Free-form log lines can contain personal data and are unsuitable for automatic
-attachment to a report.
+The Qt file sink classifies free-form diagnostics before appending to disk.
+Existing installations may retain older raw lines until their next rotations.
+The [local support exporter](../NATIVE_DESKTOP_SUPPORT_REPORT.md) collects
+reviewed fields directly from scoped providers and excludes both log files.
 
 Collect support diagnostics using a schema of allowed fields. Encode event
 classes, counts, durations and build information. Exclude message and draft
