@@ -287,6 +287,12 @@ public:
     Q_INVOKABLE void cancelOwnStatusUpdate();
     void useChatKeys(NativeChatKeyVault *vault);
     QVariantMap encryption() const;
+    Q_INVOKABLE QVariantMap renderSecretMessage(const QString &messageId, const QStringList &ordinaryOpened,
+        const QStringList &revealed);
+    Q_INVOKABLE void requestSecretMessageKey(const QString &messageId, const QString &handle,
+        const QStringList &ordinaryOpened);
+    Q_PROPERTY(quint64 secretKeyRevision READ secretKeyRevision NOTIFY secretKeysChanged)
+    quint64 secretKeyRevision() const { return m_secretKeyRevision; }
     Q_INVOKABLE void requestChatKey(const QString &keyUuid = {});
     Q_INVOKABLE void checkChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyRequest(const QString &keyUuid);
@@ -952,6 +958,7 @@ signals:
     // subscribeLogHistory).
     void sessionLogChanged();
     void stateChanged();
+    void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
     void ownProfileSettledChanged();
@@ -1044,6 +1051,10 @@ private:
         bool ready = false;
         QSet<QString> topics;
     };
+    QVariantMap presentMessageSecrets(const QString &messageId, const QStringList &ordinaryOpened,
+        const QStringList &revealed, const QString &requestHandle, QString *requestedStream, QString *requestedKey, bool validating = false);
+    quint64 m_secretKeyRevision = 0;
+    QString m_secretRequestStream;
     enum class ChatKeyAvailability { Unknown, Missing, Present, Error };
     struct PreparedChatMessage {
         QByteArray hash;
@@ -1063,12 +1074,14 @@ private:
     bool currentChatOperation(quint64 operation, const QString &key) const;
     using ChatAuthorityCallback = std::function<void(bool, const QString &)>;
     void ensureChatAuthority(ChatAuthorityCallback done);
+    void fetchChatAuthority(const QString &stream, quint64 epoch, quint64 selection,
+        std::function<void(const ChatAuthority &, const QString &)> done);
     void finishChatAuthority(quint64 epoch, quint64 selection, const QString &error = {});
     void chatCollection(const QString &path, QUrlQuery query, quint64 epoch, quint64 selection,
         std::function<void(const QJsonArray &, const QString &)> done, QJsonArray rows = {}, QSet<QByteArray> markers = {},
         int pages = 0, qint64 bytes = 0);
     void finishChatOperation(quint64 operation, const QString &key, const QString &phase, const QString &error = {});
-    void startChatRequest(const QString &key, bool checking, bool retrying);
+    void startChatRequest(const QString &key, bool checking, bool retrying, const QString &secretStream = {}, std::function<bool()> stillNeeded = {});
     // Issue #244 review 4576750798: GET-only recheck pass over durable
     // in-flight rotation announcements (see native-chat-key-vault.h).
     void maybeResolveRotationStages();
@@ -1079,11 +1092,11 @@ private:
     // their callbacks ever running; this releases the transient busy and
     // single-flight markers of those retired operations (durable pins stay).
     void interruptChatRotationOperations();
-    void postChatRequest(const QString &key, const NativeChatKeyVault::PendingRequest &pending, quint64 epoch, quint64 selection, quint64 operation);
+    void postChatRequest(const NativeChatKeyVault::Address &address, const NativeChatKeyVault::PendingRequest &pending, quint64 epoch, quint64 selection, quint64 operation);
     bool matchesChatRequest(const Message &message, const QString &key,
-                            const NativeChatKeyVault::PendingRequest &pending, bool observed) const;
+                            const NativeChatKeyVault::PendingRequest &pending, bool observed, const QString &source = {}) const;
     bool bindChatRequest(const Message &message, const QString &key,
-                         const NativeChatKeyVault::PendingRequest &pending, bool observed = false);
+                         const NativeChatKeyVault::PendingRequest &pending, bool observed = false, const QString &source = {});
     void observeChatRequest(const Message &message);
     bool currentChatRequest(const Message &response, const NativeChatKeyVault::PendingRequest &pending) const;
     bool receiveChatControl(const Message &message);

@@ -1652,15 +1652,26 @@ component NativeMentionChip: Item {
 
     component MessageSpoilerControl: NativeMentionChip {
         required property var row
-        objectName: "message-spoiler-" + row.modelData.id + "-" + modelData.id
-        Accessible.name: modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
-        Accessible.checkable: true
-        Accessible.checked: row.openedSpoilers.includes(modelData.id)
+        objectName: (modelData.secret ? "message-secret-" : "message-spoiler-") + row.modelData.id + "-" + modelData.id
+        enabled: !modelData.secret || modelData.action !== "pending"
+        Accessible.name: modelData.secret ? modelData.label.trim() : modelData.header ? modelData.label.slice(2) : qsTr("Spoiler")
+        Accessible.checkable: !modelData.secret || ["show", "hide"].includes(modelData.action)
+        Accessible.checked: modelData.secret ? modelData.action === "hide" : row.openedSpoilers.includes(modelData.id)
         activate: () => row.activateBodyLink(modelData.urn, true)
+        Image {
+            visible: Boolean(parent.modelData.secret)
+            source: visible ? "qrc:/workspace/icons/chat_lock.svg" : ""
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width: 13
+            height: 13
+            sourceSize: Qt.size(13, 13)
+            Accessible.ignored: true
+        }
         Rectangle {
             anchors.fill: parent
             anchors.margins: -1
-            visible: parent.modelData.header
+            visible: Boolean(parent.modelData.header)
             color: "transparent"
             border.width: 1
             border.color: root.colors["border-subtle"]
@@ -8212,9 +8223,37 @@ component NativeMentionChip: Item {
                     property var spoilerState: ({})
                     readonly property var openedSpoilers: spoilerState.message === modelData.id
                         && spoilerState.body === bodyMarkdown ? spoilerState.opened : []
-                    readonly property var rendered: root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers)
-                    onBodyMarkdownChanged: spoilerState = ({})
+                    property var revealedFragments: []
+                    property int secretRenderRevision: 0
+                    readonly property var rendered: {
+                        const ordinary = root.markdown.renderMessage(bodyMarkdown, false, openedSpoilers);
+                        if (!ordinary.hasSecrets) return ordinary;
+                        // Vault changes can leave the surrounding message Markdown identical.
+                        const revision = root.controller.secretKeyRevision + secretRenderRevision;
+                        const active = root.chatEncryption;
+                        const current = modelData;
+                        const display = root.controller.renderSecretMessage(String(current.id), openedSpoilers, revealedFragments);
+                        return display.html !== undefined ? display : ordinary;
+                    }
+                    onBodyMarkdownChanged: {
+                        spoilerState = ({});
+                        revealedFragments = [];
+                    }
                     function activateBodyLink(link, restoreFocus) {
+                        const secret = (rendered.secretControls || []).find(span => span.href === String(link));
+                        if (secret) {
+                            if (secret.action === "request") {
+                                root.controller.requestSecretMessageKey(String(modelData.id), secret.token, openedSpoilers);
+                            } else if (secret.action === "retry") {
+                                ++secretRenderRevision;
+                            } else if (secret.action === "show" || secret.action === "hide") {
+                                revealedFragments = secret.action === "hide"
+                                    ? revealedFragments.filter(token => token !== secret.token)
+                                    : revealedFragments.concat([secret.token]);
+                            }
+                            if (restoreFocus) focusDisclosure(secret.id, true);
+                            return;
+                        }
                         const target = (rendered.spoilers || []).find(span => span.href === String(link));
                         if (!target) {
                             root.openReference(link);
@@ -8223,11 +8262,14 @@ component NativeMentionChip: Item {
                         spoilerState = { message: modelData.id, body: bodyMarkdown,
                             opened: openedSpoilers.includes(target.id)
                                 ? openedSpoilers.filter(id => id !== target.id) : openedSpoilers.concat([target.id]) };
-                        if (restoreFocus) Qt.callLater(() => {
+                        if (restoreFocus) focusDisclosure(target.id, false);
+                    }
+                    function focusDisclosure(id, secret) {
+                        Qt.callLater(() => {
                             const chips = hasInlineImages ? mediaSpoilerChips : bodySpoilerChips;
                             for (let i = 0; chips && i < chips.count; ++i) {
                                 const chip = chips.itemAt(i);
-                                if (chip && chip.modelData.id === target.id) {
+                                if (chip && chip.enabled && chip.modelData.id === id && !!chip.modelData.secret === secret) {
                                     chip.forceActiveFocus();
                                     break;
                                 }
@@ -8282,10 +8324,10 @@ component NativeMentionChip: Item {
                     property var mentionTargets: locateMentionTargets()
                     property var spoilerTargets: locateSpoilers()
                     function locateSpoilers() {
-                        const spans = rendered.spoilers || [];
+                        const spans = (rendered.spoilers || []).concat(rendered.secretControls || []);
                         if (!spans.length) return [];
                         const pairs = spans.map(span => ({ urn: span.href, label: span.label,
-                            id: span.id, header: span.header, anchorStart: span.start, anchorLength: span.length }));
+                            id: span.id, header: span.header, secret: !!span.action, action: span.action, anchorStart: span.start, anchorLength: span.length }));
                         if (!hasInlineImages) return mentionRectsIn(messageBody, pairs, bodyMentionOverlay);
                         const targets = [];
                         for (let i = 0; i < imageRuns.count; ++i) {
@@ -8342,7 +8384,7 @@ component NativeMentionChip: Item {
                                 const right = Math.abs(after.y - top.y) < 0.5
                                     ? after.x : lastChar.x + lastChar.width;
                                 const origin = item.mapToItem(overlay, top.x, top.y);
-                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header,
+                                out.push({ urn: pair.urn, label: label, id: pair.id, header: pair.header, secret: pair.secret, action: pair.action,
                                     x: origin.x, y: origin.y,
                                     w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
                                 i = j + 1;
@@ -9372,13 +9414,17 @@ component NativeMentionChip: Item {
                                 // -interactions.hook.ts:97-116); centered control
                                 // labels stay non-selectable.
                                 readOnly: true
-                                selectByMouse: !messageRow.keyControl
+                                selectByMouse: !messageRow.keyControl && !messageRow.rendered.hasSecrets
+                                selectByKeyboard: !messageRow.keyControl && !messageRow.rendered.hasSecrets
                                 cursorVisible: false
                                 persistentSelection: true
                                 // Issue #218 review r2: a selection becoming
                                 // active here clears the other bubbles'
                                 // persistent selections (noteBodySelection).
-                                onSelectedTextChanged: root.noteBodySelection(messageRow.modelData.id, messageBody)
+                                onSelectedTextChanged: {
+                                    if (messageRow.rendered.hasSecrets && selectedText.length) deselect();
+                                    else root.noteBodySelection(messageRow.modelData.id, messageBody);
+                                }
                                 Component.onDestruction: root.forgetBodySelection(messageRow.modelData.id)
                                 bottomPadding: messageRow.inlineMeta ? 2 : 0
                                 height: contentHeight + topPadding + bottomPadding
@@ -9470,6 +9516,9 @@ component NativeMentionChip: Item {
                                             text: messageRow.imagePartHtml(imageRun.part, imageRun.index)
                                             textFormat: TextEdit.RichText
                                             readOnly: true
+                                            selectByKeyboard: !messageRow.rendered.hasSecrets
+                                            selectByMouse: !messageRow.rendered.hasSecrets
+                                            onSelectedTextChanged: if (messageRow.rendered.hasSecrets && selectedText.length) deselect()
                                             cursorVisible: false
                                             wrapMode: TextEdit.Wrap
                                             font.pixelSize: 14
