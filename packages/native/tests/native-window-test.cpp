@@ -33387,6 +33387,51 @@ private:
         }
     };
 
+    // Bug #460 fix round witness: the reported trigger shape exactly - a
+    // standalone displayable inline image part followed by a separate
+    // paragraph carrying one HTTP(S) hyperlink. The media-split body renders
+    // that paragraph as text part 1, so the right-click anchor lookup must
+    // resolve against that part's own laid-out document. The plain-text-only
+    // twin of the same paragraph keeps the ordinary-body path green.
+    struct BodyCopyImageLinkFixture
+    {
+        WindowChannelFixture base;
+        QJsonObject mediaNote, plainNote;
+        QString mediaMessageId = QStringLiteral("ad000000-0000-4000-8000-000000000460");
+        QString plainMessageId = QStringLiteral("ad000000-0000-4000-8000-000000000461");
+        QString fileUuid = QStringLiteral("9f000000-0000-4000-8000-0000000000e0");
+        QByteArray png = avatarProbePng(false);
+        BodyCopyImageLinkFixture()
+        {
+            const auto fallback = base.server.handler;
+            const auto urn = QStringLiteral("urn:image:%1?name=shot.png&content_type=image%2Fpng&w=96&h=64&size=%2")
+                .arg(fileUuid, QString::number(png.size()));
+            mediaNote = message(QStringLiteral("![shot.png](%1)\n\nSee [Reference](https://example.org/docs)").arg(urn),
+                mediaMessageId);
+            mediaNote["is_own"] = false;
+            plainNote = message(QStringLiteral("See [Reference](https://example.org/docs)"), plainMessageId);
+            plainNote["is_own"] = false;
+            base.server.handler = [this, fallback](const Request &request) -> Response {
+                const auto path = request.target.path();
+                const auto file = QStringLiteral("/api/workspace/v1/messenger/files/") + fileUuid;
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileUuid, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                    ++base.historyGets;
+                    return {QJsonArray{mediaNote, plainNote}};
+                }
+                return fallback(request);
+            };
+        }
+    };
+
     private slots:
     void codeBlockCopyButtonWritesClipboardAndResetsFeedback()
     {
@@ -33728,6 +33773,82 @@ private:
         QTRY_VERIFY(!menu->property("visible").toBool());
         QTRY_COMPARE(clipboard->text(), QStringLiteral("https://example.org/media-docs"));
         clipboard->setText(QStringLiteral("media-link-sentinel-after"));
+    }
+
+    // Bug #460 acceptance witness: the reported trigger shape exactly - a
+    // standalone displayable inline image part plus a separate paragraph with
+    // one HTTP(S) link. Right-clicking the rendered "Reference" link must
+    // store the exact destination as the menu's context link and show the
+    // "Copy link" action (part-relative hit-testing through the media run's
+    // laid-out probe); the plain-text-only twin keeps the ordinary-body path.
+    void rightClickStandaloneImageBodyLinkOffersCopyLink()
+    {
+        QTest::failOnWarning();
+        BodyCopyImageLinkFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Bug 460 teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-copy", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.messages().size() == 2, 12000);
+        auto *content = window->contentItem();
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + fixture.mediaMessageId));
+        auto *menu = window->findChild<QObject *>("messageMenu"); QVERIFY(menu);
+        auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
+
+        // The image-bearing message renders the link paragraph as media text
+        // part 1; its laid-out probe is the hit-test authority for the pointer.
+        auto *probe = item(content, "mediaLayoutProbe-" + fixture.mediaMessageId + "-1"); QVERIFY(probe);
+        QString probePlain;
+        QMetaObject::invokeMethod(probe, "getText", Q_RETURN_ARG(QString, probePlain), Q_ARG(int, 0), Q_ARG(int, 10000));
+        QVERIFY2(probePlain.contains(QStringLiteral("Reference")), qPrintable(probePlain));
+        QRectF probeCursor;
+        QMetaObject::invokeMethod(probe, "positionToRectangle", Q_RETURN_ARG(QRectF, probeCursor),
+            Q_ARG(int, probePlain.indexOf(QStringLiteral("Reference")) + 4));
+        QTest::mouseClick(window, Qt::RightButton, {},
+            probe->mapToScene(QPointF(probeCursor.x() + 2.0, probeCursor.y() + probeCursor.height() / 2.0)).toPoint());
+        QTRY_VERIFY(menu->property("visible").toBool());
+        // The menu's link target equals the HTTP(S) destination and the
+        // action is on screen and writes exactly that URL.
+        QCOMPARE(window->property("menuContextLink").toString(),
+            QStringLiteral("https://example.org/docs"));
+        auto *mediaCopyLink = visibleItem("copyBodyLinkAction"); QVERIFY(mediaCopyLink);
+        clipboard->setText(QStringLiteral("bug460-sentinel"));
+        click(window, mediaCopyLink);
+        QTRY_VERIFY(!menu->property("visible").toBool());
+        QTRY_COMPARE(clipboard->text(), QStringLiteral("https://example.org/docs"));
+
+        // Plain-text-only twin of the same paragraph stays green.
+        auto *plainBody = item(content, "message-content-" + fixture.plainMessageId); QVERIFY(plainBody);
+        QString plainText;
+        QMetaObject::invokeMethod(plainBody, "getText", Q_RETURN_ARG(QString, plainText), Q_ARG(int, 0), Q_ARG(int, 10000));
+        QVERIFY2(plainText.contains(QStringLiteral("Reference")), qPrintable(plainText));
+        QRectF plainCursor;
+        QMetaObject::invokeMethod(plainBody, "positionToRectangle", Q_RETURN_ARG(QRectF, plainCursor),
+            Q_ARG(int, plainText.indexOf(QStringLiteral("Reference")) + 4));
+        QTest::mouseClick(window, Qt::RightButton, {},
+            plainBody->mapToScene(QPointF(plainCursor.x() + 2.0, plainCursor.y() + plainCursor.height() / 2.0)).toPoint());
+        QTRY_VERIFY(menu->property("visible").toBool());
+        QCOMPARE(window->property("menuContextLink").toString(),
+            QStringLiteral("https://example.org/docs"));
+        auto *plainCopyLink = visibleItem("copyBodyLinkAction"); QVERIFY(plainCopyLink);
+        clipboard->setText(QStringLiteral("bug460-plain-sentinel"));
+        click(window, plainCopyLink);
+        QTRY_VERIFY(!menu->property("visible").toBool());
+        QTRY_COMPARE(clipboard->text(), QStringLiteral("https://example.org/docs"));
+        clipboard->setText(QStringLiteral("bug460-sentinel-after"));
     }
 
     // ---- Issue #108 (docs/NATIVE_DESKTOP_MESSAGE_TIMESTAMP_VIEWER.md) ----
