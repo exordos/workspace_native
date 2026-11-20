@@ -1,3 +1,4 @@
+#include <QSoundEffect>
 #include "api-client.h"
 #ifdef Q_OS_LINUX
 #include "live-acceptance-trace.h"
@@ -169,6 +170,18 @@ int main(int argc, char **argv)
     desktopNotifications->setClickCallback(
         [notifications](const QString &tag) { notifications->click(tag); });
     notifications->setTransport(desktopNotifications);
+    QObject::connect(notifications, &workspace::NotificationService::soundRequested,
+        &preferences, &workspace::NativePreferences::previewNotificationSound);
+    QHash<QString, QSoundEffect *> sounds;
+    QObject::connect(&preferences, &workspace::NativePreferences::notificationSoundRequested, &app,
+        [&sounds, &app](const QString &preset) {
+            auto *&sound = sounds[preset];
+            if (!sound) {
+                sound = new QSoundEffect(&app);
+                sound->setSource(QUrl(QStringLiteral("qrc:/workspace/sounds/") + preset + ".wav"));
+            }
+            sound->play();
+        });
     if (window) {
         auto *focusWatcher = new WindowFocusWatcher(&controller);
         window->installEventFilter(focusWatcher);
