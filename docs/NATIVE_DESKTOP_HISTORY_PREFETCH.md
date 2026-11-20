@@ -178,9 +178,11 @@ topic rows and preserve the viewport assertions.
 
 ### Sustained input on a slow history request
 
-For each selected conversation the controller measures the last successful
-history page request. Two consecutive upward scroll samples project how far the
-reader will travel while the next page is in flight. Prefetch keeps that
+The controller measures the last successful history page request in the
+current API session. A topic restored from disk can reuse this timing to
+request older history before a fast reader reaches the loaded edge. Two
+consecutive upward scroll samples project how far the reader will travel
+while the next page is in flight. Prefetch keeps that
 distance in addition to the normal viewport reserve, capped at four viewports
 in total. A pause, a layout jump, switching routes or restoring an anchor
 discards the velocity estimate. Programmatic restoration only rearms the next
@@ -191,3 +193,22 @@ its new prefix in a single model notification. It still refreshes the roles of
 retained rows, including service groups that changed at the page boundary.
 The topic and stream-aggregate window tests check the inserted range and
 the position of the visible message after a 50-row page arrives.
+
+The history view combines wheel notches delivered in the same event-loop
+turn before moving the ListView. It retains each notch's distance and
+direction, clamps at the loaded boundaries, and flushes the movement before
+capturing a position for an arriving page. A route change discards any pending
+movement. Touchpad input continues through the native Flickable path.
+
+Ordinary message rows create call, poll, quote and key-service controls only
+when the message needs them. A service group creates its header when its first
+visible row is present. Quote layout still settles before restoring the
+message anchor. The window regressions exercise a burst of notches and inspect
+the instantiated controls on a plain message after paging. The packaged
+Wayland acceptance run measures the resulting frames and input latency.
+
+An incoming message strictly after the loaded tail can arrive while an older
+HTTP page is in flight. The controller merges both into the current window.
+It still discards stale responses after edits, deletions, route changes and
+other overlapping mutations. Refreshing the latest window also observes tail
+arrivals, since that response can contain the same messages.

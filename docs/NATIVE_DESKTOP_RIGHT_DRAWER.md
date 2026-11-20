@@ -189,7 +189,10 @@ discarded state. The web counterpart is `shared/lib/local-reset.ts`.
 
 The window test covers the server and login lines, the localized confirmation,
 cancellation, and confirmation with a populated cache and nondefault preferences.
-It holds the refreshed history response so it can observe an empty cache before
+Clear cache, the language choices and the disk limit field sit in the scrollable
+body above the fixed Sign out footer. The window tests scroll each control into
+view and wait for a painted frame before clicking its center.
+The Clear cache test holds the refreshed history response so it can observe an empty cache before
 new server data arrives.
 
 ## Entry from the conversation header

@@ -1,3 +1,4 @@
+#include "workspace-reference.h"
 #include "support/native-test-harness.h"
 #include "support/controller-chat-creation-fixtures.h"
 #include "support/controller-poll-fixtures.h"
@@ -6,6 +7,133 @@ class ControllerPollsTest final : public NativeControllerTestHarness {
     Q_OBJECT
 private slots:
     // ---- Issue #214 polls foundation ----
+
+    void pollSnapshotCountsInQuotedMessages_data()
+    {
+        QTest::addColumn<QString>("visibility");
+        QTest::addColumn<bool>("closed");
+        QTest::addColumn<bool>("voted");
+        QTest::addColumn<QString>("deadline");
+        QTest::addColumn<bool>("fetched");
+        QTest::addColumn<QString>("expected");
+        const QString hidden = "Which day?\n• Monday\n• Tuesday\n\nWhere?\n• Office\n• Online";
+        const QString first = "Which day?\n• Monday (1)\n• Tuesday (2)\n\nWhere?\n• Office\n• Online";
+        const QString all = "Which day?\n• Monday (1)\n• Tuesday (2)\n\nWhere?\n• Office (3)\n• Online (0)";
+        QTest::newRow("hidden") << QString("after_vote") << false << false << QString() << false << hidden;
+        QTest::newRow("one-question-voted") << QString("after_vote") << false << true
+            << QString("2099-01-01T00:00:00Z") << true << first;
+        QTest::newRow("always") << QString("always") << false << false << QString() << false << all;
+        QTest::newRow("closed") << QString("after_vote") << true << false << QString() << true << all;
+        QTest::newRow("expired") << QString("after_vote") << false << false
+            << QString("2000-01-01T00:00:00Z") << false << all;
+    }
+
+    void pollSnapshotCountsInQuotedMessages()
+    {
+        QFETCH(QString, visibility); QFETCH(bool, closed); QFETCH(bool, voted);
+        QFETCH(QString, deadline); QFETCH(bool, fetched); QFETCH(QString, expected);
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto id = pollFixtureUuid(54);
+        auto poll = pollMessageDto(id, 2, closed, "Which day?", voted);
+        auto payload = poll.value("payload").toObject();
+        payload["results_visibility"] = visibility;
+        payload["closes_at"] = deadline.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(deadline);
+        poll["payload"] = payload;
+        int pollLookups = 0;
+        const auto reply = message(buildWorkspaceQuoteReference("Peer", id) + "\n\nreply", returnedId);
+        fixture.messages = [&](const Request &request) -> Response {
+            if (QUrlQuery(request.target).queryItemValue("uuid") == id) {
+                ++pollLookups;
+                return {QJsonArray{poll}};
+            }
+            return {fetched ? QJsonArray{reply} : QJsonArray{poll, reply}};
+        };
+        QVERIFY(fixture.start());
+        QTRY_COMPARE_WITH_TIMEOUT(modelMessage(fixture.controller, returnedId).value("quoteContent").toString(),
+            expected, 2000);
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("quoteStatus").toString(), QString("ready"));
+        QCOMPARE(pollLookups, fetched ? 1 : 0);
+    }
+
+    void pollSnapshotSkipsMissingQuestionStateAndCountsMissingOptionsAsZero()
+    {
+        auto poll = parseMessage(pollMessageDto(pollFixtureUuid(56), 3, true), projectId);
+        QVERIFY(poll && poll->pollState);
+        poll->pollState->questions.removeFirst();
+        poll->pollState->questions.first().optionCounts.remove(pollOptionThree);
+        QCOMPARE(pollTextSnapshot(*poll), QString("Which day?\n• Monday\n• Tuesday\n\nWhere?\n• Office (0)\n• Online (0)"));
+    }
+
+    void pollComposerEmbedsPlainSummaryAndForwardStoresIt()
+    {
+        Fixture fixture;
+        fixture.aggregateMessages = true;
+        const auto id = pollFixtureUuid(55);
+        auto poll = pollMessageDto(id, 5, false, "**Day?**");
+        auto payload = poll.value("payload").toObject();
+        payload["closes_at"] = QJsonValue::Null;
+        poll["payload"] = payload;
+        const QString summary = "**Day?**\n• Monday\n• Tuesday\n\nWhere?\n• Office\n• Online";
+        QJsonObject posted;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") {
+                posted = request.body;
+                return {message(posted["payload"].toObject()["content"].toString(), returnedId), 201};
+            }
+            if (request.target.path().endsWith("/messages/")) return {QJsonArray{poll}};
+            return {message(posted["payload"].toObject()["content"].toString(), returnedId)};
+        };
+        QVERIFY(fixture.start());
+        QVERIFY(fixture.controller.beginReply(id, "Monday"));
+        QCOMPARE(fixture.controller.replyExcerpt(), summary.simplified());
+        fixture.controller.setDraft("Answer");
+        fixture.controller.send();
+        QTRY_VERIFY(!posted.isEmpty());
+        const auto quoteWire = posted["payload"].toObject()["content"].toString();
+        QVERIFY(quoteWire.contains(buildWorkspaceQuoteUrn(id, summary)));
+        QTRY_VERIFY(fixture.controller.replyMessageId().isEmpty());
+        posted = {};
+        fixture.controller.forwardMessages({id}, streamId, topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(!posted.isEmpty(), 2000);
+        const auto wire = posted["payload"].toObject()["content"].toString();
+        const auto start = wire.indexOf("(urn:forward:");
+        QVERIFY(start >= 0 && wire.endsWith(')'));
+        const auto ref = parseWorkspaceReference(wire.mid(start + 1, wire.size() - start - 2));
+        QVERIFY(ref && ref->plainSnapshot);
+        QCOMPARE(ref->snapshotMarkdown, summary);
+    }
+
+    void pollManagementUsesVerifiedAuthorAndRejectsPeerActions_data()
+    {
+        QTest::addColumn<bool>("author"); QTest::addColumn<bool>("ownFlag");
+        QTest::newRow("author-without-convenience-flag") << true << false;
+        QTest::newRow("peer-with-inconsistent-flag") << false << true;
+    }
+
+    void pollManagementUsesVerifiedAuthorAndRejectsPeerActions()
+    {
+        QFETCH(bool, author); QFETCH(bool, ownFlag);
+        Fixture fixture;
+        const auto id = pollFixtureUuid(81);
+        auto poll = pollMessageDto(id, 3, false);
+        poll["author_uuid"] = author ? userId : pollFixtureUuid(82);
+        poll["is_own"] = ownFlag;
+        auto payload = poll["payload"].toObject(); payload["closes_at"] = QJsonValue::Null; poll["payload"] = payload;
+        int posts = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { ++posts; return {QJsonObject{}, 403}; }
+            return {QJsonArray{poll}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.canManagePoll(id), author);
+        QSignalSpy failure(&fixture.controller, &NativeController::pollActionFailed);
+        fixture.controller.closePoll(id);
+        QTRY_COMPARE(failure.size(), 1);
+        QCOMPARE(posts, author ? 1 : 0);
+        QCOMPARE(failure.first().at(2).toString(), author ? QString("http-403") : QString("not-available"));
+        QVERIFY(!modelMessage(fixture.controller, id).value("poll").toMap().value("state").toMap().value("isClosed").toBool());
+    }
 
     void pollMessageArrivesEndToEndWithEveryConfigField()
     {

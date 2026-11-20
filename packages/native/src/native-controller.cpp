@@ -414,7 +414,7 @@ QVariantMap NativeController::encryption() const
         else if (status == "rejected") rejected.append(entry);
         else if (!row.value("ownCurrentDevice").toBool()) incoming.append(entry);
     }
-    return {{"available", chatVaultMatches()}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
+    return {{"available", chatVaultMatches()}, {"presentationEpoch", m_chatEpoch}, {"state", m_chatPhase.isEmpty() ? QStringLiteral("locked") : m_chatPhase},
         {"busy", m_chatBusy || issuing || m_chatReissueBusy}, {"error", m_chatError}, {"keyUuid", m_chatRequestKey},
         {"keyRequests", requests}, {"keyResponse", chatKeyResponseMetadata()},
         {"incomingKeyRequests", incoming}, {"grantedKeyRequests", granted}, {"rejectedKeyRequests", rejected},
@@ -4364,48 +4364,7 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
 
 void NativeController::setChannelInfoNotificationMode(const QString &mode)
 {
-    const auto *stream = channelInfoStreamRow();
-    if (!stream || channelInfoNotificationBusy() || stream->notificationMode.isEmpty()
-        || stream->notificationMode == mode || !channelModes.contains(mode)) return;
-    const auto owner = ownerKey();
-    const auto generation = m_api->generation();
-    const auto streamUuid = stream->uuid;
-    // Per-stream in-flight tracking: the request stamps its own token into its
-    // stream's slot, so a request on any other stream never takes over this
-    // stream's busy state and a follow-up same-stream request is rejected
-    // until this one settles.
-    const auto token = ++m_channelInfoNotificationToken;
-    m_channelInfoNotificationInFlight.insert(streamUuid, token);
-    m_channelInfoNotificationError.clear();
-    emit stateChanged();
-    // runWorkspaceStreamNotificationUpdate -> POST streams/{id}/actions/
-    // notifications/invoke; the canonical stream DTO answers and the store
-    // value then feeds the switch (store mode wins over any stale info).
-    request("POST", messenger + "/streams/" + streamUuid + "/actions/notifications/invoke",
-        QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, streamUuid, token](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        // Only the newest in-flight request for this stream owns its busy
-        // slot: a superseded response must neither release a newer request's
-        // state nor overwrite its result, and the late response of an
-        // abandoned request may only ever release its own stream's slot.
-        if (m_channelInfoNotificationInFlight.value(streamUuid) != token) return;
-        m_channelInfoNotificationInFlight.remove(streamUuid);
-        if (m_stream != streamUuid) return;
-        const auto parsed = result.ok() && result.data.isObject()
-            ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
-        const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
-            [streamUuid](const Stream &row) { return row.uuid == streamUuid; });
-        if (!parsed || parsed->uuid != streamUuid || entry == m_streams.end()) {
-            // The reference shows t("app.error") on any failed update.
-            m_channelInfoNotificationError = tr("Something went wrong");
-            emit stateChanged();
-            return;
-        }
-        *entry = *parsed;
-        emit streamsChanged();
-        emit stateChanged();
-    });
+    updateStreamNotificationMode(m_stream, mode, true);
 }
 
 bool NativeController::streamNotificationBusy(const QString &id) const
@@ -4413,46 +4372,55 @@ bool NativeController::streamNotificationBusy(const QString &id) const
     return m_channelInfoNotificationInFlight.contains(id);
 }
 
-// Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the sidebar stream
-// menu's level switch. The endpoint, payload, validation and canonical-response
-// admission mirror setChannelInfoNotificationMode (reference updateStreamNotifications
-// -> POST streams/{id}/actions/notifications/invoke), but this entry point
-// addresses any stream: the store row updates even while another stream is open,
-// because the sidebar menu never changes the selection.
 void NativeController::setStreamNotificationMode(const QString &id, const QString &mode)
 {
-    const auto entry = std::find_if(m_streams.begin(), m_streams.end(),
+    updateStreamNotificationMode(id, mode, false);
+}
+
+void NativeController::updateStreamNotificationMode(QString id, const QString &mode, bool fromDrawer)
+{
+    const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
         [&id](const Stream &row) { return row.uuid == id; });
-    if (!authenticated() || entry == m_streams.end()) return;
-    // One in-flight request per stream, sharing the chat-info switch's slots so
-    // both surfaces observe the same busy state for the same stream.
-    if (m_channelInfoNotificationInFlight.contains(id)) return;
-    if (entry->notificationMode.isEmpty() || entry->notificationMode == mode
-        || !channelModes.contains(mode)) return;
+    if (!authenticated() || entry == m_streams.cend() || !channelModes.contains(mode)
+        || streamNotificationBusy(id)) return;
+    // The drawer shows an unsupported message for a missing mode. The sidebar
+    // uses the reference store selector's mentions-only default for old rows.
+    if (fromDrawer && entry->notificationMode.isEmpty()) return;
+    const auto current = entry->notificationMode.isEmpty() ? QStringLiteral("mentions_only") : entry->notificationMode;
+    if (current == mode) return;
     const auto owner = ownerKey();
     const auto generation = m_api->generation();
     const auto token = ++m_channelInfoNotificationToken;
     m_channelInfoNotificationInFlight.insert(id, token);
+    if (fromDrawer) m_channelInfoNotificationError.clear();
     emit stateChanged();
     request("POST", messenger + "/streams/" + id + "/actions/notifications/invoke",
         QJsonObject{{"notification_mode", mode}}, {},
-        [this, owner, generation, id, token](const ApiResult &result) {
-        if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
-        if (m_channelInfoNotificationInFlight.value(id) != token) return;
+        [this, owner, generation, id, token, fromDrawer](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_channelInfoNotificationInFlight.value(id) != token
+            || (m_api->generation() != generation && !result.completedAfterTokenRenewal)) return;
         m_channelInfoNotificationInFlight.remove(id);
         const auto parsed = result.ok() && result.data.isObject()
             ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
-        const auto current = std::find_if(m_streams.begin(), m_streams.end(),
-            [&id](const Stream &row) { return row.uuid == id; });
-        if (!parsed || parsed->uuid != id || current == m_streams.end()) {
-            // Failed or foreign answer: release the slot and keep the old level.
-            emit stateChanged();
-            return;
+        const auto row = std::find_if(m_streams.begin(), m_streams.end(),
+            [&id](const Stream &stream) { return stream.uuid == id; });
+        const bool confirmed = parsed && parsed->uuid == id && row != m_streams.end();
+        const QPointer<NativeController> guard(this);
+        if (confirmed) {
+            *row = *parsed;
+            emit streamsChanged();
+        } else if (fromDrawer && m_stream == id) {
+            m_channelInfoNotificationError = tr("Something went wrong");
         }
-        *current = *parsed;
-        emit streamsChanged();
+        if (!guard) return;
+        if (!confirmed && result.completedAfterTokenRenewal) {
+            // The renewal's catalog may have been read before the write
+            // settled. A failed response can still follow a server commit.
+            refresh();
+            if (!guard) return;
+        }
         emit stateChanged();
-    });
+    }, ApiClient::TokenRenewal::AwaitReply);
 }
 
 void NativeController::removeChannelInfoMember(const QString &bindingUuid)
@@ -9962,8 +9930,14 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_loginStep = QStringLiteral("project");
         emit stateChanged();
     });
-    connect(api, &ApiClient::sessionChanged, this, [this] {
+    connect(api, &ApiClient::sessionChanged, this, [this](quint64, bool sameOwnerRenewal) {
         const QPointer<NativeController> lookupGuard(this);
+        interruptForward(sameOwnerRenewal);
+        if (!lookupGuard) return;
+        // A same-owner renewal lets the original write finish before another
+        // choice can reach the server. Sign-out and account changes retire it.
+        if (!sameOwnerRenewal) m_channelInfoNotificationInFlight.clear();
+        m_channelInfoNotificationError.clear();
         // Transport callbacks from the previous generation will not settle.
         // New projections must be able to resolve their quotes immediately.
         resetMentionIndex();
@@ -11126,14 +11100,15 @@ void NativeController::useRealtime(RealtimeClient *client)
 
 ApiClient::RequestId NativeController::request(const QByteArray &method, const QString &path,
                                const QJsonValue &body, const QUrlQuery &query,
-                               ApiClient::Callback callback)
+                               ApiClient::Callback callback, ApiClient::TokenRenewal renewal)
 {
     QPointer<NativeController> self(this);
     const auto owner = m_api->generation();
     const auto resetGeneration = m_localResetGeneration;
     const auto started = QDateTime::currentMSecsSinceEpoch();
     return m_api->request(method, path, body, query, [self, owner, resetGeneration, callback, method, path, started](const ApiResult &result) {
-        if (self && self->m_api->generation() == owner && self->m_localResetGeneration == resetGeneration) {
+        if (self && self->m_localResetGeneration == resetGeneration
+            && (self->m_api->generation() == owner || result.completedAfterTokenRenewal)) {
             self->observeTransport(result);
             // Issue #50: "API latency from HTTP response timing" — every
             // answered HTTP round feeds the bounded diagnostics ring.
@@ -11169,7 +11144,7 @@ ApiClient::RequestId NativeController::request(const QByteArray &method, const Q
             }
             callback(result);
         }
-    });
+    }, false, {}, renewal);
 }
 
 void NativeController::login(const QString &server, const QString &user,
@@ -11916,6 +11891,7 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    m_channelInfoNotificationInFlight.clear();
     m_pollSendAttempts.clear();
     m_channelTopicRequests.clear();
     closeEditSession();
@@ -12229,6 +12205,12 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                     ++m_reactionRevisions[message->uuid]; m_ownReactions.remove(message->uuid);
                 }
                 if (m_confirmedReadIds.contains(message->uuid) || (previous && previous->read)) message->read = true;
+                if (!previous && kind == QLatin1String("message.created") && !m_messages.isEmpty()) {
+                    const auto &tail = m_messages.constLast();
+                    if (message->createdMicros > tail.createdMicros
+                        || (message->createdMicros == tail.createdMicros && message->uuid > tail.uuid))
+                        ++m_historyTailAppends;
+                }
                 ++m_messageRevision;
                 m_messages = mergeMessages(m_messages, {*message});
                 pruneMessageFields();
@@ -14652,8 +14634,9 @@ QList<EditQuoteEntry> parseEditQuoteRestore(const QString &body)
     return entries;
 }
 
-QString normalizedReplySelection(const QString &content, const QString &selectedText)
+QString normalizedReplySelection(const Message &message, const QString &selectedText)
 {
+    if (message.poll) return pollTextSnapshot(message);
     // chat-page-workspace.ui.tsx:2747-2751 (workspace_ui 230e02b8): a
     // whitespace-only selection or a body carrying encrypted fragments
     // (revealed text must never leave as a quote line, bubble-presentation
@@ -14665,7 +14648,7 @@ QString normalizedReplySelection(const QString &content, const QString &selected
     selection.replace(QChar(0x2029), QLatin1Char('\n'));
     selection.replace(QChar(0x2028), QLatin1Char('\n'));
     if (selection.trimmed().isEmpty()) return {};
-    if (content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
+    if (message.content.contains(QLatin1String("urn:secret:"), Qt::CaseInsensitive)) return {};
     return selection;
 }
 } // namespace
@@ -14791,6 +14774,7 @@ QVariantList NativeController::messages() const
         // store fed by GET /messages/?uuid=, mirroring messenger-quote-resolver
         // .hook.ts:17-58 (store hit -> ready, fetch -> loading, miss -> unavailable).
         QString quoteId, quoteLabel, quoteSelection, quoteStatus, quoteAuthorName, quoteContent;
+        bool quoteIsPoll = false;
         auto displayContent = content;
         if (const auto quote = leadingQuoteReference(content)) {
             quoteId = quote->id;
@@ -14799,10 +14783,11 @@ QVariantList NativeController::messages() const
             displayContent = quote->rest;
             const auto fallback = quoteLabel.isEmpty() ? tr("Quote") : quoteLabel;
             const auto *origin = findMessage(quoteId);
-            if (origin && origin->kind == QLatin1String("markdown")) {
+            if (origin && (origin->kind == QLatin1String("markdown") || origin->poll)) {
                 quoteStatus = QStringLiteral("ready");
                 quoteAuthorName = userDisplayName(origin->author, fallback);
-                quoteContent = origin->content;
+                quoteIsPoll = origin->poll.has_value();
+                quoteContent = quoteIsPoll ? pollTextSnapshot(*origin) : origin->content;
             } else if (origin && origin->kind == QLatin1String("e2ee")) {
                 // Issue #222 (docs/NATIVE_DESKTOP_QUOTE_E2EE_STATES.md): an encrypted
                 // origin projects the chat-prepared decryption state, mirroring the
@@ -14848,7 +14833,8 @@ QVariantList NativeController::messages() const
                 } else {
                     quoteStatus = QStringLiteral("ready");
                     quoteAuthorName = userDisplayName(record->authorId, fallback);
-                    quoteContent = record->content;
+                    quoteIsPoll = record->origin && record->origin->poll;
+                    quoteContent = quoteIsPoll ? pollTextSnapshot(*record->origin) : record->content;
                 }
             } else {
                 quoteStatus = QStringLiteral("loading");
@@ -14887,7 +14873,7 @@ QVariantList NativeController::messages() const
             {"authorPresence", avatarsOwned ? m_names.value(message.author).presence : QString{}},
             {"content", content}, {"displayContent", displayContent},
             {"quoteId", quoteId}, {"quoteLabel", quoteLabel}, {"quoteText", quoteSelection},
-            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent},
+            {"quoteStatus", quoteStatus}, {"quoteAuthorName", quoteAuthorName}, {"quoteContent", quoteContent}, {"quoteIsPoll", quoteIsPoll},
             {"time", message.created.toLocalTime().toString("HH:mm")},
             {"createdAt", message.created.toUTC().toString(Qt::ISODateWithMs)},
             {"decrypted", decrypted},
@@ -15171,6 +15157,15 @@ bool NativeController::canCompose() const
         && stream->security->provider.isEmpty() && stream->security->providerIdentity.isEmpty()
         && QStringList{"guest", "member", "moderator", "administrator", "owner"}.contains(stream->role)
         && !encryptedSendTarget().isEmpty();
+}
+
+QVariantMap NativeController::encryptedOutgoingPresentation() const
+{
+    const auto intent = m_pendingSends.constFind(conversationKey());
+    if (intent == m_pendingSends.cend() || !intent->encrypted || intent->restored || intent->text.isEmpty()
+        || intent->selection != m_selection || !chatReadAllowed() || !encryptedSendOwned(*intent, true))
+        return {};
+    return {{"id", intent->publicId}, {"text", intent->text}};
 }
 
 QVariantMap NativeController::pendingSendMetadata() const
@@ -16374,7 +16369,11 @@ void NativeController::noteScrollReserve(qreal distanceFromTopPx, qreal viewport
         return;
     const qreal base = qMax<qreal>(100.0, viewportHeightPx);
     qreal reserve = base;
-    if (m_historyTimingSelection == m_selection && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
+    if (m_scrollSampleSelection != m_selection) {
+        m_scrollSampleClock.invalidate();
+        m_scrollSampleSelection = m_selection;
+    }
+    if (m_historyTimingGeneration == m_api->generation() && m_historyPageWaitMs > 0 && m_scrollSampleClock.isValid()) {
         const auto elapsed = m_scrollSampleClock.elapsed();
         const qreal travel = m_previousTopDistance - distanceFromTopPx;
         // Exclude layout jumps and idle gestures. Ahead of steady input, keep
@@ -16597,6 +16596,7 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
     const auto selection = m_selection;
     const auto generation = m_api->generation();
     const auto revision = m_messageRevision;
+    const auto pageRevision = historyPageRevision(older);
     const auto cacheRevision = m_cacheRevision;
     const auto lease = m_cacheLease;
     const QPointer<NativeCacheService> cache = m_cache;
@@ -16605,20 +16605,27 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
     m_loading = true;
     emit stateChanged();
     if (!guard) return;
-    const auto network = [this, guard, older, latest, selection, generation, revision, key, networkStarted] {
+    const auto network = [this, guard, older, latest, selection, generation, pageRevision, key, networkStarted] {
         if (!guard || generation != m_api->generation() || selection != m_selection || *networkStarted) return;
         *networkStarted = true;
         const auto boundary = latest || m_messages.isEmpty() ? std::optional<Message>{} : std::optional<Message>{m_messages.first()};
-        historyPage(older, selection, revision, boundary, older ? key.marker : QByteArray{}, {}, {});
+        historyPage(older, selection, pageRevision, boundary, older ? key.marker : QByteArray{}, {}, {});
     };
-    const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, cacheRevision, older, network](bool savedOnly) {
+    const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, pageRevision, cacheRevision, older, network](bool savedOnly) {
         if (!guard || !cache || cache != m_cache || selection != m_selection || generation != m_api->generation()) return;
-        cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
+        cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, pageRevision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
             if (!guard || selection != m_selection || cache != m_cache || generation != m_api->generation()) return;
-            const bool current = cacheRevision == m_cacheRevision && lease.owner == m_cacheLease.owner
-                && lease.generation == m_cacheLease.generation && revision == m_messageRevision;
-            if (!current) {
-                if (!savedOnly) { m_loading = false; loadMessages(); }
+            const bool sameLease = lease.owner == m_cacheLease.owner && lease.generation == m_cacheLease.generation;
+            if (!sameLease || cacheRevision != m_cacheRevision || revision != m_messageRevision) {
+                if (savedOnly) return;
+                if (sameLease && older && revision != m_messageRevision && pageRevision == historyPageRevision(true)) {
+                    // The cached projection predates a tail arrival. Fetch the original
+                    // older cursor from the server without replaying the visible window.
+                    network();
+                } else {
+                    m_loading = false;
+                    loadMessages();
+                }
                 return;
             }
             if (savedOnly && (m_historyVerified || !m_messages.isEmpty())) return;
@@ -16701,7 +16708,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         [this, older, selection, revision, boundary, marker, accumulated, seen, pages, bytes, key, lease, cacheRevision, cache, recovery, requestTimer](const ApiResult &result) mutable {
         if (selection != m_selection)
             return;
-        if (revision != m_messageRevision) {
+        if (revision != historyPageRevision(older)) {
             // A confirmed local mutation is newer than this snapshot. Keep the
             // verified rows while rebuilding from a fresh server transaction.
             m_loading = false;
@@ -16778,8 +16785,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             m_messages = mergeMessages({}, accumulated);
         }
         pruneMessageFields();
-        if (selection != m_historyTimingSelection) m_scrollSampleClock.invalidate();
-        m_historyTimingSelection = selection;
+        m_historyTimingGeneration = m_api->generation();
         m_historyPageWaitMs = requestTimer.elapsed();
         m_before = result.nextMarker;
         if (!older) m_after.clear();
@@ -18236,7 +18242,8 @@ const Message *NativeController::replyTarget(const QString &id) const
     const auto *stream = currentStream();
     const auto *message = findMessage(id);
     if (!authoritativeRoute() || !stream || stream->encrypted || !message
-        || message->kind != "markdown" || message->stream != m_stream || message->topic != m_topic)
+        || (message->kind != "markdown" && !message->poll)
+        || message->stream != m_stream || message->topic != m_topic)
         return nullptr;
     return message;
 }
@@ -18248,6 +18255,8 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
         report(tr("This message can no longer be replied to."));
         return false;
     }
+    const auto selection = normalizedReplySelection(*message, selectedText);
+    if (message->poll && selection.trimmed().isEmpty()) return false;
     if (!m_editingMessage.isEmpty()) closeEditSession();
     // replyToWorkspaceReply (workspace-reply.lib.ts:26-57): an empty session gets a
     // first tab that inherits the composer text; otherwise only the active tab's
@@ -18256,7 +18265,7 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
         ReplyTab tab;
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
-        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tab.selectedText = selection;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
         tab.answer = draft();
         m_replyTabs.append(tab);
@@ -18267,7 +18276,6 @@ bool NativeController::beginReply(const QString &id, const QString &selectedText
     }
     for (auto &tab : m_replyTabs) {
         if (tab.id != m_replyActiveTab) continue;
-        const auto selection = normalizedReplySelection(message->content, selectedText);
         if (tab.message != id || tab.selectedText != selection) {
             tab.message = id;
             tab.selectedText = selection;
@@ -18304,7 +18312,8 @@ bool NativeController::appendReplyTabs(const QStringList &ids, const QString &se
         tab.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         tab.message = id;
         tab.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-        tab.selectedText = normalizedReplySelection(message->content, selectedText);
+        tab.selectedText = normalizedReplySelection(*message, selectedText);
+        if (message->poll && tab.selectedText.trimmed().isEmpty()) return false;
         tabs.append(std::move(tab));
     }
 
@@ -18478,9 +18487,13 @@ std::optional<QString> NativeController::replyPlainFor(const QString &id) const
     // the resolved cache content counts as "in memory" here.
     if (id.isEmpty()) return std::nullopt;
     const QString *content = nullptr;
-    if (const auto *message = findMessage(id); message) content = &message->content;
-    else if (const auto record = m_quotes.constFind(id);
-             record != m_quotes.cend() && !record->missing) content = &record->content;
+    if (const auto *message = findMessage(id)) {
+        if (message->poll) return pollTextSnapshot(*message).simplified();
+        content = &message->content;
+    } else if (const auto record = m_quotes.constFind(id); record != m_quotes.cend() && !record->missing) {
+        if (record->origin && record->origin->poll) return pollTextSnapshot(*record->origin).simplified();
+        content = &record->content;
+    }
     if (!content) return std::nullopt;
     static NativeMarkdown previewCache;
     return previewCache.renderPreview(*content).value("plain").toString().simplified();
@@ -18687,7 +18700,8 @@ void NativeController::scheduleQuoteFetch(const QString &id) const
             const QJsonArray rows = result.ok() && result.data.isArray() ? result.data.toArray() : QJsonArray{};
             const auto parsed = rows.isEmpty() ? std::optional<Message>{}
                 : parseMessage(rows.first().toObject(), project);
-            if (parsed && parsed->uuid == id && parsed->kind == "markdown") {
+            if (parsed && parsed->uuid == id && (parsed->kind == "markdown" || parsed->poll)) {
+                if (parsed->poll) record.origin = *parsed;
                 record.authorId = parsed->author;
                 record.content = parsed->content;
             } else if (parsed && parsed->uuid == id && parsed->kind == "e2ee" && parsed->crypto) {
@@ -19537,6 +19551,26 @@ bool NativeController::forwardPending() const
     return m_forwardIntent.busy || m_forwardIntent.pending;
 }
 
+void NativeController::interruptForward(bool sameOwnerRenewal)
+{
+    auto &intent = m_forwardIntent;
+    if (!forwardPending()) return;
+
+    intent.generation = m_api->generation();
+    if (sameOwnerRenewal && forwardOwned(intent) && !intent.wire.isEmpty()) {
+        // Once the snapshot has reached the POST, only a read-back is safe.
+        intent.ticket = ++m_nextOutgoing;
+        intent.busy = false;
+        intent.pending = true;
+        m_forwardError = tr("Forwarding was not confirmed. Check does not send it again.");
+    } else {
+        clearForwardIntent();
+        m_forwardError = tr("Forwarding was interrupted by a session change.");
+    }
+    m_error = m_forwardError;
+    emit forwardChanged();
+}
+
 void NativeController::clearForwardIntent()
 {
     m_forwardIntent = ForwardIntent{};
@@ -19605,7 +19639,7 @@ void NativeController::forwardMessages(const QStringList &messageUuids, const QS
 
 void NativeController::fetchForwardSources(quint64 ticket)
 {
-    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) { clearForwardIntent(); return; }
+    if (m_forwardIntent.ticket != ticket || !forwardOwned(m_forwardIntent)) return;
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("project_id"), m_forwardIntent.project);
     for (const auto &uuid : m_forwardIntent.sources)
@@ -19630,11 +19664,11 @@ void NativeController::fetchForwardSources(quint64 ticket)
             // (workspace_ui 75bd21f37 workspace-forward-message.lib.ts:78-84
             // + ui.tsx:449-451). Mirror that instead of silently dropping the
             // unsupported source and posting a truncated snapshot.
-            if (parsed->kind != QLatin1String("markdown")) { unsupported = true; continue; }
+            if (parsed->kind != QLatin1String("markdown") && !parsed->poll) { unsupported = true; continue; }
             found.insert(parsed->uuid, *parsed);
         }
         if (unsupported) {
-            failForward(tr("Only text messages can be forwarded."));
+            failForward(tr("Only text messages and polls can be forwarded."));
             return;
         }
         m_forwardIntent.wire = buildForwardSnapshot(m_forwardIntent.sources, found);
@@ -19683,8 +19717,10 @@ QString NativeController::buildForwardSnapshot(const QStringList &sources,
                 .toString(Qt::ISODateWithMs);
         else
             options.sourceLabel.reset();
+        options.plainSnapshot = message.poll.has_value();
+        const auto snapshot = message.poll ? pollTextSnapshot(message) : message.content;
         const auto block = workspace::buildWorkspaceForwardReference(
-            userDisplayName(message.author, message.author), message.uuid, message.content, options);
+            userDisplayName(message.author, message.author), message.uuid, snapshot, options);
         if (block.isEmpty()) return QString();
         blocks << block;
     }
@@ -19742,10 +19778,11 @@ void NativeController::postForward(quint64 ticket)
 void NativeController::checkForwardStatus()
 {
     if (!m_forwardIntent.pending || m_forwardIntent.busy || !forwardOwned(m_forwardIntent)) return;
+    const auto ticket = m_forwardIntent.ticket;
     m_forwardIntent.busy = true;
     emit forwardChanged();
     emit stateChanged();
-    readForwardStatus(m_forwardIntent.ticket);
+    readForwardStatus(ticket);
 }
 
 void NativeController::readForwardStatus(quint64 ticket)
@@ -20243,14 +20280,57 @@ void NativeController::votePollOption(const QString &messageUuid, const QString 
             {QStringLiteral("option_uuid"), optionUuid}, {QStringLiteral("selected"), selected}});
 }
 
+bool NativeController::canManagePoll(const QString &id) const
+{
+    const auto *message = findMessage(id);
+    const auto *stream = currentStream();
+    if (!authenticated() || !authoritativeRoute() || !supportsMessengerPolls(stream) || !message
+        || !message->poll || !message->pollState || message->pollState->isClosed
+        || message->project != m_session->project() || message->stream != m_stream
+        || (!m_topic.isEmpty() && message->topic != m_topic) || message->author != m_session->user())
+        return false;
+    const auto &poll = *message->poll;
+    const auto deadline = QDateTime::fromString(poll.closesAt, Qt::ISODateWithMs);
+    if (deadline.isValid() && deadline <= QDateTime::currentDateTimeUtc()) return false;
+
+    // The bridge owns management of native Zulip poll widgets. Other polls
+    // carried by a Zulip stream use the Workspace management endpoints.
+    if (!stream->security || stream->security->source != QLatin1String("zulip")) return true;
+    if (poll.questions.size() != 1 || !poll.multipleAnswers || poll.isAnonymous || !poll.allowRevote
+        || poll.resultsVisibility != QLatin1String("always") || !poll.allowAddingOptions
+        || !poll.closesAt.isEmpty() || !poll.closedAt.isEmpty()) return true;
+    const auto &question = poll.questions.first();
+    if (!question.correctOptionUuids.isEmpty()) return true;
+    const auto literalLine = [](const QString &value) {
+        const auto space = [](QChar c) { return c.isSpace() || (c.unicode() >= 28 && c.unicode() <= 31); };
+        return (value.isEmpty() || (!space(value.front()) && !space(value.back())))
+            && !value.contains('\r') && !value.contains('\n') && !value.contains(QLatin1String("@*"));
+    };
+    if (!literalLine(question.text)) return true;
+    QSet<QString> labels;
+    for (const auto &option : question.options) {
+        if (labels.contains(option.text) || !literalLine(option.text)) return true;
+        labels.insert(option.text);
+    }
+    return false;
+}
+
 void NativeController::closePoll(const QString &messageUuid)
 {
+    if (!canManagePoll(messageUuid)) {
+        emit pollActionFailed(messageUuid, QStringLiteral("close_poll"), QStringLiteral("not-available"), {});
+        return;
+    }
     invokePollAction(messageUuid, QStringLiteral("close_poll"), QJsonObject{});
 }
 
 void NativeController::updatePollSettings(const QString &messageUuid, const QString &closesAt,
     bool allowAddingOptions)
 {
+    if (!canManagePoll(messageUuid)) {
+        emit pollActionFailed(messageUuid, QStringLiteral("update_settings"), QStringLiteral("not-available"), {});
+        return;
+    }
     // Full-config save: both fields are always present (closes_at null clears).
     QJsonObject settings{{QStringLiteral("allow_adding_options"), allowAddingOptions}};
     settings.insert(QStringLiteral("closes_at"),

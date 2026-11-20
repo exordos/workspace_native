@@ -154,6 +154,9 @@ locale (with `{{count}}` mapped to the Qt numerus form `%n`).
   - Localized text via `tr()` (context `JitsiCallWindowController`) using the
     exact reference en strings; ru catalog entries copied from the reference
     ru locale, guarded by `native-native-locale`.
+- When a user retries a failed meeting, Chromium may still deliver the previous
+  page's terminal load event. The embed accepts the result for the live view's
+  current URL, including its final redirected URL.
 - `packages/native/qml/NativeCallWindow.qml` — the visual shell: expanded mode
   renders as a scrim overlay inside `Main.qml` (outside click/Escape route to
   `requestDismiss()`), minimized mode renders inside a frameless `Window`
