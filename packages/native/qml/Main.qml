@@ -3421,7 +3421,7 @@ component NativeMentionChip: Item {
         x: root.width - width - 16
         y: topBar.height - 4
         width: 315
-        height: Math.min(accountActions.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
+        height: Math.min(accountActions.implicitHeight + 8 + signOutFooter.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
         padding: 12
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: Rectangle {
@@ -3429,14 +3429,34 @@ component NativeMentionChip: Item {
             border.color: root.colors["border-subtle"]
             radius: 10
         }
-        contentItem: Flickable {
-            id: accountScroll
-            objectName: "accountMenuScroll"
-            clip: true
-            contentWidth: width
-            contentHeight: accountActions.implicitHeight
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {}
+        contentItem: Item {
+            Flickable {
+                id: accountScroll
+                objectName: "accountMenuScroll"
+                anchors.top: parent.top
+                anchors.bottom: signOutFooter.top
+                anchors.bottomMargin: 8
+                width: parent.width
+                clip: true
+                contentWidth: width
+                contentHeight: accountActions.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {}
+            }
+            NativeButton {
+                id: signOutFooter
+                colors: root.colors
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                text: qsTr("Sign out")
+                objectName: "signOutButton"
+                onClicked: {
+                    accountPopup.close();
+                    root.controller.closeDrafts();
+                    root.controller.logout();
+                }
+            }
         }
         ColumnLayout {
             id: accountActions
@@ -3757,17 +3777,7 @@ component NativeMentionChip: Item {
                     accountPopup.close();
                 }
             }
-            NativeButton {
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Sign out")
-                objectName: "signOutButton"
-                onClicked: {
-                    accountPopup.close();
-                    root.controller.closeDrafts();
-                    root.controller.logout();
-                }
-            }
+
         }
     }
 

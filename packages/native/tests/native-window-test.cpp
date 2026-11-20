@@ -21883,6 +21883,24 @@ mv -Tf "$root/.current-new" "$root/current"
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
     // and packages/web/src/shared/lib/avatar-color.lib.ts for the color.
+    void accountMenuKeepsSignOutReachableWhileScrolling()
+    {
+        ChannelInfoWindowScene scene;
+        scene.window->resize(900, 600);
+        click(scene.window, visibleItem("accountMenuButton"));
+        auto *scroll = visibleItem("accountMenuScroll");
+        auto *signOut = visibleItem("signOutButton");
+        QVERIFY(scroll && signOut);
+        QTRY_VERIFY(scroll->property("contentHeight").toReal() > scroll->height());
+        const QRectF bounds(QPointF{}, scene.window->size());
+        QTRY_VERIFY(bounds.contains(signOut->mapRectToScene({QPointF{}, signOut->size()})));
+        const auto position = signOut->mapToScene(QPointF{});
+        scroll->setProperty("contentY", scroll->property("contentHeight").toReal() - scroll->height());
+        QCOMPARE(signOut->mapToScene(QPointF{}), position);
+        click(scene.window, signOut);
+        QTRY_VERIFY(!scene.controller.authenticated());
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;
