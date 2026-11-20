@@ -7736,6 +7736,11 @@ ApplicationWindow {
                     readBoundary: bubble
                     readId: String(modelData.id)
                     readonly property bool own: Boolean(modelData.own)
+                    // Issue #113 read-request pulse (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md):
+                    // the reference marks the bubble pending exactly when the server
+                    // message is inbound and not yet read
+                    // (workspace-message-bubble-presentation.ui.tsx:531-532).
+                    readonly property bool readRequestPending: !own && !Boolean(modelData.read)
                     readonly property bool lastInOwnGroup: groupLast
                     width: messageList.width - 24
                     height: bubbleOffset + (externalAuthor ? 24 : 0) + bubble.height + (groupLast && !keyControl ? 4 : 0)
@@ -7928,6 +7933,41 @@ ApplicationWindow {
                         topRightRadius: !messageRow.own || messageRow.groupLast ? 18 : 10
                         bottomLeftRadius: messageRow.own ? 18 : messageRow.groupLast ? 6 : 10
                         bottomRightRadius: messageRow.own ? (messageRow.lastInOwnGroup ? 6 : 10) : 18
+                        // Issue #113 read-request pulse (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md):
+                        // native port of workspace-message-read-request-pulse::before
+                        // (app.styles.css:128-156) - an accent wash between the bubble
+                        // fill and its content (z: -1 mirrors z-index: -1 with
+                        // isolation: isolate, so text stays fully opaque), radii
+                        // mirrored from the bubble (border-radius: inherit), opacity
+                        // 0 -> 0.2 -> 0 per 1.6 s ease-in-out cycle while the bubble
+                        // awaits its read receipt. root.active is the Window.active
+                        // stand-in for the reference activity gate, and reduced motion
+                        // freezes the wash at the full 0.2 (app.styles.css:269-286).
+                        // No visible text: the reference overlay is purely visual.
+                        Rectangle {
+                            id: readRequestOverlay
+                            objectName: "message-read-pulse-" + String(messageRow.modelData.id)
+                            anchors.fill: parent
+                            visible: messageRow.readRequestPending
+                            z: -1
+                            color: root.colors.accent
+                            opacity: root.prefersReducedMotion ? 0.2 : 0
+                            topLeftRadius: bubble.topLeftRadius
+                            topRightRadius: bubble.topRightRadius
+                            bottomLeftRadius: bubble.bottomLeftRadius
+                            bottomRightRadius: bubble.bottomRightRadius
+                            Accessible.ignored: true
+                            SequentialAnimation {
+                                objectName: "message-read-pulse-anim-" + String(messageRow.modelData.id)
+                                loops: Animation.Infinite
+                                running: messageRow.readRequestPending && root.active
+                                    && !root.prefersReducedMotion
+                                // CSS applies the timing function per keyframe
+                                // segment, so each 800 ms leg eases in-out.
+                                NumberAnimation { target: readRequestOverlay; property: "opacity"; from: 0.0; to: 0.2; duration: 800; easing.type: Easing.InOutQuad }
+                                NumberAnimation { target: readRequestOverlay; property: "opacity"; from: 0.2; to: 0.0; duration: 800; easing.type: Easing.InOutQuad }
+                            }
+                        }
                         Column {
                             id: bubbleContent
                             x: 12
