@@ -116,6 +116,7 @@ public:
     }
 
     int pipe;
+    qint64 requestSequence = 0;
     QQuickWindow *window;
     NativeController &controller;
     NativeCacheService &cache;
@@ -171,16 +172,27 @@ void observeLiveAcceptance(QQuickWindow *window, ApiClient &api, NativeControlle
         const auto query = QUrlQuery(url);
         const bool older = query.hasQueryItem("page_marker") || query.hasQueryItem("older_than");
         const auto start = nowMs();
-        trace->writeEvent("request", {{"category", category}, {"older", older}});
-        QObject::connect(reply, &QNetworkReply::finished, trace, [trace, reply, start, category, older] {
-            trace->writeEvent("response", {{"category", category}, {"older", older}, {"elapsed", nowMs()-start},
+        const auto index = ++trace->requestSequence;
+        const auto topic = query.queryItemValue("topic_uuid");
+        const auto view = topic == trace->topicA && !topic.isEmpty() ? "a"
+            : topic == trace->topicB && !topic.isEmpty() ? "b" : "other";
+        trace->writeEvent("request", {{"category", category}, {"older", older}, {"index", index}, {"view", view}});
+        QObject::connect(reply, &QNetworkReply::finished, trace, [trace, reply, start, category, older, index, view] {
+            trace->writeEvent("response", {{"category", category}, {"older", older}, {"index", index}, {"view", view}, {"elapsed", nowMs()-start},
                 {"status", reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()}});
         });
     });
     const auto peerMessage = qgetenv("WORKSPACE_NATIVE_ACCEPTANCE_PEER_MESSAGE");
-    QObject::connect(&realtime, &RealtimeClient::eventReceived, trace, [trace, peerMessage](const QJsonObject &event) {
-        const bool peer = !peerMessage.isEmpty() && QJsonDocument(event).toJson(QJsonDocument::Compact).contains(peerMessage);
-        trace->writeEvent("realtime", {{"peer", peer}});
+    const auto peerIdentity = qgetenv("WORKSPACE_NATIVE_ACCEPTANCE_PEER_ID");
+    QObject::connect(&realtime, &RealtimeClient::eventReceived, trace, [trace, peerMessage, peerIdentity](const QJsonObject &event) {
+        static const QStringList kinds{"message.created", "message.updated", "message.deleted", "message.read",
+            "messages.read", "message_reaction.created", "message_reaction.updated", "user.updated"};
+        const auto payload = event.value("payload").toObject();
+        const auto kind = payload.value("kind").toString();
+        const auto serialized = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        const bool peer = (!peerMessage.isEmpty() && serialized.contains(peerMessage))
+            || (!peerIdentity.isEmpty() && serialized.contains(peerIdentity));
+        trace->writeEvent("realtime", {{"peer", peer}, {"kind", kinds.contains(kind) ? kind : QStringLiteral("other")}});
     });
 }
 }

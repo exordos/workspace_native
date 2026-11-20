@@ -16,7 +16,7 @@ class NetworkConditions:
         self.mode = None
         self.connections = set()
         self.matched = 0
-        self.effects = 0
+        self.effects = {"delay": 0, "disconnect": 0}
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
 
@@ -43,7 +43,7 @@ class NetworkConditions:
                 await writer.drain()
                 return
             if self.mode == "disconnect":
-                self.effects += 1
+                self.effects[self.mode] += 1
                 return
             source, upstream = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port), 8
@@ -55,10 +55,10 @@ class NetworkConditions:
             async def copy(src, dst, down):
                 while chunk := await src.read(65536):
                     if self.mode == "disconnect":
-                        self.effects += 1
+                        self.effects[self.mode] += 1
                         return
                     if down and self.mode == "delay":
-                        self.effects += 1
+                        self.effects[self.mode] += 1
                         await asyncio.sleep(0.75)
                     dst.write(chunk)
                     await dst.drain()
@@ -97,7 +97,7 @@ class NetworkConditions:
             if mode == "disconnect":
                 for writer in self.connections:
                     writer.close()
-                self.effects += len(self.connections)
+                self.effects["disconnect"] += len(self.connections)
             applied.set()
 
         self.loop.call_soon_threadsafe(enable)

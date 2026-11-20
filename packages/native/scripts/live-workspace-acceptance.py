@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -497,13 +498,15 @@ class Desktop:
             "history-unavailable",
         )
 
-    def scroll(self, kind, direction, bursts):
+    def scroll(self, kind, direction, bursts, on_input=None):
         self.position(self.pane)
         with self.action(
             kind, direction=direction, intent=self.latest("sample").get("intent", 0)
         ):
             time.sleep(0.16)
-            for _ in range(bursts):
+            for i in range(bursts):
+                if i == 2 and on_input:
+                    on_input()
                 # wl_pointer vertical axes use positive for down, Qt angle deltas positive for up.
                 self.point(f"wheel {-direction * 12}")
                 time.sleep(0.025)
@@ -615,28 +618,46 @@ class Desktop:
                 time.sleep(0.02)
             self.point("finger 0")
             time.sleep(0.35)
-        self.scroll("paged-scroll", 1, 160 if extended else 65)
-        time.sleep(0.35)
-        settled = self.latest("sample")
-        with self.action(
-            "stopped", **{k: settled[k] for k in ("anchor", "anchorY") if k in settled}
+        with (
+            peer.temporary_message("a", peer.message) as create,
+            ThreadPoolExecutor(max_workers=1) as worker,
         ):
-            time.sleep(0.8)
-        with self.action("typing"):
-            self.click("messageComposer")
-            self.record(
-                "type-start", before=self.latest("picture").get("editorSignature", "")
+            arrival = None
+
+            def submit_arrival():
+                nonlocal arrival
+                arrival = worker.submit(create)
+
+            self.scroll(
+                "paged-scroll", 1, 160 if extended else 65, on_input=submit_arrival
             )
-            command(["wtype", "-"], env=self.env, data=b"acceptance draft")
-            self.until(
-                lambda: self.latest("sample").get("draftLength", 0) > 0,
-                "typing-not-observed",
-            )
-            peer.exercise(self)
-            time.sleep(0.4)
-        with self.action("warm-delayed"), network.disturb("delay"):
-            self.topic("b")
-            time.sleep(0.8)
+            arrival.result()
+            time.sleep(0.35)
+            settled = self.latest("sample")
+            with self.action(
+                "stopped",
+                **{k: settled[k] for k in ("anchor", "anchorY") if k in settled},
+            ):
+                time.sleep(0.8)
+            with self.action("typing"):
+                self.click("messageComposer")
+                self.record(
+                    "type-start",
+                    before=self.latest("picture").get("editorSignature", ""),
+                )
+                command(["wtype", "-"], env=self.env, data=b"acceptance draft")
+                self.until(
+                    lambda: self.latest("sample").get("draftLength", 0) > 0,
+                    "typing-not-observed",
+                )
+                peer.exercise(self)
+                time.sleep(0.4)
+        # Invalidate only the warmed target's history through a real peer arrival.
+        with peer.temporary_message("b", str(uuid4())) as create:
+            create()
+            with self.action("warm-delayed"), network.disturb("delay"):
+                self.topic("b")
+                time.sleep(0.8)
         with self.action("reconnect"):
             with network.disturb("disconnect"):
                 self.topic("a")
@@ -675,61 +696,70 @@ class Peer:
         except (requests.RequestException, ValueError) as exc:
             raise Blocked("peer-api-transport") from exc
 
-    def exercise(self, desktop):
+    @contextlib.contextmanager
+    def temporary_message(self, topic, identifier):
         if not self.identity or not self.identity.get("token"):
             raise Blocked("peer-role-unavailable")
-        api = "/api/workspace/v1/messenger"
-        item = api + "/messages/" + self.message
-        sent = False
-        try:
+        collection = "/api/workspace/v1/messenger/messages/"
+        item = collection + identifier
+        verified = threading.Event()
+
+        def create():
             self.request(
                 "POST",
-                api + "/messages/",
+                collection,
                 {
-                    "uuid": self.message,
+                    "uuid": identifier,
                     "stream_uuid": self.config["stream"],
-                    "topic_uuid": self.config["topic_a"],
+                    "topic_uuid": self.config["topic_" + topic],
                     "payload": {"kind": "markdown", "content": "Acceptance arrival"},
                 },
             )
-            sent = True
             row = self.request("GET", item)
             if (
                 row.get("stream_uuid") != self.config["stream"]
-                or row.get("topic_uuid") != self.config["topic_a"]
+                or row.get("topic_uuid") != self.config["topic_" + topic]
             ):
                 raise Blocked("peer-message-route")
-            self.request(
-                "PUT",
-                item,
-                {"payload": {"kind": "markdown", "content": "Acceptance edit"}},
-            )
-            self.request(
-                "POST",
-                api + "/message_reactions/",
-                {"message_uuid": self.message, "emoji_name": "thumbs_up"},
-            )
-            read_target = str(UUID(self.config["read_boundary"]))
-            boundary = self.request("GET", api + "/messages/" + read_target)
-            if (
-                boundary.get("stream_uuid") != self.config["stream"]
-                or boundary.get("topic_uuid") != self.config["topic_a"]
-            ):
-                raise Blocked("peer-read-route")
-            self.request(
-                "POST",
-                api + "/messages/" + read_target + "/actions/read_up_to/invoke",
-                {},
-            )
-            peer = str(UUID(self.identity["uuid"]))
-            self.request(
-                "POST",
-                "/api/workspace/v1/users/" + peer + "/actions/presence/invoke",
-                {"status": "active"},
-            )
+            verified.set()
+
+        try:
+            yield create
         finally:
-            if sent:
+            if verified.is_set():
                 self.request("DELETE", item)
+
+    def exercise(self, desktop):
+        api = "/api/workspace/v1/messenger"
+        item = api + "/messages/" + self.message
+        self.request(
+            "PUT",
+            item,
+            {"payload": {"kind": "markdown", "content": "Acceptance edit"}},
+        )
+        self.request(
+            "POST",
+            api + "/message_reactions/",
+            {"message_uuid": self.message, "emoji_name": "thumbs_up"},
+        )
+        read_target = str(UUID(self.config["read_boundary"]))
+        boundary = self.request("GET", api + "/messages/" + read_target)
+        if (
+            boundary.get("stream_uuid") != self.config["stream"]
+            or boundary.get("topic_uuid") != self.config["topic_a"]
+        ):
+            raise Blocked("peer-read-route")
+        self.request(
+            "POST",
+            api + "/messages/" + read_target + "/actions/read_up_to/invoke",
+            {},
+        )
+        peer = str(UUID(self.identity["uuid"]))
+        self.request(
+            "POST",
+            "/api/workspace/v1/users/" + peer + "/actions/presence/invoke",
+            {"status": "active"},
+        )
         desktop.until(
             lambda: any(
                 e.get("peer") for e in list(desktop.events) if e["event"] == "realtime"
@@ -894,6 +924,10 @@ def main():
                     raise Blocked("invalid-reviewed-limits")
             peer = Peer(config, args.peer_role)
             desktop.env["WORKSPACE_NATIVE_ACCEPTANCE_PEER_MESSAGE"] = peer.message
+            if peer.identity and peer.identity.get("uuid"):
+                desktop.env["WORKSPACE_NATIVE_ACCEPTANCE_PEER_ID"] = str(
+                    UUID(peer.identity["uuid"])
+                )
             desktop.env["WORKSPACE_NATIVE_ACCEPTANCE_TOPIC_A"] = config["topic_a"]
             desktop.env["WORKSPACE_NATIVE_ACCEPTANCE_TOPIC_B"] = config["topic_b"]
             with NetworkConditions(config["origin"]) as net:
@@ -923,7 +957,7 @@ def main():
                     }
                 else:
                     desktop.run(args.mode == "extended", peer, net)
-                    if not net.matched or not net.effects:
+                    if not net.matched or not all(net.effects.values()):
                         raise Blocked("network-fault-not-delivered")
                     result = evaluate(desktop.events, limits)
             result["runtime"] = desktop.latest("runtime")

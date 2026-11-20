@@ -33,8 +33,8 @@ def sanitize_native_event(raw):
         "click": (),
         "wheel": ("angle", "pixel", "phase"),
         "realtime": ("peer",),
-        "request": ("older",),
-        "response": ("older", "elapsed", "status"),
+        "request": ("older", "index"),
+        "response": ("older", "elapsed", "status", "index"),
     }
     kind = raw.get("event")
     if kind not in allowed or type(raw.get("ms")) is not int:
@@ -43,13 +43,31 @@ def sanitize_native_event(raw):
     for key in allowed[kind]:
         if key in raw and type(raw[key]) in (bool, int, float):
             event[key] = raw[key]
+    if kind == "realtime" and raw.get("kind") in (
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.read",
+        "messages.read",
+        "message_reaction.created",
+        "message_reaction.updated",
+        "user.updated",
+        "other",
+    ):
+        event["kind"] = raw["kind"]
     if kind == "runtime":
         import re
 
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(raw.get("qt", ""))):
             return None
         event["qt"] = raw["qt"]
-    if kind == "sample" and raw.get("view") in ("a", "b", "aggregate", "none", "other"):
+    if kind in ("sample", "request", "response") and raw.get("view") in (
+        "a",
+        "b",
+        "aggregate",
+        "none",
+        "other",
+    ):
         event["view"] = raw["view"]
     if kind in ("request", "response"):
         if raw.get("category") not in ("history", "auth", "image", "events", "other"):
@@ -106,6 +124,12 @@ def evaluate(events, limits):
             "p95_frame_ms": percentile(frame_intervals, 0.95),
             "max_frame_ms": max(frame_intervals, default=0),
         }
+        resources = [e for e in window if e["event"] == "process"]
+        if resources:
+            metrics["exit_rss_kib"] = resources[-1]["rss"]
+            metrics["cpu_ticks_used"] = max(
+                0, resources[-1]["cpu"] - resources[0]["cpu"]
+            )
         phases[key] = metrics
         if not observed or len(pictures) < 2:
             blocked.add("missing-temporal-evidence")
@@ -274,6 +298,13 @@ def evaluate(events, limits):
                 and e.get("older")
                 for e in window
             )
+            if not any(
+                e["event"] == "realtime"
+                and e.get("peer")
+                and e.get("kind") == "message.created"
+                for e in window
+            ):
+                blocked.add("peer-arrival-during-scroll-unobserved")
             if metrics["older_requests"] < 2:
                 blocked.add("several-pagination-boundaries-unobserved")
         if kind == "loaded-scroll" and any(
@@ -284,13 +315,27 @@ def evaluate(events, limits):
         ):
             blocked.add("loaded-range-not-isolated")
         if kind == "warm-delayed":
-            pending = served = False
+            pending = set()
+            visible = False
+            served = False
             for e in window:
-                if e["event"] == "request" and e.get("category") == "history":
-                    pending = True
-                elif e["event"] == "response" and e.get("category") == "history":
-                    pending = False
-                if pending and e["event"] == "sample" and e.get("count", 0) > 0:
+                if (
+                    e.get("category") == "history"
+                    and e.get("view") == "b"
+                    and "index" in e
+                ):
+                    if e["event"] == "request":
+                        pending.add(e["index"])
+                    elif e["event"] == "response":
+                        pending.discard(e["index"])
+                if e["event"] == "sample":
+                    visible = e.get("count", 0) > 0 and e.get("view") == "b"
+                if (
+                    pending
+                    and visible
+                    and e["event"] == "picture"
+                    and e["occupancy"] > 0
+                ):
                     served = True
             if not served:
                 blocked.add("cached-content-during-revalidation-unobserved")
@@ -311,6 +356,25 @@ def evaluate(events, limits):
     }
     if not required.issubset({a["kind"] for a in actions}):
         blocked.add("incomplete-scenarios")
+    realtime = Counter(
+        e.get("kind", "other")
+        for e in events
+        if e["event"] == "realtime" and e.get("peer")
+    )
+    if (
+        not {
+            "message.created",
+            "message.updated",
+            "message.deleted",
+            "user.updated",
+        }.issubset(realtime)
+        or not any(
+            k in realtime
+            for k in ("message_reaction.created", "message_reaction.updated")
+        )
+        or not any(k in realtime for k in ("message.read", "messages.read"))
+    ):
+        blocked.add("peer-event-classes-unobserved")
     if not any(e["event"] == "peer-workload" for e in events):
         blocked.add("peer-workload-unobserved")
     if not any(
@@ -344,6 +408,7 @@ def evaluate(events, limits):
         "requests": dict(
             Counter(e["category"] for e in events if e["event"] == "request")
         ),
+        "peer_events": dict(realtime),
         "cache_hits": max((e.get("hits", 0) for e in samples), default=0),
         "frame_interval_median_ms": median(
             [b - a for a, b in itertools.pairwise(frames)]

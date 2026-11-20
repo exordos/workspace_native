@@ -81,6 +81,50 @@ class Controls(unittest.TestCase):
         self.assertEqual(report["status"], "BLOCKED")
         self.assertNotIn("no-visible-wheel-response", report["failures"])
 
+    def test_delayed_navigation_requires_target_pixels_while_its_own_request_is_pending(
+        self,
+    ):
+        rows = [
+            {"event": "action", "ms": 0, "id": 1, "kind": "warm-delayed"},
+            {
+                "event": "request",
+                "ms": 2,
+                "category": "history",
+                "view": "b",
+                "index": 4,
+            },
+            {"event": "sample", "ms": 5, "view": "b", "count": 30},
+            {
+                "event": "response",
+                "ms": 6,
+                "category": "history",
+                "view": "a",
+                "index": 2,
+            },
+            {"event": "picture", "ms": 7, "occupancy": 0.3, "signature": "content"},
+            {
+                "event": "response",
+                "ms": 9,
+                "category": "history",
+                "view": "b",
+                "index": 4,
+            },
+            {"event": "end", "ms": 15, "id": 1},
+        ]
+        missing = "cached-content-during-revalidation-unobserved"
+        self.assertNotIn(missing, evaluate(rows, LIMITS)["blocked"])
+        rows[4]["ms"] = 11
+        self.assertIn(missing, evaluate(rows, LIMITS)["blocked"])
+
+    def test_cpu_ticks_accumulate_across_the_real_restart(self):
+        rows = [
+            {"event": "launch", "ms": 1},
+            {"event": "process", "ms": 2, "cpu": 15, "rss": 20},
+            {"event": "launch", "ms": 3},
+            {"event": "process", "ms": 4, "cpu": 5, "rss": 18},
+        ]
+        self.assertEqual(evaluate(rows, None)["resources"]["cpu_ticks"], 20)
+
     def test_one_blank_capture_is_enough(self):
         rows = trace()
         rows.insert(
@@ -167,7 +211,7 @@ class NetworkControlTests(unittest.TestCase):
                     with network.disturb("disconnect"):
                         self.assertEqual(allowed.recv(256), b"")
                 self.assertEqual(network.matched, 1)
-                self.assertGreater(network.effects, 0)
+                self.assertGreater(network.effects["disconnect"], 0)
             endpoint.shutdown()
             thread.join(2)
 
