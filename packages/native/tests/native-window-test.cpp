@@ -30288,7 +30288,7 @@ private slots:
         QTRY_COMPARE(session.projects().size(),1); session.selectProject(projectId);
         // The catalog answer is held: the dashed spinner card replaces the rows.
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarLoadingCard"),5000);
-        QVERIFY(releaseStreams);
+        QTRY_VERIFY(releaseStreams);
         QCOMPARE(visibleItem("sidebarLoadingText")->property("text").toString(),QStringLiteral("Loading\u2026"));
         QCOMPARE(visibleItem("sidebarLoadingText")->property("font").value<QFont>().pixelSize(),14);
         QCOMPARE(visibleItem("sidebarLoadingText")->property("color").value<QColor>(),QColor("#989898"));
@@ -30651,7 +30651,8 @@ private slots:
         QCOMPARE(accessible->role(), QAccessible::Role(role));
         QCOMPARE(accessible->text(QAccessible::Name), text);
         if (stateCase == QStringLiteral("loading")) {
-            const auto send = std::exchange(releaseStreams,{}); if (send) send();
+            QTRY_VERIFY(releaseStreams);
+            const auto send = std::exchange(releaseStreams,{}); send();
             QTRY_VERIFY_WITH_TIMEOUT(visibleItem("stream-"+streamId),5000);
         }
         const bool closed = closeIncubatedTestWindow(engine,window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
