@@ -7859,11 +7859,11 @@ component NativeMentionChip: Item {
                             const count = String(part.html || "").split("<a href=\"urn:user:").length - 1;
                             if (count <= 0)
                                 continue;
-                            // Round-4 review N4: whole-document anchor spans
-                            // do not index a part's own text document, so
-                            // inline-image parts keep the in-part text search.
+                            // The TextEdit for each part starts at zero; translate
+                            // anchor positions from the original document.
                             const pairs = messageRow.mentionPairs.slice(consumed, consumed + count)
-                                .map(pair => ({ urn: pair.urn, label: pair.label }));
+                                .map(pair => ({ urn: pair.urn, label: pair.label,
+                                    anchorStart: pair.anchorStart - part.start, anchorLength: pair.anchorLength }));
                             consumed += count;
                             for (const rect of mentionRectsIn(run.textPart, pairs, mediaMentionOverlay))
                                 out.push(rect);

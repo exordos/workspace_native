@@ -1022,9 +1022,9 @@ public:
         server.handler = [this, fallback](const Request &request) -> Response {
             const auto path = request.target.path();
             if (path.endsWith("/messages/") && request.method == "GET") {
-                const auto body = QStringLiteral("Before [Ann](urn:user:%1) mid\n"
+                const auto body = QStringLiteral("Before @Ann then [Ann](urn:user:%1) mid\n"
                     "![shot](urn:image:%2?name=s.png&content_type=image%2Fpng&w=8&h=8)\n"
-                    "tail [Bob](urn:user:%3)")
+                    "tail @Bob then [Bob](urn:user:%3)")
                     .arg(annUuid(), messageId, bobUuid());
                 return {QJsonArray{message(body, messageId, topicId)}, 200, 0};
             }
@@ -34879,6 +34879,16 @@ private slots:
         auto *annChip = visibleItem("message-mention-" + ann);
         QVERIFY2(annChip->width() > 4 && annChip->height() > 4,
             qPrintable(QStringLiteral("ann chip %1x%2").arg(annChip->width()).arg(annChip->height())));
+        for (const auto &target : {qMakePair(ann, 0), qMakePair(bob, 2)}) {
+            auto *chip = visibleItem("message-mention-" + target.first);
+            auto *part = visibleItem("mediaTextRun-" + messageId + "-" + QString::number(target.second));
+            QVERIFY(part && chip);
+            const auto point = part->mapFromItem(chip, QPointF(chip->width() / 2, chip->height() / 2));
+            QString href;
+            QVERIFY(QMetaObject::invokeMethod(part, "linkAt", Q_RETURN_ARG(QString, href),
+                Q_ARG(qreal, point.x()), Q_ARG(qreal, point.y())));
+            QCOMPARE(href, QStringLiteral("urn:user:") + target.first);
+        }
         if (!closeIncubatedTestWindow(engine, window))
             QFAIL("inline-image mention scene teardown");
     }

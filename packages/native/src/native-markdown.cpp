@@ -69,7 +69,7 @@ QVariantMap textPart(MessageDocument &document, int first, int last,
     const auto tail = part.lastBlock();
     auto format = tail.blockFormat(); format.setBottomMargin(0);
     QTextCursor(tail).setBlockFormat(format);
-    QVariantMap result{{"kind", "text"}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
+    QVariantMap result{{"kind", "text"}, {"start", first}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
     // Issue #110 review r3 (finding 4639247928): the copy targets a media-split
     // body renders per text part. The part document re-imports the exported
     // fragment 1:1 (one element per block), so a block entirely inside this
