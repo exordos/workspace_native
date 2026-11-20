@@ -1666,7 +1666,20 @@ private slots:
             }
             return Response{reacted ? QJsonArray{fact} : QJsonArray{}};
         };
-        QVERIFY(fixture.start()); fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy());
+        // Wait for this owner's database before warming the routes. An initial
+        // history read while the database opens correctly bypasses the cache.
+        fixture.controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(fixture.controller.projects().size(), 1);
+        fixture.controller.openProject(projectId);
+        QTRY_VERIFY(cache.available() && fixture.controller.streams().size() == 1);
+        fixture.controller.selectStream(streamId);
+        QTRY_COMPARE(fixture.controller.topics().size(), 2);
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(!fixture.controller.busy());
+        QCOMPARE(history, 1);
+        QVERIFY(flushCache(cache));
+
+        fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy());
         fixture.controller.selectTopic(topicId); QTRY_VERIFY(!fixture.controller.busy()); QCOMPARE(history, 2);
         if (operation == "star") fixture.controller.starMessage(messageId);
         if (operation == "edit") fixture.controller.editMessage(messageId, "edited");
