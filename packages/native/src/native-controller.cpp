@@ -3258,7 +3258,7 @@ void NativeController::saveOwnStatus(const QString &text, const QString &emoji, 
         const auto name = directoryViewerName(row);
         // A single owned canonical response cannot adopt somebody else's directory.
         if (m_channelDirectoryOwner != owner) {
-            m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryValid = false;
+            m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryValid = false;
             m_channelDirectoryOwner = owner;
         }
         m_names.insert(user, makeUserPresentation(name, row, true, m_names.value(user)));
@@ -3863,6 +3863,30 @@ QVariantList NativeController::chatPickerChoices() const
         result.append(choice);
     }
     return result;
+}
+
+QVariantList NativeController::searchWorkspaceUsers(const QString &query) const
+{
+    const auto needle = query.trimmed();
+    QVariantList matches;
+    if (needle.isEmpty() || !authenticated() || m_channelDirectoryOwner != creationOwnerKey()) return matches;
+    auto addMatch = [&](QVariantMap choice) {
+        if (choice.isEmpty()) return;
+        const auto person = m_names.constFind(choice.value("id").toString());
+        const auto contains = [&](const QString &value) { return value.contains(needle, Qt::CaseInsensitive); };
+        if (!contains(choice.value("displayName").toString()) && !contains(choice.value("username").toString())
+            && !contains(choice.value("email").toString())
+            && (person == m_names.cend() || (!contains(person->statusText) && !contains(person->statusEmoji)))) return;
+        choice["presence"] = person == m_names.cend() ? QString{} : person->presence;
+        choice["statusLabel"] = person == m_names.cend() ? QString{} : person->statusLabel;
+        matches.append(choice);
+    };
+    const auto self = m_session->user();
+    for (const auto &id : m_directoryUserOrder) {
+        addMatch(id == self ? m_mentionSelfChoice : m_channelChoices.value(id));
+        if (matches.size() == 20) break;
+    }
+    return matches;
 }
 
 bool NativeController::channelMembersVerified() const
@@ -5023,6 +5047,7 @@ void NativeController::navigateProfileDirect(const ProfileDirectNavigation &navi
 void NativeController::updateChannelDirectory(const QJsonArray &rows, bool authoritative)
 {
     QMap<QString, QVariantMap> choices;
+    QStringList userOrder;
     QVariantMap selfChoice;
     bool valid = rows.size() <= 100000;
     for (const auto &value : rows) {
@@ -5030,9 +5055,15 @@ void NativeController::updateChannelDirectory(const QJsonArray &rows, bool autho
         if (!choice) { valid = false; break; }
         const auto id = choice->value("id").toString();
         if (id == m_session->user()) {
-            if (selfChoice.isEmpty()) selfChoice = *choice;
-        } else if (!choices.contains(id)) choices.insert(id, *choice);
+            if (!selfChoice.isEmpty()) continue;
+            selfChoice = *choice;
+        } else {
+            if (choices.contains(id)) continue;
+            choices.insert(id, *choice);
+        }
+        userOrder.append(id);
     }
+    m_directoryUserOrder = valid ? std::move(userOrder) : QStringList{};
     m_mentionSelfChoice = valid ? selfChoice : QVariantMap{};
     m_channelChoices = valid ? choices : QMap<QString, QVariantMap>{};
     m_channelDirectoryOwner = creationOwnerKey();
@@ -11655,7 +11686,7 @@ void NativeController::reset()
     m_ownProfileError.clear(); m_ownAvatarError.clear();
     m_ownProfileLoading = m_ownProfileSaving = m_ownProfileRefresh = m_ownAvatarBusy = false;
     m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
-    m_channelChoices.clear(); m_mentionSelfChoice.clear();
+    m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear();
     m_channelDirectoryOwner.clear();
     m_channelDirectoryValid = false;
     // Issue #293: no stage check may survive the owner it was running for.
@@ -12465,8 +12496,14 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         const auto choice = channelDirectoryChoice(payload, m_session->project());
         if (!choice) m_channelDirectoryValid = false;
         else if (m_channelDirectoryOwner == creationOwnerKey() && m_channelDirectoryValid) {
-            if (id == m_session->user()) m_mentionSelfChoice = *choice;
-            else m_channelChoices.insert(id.toLower(), *choice);
+            const auto user = id.toLower();
+            if (user == m_session->user()) {
+                if (m_mentionSelfChoice.isEmpty()) m_directoryUserOrder.append(user);
+                m_mentionSelfChoice = *choice;
+            } else {
+                if (!m_channelChoices.contains(user)) m_directoryUserOrder.append(user);
+                m_channelChoices.insert(user, *choice);
+            }
         }
         staleCache(NativeCache::Kind::Users);
         if (!current()) return true;
@@ -16927,7 +16964,7 @@ void NativeController::openProfileShareLink(const QString &user)
                 valid = valid && validCreationDate(row.value(field));
             if (valid) {
                 if (m_channelDirectoryOwner != owner) {
-                    m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryOwner = owner;
+                    m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryOwner = owner;
                     m_channelDirectoryValid = false;
                 }
                 m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, true, m_names.value(user)));
@@ -16969,7 +17006,7 @@ void NativeController::openProfileShareLink(const QString &user)
             if (row.value("uuid").toString().toLower() != user
                 || !channelDirectoryChoice(row, m_session->project())) continue;
             if (m_channelDirectoryOwner != owner) {
-                m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_channelDirectoryOwner = owner;
+                m_names.clear(); m_channelChoices.clear(); m_mentionSelfChoice.clear(); m_directoryUserOrder.clear(); m_channelDirectoryOwner = owner;
                 m_channelDirectoryValid = false;
             }
             m_names.insert(user, makeUserPresentation(directoryViewerName(row), row, false, {}));
