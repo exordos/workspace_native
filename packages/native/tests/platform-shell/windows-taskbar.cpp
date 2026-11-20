@@ -135,6 +135,62 @@ QVector<QPoint> changedPixels(const QImage &before, const QImage &after, Color m
 class WindowsShellTest final : public QObject {
     Q_OBJECT
 private slots:
+    void taskbarButtonCreationReplaysCurrentHints_data()
+    {
+        QTest::addColumn<bool>("recreate");
+        QTest::newRow("published-before-window") << false;
+        QTest::newRow("recreated-button") << true;
+    }
+
+    void taskbarButtonCreationReplaysCurrentHints()
+    {
+        QFETCH(bool, recreate);
+        QWindow window;
+        window.setTitle("Workspace taskbar lifecycle");
+        window.resize(640, 400);
+        window.setIcon(acceptanceIcon());
+        workspace::NativeDesktop desktop(&window);
+        if (recreate) {
+            window.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&window));
+            QTRY_VERIFY_WITH_TIMEOUT(!taskbarPixels().isNull(), 10000);
+        } else {
+            QVERIFY(!window.handle());
+        }
+
+        desktop.setUnreadCount(7);
+        workspace::setPlatformTaskbarProgress(&window, .55);
+        const auto hintsVisible = [](const QImage &image) {
+            int dots = 0;
+            int progress = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x) {
+                    dots += orange(image.pixel(x, y));
+                    progress += green(image.pixel(x, y));
+                }
+            return dots > 0 && progress > 4;
+        };
+        if (recreate) {
+            QTRY_VERIFY_WITH_TIMEOUT(hintsVisible(taskbarPixels()), 10000);
+            window.hide();
+            window.destroy();
+            QVERIFY(!window.handle());
+            QTRY_VERIFY_WITH_TIMEOUT(taskbarPixels().isNull(), 10000);
+        }
+
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QImage withHints;
+        QTRY_VERIFY_WITH_TIMEOUT(hintsVisible(withHints = taskbarPixels()), 10000);
+        desktop.setUnreadCount(0);
+        workspace::setPlatformTaskbarProgress(&window, -1);
+        QTRY_VERIFY_WITH_TIMEOUT([&] {
+            const auto cleared = taskbarPixels();
+            return !changedPixels(cleared, withHints, orange).isEmpty()
+                && changedPixels(cleared, withHints, green).size() > 4;
+        }(), 10000);
+    }
+
     void progressReachesTheExplorerTaskbarAndClears()
     {
         QWindow window;
