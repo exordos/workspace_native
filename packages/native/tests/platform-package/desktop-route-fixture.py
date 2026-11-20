@@ -21,6 +21,7 @@ class PackageConversation:
         self.target_gets = 0
         self.history_gets = 0
         self.probe_results = {}
+        self.routes = set()
 
     def row(self, message_id, content):
         return {"uuid": message_id, "project_id": self.project, "stream_uuid": self.stream,
@@ -31,6 +32,8 @@ class PackageConversation:
     def handle(self, request):
         parsed = urlparse(request.path)
         path = parsed.path.removeprefix("/api/workspace/v1/messenger/")
+        self.routes.add((path.replace(self.stream, "<stream>").replace(self.message, "<message>").replace(self.topic, "<topic>"), tuple(sorted(parse_qs(parsed.query)))))
+
         if parsed.path == "/hosted-desktop-call":
             page = b"""<!doctype html><meta charset=utf-8><title>Hosted media check</title>
 <script>

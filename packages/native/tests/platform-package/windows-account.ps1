@@ -75,6 +75,7 @@ switch ($Mode) {
         Press 'Next'
         Press 'Login'
     }
+    'channel' { Press 'General Chat: Cassi hosted channel' }
     'call' { Press 'Join call' }
     'update' {
         Press 'Profile'

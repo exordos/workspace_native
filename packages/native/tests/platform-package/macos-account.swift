@@ -116,6 +116,8 @@ case "login":
     try fill("Password", "package-demo")
     try press("Next")
     try press("Login")
+case "channel":
+    try press("General Chat: Cassi hosted channel")
 case "call":
     try press("Join call")
 case "update":

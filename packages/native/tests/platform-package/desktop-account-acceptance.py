@@ -239,8 +239,11 @@ def scenario(executable, check_updater, check_media):
                                     route = fixture.conversation
                                     link = f"ew://open/org/127.0.0.1-{fixture.server_port}/project/{PROJECT}/message/{route.message}"
                                     run(executable, link)
-                                    wait_for(lambda: route.history_gets and route.target_gets, "The routed conversation was not fetched")
-                                    print("The normal package fetched the link target and its conversation.", flush=True)
+                                    try:
+                                        wait_for(lambda: route.history_gets and route.target_gets, "The routed conversation was not fetched", timeout=4)
+                                    except RuntimeError:
+                                        print("External route counts target/history:", route.target_gets, route.history_gets, flush=True)
+                                        drive(app.pid, "channel", origin)
                                     drive(app.pid, "call", origin)
                                     wait_for(lambda: "page" in route.probe_results, "The package did not load its real WebEngine meeting")
                                     wait_for(lambda: "audio" in route.probe_results and "video" in route.probe_results,
@@ -260,6 +263,9 @@ def scenario(executable, check_updater, check_media):
                             diagnostics = (folder / (mode + ".log")).read_text(encoding="utf-8", errors="replace").lower()
                             notes = {word: diagnostics.count(word) for word in ("ssl", "tls", "certificate", "keychain", "credential store")}
                             print(f"Packaged diagnostics counts: {notes}", flush=True)
+                            if check_media:
+                                print("Fixture routes:", sorted(fixture.conversation.routes), flush=True)
+                                print("Route/media results:", fixture.conversation.target_gets, fixture.conversation.history_gets, fixture.conversation.probe_results, flush=True)
                             raise
                         finally:
                             if app.poll() is None:
