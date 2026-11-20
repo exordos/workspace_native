@@ -31,3 +31,25 @@ description you choose to share. A report ID links a reviewed file to a
 support conversation. To reproduce a report, match its executable fingerprint
 to the package, reproduce the described steps with a synthetic account and
 run the owning feature's regression test.
+
+
+## Reproducing a report about an account switch
+
+Use the build fingerprint to identify the reported executable. Reproduce
+with two synthetic accounts. Prepare a preview with optional counts under
+the first account, switch to the second, then open Diagnostics and prepare a
+fresh preview. The original preview closes on the switch. Only measurements
+from the new session appear in the new preview.
+
+With the [development environment](NATIVE_DESKTOP_DEVELOPMENT.md) running,
+exercise the same transition from the repository root:
+
+```sh
+cmake --build build/native --target native-window-test native-support-report-test
+build/native/native-window-test supportReportBeforeLoginAndFromDiagnostics
+ctest --test-dir build/native --output-on-failure -R '^native-support-report$'
+```
+
+The window test exercises the sign-in and Diagnostics entry points. The
+focused export test compares the saved bytes with the preview and checks
+cancellation, file-write failure and executable identity.

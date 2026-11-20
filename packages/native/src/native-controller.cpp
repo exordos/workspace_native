@@ -20391,8 +20391,7 @@ void NativeController::callFromProfile(const QString &userUuid)
     const auto navigation = resolveProfileDirect(peer);
     if (navigation.status == ProfileDirectNavigation::Status::MissingDefaultTopic) {
         // :481-489: logged and returned before the pending queue is touched.
-        qInfo().noquote() << "Default topic missing for existing direct stream before call"
-                          << navigation.streamUuid;
+        qInfo("Default topic missing for existing direct stream before call");
         return;
     }
     if (navigation.status == ProfileDirectNavigation::Status::StreamMissing && !canStartDirectChatWith(peer)) {
