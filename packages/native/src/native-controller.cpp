@@ -7433,8 +7433,8 @@ void NativeController::showFavorites()
         return;
     closeOtherContentPages(ContentPage::Favorites);
     m_favoritesError.clear();
-    runFavoritesFlow();
     m_favoritesVisible = true;
+    runFavoritesFlow();
     emit stateChanged();
 }
 
@@ -7475,7 +7475,7 @@ void NativeController::runFavoritesFlow()
     // the create (workspace-self-chat.hook.ts:130-190 effect guard).
     if (const auto self = findSelfStream()) {
         m_favoritesStatus = QStringLiteral("loading");
-        openSelfStream(self->uuid, self->defaultTopic);
+        openSelfStream(self->uuid);
         return;
     }
     ensureSelfStream();
@@ -7531,55 +7531,39 @@ void NativeController::ensureSelfStream()
         // while the create was in flight, re-selecting here would reopen the
         // page they left and steal their navigation.
         if (m_favoritesVisible) {
-            openSelfStream(parsed->uuid, parsed->defaultTopic);
+            openSelfStream(parsed->uuid);
             emit stateChanged();
         }
     });
     emit stateChanged();
 }
 
-void NativeController::openSelfStream(const QString &streamUuid, const QString &preferredTopic)
+void NativeController::openSelfStream(const QString &streamUuid)
 {
-    const auto owner = creationOwnerKey();
-    const auto generation = m_api->generation();
-    const auto watch = ++m_favoritesWatch;
-    // Ordinary route machinery: the stream must exist in the catalog, which
-    // the ensure flow guarantees before calling this.
-    selectStream(streamUuid);
-    // selectStream's activation leaves favorites; this page owns the route
-    // again for as long as the self stream stays selected.
-    m_favoritesVisible = true;
-    m_favoritesStatus = QStringLiteral("loading");
-    const auto connection = std::make_shared<QMetaObject::Connection>();
-    *connection = connect(this, &NativeController::topicsChanged, this,
-        [this, connection, watch, streamUuid, preferredTopic, owner, generation] {
-        if (watch != m_favoritesWatch || m_stream != streamUuid) { disconnect(*connection); return; }
-        if (owner != creationOwnerKey() || generation != m_api->generation() || !authenticated()) return;
-        if (!m_topicsVerified) return; // the stream's topic page has not landed yet
-        QString chosen;
-        for (const auto &topic : std::as_const(m_topics)) {
-            if (topic.stream != streamUuid) continue;
-            if (topic.uuid == preferredTopic || (preferredTopic.isEmpty() && topic.isDefault)) {
-                chosen = topic.uuid;
-                break;
-            }
-        }
-        disconnect(*connection);
-        if (chosen.isEmpty()) {
-            // Verified topics without exactly the default topic violate the
-            // reference contract (findWorkspaceDefaultTopic, hook ready gate).
-            m_favoritesStatus = QStringLiteral("error");
-            m_favoritesError = tr("Could not open Favorites.");
-            emit stateChanged();
+    if (!m_selectingDraftRoute) m_draftOpenId.clear();
+    activateStream(streamUuid, nullptr, {}, nullptr, 0, true);
+}
+
+void NativeController::settleFavoritesTopics(bool success)
+{
+    if (!m_favoritesVisible || m_favoritesStatus != QLatin1String("loading")) return;
+    const auto *stream = currentStream();
+    if (!stream || !stream->privateStream || stream->directUser != m_session->user()) return;
+    if (success) {
+        const auto topic = std::find_if(m_topics.cbegin(), m_topics.cend(), [stream](const Topic &item) {
+            return item.stream == stream->uuid && (stream->defaultTopic.isEmpty()
+                ? item.isDefault : item.uuid == stream->defaultTopic);
+        });
+        if (topic != m_topics.cend()) {
+            const auto id = topic->uuid;
+            m_favoritesStatus = QStringLiteral("ready");
+            selectTopic(id);
             return;
         }
-        // The reference ready state carries the {streamUuid, topicUuid} route
-        // (workspace-self-chat.hook.ts:176-185); publishing it selects the
-        // default topic exactly like the conversation page would.
-        m_favoritesStatus = QStringLiteral("ready");
-        emit stateChanged();
-        selectTopic(chosen);
-    });
+    }
+    m_favoritesStatus = QStringLiteral("error");
+    m_favoritesError = tr("Could not open Favorites.");
+    emit stateChanged();
 }
 
 void NativeController::loadStarredCollection(bool append)
@@ -11453,7 +11437,7 @@ void NativeController::reset()
     // Issue #70: favorites is per-runtime state; the in-flight create dedup
     // dies with the session so a later sign-in can ensure again.
     m_favoritesVisible = false; m_favoritesStatus.clear(); m_favoritesError.clear();
-    m_selfStreamEnsures.clear(); ++m_favoritesEnsureSeq; ++m_favoritesWatch;
+    m_selfStreamEnsures.clear(); ++m_favoritesEnsureSeq;
     resetStarred();
     resetInbox();
     resetFeed();
@@ -15239,7 +15223,7 @@ void NativeController::selectStream(const QString &id)
 
 void NativeController::activateStream(const QString &id, const QVector<Topic> *verifiedTopics,
                                       const QString &directPublishingAttempt,
-                                      const Topic *initialTopic, quint64 openingTicket)
+                                      const Topic *initialTopic, quint64 openingTicket, bool openingFavorites)
 {
     if (!id.isEmpty() && std::none_of(m_streams.begin(), m_streams.end(),
             [&id](const Stream &stream) { return stream.uuid == id; }))
@@ -15248,7 +15232,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     // same way the reference route unmounts FavoritesPage (chat-page.ui.tsx:21).
     // Re-opening the SAME stream (topic switch re-entry from Favorites itself)
     // must keep favorites active.
-    if (m_stream != id) { leaveFavorites(); }
+    if (!openingFavorites && m_stream != id) leaveFavorites();
     cancelConversationRestore();
     // Issue #134: any stream navigation invalidates a parked profile Message route.
     if (m_profileDirectActive) {
@@ -15278,6 +15262,10 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     ++m_topicMutation;
     ++m_selection;
     m_stream = id;
+    if (openingFavorites) {
+        m_favoritesVisible = true;
+        m_favoritesStatus = QStringLiteral("loading");
+    }
     if (!m_restoringSidebarRoute) collapseSidebarExcept(id);
     m_topicsVerified = m_historyVerified = false;
     m_topic = initialTopic ? initialTopic->uuid : QString{};
@@ -15347,7 +15335,10 @@ void NativeController::loadTopics()
         for (const auto &value : rows) {
             const auto topic = parseTopic(value.toObject(), m_session->project(), m_stream);
             if (!topic || ids.contains(topic->uuid)) {
+                const QPointer<NativeController> guard(this);
                 report(tr("The server returned an invalid topic list."));
+                if (guard && authoritative && selection == m_selection && topicRequest == m_topicRequest)
+                    settleFavoritesTopics(false);
                 return false;
             }
             ids.insert(topic->uuid);
@@ -15391,9 +15382,14 @@ void NativeController::loadTopics()
         if (authoritative) resolveDeepLinkTopic();
         if (!guard) return true;
         notifyTrustChanged();
+        if (guard && authoritative && selection == m_selection && topicRequest == m_topicRequest)
+            settleFavoritesTopics(true);
         return true;
     }, m_topicSeedUnverified, [this, selection, topicRequest] {
-        if (selection != m_selection || topicRequest != m_topicRequest
+        if (selection != m_selection || topicRequest != m_topicRequest) return;
+        const QPointer<NativeController> guard(this);
+        settleFavoritesTopics(false);
+        if (!guard || selection != m_selection || topicRequest != m_topicRequest
             || !m_profileDirectActive || m_stream != m_profileDirectStream) return;
         m_profileDirectActive = false; m_profileDirectStream.clear(); m_profileDirectTopic.clear();
         emit stateChanged();
