@@ -6552,7 +6552,9 @@ component NativeMentionChip: Item {
                 // of the boolean edge.
                 property int userScrollGeneration: 0
                 property bool anchorJumpPending: false
-                readonly property real distanceFromTop: contentY - originY + topMargin
+                // Read the current position inside the scroll signal. A dependent
+                // binding can still hold the previous Y during contentYChanged.
+                function distanceFromTop() { return contentY - originY + topMargin }
                 // Drag/fling is user scrolling too (handleTouchMove analogue).
                 onMovementStarted: { userScrollSeen = true; ++userScrollGeneration; takeOpeningControl() }
                 MouseArea {
@@ -7227,7 +7229,7 @@ component NativeMentionChip: Item {
                         // arm/coalescing/end-of-history guards inside
                         // noteScrollReserve keep this from ever duplicating or
                         // storming a request.
-                        root.controller.noteScrollReserve(distanceFromTop, height)
+                        root.controller.noteScrollReserve(distanceFromTop(), height)
                         finishServiceHistoryReady();
                         scheduleVisibleRead();
                         return;
@@ -7275,7 +7277,7 @@ component NativeMentionChip: Item {
                     // from the restored geometry - re-arm only; this call can
                     // never start a request, keeping programmatic movement
                     // unattributed as user scrolling.
-                    root.controller.noteScrollRearm(distanceFromTop, height)
+                    root.controller.noteScrollRearm(distanceFromTop(), height)
                     finishServiceHistoryReady();
                     scheduleVisibleRead();
                     maybeAdvanceHiddenWindow();
@@ -7395,7 +7397,7 @@ component NativeMentionChip: Item {
                     // decision to the controller (reference gates preserved:
                     // userScrollSeen, positioning, anchorJumpPending).
                     if (userScrollSeen && !positioning && !anchorJumpPending)
-                        root.controller.noteScrollReserve(distanceFromTop, height)
+                        root.controller.noteScrollReserve(distanceFromTop(), height)
                     // Issue #253: same reference syncAtBottomFromElement analogue
                     // that keeps the resize-time tail intent current outside the
                     // programmatic capture/restore passes. Programmatic movement
