@@ -136,7 +136,7 @@ def trust_loopback_certificate(directory):
     if WINDOWS:
         der_file = directory / "ca.cer"
         der_file.write_bytes(der)
-        run("certutil", "-user", "-addstore", "Root", der_file, **quiet)
+        run("certutil", "-f", "-addstore", "Root", der_file, **quiet)
     else:
         run("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k",
             "/Library/Keychains/System.keychain", ca, **quiet)
@@ -144,7 +144,7 @@ def trust_loopback_certificate(directory):
         yield cert, key
     finally:
         if WINDOWS:
-            run("certutil", "-user", "-delstore", "Root", thumbprint, **quiet)
+            run("certutil", "-delstore", "Root", thumbprint, **quiet)
         else:
             run("sudo", "security", "remove-trusted-cert", "-d", ca, **quiet)
             run("sudo", "security", "delete-certificate", "-Z", thumbprint, "/Library/Keychains/System.keychain", **quiet)
