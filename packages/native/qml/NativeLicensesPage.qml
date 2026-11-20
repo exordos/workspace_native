@@ -16,9 +16,8 @@ import QtQuick.Effects
 // case-insensitively; counter text-xs (licenses.packagesOf); 4-column table
 // with sticky header and border-t rows; package names are accent external
 // links only when a repository URL exists. The dataset is the native client's
-// own third-party dependencies, generated at build time into
-// qrc:/workspace/licenses/licenses.json by scripts/collect-native-licenses.py
-// - never the reference app's npm dataset.
+// own third-party dependencies, read from the packaged inventory catalog or
+// the SDK versions embedded in an unpackaged build.
 FocusScope {
     id: page
     objectName: "nativeLicensesPage"
@@ -72,7 +71,7 @@ FocusScope {
     }
 
     // Dataset handoff: Main.qml passes the JSON string that
-    // NativeController reads from the build-time Qt resource
+    // NativeController reads from the distribution or build catalog
     // (QML XMLHttpRequest refuses local file GETs by policy).
     property string datasetJson: ""
     onDatasetJsonChanged: {

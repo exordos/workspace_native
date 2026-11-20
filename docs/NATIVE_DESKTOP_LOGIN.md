@@ -120,12 +120,18 @@ the wizard therefore normalizes any valid input to its origin before discovery
 and sign-in, mirroring the reference `new URL(input).origin` behaviour. Test
 harnesses keep the established loopback-HTTP allowance of `ApiClient`.
 
-Initial auto-advance (`login-initial-organization.lib.ts`): in the desktop build
-there is no browser origin, so only a message-link organization resolves and
-auto-advances. The native client has no message-link login entry yet (deep links
-route inside an authenticated session), so the initial step is always the
-organization step with an empty field. When #73 (deep-link navigation) grows a
-pre-auth entry, the auto-advance belongs there.
+On a fresh organization step, a message link can identify a known origin
+before the user types an address. The desktop wizard compares the link's
+organization ID with the configured default and remembered session origins.
+A single matching origin triggers discovery. Multiple matching origins or an
+unknown organization leave the address field open for manual entry. The wizard
+enters the credentials step after discovery succeeds. An edit to the address
+or a replacement link cancels the pending advance. A manually entered address
+for a different organization shows the wrong-account message before any request.
+Address history supplies suggestions. Automatic discovery uses saved sessions.
+
+The realm preview appears when discovery supplies a name or a usable icon URL.
+Only an advertised name appears alongside the icon.
 
 ## Native design
 
@@ -238,3 +244,8 @@ The Qt Quick window case `loginWizardReferenceSurfaces` exercises the English
 and Russian organization form, filtered keyboard selection, the public shortcut
 and the credentials form. The latter has separate login and password labels
 and a Next action.
+
+
+The credentials form accepts Enter from the username or password field. An
+empty submission keeps the form open and asks the user to fill in all fields.
+Discovery and credential errors appear in the form above the submit button.

@@ -27,7 +27,10 @@ tree, not the separately modified UI working directory.
   in `chat-page-workspace.test.tsx` check those contracts.
 
 Native keeps verified uploads in separate cards and transfers their serialized
-links to the existing durable outgoing queue on send. A ready image can also be
+links to the existing durable outgoing queue on send. Missing attachment links
+precede the text. When the first paragraph is a standalone quote, the quote
+stays first, followed by the missing links and the answer. A link already in
+the body is kept at its original position. A ready image can also be
 dragged into the composer as a readable alias; the alias is kept in memory,
 omitted from the saved draft, and replaced with the canonical image reference
 in the submitted body. The card indicates an image in text and can remove it
@@ -85,3 +88,5 @@ restoring quote tabs, matching the source composer. It preserves the original
 attachment prefix when the user saves the restored reply again.
 
 Image and video uploads include their intrinsic pixel width and height in the Markdown URL when the local decoder reports both within 300 ms. Binary files and unreadable media keep the existing URL. The probe uses the uploaded bytes and completes without opening the file again.
+
+A link shown as a Markdown code example or escaped text keeps its literal form. The ready upload still inserts an actionable link.

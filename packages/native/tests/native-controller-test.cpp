@@ -8695,6 +8695,7 @@ private slots:
 
     void aggregateVisibleReadCoalescesSeparatelyForEachActualTopic()
     {
+        QStringList notified;
         Fixture fixture; fixture.aggregateMessages = true; fixture.extraTopic = true;
         QMap<QString, QJsonObject> rows;
         for (int n = 1; n <= 5; ++n) {
@@ -8726,6 +8727,21 @@ private slots:
         QVERIFY(modelMessage(fixture.controller, a1).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(4).value("uuid").toString()).value("read").toBool());
         QVERIFY(!modelMessage(fixture.controller, historyMessage(5).value("uuid").toString()).value("read").toBool());
+
+        // A queued anchor deleted before dispatch must also disappear from
+        // the snapshot last delivered to the visual read-request indicator.
+        connect(&fixture.controller, &NativeController::readRequestBoundariesChanged, &fixture.controller,
+            [&] { notified = fixture.controller.readRequestBoundaryIds(); });
+        const auto a5 = historyMessage(5).value("uuid").toString();
+        const auto b4 = historyMessage(4).value("uuid").toString();
+        fixture.controller.markMessagesReadUpTo(a5);
+        fixture.controller.markMessagesReadUpTo(b4);
+        QCOMPARE(notified.size(), 2);
+        rows.remove(b4);
+        QVERIFY(fixture.controller.applyRealtimeEvent(controllerEvent("message.deleted",
+            QJsonObject{{"uuid", b4}, {"stream_uuid", streamId}, {"topic_uuid", secondTopicId}})));
+        QTRY_VERIFY(fixture.controller.readRequestBoundaryIds().isEmpty());
+        QVERIFY(notified.isEmpty());
     }
 
     void aggregateLoadsActualTopicsAndRealtimeWithoutADefaultComposer()
@@ -14946,6 +14962,61 @@ private slots:
         fixture.controller.submitEditMessage(); QTest::qWait(100); QCOMPARE(puts, 0);
         fixture.controller.removeUpload(card); QTRY_COMPARE_WITH_TIMEOUT(deletes, 1, 2000);
         QCOMPARE(fixture.controller.draft().size(), 40000);
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody_data()
+    {
+        QTest::addColumn<QString>("body");
+        QTest::addColumn<QString>("expected");
+        const auto quote = QStringLiteral("[Sam](urn:quote:") + messageId + ")";
+        QTest::newRow("plain") << QStringLiteral("Caption") << QStringLiteral("LINK\nCaption");
+        QTest::newRow("existing") << QStringLiteral("Caption\nLINK") << QStringLiteral("Caption\nLINK");
+        QTest::newRow("linked-in-list") << QStringLiteral("- LINK") << QStringLiteral("- LINK");
+        QTest::newRow("code-span") << QStringLiteral("Example: `LINK`") << QStringLiteral("LINK\nExample: `LINK`");
+        QTest::newRow("escaped-markup") << QStringLiteral("Example: \\LINK") << QStringLiteral("LINK\nExample: \\LINK");
+        QTest::newRow("quote-and-answer") << quote + "\n\nCaption" << quote + "\n\nLINK\n\nCaption";
+        QTest::newRow("quote-only") << quote << quote + "\n\nLINK";
+        QTest::newRow("continued-paragraph") << quote + "\nanswer" << "LINK\n" + quote + "\nanswer";
+        QTest::newRow("list-starts-new-block") << quote + "\n- list item" << quote + "\n\nLINK\n\n- list item";
+        QTest::newRow("heading-starts-new-block") << quote + "\n# Heading" << quote + "\n\nLINK\n\n# Heading";
+        QTest::newRow("setext-title") << quote + "\n===" << "LINK\n" + quote + "\n===";
+        QTest::newRow("inline-quote") << quote + " text" << "LINK\n" + quote + " text";
+    }
+
+    void uploadedAttachmentOrderInOutgoingBody()
+    {
+        QFETCH(QString, body);
+        QFETCH(QString, expected);
+        Fixture f;
+        FileClient files(&f.api);
+        f.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QFile file(directory.filePath("report.txt"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("report"), 6);
+        file.close();
+        f.files = [](const Request &) { return Response{QJsonObject{
+            {"uuid", returnedId}, {"stream_uuid", streamId}, {"name", "report.txt"},
+            {"content_type", "text/plain"}, {"size_bytes", 6},
+            {"hash", QString::fromLatin1(QCryptographicHash::hash("report", QCryptographicHash::Sha256).toHex())}}, 201}; };
+        QString sent;
+        f.messages = [&](const Request &r) {
+            if (r.method == "POST") {
+                sent = r.body.value("payload").toObject().value("content").toString();
+                return Response{QJsonObject{}, 503};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(f.start());
+        f.controller.attachFiles({QUrl::fromLocalFile(file.fileName())});
+        QTRY_VERIFY(!f.controller.fileBusy());
+        QCOMPARE(f.controller.uploadEntries().size(), 1);
+        const auto link = f.controller.uploadEntries().first().toMap().value("markdown").toString();
+        QVERIFY(!link.isEmpty());
+        f.controller.setDraft(body.replace("LINK", link));
+        f.controller.send();
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent, expected.replace("LINK", link));
     }
 
     void acceptedAttachmentWireSurvivesUncertainSendAndNavigation()
@@ -31789,6 +31860,96 @@ private slots:
         QCOMPARE(tray->toolTip(), QString("Workspace"));
     }
 
+    void joinedCallUpdatesTrayAndKeepsOneInhibitorThroughPip()
+    {
+        PowerBusFixture bus("joined-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall());
+
+        CallAwareness awareness;
+        awareness.start(*fixture.controller.callWindow(), bus.watcherBus);
+        QWindow window;
+        NativeDesktop desktop(&window, nullptr, [] { return false; });
+        connect(&awareness, &CallAwareness::callStateChanged, &desktop, &NativeDesktop::setCallState);
+        auto *tray = desktop.findChild<QSystemTrayIcon *>();
+        QVERIFY(tray);
+        const auto idleTip = tray->toolTip();
+        auto *shell = fixture.controller.callWindow();
+        auto *bridge = fixture.controller.embedBridge();
+        fixture.controller.joinCall("https://meet.example.com/cassi-room");
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Loading);
+        shell->apiLoadFailed();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::LoadFailed);
+        QVERIFY(!awareness.callActive());
+        QCOMPARE(tray->toolTip(), idleTip);
+        QCOMPARE(saver.inhibits.size(), 0);
+
+        shell->retry();
+        shell->apiLoadSucceeded();
+        QCOMPARE(shell->embedState(), JitsiCallWindowController::Ready);
+        QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room"));
+        bridge->reportParticipantCount(3);
+        bridge->handleParticipantsJoined();
+        QCOMPARE(shell->participantCount(), 3);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (3 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Minimized);
+        bridge->reportParticipantCount(2);
+        bridge->handleParticipantsLeft();
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-room (2 participants)"));
+        shell->toggleMinimize();
+        QCOMPARE(shell->mode(), JitsiCallWindowController::Expanded);
+        QCOMPARE(saver.inhibits.size(), 1);
+        QVERIFY(saver.uninhibits.isEmpty());
+        shell->readyToClose();
+        QVERIFY(!fixture.controller.calls()->hasActiveCall());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+        QVERIFY(!awareness.callActive());
+
+        fixture.controller.joinCall("https://meet.example.com/cassi-next");
+        shell->apiLoadSucceeded();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.inhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), QString("Workspace - In call: cassi-next"));
+        fixture.controller.calls()->closeCall();
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 2, 3000);
+        QCOMPARE(tray->toolTip(), idleTip);
+    }
+
+    void attachingToAReadyCallReleasesTheInhibitorWhenItsWindowIsDestroyed()
+    {
+        PowerBusFixture bus("ready-call-awareness");
+        QVERIFY(bus.ok);
+        ScreenSaverStub saver;
+        new ScreenSaverAdaptor(&saver);
+        QVERIFY(bus.exportObject("/ScreenSaver", &saver));
+        QVERIFY(bus.claimService("org.freedesktop.ScreenSaver"));
+        CallAwareness awareness;
+        {
+            JitsiCallWindowController shell;
+            shell.setParticipantCountProvider([] { return 4; });
+            shell.open({{"meetingUrl", "https://meet.jit.si/cassi-ready"}});
+            shell.apiLoadSucceeded();
+            QCOMPARE(shell.participantCount(), 4);
+            QSignalSpy changes(&awareness, &CallAwareness::callStateChanged);
+            awareness.start(shell, bus.watcherBus);
+            QCOMPARE(awareness.activeRoom(), QString("cassi-ready"));
+            QCOMPARE(changes.last().at(1).toInt(), 4);
+            QTRY_COMPARE_WITH_TIMEOUT(awareness.inhibitCookie(), 1701u, 3000);
+        }
+        QVERIFY(!awareness.callActive());
+        QTRY_COMPARE_WITH_TIMEOUT(saver.uninhibits.size(), 1, 3000);
+    }
+
     void displaySleepInhibitIsAcquiredExactlyOncePerCall()
     {
         PowerBusFixture bus("call-once");
@@ -32473,6 +32634,79 @@ private slots:
     // never fetch, and a page that completes after its selection was
     // replaced stays silent (the completion guard that keeps a late page
     // from resurrecting counts of a conversation the user already left).
+    void chatHeaderRetriesInitialMemberFailure_data()
+    {
+        QTest::addColumn<QString>("edge");
+        for (const char *edge : {"visibility", "stream", "topic"})
+            QTest::newRow(edge) << QString::fromLatin1(edge);
+    }
+
+    void chatHeaderRetriesInitialMemberFailure()
+    {
+        QFETCH(QString, edge);
+        Fixture f;
+        QVERIFY(f.start());
+        f.controller.selectStream({});
+        int reads = 0;
+        f.bindings = [&](const Request &) -> Response {
+            if (++reads == 1)
+                return Response{QJsonArray{}, 500};
+            auto binding = creationBinding(userId, 900);
+            binding["stream_uuid"] = streamId;
+            return Response{QJsonArray{binding}};
+        };
+        f.controller.setChatHeaderVisible(true);
+        f.controller.selectStream(streamId);
+        QTRY_COMPARE(reads, 1);
+        QTRY_VERIFY(!f.controller.busy());
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
+        const auto reactivate = [&] {
+            if (edge == "visibility") {
+                f.controller.setChatHeaderVisible(false);
+                f.controller.setChatHeaderVisible(true);
+            } else if (edge == "stream") {
+                f.controller.selectStream(streamId);
+            } else {
+                f.controller.selectTopic(topicId);
+            }
+        };
+        reactivate();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
+        QCOMPARE(reads, 2);
+        reactivate();
+        QTest::qWait(150);
+        QCOMPARE(reads, 2);
+    }
+
+    void chatHeaderRetriesRetiredInitialMemberRequest()
+    {
+        Fixture f;
+        QVERIFY(f.start());
+        f.controller.selectStream({});
+        int reads = 0;
+        std::function<void()> release;
+        f.bindings = [&](const Request &) -> Response {
+            ++reads;
+            auto binding = creationBinding(userId, 900);
+            binding["stream_uuid"] = streamId;
+            Response result{QJsonArray{binding}};
+            if (reads == 1)
+                result.defer = [&](std::function<void()> send) { release = std::move(send); };
+            return result;
+        };
+        f.controller.setChatHeaderVisible(true);
+        f.controller.selectStream(streamId);
+        QTRY_VERIFY(release);
+        f.api.setAccessToken("rotated-test-token");
+        f.controller.selectStream(streamId);
+        QTRY_COMPARE_WITH_TIMEOUT(f.controller.chatHeaderMemberCount(), 1, 2000);
+        QCOMPARE(reads, 2);
+        release();
+        QTest::qWait(150);
+        QCOMPARE(reads, 2);
+        QCOMPARE(f.controller.chatHeaderMemberCount(), 1);
+    }
+
     void chatHeaderCountersFetchFollowsVisibleSelectionEdges()
     {
         Fixture f;
@@ -32524,33 +32758,32 @@ private slots:
         QTest::qWait(250);
         QCOMPARE(bindingRequests, 0);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
-        // Mounting the header over a PRE-mount selection stays silent: the
-        // #434-pinned budgets (and the e2ee suites) mount windows on
-        // already-selected streams and refetch nothing on mount.
+        // Mounting a visible header over a restored selection loads its first page.
         held = QJsonArray{binding("61000000-0000-4000-8000-00000000000c", userId, streamId),
             binding("61000000-0000-4000-8000-00000000000d", channelMemberB, streamId)};
         f.controller.setChatHeaderVisible(true);
-        QTest::qWait(250);
-        QCOMPARE(bindingRequests, 0);
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
+        QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
+        QCOMPARE(bindingRequests, 1);
         // A selection edge on the visible header loads exactly one page; the
         // page belongs to the stream that was selected, so bob (idle) is in
         // the member half but not the online half.
         f.controller.selectStream(otherStream);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
-        QCOMPARE(bindingRequests, 1);
+        QCOMPARE(bindingRequests, 2);
         f.controller.selectStream(streamId);
         QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 2);
         QCOMPARE(f.controller.chatHeaderOnlineCount(), 1);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         // Re-activating the same stream (a topic switch) is not an edge and
         // never re-reads the page (#434 budget).
         f.controller.selectStream(streamId);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         // Direct chats clear the projection without a request.
         f.controller.selectStream(directStreamUuid);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         // Issue #438 review (finding 4633233517): after the header has been
         // mounted, a selection edge skipped while it is off screen records
@@ -32560,15 +32793,15 @@ private slots:
         f.controller.setChatHeaderVisible(false);
         f.controller.selectStream(streamId);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 2);
+        QCOMPARE(bindingRequests, 3);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         f.controller.setChatHeaderVisible(true);
         QTRY_COMPARE_WITH_TIMEOUT(f.controller.chatHeaderMemberCount(), 2, 5000);
-        QCOMPARE(bindingRequests, 3);
+        QCOMPARE(bindingRequests, 4);
         f.controller.setChatHeaderVisible(false);
         f.controller.setChatHeaderVisible(true);
         QTest::qWait(250);
-        QCOMPARE(bindingRequests, 3);
+        QCOMPARE(bindingRequests, 4);
         QCOMPARE(f.controller.chatHeaderMemberCount(), 2);
         // A page that completes after its selection was replaced stays
         // silent: the late otherStream snapshot must not move the counts of
@@ -32576,7 +32809,7 @@ private slots:
         holdNext = true;
         f.controller.selectStream(otherStream);
         QTRY_VERIFY_WITH_TIMEOUT(static_cast<bool>(release), 5000);
-        QCOMPARE(bindingRequests, 4);
+        QCOMPARE(bindingRequests, 5);
         f.controller.selectStream(directStreamUuid); // leaves the loading stream
         QCOMPARE(f.controller.chatHeaderMemberCount(), 0);
         release(); // the superseded page arrives after the selection moved on

@@ -17,10 +17,10 @@ Item {
     required property string roomName
     required property string locationName
     required property string authorName
-    required property string timeText
+    readonly property alias metadataRow: metaRow
     signal joinRequested(string meetingUrl)
 
-    implicitHeight: 70
+    implicitHeight: metaRow.y + metaRow.height
     activeFocusOnTab: true
     Accessible.role: Accessible.Button
     Accessible.name: qsTr("Join call")
@@ -119,7 +119,7 @@ Item {
     // Row 2: chevron, participant-initial avatars, message time.
     Item {
         id: metaRow
-        y: 38
+        y: titleRow.height + 8
         width: parent.width
         height: 32
         NativeIconButton {
@@ -152,15 +152,6 @@ Item {
                 color: card.colors["text-primary"]
                 font.pixelSize: 10
             }
-        }
-        Text {
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            text: card.timeText
-            textFormat: Text.PlainText
-            color: card.colors["text-muted"]
-            font.pixelSize: 12
-            Accessible.ignored: true
         }
     }
 }

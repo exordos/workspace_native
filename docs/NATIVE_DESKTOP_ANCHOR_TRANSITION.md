@@ -107,7 +107,8 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   reads the XDG Settings portal `org.freedesktop.appearance/reduced-motion` key at
   startup (service `org.freedesktop.portal.Desktop`, object path
   `/org/freedesktop/portal/desktop`, interface `org.freedesktop.portal.Settings`,
-  `Read`, 2 s timeout, unknown value = no preference per spec) and
+  `Read`, 2 s timeout). The startup reply wraps the unsigned setting in two variants,
+  with value 1 requesting reduced motion. The preferences object
   keeps it live via the `SettingChanged` signal on that same addressing. The test
   harness pins the same value through that seam. The live-region `Text`
   "Loading message context" renders in place of the old
@@ -123,6 +124,11 @@ An `anchorTransitionLayer` `Item` parented to `messageList` (viewport child, lik
   `controller.retryAnchorNavigation()`; below it an inline `anchorScrollToBottom`
   button (same look as the existing floating scroll-to-bottom) calls
   `controller.dismissAnchorNavigation()` + `messageList.scrollToLatest()`.
+
+A failed link and its Retry action belong to the stream and topic where resolution
+failed. Selecting another conversation dismisses the alert. While either the pending
+or failed layer covers the viewport, the list suspends automatic read receipts.
+Dismissing the layer resumes the normal visible-row and end-of-topic checks.
 
 ### Deterministic tests
 

@@ -49,7 +49,7 @@ States: idle vs active call. Tooltip text is rendered in the active app locale
   services); the injectable parameter keeps the private fixture bus usable in
   tests, and a connection that is not connected degrades to "inhibit is a
   no-op, the rest of the behaviour still holds".
-- `Q_INVOKABLE` API for the future call surface:
+- `Q_INVOKABLE` methods for the shell call state:
   `callStarted(QString room, int participants)`,
   `callParticipantsUpdated(int count)`, `callEnded()`. These mirror the
   `call:start` / `call:update` / `call:end` IPC events one-to-one, including
@@ -87,14 +87,21 @@ Both wrappers are `tr()` strings and were added to
 `packages/native/translations/workspace_ru.ts` so the native-native-locale
 catalog guard stays green; the room name stays data.
 
-`main.cpp` wires the dormant service: `CallAwareness` is constructed next to
-the tray (`NativeDesktop`), `start()` is called on the session bus,
-`callStateChanged` is connected directly to `NativeDesktop::setCallState`, and
-the object is exposed to QML as the `callAwareness` context property so the
-future call surface can call it without new plumbing. The tray object is
-reachable because the connection target is the real `NativeDesktop` instance.
+`main.cpp` starts awareness on the session bus and subscribes it to the same
+call window that follows the controller's active-call store. A successful embed
+load acquires the inhibitor and publishes the parsed room. Until the embed is
+ready, including after a failed load, the tray stays idle. Live participant
+counts from the meeting bridge update the tooltip. Switching between expanded
+and PiP preserves both the room and the inhibitor. When the shell closes, the
+store clears, or the observed window is destroyed, the service releases the
+inhibitor and restores the idle tooltip.
 
 ## Tests (mock D-Bus, per the #78 precedent)
+
+`joinedCallUpdatesTrayAndKeepsOneInhibitorThroughPip` follows a synthetic
+meeting from the controller's Join action through embed failure, retry, live
+participant updates, PiP and two independent close paths. It asserts the
+private D-Bus service's acquire/release calls and the actual tray tooltip.
 
 `native-controller-test` (the group the issue names) gains a
 `ScreenSaverStub` / `PowerManagementInhibitStub` pair exported on the private

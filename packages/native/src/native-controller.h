@@ -173,6 +173,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(qulonglong historyCommitRevision READ historyCommitRevision NOTIFY messagesChanged)
     Q_PROPERTY(bool messageHistoryReady READ messageHistoryReady NOTIFY stateChanged)
+    Q_PROPERTY(QStringList readRequestBoundaryIds READ readRequestBoundaryIds NOTIFY readRequestBoundariesChanged)
     Q_PROPERTY(QVariantList reactionChoices READ reactionChoices CONSTANT)
     Q_PROPERTY(QString conversationKind READ conversationKind NOTIFY stateChanged)
     Q_PROPERTY(bool hasConversation READ hasConversation NOTIFY stateChanged)
@@ -436,6 +437,7 @@ public:
     QVariantList messages() const;
     qulonglong historyCommitRevision() const { return m_historyCommitRevision; }
     bool messageHistoryReady() const;
+    QStringList readRequestBoundaryIds() const;
     QVariantList reactionChoices() const { return knownReactionEmojis(); }
     bool hasConversation() const { return !m_stream.isEmpty(); }
     QString conversationKind() const { return !hasConversation() ? QStringLiteral("none")
@@ -600,7 +602,7 @@ public:
     Q_INVOKABLE void showSection(const QString &name);
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
     // read from the build-time Qt resource as one JSON string.
-    Q_INVOKABLE QString licensesDatasetJson() const;
+    Q_INVOKABLE static QString licensesDatasetJson();
     // Issue #50: the Diagnostics page surface (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md):
     // the live dataset object, the pretty-printed snapshot JSON for the copy
     // action and the advanced block, the connection-report subset, the live
@@ -821,6 +823,7 @@ public:
     // like chat-page-workspace.ui.tsx:2747-2751 at workspace_ui 230e02b8.
     Q_INVOKABLE bool beginReply(const QString &id, const QString &selectedText = {});
     Q_INVOKABLE bool addReplyTab(const QString &id, const QString &selectedText = {});
+    Q_INVOKABLE bool replyToSelection(const QStringList &ids);
     Q_INVOKABLE bool selectReplyTab(const QString &tabId);
     Q_INVOKABLE void removeReplyTab(const QString &tabId);
     Q_INVOKABLE bool reorderReplyTab(const QString &tabId, int destinationIndex);
@@ -934,6 +937,7 @@ signals:
     void rotationStageResolved(const QString &streamUuid, const QString &keyUuid,
         const QString &outcome, const QString &message);
     void decryptRetryStateChanged();
+    void readRequestBoundariesChanged();
     void archivedChatsChanged();
     // Issue #50: one finished Diagnostics ping (ok + latency ms); the page
     // mirrors the reference ping reset timer (3 s, logs-page.ui.tsx:238-242).
@@ -1812,20 +1816,13 @@ private:
     void loadChatHeaderMembersPage(const QString &marker, quint64 ticket, const QString &stream,
                                    QStringList accepted, QSet<QString> seenUsers);
     void applyChatHeaderMembersBindingEvent(const QString &kind, const QJsonArray &rows);
-    // Issue #438: the automatic fetch trigger, scoped the same way #434 scoped
-    // the binding-event NOTIFY: only a selection edge on an on-screen header
-    // may load member pages; the same owner+stream never refetches on its own.
+    // Load missing membership on a visible channel, once per pending or successful snapshot.
     void ensureChatHeaderMembers();
+    void publishChatHeaderMembers(QStringList accepted);
     QString m_chatHeaderMembersStream;
     QString m_chatHeaderMembersOwner;
     QStringList m_chatHeaderMemberUuids;
     bool m_chatHeaderVisible = false;
-    // Issue #438 review (finding 4633233517): has the header surface ever
-    // been on screen? Pre-mount selection skips arm nothing; only skips
-    // after the first mount record a deferred recovery obligation, cleared
-    // when the current selection claims its page (or is unselected).
-    bool m_chatHeaderVisibilityMounted = false;
-    bool m_chatHeaderDeferredEdge = false;
     quint64 m_chatHeaderMembersTicket = 0;
     // Issue #89 round 3 (PR #432 review finding 4628746243): a binding
     // membership event that lands while a member page load is in flight is
@@ -2011,6 +2008,8 @@ private:
     QList<ReplyTab> m_replyTabs;
     QString m_replyActiveTab, m_replyRoute;
     QHash<QString, ParkedReplySession> m_replySessions;
+    const Message *replyTarget(const QString &id) const;
+    bool appendReplyTabs(const QStringList &ids, const QString &selectedText, bool keepRestoredEdit);
     const ReplyTab *activeReplyTab() const;
     QString replyTabAuthor(const ReplyTab &tab) const;
     QString replyTabPlain(const ReplyTab &tab) const;
@@ -2234,6 +2233,9 @@ private:
     // lowercased project uuid (reference messageTarget). Returns false when
     // no parked message link exists.
     bool linkedMessageTarget(QString *org, QString *project) const;
+    bool rejectMismatchedLoginOrganization(const QUrl &origin);
+    void discoverInitialLinkedOrganization();
+    void discoverLoginOrganization(const QString &text, quint64 linkSerial);
     QString m_pendingDeepLink;
     QMetaObject::Connection m_profileLinkCacheDestroyed;
     std::weak_ptr<quint64> m_profileLinkSelection;
@@ -2253,6 +2255,7 @@ private:
     bool m_anchorLinkPending = false;
     QString m_anchorNavigationError;
     QString m_failedAnchorLinkTarget;
+    QString m_failedAnchorConversation;
     std::optional<Message> m_pendingAnchorParsed;
     QString m_pendingAnchorStream;
     QString m_pendingAnchorTopic;
