@@ -63,7 +63,7 @@ public:
     // with status 0; destruction suppresses callbacks and removes staged files.
     // Lightweight admission validation; upload rechecks its immutable snapshot
     // because the selected file can change while it is queued.
-    static QString validateUpload(const QString &path, const QString &streamUuid, const QString &name);
+    static QString validateUpload(const QString &path, const QString &streamUuid, const QString &name, QString *imageName = nullptr);
     quint64 upload(const QString &path, const QString &streamUuid, const QString &name,
                    Completion completion, Progress progress = {});
     quint64 download(const QString &uuid, const QString &destination, Completion completion,

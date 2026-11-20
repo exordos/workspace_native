@@ -1526,6 +1526,7 @@ private:
     QString clipboardUploadName(const QString &extension, bool image) const;
     void validateQueuedUpload(quint64 intent, quint64 epoch);
     QStringList readyUploadLinks(quint64 session) const;
+    void reserveImageAlias(UploadEntry &entry, const QString &name);
     QString imageAlias(const UploadEntry &entry) const;
     QString replaceImageAliases(const QString &text, bool serialize) const;
     void cancelEditUploads();

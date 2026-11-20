@@ -256,7 +256,7 @@ void FileClient::cancelAll()
     }
 }
 
-QString FileClient::validateUpload(const QString &path, const QString &streamUuid, const QString &name)
+QString FileClient::validateUpload(const QString &path, const QString &streamUuid, const QString &name, QString *imageName)
 {
     const QFileInfo info(path);
     if (!validUuid(streamUuid) || !info.isFile() || info.size() <= 0 || info.size() > 25 * 1024 * 1024)
@@ -268,11 +268,13 @@ QString FileClient::validateUpload(const QString &path, const QString &streamUui
     const QMimeDatabase mime;
     const auto declared = mime.mimeTypeForFile(path, QMimeDatabase::MatchExtension).name();
     const auto uploaded = mime.mimeTypeForFile(uploadName, QMimeDatabase::MatchExtension).name();
+    const auto header = input.peek(4096);
     if (declared.startsWith("image/") || uploaded.startsWith("image/")) {
-        const auto header = input.read(12);
         if (!imageSignatureMatches(declared, header) || !imageSignatureMatches(uploaded, header))
             return FileClient::tr("The image file type does not match its contents.");
     }
+    if (imageName && mime.mimeTypeForData(header).name().startsWith("image/"))
+        *imageName = uploadName;
     return {};
 }
 
