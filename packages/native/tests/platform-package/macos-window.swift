@@ -65,7 +65,7 @@ guard waitFor(15, { !secondary.isRunning }), secondary.terminationStatus == 0,
       waitFor(10, { app.isRunning && windowBounds(pid) != nil }) else {
     throw fail("The second launch did not restore the original application.")
 }
-print("A second launch restored the original hidden application.")
+print("A second launch restored the original minimized window.")
 
 func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
     var value: CFTypeRef?
@@ -82,31 +82,42 @@ func addressField(_ element: AXUIElement, depth: Int = 0) -> AXUIElement? {
     for child in children { if let match = addressField(child, depth: depth + 1) { return match } }
     return nil
 }
-func command(_ key: CGKeyCode, _ pid: pid_t) {
-    for down in [true, false] {
-        let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)!
-        event.flags = .maskCommand
-        event.postToPid(pid)
+func command(_ key: CGKeyCode) {
+    let commandKey: CGKeyCode = 55
+    let strokes: [(CGKeyCode, Bool, CGEventFlags)] = [
+        (commandKey, true, .maskCommand), (key, true, .maskCommand),
+        (key, false, .maskCommand), (commandKey, false, [])]
+    for (code, down, flags) in strokes {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
+        event.flags = flags
+        event.post(tap: .cghidEventTap)
     }
 }
+guard let running = NSRunningApplication(processIdentifier: pid) else { throw fail("The primary application exited.") }
+_ = running.activate(options: [.activateIgnoringOtherApps])
+guard waitFor(10, { running.isActive }) else { throw fail("The primary window did not regain keyboard activation.") }
 var field: AXUIElement?
 guard waitFor(15, { field = addressField(a11y); return field != nil }),
       let field, AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
     throw fail("The accessible login address field could not be focused.")
 }
+guard waitFor(5, {
+    guard let focused = attribute(a11y, kAXFocusedUIElementAttribute as CFString) else { return false }
+    return CFEqual(focused, field)
+}) else { throw fail("The login address field did not regain actual keyboard focus.") }
 let pasteboard = NSPasteboard.general
-let text = "https://cassi-package.invalid/clipboard"
+let text = "Cassi clipboard | Привет"
 pasteboard.clearContents()
 pasteboard.setString(text, forType: .string)
-command(0, pid) // Command+A
-command(9, pid) // Command+V
+command(0) // Command+A
+command(9) // Command+V
 guard waitFor(5, { attribute(field, kAXValueAttribute as CFString) as? String == text }) else {
     throw fail("The application did not paste the system clipboard.")
 }
 pasteboard.clearContents()
 pasteboard.setString("cassi-copy-control", forType: .string)
-command(0, pid)
-command(8, pid) // Command+C
+command(0)
+command(8) // Command+C
 guard waitFor(5, { pasteboard.string(forType: .string) == text }) else {
     throw fail("The application did not copy the selected text.")
 }

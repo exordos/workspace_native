@@ -69,7 +69,7 @@ try {
             $field = $addresses[0]
             $field.SetFocus()
             $pattern = $field.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-            $text = "https://cassi-package.invalid/clipboard"
+            $text = "Cassi clipboard | Привет"
             Set-Clipboard -Value $text
             [System.Windows.Forms.SendKeys]::SendWait('^a')
             [System.Windows.Forms.SendKeys]::SendWait('^v')
