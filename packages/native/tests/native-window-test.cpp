@@ -9323,7 +9323,10 @@ mv -Tf "$root/.current-new" "$root/current"
         if (!fixture.directBodies.isEmpty())
             QCOMPARE(fixture.directBodies.first(), QJsonObject({{"name", "Direct"}, {"description", "Private workspace"},
                 {"source_name", "native"}, {"direct_user_uuid", channelPeer}}));
-        click(window, item(window->contentItem(), "topic-" + channelDefault));
+        // The sidebar publishes its expansion on the next event loop turn.
+        const auto topicRow = [&] { return visibleItem(window->contentItem(), "topic-" + channelDefault); };
+        QTRY_VERIFY(topicRow() && topicRow()->width() > 0 && topicRow()->height() > 0);
+        clickReadyItem(window, topicRow());
         QTRY_COMPARE(controller.selectedTopic(), channelDefault);
         QTRY_VERIFY(!controller.busy());
         QCOMPARE(visibleItem("directConversationName")->property("text").toString(), QString("Alice"));
