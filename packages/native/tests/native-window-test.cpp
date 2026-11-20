@@ -36926,6 +36926,17 @@ private slots:
         QVERIFY2(chipFocused(), qPrintable(QStringLiteral("Tab chain never reached a mention chip; visited: ") + chain.join(QStringLiteral(" -> "))));
         // Shift+Tab leaves the chip and Tab walks straight back onto it.
         QCOMPARE(chain.contains("quickReply-" + messageId), inTopic);
+        if (inTopic) {
+            const auto firstMention = focusedName();
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(focusedName(), "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(focusedName(), "quick-reactions-" + messageId);
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_COMPARE(focusedName(), "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+            QTRY_COMPARE(focusedName(), firstMention);
+        }
         QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
         QTest::qWait(25);
         QVERIFY2(!chipFocused(), qPrintable(QStringLiteral("Shift+Tab did not move focus off the chip: ") + focusedName()));
