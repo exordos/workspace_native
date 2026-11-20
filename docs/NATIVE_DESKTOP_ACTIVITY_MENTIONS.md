@@ -227,6 +227,14 @@ window tests get a `WindowMentionsFixture` cloning `WindowDraftFixture`'s
 skeleton with a mentioned-aware `/messages/` route. Message rows gain
 `"mentioned": true` in the JSON used by these tests only.
 
+The sidebar loads its unread-mention index on sign-in through the same messages
+endpoint as chat history. Its initial request has `mentioned=true`, `read=false`,
+a 100-row page, newest-first order and no conversation or page marker.
+The reactions deeplink fixture checks that this startup request occurs exactly
+once and that opening Reactions requests no collection. Restart and warm-cache
+window checks serve an empty mention index independently of their topic and
+stream history counters.
+
 ## Out of scope (named)
 
 - Forward button on cards: deferred to the multiple-forward roadmap (#7); the

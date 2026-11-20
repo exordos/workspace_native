@@ -427,6 +427,16 @@ static QJsonObject windowChannelTopic(const QString &id, const QString &stream, 
         {"updated_at", "2026-01-02T10:00:00Z"}};
 }
 
+static bool isInitialUnreadMentionIndex(const Request &request)
+{
+    const QUrlQuery query(request.target);
+    return request.method == "GET" && request.target.path() == "/api/workspace/v1/messenger/messages/"
+        && query.queryItemValue("mentioned") == "true" && query.queryItemValue("read") == "false"
+        && query.queryItemValue("sort_key") == "created_at" && query.queryItemValue("sort_dir") == "desc"
+        && query.queryItemValue("page_limit") == "100" && !query.hasQueryItem("page_marker")
+        && !query.hasQueryItem("stream_uuid") && !query.hasQueryItem("topic_uuid");
+}
+
 class WindowChannelFixture {
 public:
     MockServer server;
@@ -5969,12 +5979,17 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool russian = locale == QLatin1String("ru");
         class WindowReactionsFixture final : public WindowChannelFixture {
         public:
+            int indexRequests = 0;
             int collectionRequests = 0;
             WindowReactionsFixture()
             {
                 sourceScene = true;
                 const auto fallback = server.handler;
                 server.handler = [this, fallback](const Request &request) -> Response {
+                    if (isInitialUnreadMentionIndex(request)) {
+                        ++indexRequests;
+                        return Response{QJsonArray{}};
+                    }
                     const QUrlQuery query(request.target);
                     if (request.target.path().endsWith("/messages/")
                         && (query.hasQueryItem("starred") || query.hasQueryItem("mentioned")))
@@ -5997,6 +6012,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_COMPARE(fixture.indexRequests, 1);
         QVERIFY(view("messageList")); // the conversation renders before the route
         QVERIFY(!view("activityUnsupportedText"));
         controller.openMessageLink(QStringLiteral("ew://open/org/127.0.0.1-")
@@ -6033,6 +6049,8 @@ mv -Tf "$root/.current-new" "$root/current"
             + QString::number(fixture.server.origin().port())
             + QStringLiteral("/project/") + projectId + QStringLiteral("/activity/reactions"));
         QTRY_VERIFY(view("activityUnsupportedText"));
+        QCOMPARE(fixture.indexRequests, 1);
+        QCOMPARE(fixture.collectionRequests, 0);
         QVERIFY(!view("messageList"));
         // The header close control returns to the conversation.
         auto *closeButton = view("activityUnsupportedCloseButton"); QVERIFY(closeButton);
@@ -9588,6 +9606,7 @@ mv -Tf "$root/.current-new" "$root/current"
             if (path.endsWith("/stream_topics/"))
                 return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
                     {"stream_uuid", streamId}, {"name", "History"}}}, 200, phase == "restore" ? 350 : 0};
+            if (isInitialUnreadMentionIndex(request)) return Response{QJsonArray{}};
             if (path.endsWith("/messages/")) {
                 const bool aggregate = !QUrlQuery(request.target).hasQueryItem("topic_uuid");
                 if (aggregate) ++aggregateGets;
@@ -9957,6 +9976,7 @@ mv -Tf "$root/.current-new" "$root/current"
                     topics.append(QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId}, {"name", id == topicId ? "First" : "Second"}});
                 return Response{topics};
             }
+            if (isInitialUnreadMentionIndex(request)) return Response{QJsonArray{}};
             if (path.endsWith("/messages/")) {
                 const auto id = QUrlQuery(request.target).queryItemValue("topic_uuid");
                 if (id.isEmpty()) {
