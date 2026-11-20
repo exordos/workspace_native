@@ -7053,8 +7053,13 @@ component NativeMentionChip: Item {
                 property bool preparingRows: false
                 property bool preparationSurfaceVisible: false
                 property var outgoingPresentation: ({})
+                property var lastOutgoing: ({})
                 readonly property var currentOutgoing: root.controller.encryptedOutgoingPresentation
                 onCurrentOutgoingChanged: {
+                    const next = currentOutgoing || {};
+                    if (next.id === lastOutgoing.id && next.text === lastOutgoing.text)
+                        return;
+                    lastOutgoing = next;
                     if (preparedScope.length)
                         replaceMessages(messageSnapshot, true)
                 }
