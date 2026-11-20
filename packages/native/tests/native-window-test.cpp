@@ -21590,6 +21590,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerPreviewShowsTheBodyItSends()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         QFETCH(bool, inlineFile);
@@ -21712,6 +21717,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(posted, outgoing);
         QTRY_VERIFY(view("messageComposer") && !view("composerPreviewMarkdown"));
         QTRY_VERIFY(controller.draft().isEmpty());
+        QVERIFY(!accessible->state().checked);
 
         QVERIFY(controller.beginEditMessage(messageId));
         const QString revision = "Edited **reply source**";
@@ -21737,6 +21743,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerAiNoticeTracksItsTriggerAndOtherPickers()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         WindowChannelFixture fixture;
@@ -21815,6 +21826,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(send && send->isEnabled());
         click(window, send);
         QTRY_VERIFY(!open(notice));
+        QVERIFY(!iface->state().checked);
         QCOMPARE(sent.size(), 0);
         click(window, ai);
         QTRY_VERIFY(open(notice));
