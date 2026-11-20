@@ -571,7 +571,10 @@ copy/accessibility content and ordinary text rendering stay available. Mixed,
 adjacent, nested, quoted and external image references retain their safe links.
 The current static PNG/JPEG/GIF/WebP previews use the existing authenticated
 FileClient metadata/hash/size pipeline. Reopening a warm route shares the retained
-preview without another file request. A failed decoder still leaves the original
+preview without another file request. When a message refresh replaces a visible
+delegate, its new delegate has 100 ms to reclaim an in-flight preview. An
+unclaimed transfer is canceled, and changing accounts still clears it immediately.
+A failed decoder still leaves the original
 attachment's existing Save action usable; Retry remains a separate action.
 
 MessageImages bounds its own decoded preview LRU to 32 MiB, 64 entries, 4096 leases
