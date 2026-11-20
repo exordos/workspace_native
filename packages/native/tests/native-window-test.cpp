@@ -26979,6 +26979,13 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
 
+    void callEmbedRetryRecoversWhenTheViewUrlDivergesFromMeetingUrl_data()
+    {
+        QTest::addColumn<bool>("redirect");
+        QTest::newRow("meeting") << false;
+        QTest::newRow("redirected-meeting") << true;
+    }
+
     void callEmbedRetryRecoversWhenTheViewUrlDivergesFromMeetingUrl()
     {
         // PR #264 review (medium): the LoadFailed -> Loading retry edge also
@@ -26992,6 +26999,7 @@ private:
         // TypeError and started no load at all, leaving the controller stuck
         // in Loading forever. This case desynchronizes the live view after
         // LoadFailed, then retries and requires recovery to Ready.
+        QFETCH(bool, redirect);
         QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
         QTemporaryDir directory; QVERIFY(directory.isValid());
         WindowCallFixture fixture; fixture.meetConfigured = true; fixture.localMeeting = true;
@@ -27061,8 +27069,17 @@ private:
         const auto handle = fixture.server.handler;
         fixture.server.handler = [&](const Request &request) {
             auto response = handle(request);
-            if (request.target.path() == QStringLiteral("/workspace-call-room"))
+            if (request.target.path() == QStringLiteral("/workspace-call-room")) {
+                if (redirect) {
+                    response.status = 302;
+                    response.headers.insert("Location", "/redirected-meeting");
+                }
                 response.defer = [&](auto finish) { finishMeeting = std::move(finish); };
+            } else if (request.target.path() == QStringLiteral("/redirected-meeting")) {
+                response.status = 200;
+                response.rawBody = embedMeetingPage();
+                response.rawContentType = "text/html; charset=utf-8";
+            }
             return response;
         };
         const auto restoreHandler = qScopeGuard([&] { fixture.server.handler = handle; });
@@ -27092,6 +27109,8 @@ private:
         finishMeeting();
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::Ready), 20000);
+        QCOMPARE(engineView->property("url").toUrl().path(),
+                 redirect ? QStringLiteral("/redirected-meeting") : QStringLiteral("/workspace-call-room"));
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
