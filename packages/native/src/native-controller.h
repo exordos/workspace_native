@@ -1399,7 +1399,8 @@ private:
     void noteTopicOpeningStream(const Stream &stream);
     void activateStream(const QString &id, const QVector<Topic> *topics = nullptr,
                         const QString &directPublishingAttempt = {},
-                        const Topic *initialTopic = nullptr, quint64 openingTicket = 0);
+                        const Topic *initialTopic = nullptr, quint64 openingTicket = 0,
+                        bool openingFavorites = false);
     struct ArchiveOperation {
         QString owner, acl, error;
         quint64 generation = 0, catalog = 0, ticket = 0;
@@ -2097,7 +2098,8 @@ private:
     std::optional<Stream> findSelfStream() const;
     void runFavoritesFlow();
     void ensureSelfStream();
-    void openSelfStream(const QString &streamUuid, const QString &preferredTopic);
+    void openSelfStream(const QString &streamUuid);
+    void settleFavoritesTopics(bool success);
     void leaveFavorites();
     // Unread-mentions index entries (activity.model.ts ActivityUnreadMention):
     // stream/topic/created_at are needed for the read-boundary and scope clears
@@ -2156,7 +2158,6 @@ private:
     QString m_favoritesStatus, m_favoritesError;
     QHash<QString, quint64> m_selfStreamEnsures;
     quint64 m_favoritesEnsureSeq = 0;
-    quint64 m_favoritesWatch = 0;
     QString m_section = QStringLiteral("chat");
     QString m_sectionBeforeLicenses = QStringLiteral("chat");
     QHash<QString, QVector<Topic>> m_inboxTopics;

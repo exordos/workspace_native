@@ -32320,6 +32320,104 @@ private slots:
         QVERIFY(controller.selectedStream() == streamId);
     }
 
+    void favoritesTopicCompletionFollowsCurrentPage_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : {"calendar", "reopened", "http-failure", "transport-failure", "malformed"})
+            QTest::newRow(name) << QString::fromLatin1(name);
+    }
+
+    void favoritesTopicCompletionFollowsCurrentPage()
+    {
+        QFETCH(QString, scenario);
+        WindowFavoritesFixture fixture;
+        fixture.catalogIncludesSelf = true;
+        fixture.sourceScene = true;
+        int topicRequests = 0;
+        bool recovered = false;
+        std::function<void()> release;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) {
+            auto reply = fallback(request);
+            if (!request.target.path().endsWith("/stream_topics/")
+                || QUrlQuery(request.target).queryItemValue("stream_uuid") != windowFavoritesStream)
+                return reply;
+            if (++topicRequests == 1) {
+                if (scenario == "http-failure" || scenario == "reopened") reply.status = 500;
+                if (scenario == "transport-failure") reply.abortConnection = true;
+                if (scenario == "malformed") reply.data = QJsonArray{QJsonObject{}};
+                reply.headers.insert("X-Favorites-Test", "held");
+                reply.defer = [&](std::function<void()> deliver) { release = std::move(deliver); };
+            } else if (scenario == "transport-failure" && !recovered) {
+                // Qt may transparently retry a GET after the first connection closes.
+                reply.abortConnection = true;
+            }
+            return reply;
+        };
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("prefs.ini"));
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-favorites");
+        QVERIFY(chip);
+        click(window, chip);
+        QTRY_VERIFY(release);
+        QCOMPARE(controller.favoritesStatus(), "loading");
+        if (scenario == "calendar" || scenario == "reopened") {
+            auto *calendar = view("sectionCalendarButton");
+            QVERIFY(calendar);
+            click(window, calendar);
+            QTRY_COMPARE(controller.section(), "calendar");
+            QVERIFY(!controller.favoritesVisible());
+            if (scenario == "reopened") {
+                click(window, view("sectionChatButton"));
+                QTRY_VERIFY(view("activity-favorites"));
+                click(window, view("activity-favorites"));
+                QTRY_COMPARE(controller.favoritesStatus(), "ready");
+            }
+            auto *network = api.findChild<QNetworkAccessManager *>();
+            QVERIFY(network);
+            bool completed = false;
+            auto connection = connect(network, &QNetworkAccessManager::finished, this, [&](QNetworkReply *reply) {
+                if (reply->rawHeader("X-Favorites-Test") == "held") completed = true;
+            });
+            auto disconnectFinished = qScopeGuard([&] { disconnect(connection); });
+            release();
+            QTRY_VERIFY(completed);
+            if (scenario == "calendar") {
+                QCOMPARE(controller.section(), "calendar");
+                QVERIFY(!controller.favoritesVisible());
+                QVERIFY(controller.selectedTopic() != windowFavoritesTopic);
+            } else {
+                QCOMPARE(controller.favoritesStatus(), "ready");
+                QCOMPARE(controller.selectedTopic(), windowFavoritesTopic);
+            }
+        } else {
+            release();
+            QTRY_VERIFY_WITH_TIMEOUT(view("favoritesRetryButton"), 2500);
+            QVERIFY(!view("favoritesLoading"));
+            QCOMPARE(controller.favoritesStatus(), "error");
+            recovered = true;
+            auto *retry = view("favoritesRetryButton");
+            click(window, retry);
+            QTRY_COMPARE(controller.selectedTopic(), windowFavoritesTopic);
+            QCOMPARE(controller.favoritesStatus(), "ready");
+            QTRY_VERIFY(view("favoritesConversationHeader"));
+        }
+        QCOMPARE(fixture.selfPosts, 0);
+    }
+
     // A failed ensure renders the bordered error card with Retry
     // (chat-page.ui.tsx:56-65); Retry re-dispatches the create and recovers.
     void favoritesEnsureFailureShowsErrorCardAndRetry()
