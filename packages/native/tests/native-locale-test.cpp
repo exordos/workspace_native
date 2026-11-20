@@ -96,14 +96,34 @@ private slots:
                  QFileInfo(translations).canonicalFilePath());
     }
 
+    void translationScanIgnoresUnrelatedSourcesBesideTheBuild()
+    {
+        QTemporaryDir layout;
+        QVERIFY(layout.isValid());
+        QVERIFY(QDir().mkpath(layout.filePath("src")));
+        QVERIFY(QDir().mkpath(layout.filePath("build")));
+        QFile unrelated(layout.filePath("src/unrelated.cpp"));
+        QVERIFY(unrelated.open(QIODevice::WriteOnly));
+        unrelated.write("const auto value = QT_TRANSLATE_NOOP(\"Unrelated\", \"Outside native sources\");");
+        unrelated.close();
+        const QString probePath = layout.filePath("build/" + QFileInfo(QCoreApplication::applicationFilePath()).fileName());
+        QVERIFY(QFile::copy(QCoreApplication::applicationFilePath(), probePath));
+        QProcess probe;
+        probe.setWorkingDirectory(layout.filePath("build"));
+        probe.start(probePath, {"currentPublicSourceMessagesExistInTheReviewedCatalog"});
+        QVERIFY2(probe.waitForFinished(10000), qPrintable(probe.errorString()));
+        QCOMPARE(probe.exitStatus(), QProcess::NormalExit);
+        QVERIFY2(probe.exitCode() == 0, probe.readAllStandardOutput().constData());
+    }
+
     void currentPublicSourceMessagesExistInTheReviewedCatalog()
     {
         QTemporaryDir directory;
         const auto generated = directory.filePath("extracted.ts");
-        const auto src = QFINDTESTDATA("../src");
-        const auto qml = QFINDTESTDATA("../qml");
-        const auto catalog = QFINDTESTDATA("../translations/workspace_ru.ts");
-        QVERIFY(!src.isEmpty() && !qml.isEmpty() && !catalog.isEmpty());
+        const QDir source(QString::fromUtf8(WORKSPACE_NATIVE_SOURCE_DIR));
+        const auto src = source.filePath("src");
+        const auto qml = source.filePath("qml");
+        const auto catalog = source.filePath("translations/workspace_ru.ts");
         QProcess update;
         update.start(QString::fromUtf8(WORKSPACE_NATIVE_LUPDATE_EXECUTABLE),
             {src, qml, "-no-obsolete", "-locations", "none", "-ts", generated});
@@ -135,7 +155,7 @@ private slots:
 
     void allCatalogMessagesAreReviewedAndPreserveArguments()
     {
-        const auto path = QFINDTESTDATA("../translations/workspace_ru.ts");
+        const auto path = QDir(QString::fromUtf8(WORKSPACE_NATIVE_SOURCE_DIR)).filePath("translations/workspace_ru.ts");
         QVERIFY(!path.isEmpty());
         QFile file(path);
         QVERIFY(file.open(QIODevice::ReadOnly));

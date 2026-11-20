@@ -1,3 +1,4 @@
+#include <QSoundEffect>
 #include "api-client.h"
 #ifdef Q_OS_LINUX
 #include "live-acceptance-trace.h"
@@ -169,6 +170,18 @@ int main(int argc, char **argv)
     desktopNotifications->setClickCallback(
         [notifications](const QString &tag) { notifications->click(tag); });
     notifications->setTransport(desktopNotifications);
+    QObject::connect(notifications, &workspace::NotificationService::soundRequested,
+        &preferences, &workspace::NativePreferences::previewNotificationSound);
+    QHash<QString, QSoundEffect *> sounds;
+    QObject::connect(&preferences, &workspace::NativePreferences::notificationSoundRequested, &app,
+        [&sounds, &app](const QString &preset) {
+            auto *&sound = sounds[preset];
+            if (!sound) {
+                sound = new QSoundEffect(&app);
+                sound->setSource(QUrl(QStringLiteral("qrc:/workspace/sounds/") + preset + ".wav"));
+            }
+            sound->play();
+        });
     if (window) {
         auto *focusWatcher = new WindowFocusWatcher(&controller);
         window->installEventFilter(focusWatcher);
@@ -233,6 +246,12 @@ int main(int argc, char **argv)
     preferences.attachWindow(window);
     const auto activate = [&preferences, &shuttingDown] { if (!shuttingDown) preferences.activateWindow(); };
     QObject::connect(&desktop, &workspace::NativeDesktop::activateRequested, &app, activate);
+    QObject::connect(&desktop, &workspace::NativeDesktop::sectionRequested, &app,
+                     [&](const QString &section) {
+                         if (shuttingDown) return;
+                         activate();
+                         controller.showSection(section);
+                     });
     // A valid notification click reuses this same guarded activation path as
     // tray activation and second-instance deep links (issue #117); expired or
     // unknown tags emit nothing and keep the window untouched.
@@ -247,7 +266,7 @@ int main(int argc, char **argv)
         if (controller.authenticated()) {
             for (const auto &value : controller.streams()) {
                 const auto unread = qMax<qint64>(0, value.toMap().value("unread").toLongLong());
-                count += qMin(unread, std::numeric_limits<qint64>::max() - count);
+                count += qMin(unread, (std::numeric_limits<qint64>::max)() - count);
             }
         }
         desktop.setUnreadCount(count);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Temporal fault controls run independently of credentials or public services."""
 
+import contextlib
 import runpy
 import socket
 import socketserver
@@ -144,6 +145,39 @@ class Controls(unittest.TestCase):
         rows.insert(-1, {"event": "sample", "ms": 200, "intent": 3, "count": 22})
         self.assertIn("gui-stall", evaluate(rows, LIMITS)["failures"])
 
+    def test_warm_switch_waits_for_the_client_to_observe_invalidation(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                                    / "scripts" / "live-workspace-acceptance.py"))
+        peer = runner["Peer"]({}, "writer")
+        desktop = Mock()
+        desktop.events = [{"event": "realtime", "kind": "message.created", "peer": True}]
+        cleanup = Mock()
+        create = Mock()
+
+        @contextlib.contextmanager
+        def message(*args):
+            try:
+                yield create
+            finally:
+                cleanup()
+
+        peer.temporary_message = message
+
+        def deliver(predicate, reason, timeout):
+            create.assert_called_once()
+            self.assertFalse(predicate())
+            desktop.events.append(sanitize_native_event({
+                "event": "realtime", "ms": 100, "peer": True,
+                "kind": "message.created", "revalidation": True,
+            }))
+            self.assertTrue(predicate())
+
+        desktop.until.side_effect = deliver
+        with peer.invalidate_warmed_topic(desktop):
+            desktop.until.assert_called_once()
+            cleanup.assert_not_called()
+        cleanup.assert_called_once()
+
     def test_peer_uses_the_public_uuid_returned_by_the_deployed_backend(self):
         runner = runpy.run_path(
             str(
@@ -238,9 +272,11 @@ class Controls(unittest.TestCase):
         }
         desktop.fill = Mock()
         desktop.lookup = Mock()
-        desktop.lookup.return_value.get_text_iface.return_value.get_text.return_value = (
-            "https://elsewhere.invalid"
-        )
+        field = desktop.lookup.return_value.get_text_iface.return_value
+        # PyGObject exposes Accessible.get_text() (no offsets) on this proxy.
+        field.get_text.side_effect = lambda: field
+        desktop.atspi = Mock()
+        desktop.atspi.Text.get_text.return_value = "https://elsewhere.invalid"
         desktop.click = Mock()
 
         def until(predicate, reason, seconds=15):

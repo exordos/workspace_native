@@ -46,6 +46,18 @@ QString validPalette(const QString &palette)
     return QStringLiteral("blue-cold");
 }
 
+QString validNotificationSound(const QString &value)
+{
+    for (const auto *preset : {"subtle", "digital", "glass", "pulse", "none"})
+        if (value == QLatin1String(preset)) return value;
+    return QStringLiteral("default");
+}
+
+QString validSortMode(const QString &value)
+{
+    return value == "alphabetical" || value == "unread_first" ? value : QStringLiteral("last_message");
+}
+
 QString validMode(const QString &mode)
 {
     return mode == "light" || mode == "dark" || mode == "system" ? mode : QStringLiteral("system");
@@ -84,11 +96,12 @@ QString normalizeOrganizationOrigin(const QString &value)
 } // namespace
 
 NativePreferences::NativePreferences(QString settingsFile, QObject *parent, std::function<QDate()> utcToday)
-    : QObject(parent), m_settings(preferencesPath(settingsFile), QSettings::IniFormat),
+    : QObject(parent), m_settings(preferencesPath(settingsFile), QSettings::IniFormat), m_hotkeys(m_settings, this),
       m_utcToday(std::move(utcToday))
 {
     if (!m_utcToday) m_utcToday = [] { return QDateTime::currentDateTimeUtc().date(); };
     m_settings.setFallbacksEnabled(false);
+    m_hotkeys.load(settingsGroup());
     {
         // Persisted organization suggestions (login wizard). Entries that no
         // longer normalize to an origin are dropped instead of offered.
@@ -342,6 +355,7 @@ void NativePreferences::setOwner(const QString &owner)
     const auto next = valid ? owner : QString{};
     if (m_owner != next) {
         m_owner = next;
+        m_hotkeys.load(settingsGroup());
         // Appearance emits synchronously. Every observer must already see this
         // owner's history, including while the language/theme is changing.
         loadReactionHistory();
@@ -407,6 +421,10 @@ void NativePreferences::loadAuthIdleTimeout()
 // settings blob (deviation D2), unlike the per-owner authIdleTimeout scope.
 void NativePreferences::loadChatLayout()
 {
+    const auto sound = validNotificationSound(m_settings.value("settings/app/notificationSound").toString());
+    const auto sortMode = validSortMode(m_settings.value("settings/app/sidebarSortMode").toString());
+    if (sound != m_notificationSound) { m_notificationSound = sound; emit notificationSoundChanged(); }
+    if (sortMode != m_sidebarSortMode) { m_sidebarSortMode = sortMode; emit sidebarSortModeChanged(); }
     const auto density = m_settings.value("settings/app/chatListDensity").toString();
     const auto action = m_settings.value("settings/app/chatClickAction").toString();
     const auto nextDensity = density == QLatin1String("compact")
@@ -421,6 +439,31 @@ void NativePreferences::loadChatLayout()
         m_chatClickAction = nextAction;
         emit chatClickActionChanged();
     }
+}
+
+void NativePreferences::setNotificationSound(const QString &preset)
+{
+    const auto value = validNotificationSound(preset);
+    if (m_notificationSound == value) return;
+    m_notificationSound = value;
+    m_settings.setValue("settings/app/notificationSound", value);
+    m_settings.sync();
+    emit notificationSoundChanged();
+}
+
+void NativePreferences::previewNotificationSound()
+{
+    if (m_notificationSound != "none") emit notificationSoundRequested(m_notificationSound);
+}
+
+void NativePreferences::setSidebarSortMode(const QString &mode)
+{
+    const auto value = validSortMode(mode);
+    if (m_sidebarSortMode == value) return;
+    m_sidebarSortMode = value;
+    m_settings.setValue("settings/app/sidebarSortMode", value);
+    m_settings.sync();
+    emit sidebarSortModeChanged();
 }
 
 void NativePreferences::setChatListDensity(const QString &density)
@@ -558,6 +601,41 @@ void NativePreferences::setLocale(const QString &locale)
     m_locale = locale;
     persist();
     emit localeChanged();
+}
+
+bool NativePreferences::resetLocalSettings()
+{
+    m_conversationSaveTimer.stop();
+    m_pendingConversationOwner.clear();
+    m_pendingConversation.clear();
+    const QPointer<QWindow> window = m_window;
+    attachWindow(nullptr);
+    m_settings.clear();
+    m_settings.setValue("login/organizationHistory", m_organizationHistory);
+    m_settings.sync();
+    if (window) {
+        window->setWindowState(Qt::WindowNoState);
+        attachWindow(window);
+    }
+    if (m_settings.status() != QSettings::NoError) {
+        setError(tr("The local settings could not be cleared."));
+        return false;
+    }
+    m_mentionStore = {};
+    m_mentionStoreLoaded = false;
+    m_mentionStoreOwner.clear();
+    m_sidebarWidth = 299;
+    m_cacheLimitGb = 10;
+    m_composerToolbarExpanded = false;
+    loadAppearance();
+    loadAuthIdleTimeout();
+    loadChatLayout();
+    loadFolderRail();
+    loadReactionHistory();
+    emit sidebarPreferredWidthChanged();
+    emit cacheLimitGbChanged();
+    emit composerToolbarExpandedChanged();
+    return true;
 }
 
 void NativePreferences::setCacheLimitGb(int gigabytes)

@@ -49,8 +49,7 @@ comment on #3, matrix slice `shell-badge`).
   `_NET_WM_STATE_DEMANDS_ATTENTION`), and the flash clears on the window focus
   handler.
 - Effects: notification itself is always silent; a separate sound may play per
-  the `notificationSound` setting (settings surface not ported natively yet —
-  see deviations). Click consumes the aggregate, closes the tag and navigates
+  the `notificationSound` setting in the account drawer. Click consumes the aggregate, closes the tag and navigates
   to the conversation route.
 
 ## Native design
@@ -117,12 +116,9 @@ aggregate route suppresses the whole stream).
 - No permission banner. `shared/lib/notifications.ts` gates on a localStorage
   flag and proves delivery with a test notification because browsers require a
   user gesture for the web Notification API; a native Linux app talks to the
-  desktop notification service without such a gate. Banner parity (and the
-  `notificationSound` picker) is tracked as follow-up scope, not implemented
-  here.
-- Sound: the reference notification is always `silent: true` and any sound is a
-  separate settings-driven playback; the native settings surface for
-  `notificationSound` is not ported, so native shows silent notifications only.
+  desktop notification service without such a gate.
+- The platform banner remains silent. An eligible notification asks the
+  settings sound player for the selected preset. Off suppresses the request.
 - The generic-notification body is `username · host` derived from
   `Session::publicProfile()["username"]` and the API origin hostname
   (`ApiClient::server()`), mirroring `resolveGenericNotificationAccountLabel`
