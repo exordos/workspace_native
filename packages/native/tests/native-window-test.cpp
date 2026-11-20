@@ -7386,6 +7386,108 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
     }
 
+    void shortcutSettingsSearchRecordingAndHelp_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("theme");
+        for (const auto *locale : {"en","ru"})
+            for (const auto *theme : {"light","dark"})
+                QTest::newRow(qPrintable(QString("%1-%2").arg(locale,theme))) << QString(locale) << QString(theme);
+    }
+
+    void shortcutSettingsSearchRecordingAndHelp()
+    {
+        QFETCH(QString,locale); QFETCH(QString,theme);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory;
+        NativePreferences preferences(directory.filePath("shortcuts.ini"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard=QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine,guard.data()))
+                QTest::qFail("Shortcut window teardown",__FILE__,__LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture,controller,session));
+        preferences.setLocale(locale); preferences.setMode(theme);
+        auto *registry=preferences.hotkeys();
+        QVERIFY(!window->findChild<QObject *>("shortcutsHelp"));
+        QVERIFY(!window->findChild<QObject *>("shortcutSettings"));
+        window->contentItem()->forceActiveFocus();
+        QTest::keyClick(window,Qt::Key_Slash,Qt::ControlModifier);
+        QTRY_VERIFY(window->findChild<QObject *>("shortcutsHelp"));
+        QPointer<QObject> help = window->findChild<QObject *>("shortcutsHelp");
+        QTRY_VERIFY(help && help->property("visible").toBool());
+        QTRY_VERIFY(visibleItem("shortcut-composer.bold"));
+        QVERIFY(!visibleItem("shortcut-navigation.calendar"));
+        for (const auto &id : {"cancel", "focus", "send", "editing", "focusZones"})
+            QVERIFY(visibleItem("shortcut-fixed." + QString::fromLatin1(id)));
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(help.isNull());
+        QTRY_VERIFY(visibleItem("accountMenuButton"));
+        click(window,visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(window,visibleItem("accountSettingsAction"));
+        QTRY_VERIFY(visibleItem("accountKeyboardShortcuts"));
+        click(window,visibleItem("accountKeyboardShortcuts"));
+        QTRY_VERIFY(window->findChild<QObject *>("shortcutSettings"));
+        QPointer<QObject> settings = window->findChild<QObject *>("shortcutSettings");
+        QTRY_VERIFY(settings && settings->property("visible").toBool());
+        auto find=[&](const QString &name) { return item(window->contentItem(), name); };
+        auto *search=find("shortcutsSearch"); QVERIFY(search);
+        const auto boldLabel=locale=="ru" ? QStringLiteral("Жирный") : QStringLiteral("Bold");
+        search->setProperty("text",boldLabel);
+        QTRY_VERIFY(find("shortcut-composer.bold") && find("shortcut-composer.bold")->isVisible());
+        QVERIFY(!find("shortcut-composer.italic") || !find("shortcut-composer.italic")->isVisible());
+        search->setProperty("text","no-matching-shortcut");
+        QTRY_VERIFY(find("shortcutsEmpty") && find("shortcutsEmpty")->isVisible());
+        search->setProperty("text",boldLabel);
+        QTRY_VERIFY(find("shortcut-composer.bold") && find("shortcut-composer.bold")->isVisible());
+        click(window,find("shortcut-composer.bold"));
+        QTRY_VERIFY(registry->recording());
+        QTest::keyClick(window,Qt::Key_C,Qt::ControlModifier);
+        QTRY_COMPARE(settings->property("errorCode").toString(),QString("reserved"));
+        QVERIFY(!find("shortcutSave")->isEnabled());
+        QTest::keyClick(window,Qt::Key_E,Qt::ControlModifier);
+        QTRY_COMPARE(settings->property("errorCode").toString(),QString("conflict"));
+        QTest::keyClick(window,Qt::Key_B,Qt::ControlModifier|Qt::ShiftModifier);
+        QTRY_VERIFY(find("shortcutSave")->isEnabled());
+        click(window,find("shortcutSave"));
+        QTRY_COMPARE(registry->binding("composer.bold"),QString("Ctrl+Shift+B"));
+        QTRY_VERIFY(find("shortcut-composer.bold")->hasActiveFocus());
+        click(window,find("shortcut-composer.bold"));
+        QTRY_VERIFY(registry->recording());
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(settings->property("editor").toString().isEmpty());
+        QVERIFY(settings->property("visible").toBool());
+        QCOMPARE(registry->binding("composer.bold"),QString("Ctrl+Shift+B"));
+        click(window,find("shortcut-composer.bold"));
+        click(window,find("shortcutDisable"));
+        QTRY_VERIFY(registry->binding("composer.bold").isEmpty());
+        click(window,find("shortcut-composer.bold"));
+        click(window,find("shortcutReset"));
+        QTRY_COMPARE(registry->binding("composer.bold"),QString("Mod+B"));
+        QVERIFY(registry->assign("composer.bold","Ctrl+Shift+K").isEmpty());
+        click(window,find("shortcutsResetAll"));
+        QTRY_COMPARE(registry->binding("composer.bold"),QString("Mod+B"));
+        click(window,find("shortcutsEnabled"));
+        QTRY_VERIFY(!registry->enabled());
+        QTest::keyClick(window,Qt::Key_Escape);
+        QTRY_VERIFY(settings.isNull());
+        auto *composer=find("messageComposer"); QVERIFY(composer);
+        click(window,composer); QTRY_VERIFY(composer->hasActiveFocus());
+        QTest::keyClick(window,Qt::Key_B,Qt::ControlModifier);
+        QVERIFY(controller.draft().isEmpty());
+        QVERIFY(registry->setEnabled(true).isEmpty());
+        QVERIFY(registry->assign("composer.bold","Ctrl+Shift+K").isEmpty());
+        QTest::keyClick(window,Qt::Key_B,Qt::ControlModifier);
+        QVERIFY(controller.draft().isEmpty());
+        QTest::keyClick(window,Qt::Key_K,Qt::ControlModifier|Qt::ShiftModifier);
+        QTRY_COMPARE(controller.draft(),QString("****"));
+    }
+
     void composerFormattingDefaultsRespectCompositionRepeatAndOtherTargets()
     {
         WindowChannelFixture fixture; fixture.sourceScene = true;
