@@ -168,6 +168,13 @@ static QQuickItem *visibleItem(QQuickItem *root, const QString &name)
     return nullptr;
 }
 
+static void clickActiveInlineImage(QQuickWindow *window, const QString &message)
+{
+    const auto image = [&] { return visibleItem(window->contentItem(), "inline-image-" + message); };
+    QTRY_VERIFY(image() && image()->isVisible() && image()->property("loadActive").toBool());
+    clickReadyItem(window, image());
+}
+
 static void checkSidebarCardBelowExpandedActivity(QQuickWindow *window, const QString &cardName)
 {
     auto *root = window->contentItem();
@@ -19925,9 +19932,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(content, "topic-" + topicId));
         QTRY_COMPARE(controller.selectedTopic(), topicId);
-        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
         auto *viewer = controller.mediaViewer();
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->count(), 1);
         // The strip and the arrows are rendered only for galleries of more
@@ -20099,7 +20105,8 @@ mv -Tf "$root/.current-new" "$root/current"
         const QByteArray png = avatarProbePng(false);
         const QByteArray mp4 = mediaViewerVideoBytes();
         WindowChannelFixture fixture;
-        QList<std::function<void()>> pendingDownloads;
+        QList<std::function<void()>> pendingDownloads, pendingThirdMetadata;
+        bool failuresReleased = false;
         const auto fallback = fixture.server.handler;
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
@@ -20116,7 +20123,8 @@ mv -Tf "$root/.current-new" "$root/current"
                 || path.startsWith("/api/workspace/v1/messenger/files/" + fileC)) {
                 if (path.endsWith("/actions/download")) {
                     Response failure{QJsonObject{}, 500};
-                    failure.defer = [&](std::function<void()> send) { pendingDownloads.append(std::move(send)); };
+                    if (!failuresReleased)
+                        failure.defer = [&](std::function<void()> send) { pendingDownloads.append(std::move(send)); };
                     return failure;
                 }
                 const QString file = path.contains(fileC) ? fileC : fileB;
@@ -20124,7 +20132,11 @@ mv -Tf "$root/.current-new" "$root/current"
                 metadata["stream_uuid"] = streamId;
                 metadata["name"] = video ? "clip.mp4" : "shot.png";
                 metadata["content_type"] = video ? "video/mp4" : "image/png";
-                return Response{metadata};
+                Response result{metadata};
+                // Let the third image start downloading after the first failures were delivered.
+                if (file == fileC && !failuresReleased)
+                    result.defer = [&](std::function<void()> send) { pendingThirdMetadata.append(std::move(send)); };
+                return result;
             }
             if (path.endsWith("/messages/") && request.method == "GET") {
                 ++fixture.historyGets;
@@ -20160,7 +20172,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), video ? 2 : 3);
         auto *viewer = controller.mediaViewer();
-        click(window, visibleItem(content, "inline-image-" + first));
+        clickActiveInlineImage(window, first);
         QTRY_VERIFY(viewer->open());
         QAccessible::setActive(true);
         using Politeness = QAccessible::AnnouncementPoliteness;
@@ -20187,6 +20199,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(accessible->text(QAccessible::Name), loading);
         QTRY_VERIFY(announcements.contains(qMakePair(loading, Politeness::Polite)));
         QTRY_VERIFY(!pendingDownloads.isEmpty());
+        if (!video) QTRY_VERIFY(!pendingThirdMetadata.isEmpty());
+        failuresReleased = true;
+        for (const auto &send : std::exchange(pendingThirdMetadata, {})) send();
         for (const auto &send : std::exchange(pendingDownloads, {}))
             send();
         const QString expected = video
