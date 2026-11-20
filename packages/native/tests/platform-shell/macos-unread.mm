@@ -50,7 +50,15 @@ NSInteger observedRequest(id app, SEL selector, NSRequestUserAttentionType type)
 
 QByteArray expectedDockIcon(const QString &file)
 {
-    return pixels([[NSImage alloc] initWithContentsOfFile:file.toNSString()]);
+    NSImage *reference = [[NSImage alloc] initWithContentsOfFile:file.toNSString()];
+    if (!reference) return {};
+    // AppKit converts the Dock image on Intel. Compare the application with
+    // the independent reference PNG after both went through the same API.
+    NSImage *previous = NSApp.applicationIconImage;
+    NSApp.applicationIconImage = reference;
+    const auto expected = pixels(NSApp.applicationIconImage);
+    NSApp.applicationIconImage = previous;
+    return expected;
 }
 }
 

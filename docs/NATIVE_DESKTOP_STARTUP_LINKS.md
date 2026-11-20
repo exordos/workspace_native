@@ -18,3 +18,5 @@ The visible Qt Quick tests must also assert the destination message body after
 startup in English/Russian and light/dark. Keep existing running-app links and
 quiet Inbox fallback checks. Synthetic tests are separate from live Workspace
 and operating-system URL registration acceptance.
+
+On macOS the installed preview declares the `ew` URL scheme. Launch Services delivers URLs to Qt as file-open events. The application passes validated `ew://` URLs to the same activation and routing code used by a second launch. When the controller is still starting, it retains the most recent validated URL. The package check opens an `ew://` link with the installed application selected and verifies that its original minimized window reappears.

@@ -1,21 +1,21 @@
 # Windows and macOS desktop packages
 
-Build the existing native CMake application in Release mode with Qt 6.10.2 on Windows x64 and macOS arm64. On Windows the portable ZIP keeps the executable in `bin` with the Qt plugins and QML imports under the installation prefix. On macOS the ZIP preserves the application bundle, symlinks and executable permissions. Both archives include the bundled license notices.
+Build the existing native CMake application in Release mode with Qt 6.10.2 on Windows x64, Intel macOS and Apple Silicon macOS. On Windows the portable ZIP keeps the executable in `bin` with the Qt plugins and QML imports under the installation prefix. On macOS the ZIP preserves the application bundle, symlinks and executable permissions. Both archives include the bundled license notices.
 
-The repository workflow builds each platform on its own GitHub-hosted runner and stores the archive and SHA-256 digest as workflow artifacts. A fresh runner downloads that platform's artifacts, verifies the digest, extracts the archive into a path with spaces and launches the packaged executable with its native desktop backend. It verifies a visible, nonempty window owned by that process. The smoke runner installs no Qt SDK or build dependencies.
+The repository workflow builds each platform on its own GitHub-hosted runner and stores the archive and SHA-256 digest as workflow artifacts. A fresh runner downloads that platform's artifacts, verifies the digest, extracts the archive into a path with spaces and launches the packaged executable with its native desktop backend. It verifies a visible, nonempty window owned by that process. The macOS launch job also checks the runner architecture and verifies that the application executable contains the matching Mach-O slice. The smoke runner installs no Qt SDK or build dependencies.
 
-| Acceptance | Windows x64 | macOS arm64 |
+| Acceptance | Windows x64 | macOS (Apple Silicon and Intel) |
 | --- | --- | --- |
 | Package integrity, relocated application, first visible window | Hosted Windows window enumeration | Hosted macOS WindowServer enumeration |
 | Normal and unread tray assets | Windows notification-area icon | macOS status item |
 | Unread and attention | Shell taskbar unread dot and accessible name | Dock unread icon, active-call badge and informational bounce |
 | Updater progress | Taskbar progress and its cleared state | Dock progress and its cleared state |
 
-Clean runners verified both archive digests and observed a visible window owned by each extracted application. Windows x64 reported a 1024 × 728 client area and macOS arm64 reported a 1024 × 681 window. The first Windows build caught a Windows SDK macro expanding the unread-count saturation expression in the application entry point. The same source now compiles with MSVC and launches from the relocated ZIP.
+Clean runners verified all three archive digests and observed a visible window owned by each extracted application. Windows x64 reported a 1024 × 728 client area, Apple Silicon reported a 1024 × 681 window and Intel macOS reported a 1440 × 928 window. The Intel launch also verified the x86_64 executable and its ad hoc signature. The first Windows build caught a Windows SDK macro expanding the unread-count saturation expression in the application entry point. The same source now compiles with MSVC and launches from the relocated ZIP.
 
 The package workflow runs the shell checks on the build runners. Fresh launch runners then validate the relocated archives. The shell checks observe controlled unread and progress events on each operating system. The existing Linux workflow and its Release acceptance results remain independent. The workflow produces an unsigned Windows preview and an ad hoc signed macOS preview. Windows signing, Apple notarization and store distribution require their own release process.
 
-Both archives carry the Qt SQLite driver used by the cache, diagnostics and key vault. The packaging step removes other SQL drivers because optional SDK plugins depend on host-only database libraries. The Windows portable ZIP includes the release-only MSVC runtime alongside its executable. The native launch check examines its loaded modules and confirms that the process uses the copies inside the relocated archive. CMake selects these files from the build toolchain’s redistributable directory. [CMake runtime installation](https://cmake.org/cmake/help/latest/module/InstallRequiredSystemLibraries.html)
+The archives carry the Qt SQLite driver used by the cache, diagnostics and key vault. The packaging step removes other SQL drivers because optional SDK plugins depend on host-only database libraries. The Windows portable ZIP includes the release-only MSVC runtime alongside its executable. The native launch check examines its loaded modules and confirms that the process uses the copies inside the relocated archive. CMake selects these files from the build toolchain’s redistributable directory. [CMake runtime installation](https://cmake.org/cmake/help/latest/module/InstallRequiredSystemLibraries.html)
 
 The Mac bundle links QtSvg so macdeployqt includes the SVG image reader used by QML. The clean launch checks that the extracted application loads that reader from its own bundle and reports any embedded startup icon that failed to decode. [Qt macOS plugin deployment](https://doc.qt.io/qt-6/macos-deployment.html)
 
@@ -60,3 +60,9 @@ notification or download event. [Microsoft’s taskbar interface](https://learn.
 The shell adapter accepts download progress from the existing updater bridge. The macOS check reads the native progress indicator on the Dock tile. The Windows check captures Explorer's taskbar while the progress bar appears and clears. The current release updater supports Linux x86_64 and reports that updates are unavailable on other platforms. The Windows and macOS checks therefore supply controlled progress values to the shell adapter. A signed Windows or macOS update channel requires its own distribution and installation acceptance.
 
 [Desktop shell ownership decision](decisions/0011-native-desktop-shell.md)
+
+## Windows per-user installer
+
+Each Windows package includes a portable ZIP and a per-user MSI built by CPack and WiX from the same staged application. Check the chosen file against `SHA256SUMS`. The installer places the application under `%LOCALAPPDATA%\Workspace Native Preview` and creates a shortcut in the current user's Start menu. The shortcut and running application use `com.exordos.workspace.native.preview` as their Windows application ID. Users can remove the preview from Windows Settings under Installed apps.
+
+A two-version installation test removes an obsolete file during the MSI upgrade and retains an unrelated file. The clean Windows runner checks the installer digest, installs into a fresh profile, reads the current user's uninstall registration and Start menu shortcut, and launches the installed executable. After uninstall it checks that the application's files and registration are gone and a file it created alongside them was preserved.

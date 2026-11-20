@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -49,7 +50,14 @@ if shell_log.is_file():
     sys.stdout.buffer.flush()
 result.check_returncode()
 artifacts.mkdir(parents=True, exist_ok=True)
-name = "workspace-native-windows-x64" if windows else "workspace-native-macos-arm64"
+if windows:
+    name = "workspace-native-windows-x64"
+else:
+    machine = platform.machine()
+    mac_arch = {"arm64": "arm64", "x86_64": "x64"}.get(machine)
+    if mac_arch is None:
+        sys.exit(f"Unsupported macOS package architecture: {machine}")
+    name = f"workspace-native-macos-{mac_arch}"
 archive = artifacts / f"{name}.zip"
 # Workspace uses SQLite. Optional Qt SQL plugins such as Mimer and
 # PostgreSQL import external SDK libraries that are absent on clean hosts.
@@ -65,14 +73,32 @@ if windows:
         sys.exit("The Windows package is missing its executable.")
     shutil.make_archive(str(archive.with_suffix("")), "zip", stage)
 else:
-    assert platform.machine() == "arm64", platform.machine()
     app = stage / "workspace-native.app"
     if not (app / "Contents/MacOS/workspace-native").is_file():
         sys.exit("The macOS package is missing its application bundle.")
     run("codesign", "--force", "--deep", "--sign", "-", app)
     run("codesign", "--verify", "--deep", "--strict", app)
     run("ditto", "-c", "-k", "--sequesterRsrc", stage, archive)
-with archive.open("rb") as stream:
-    digest = hashlib.file_digest(stream, "sha256").hexdigest()
-(artifacts / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
-print(f"Created {archive.name} ({archive.stat().st_size} bytes).")
+packages = [archive]
+if windows:
+    cache = (build / "application/CMakeCache.txt").read_text(encoding="utf-8")
+    version = re.search(r"^CMAKE_PROJECT_VERSION:STATIC=([0-9]+\.[0-9]+\.[0-9]+)$", cache, re.M)
+    if not version:
+        sys.exit("Missing configured application version for the Windows installer.")
+    arch = name.removeprefix("workspace-native-windows-")
+    installer = artifacts / f"{name}-setup.msi"
+    msi_build = build / "msi"
+    environment = dict(os.environ, WORKSPACE_MSI_VERSION=version[1], WORKSPACE_MSI_STAGE=str(stage),
+                       WORKSPACE_MSI_ARCH=arch)
+    subprocess.run([os.environ.get("WORKSPACE_CPACK", "cpack"), "--config",
+                    root / "packages/native/packaging/windows-msi.cmake", "-B", msi_build],
+                   env=environment, check=True)
+    shutil.copyfile(msi_build / installer.name, installer)
+    packages.append(installer)
+checksums = []
+for package in packages:
+    with package.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    checksums.append(f"{digest}  {package.name}\n")
+    print(f"Created {package.name} ({package.stat().st_size} bytes).")
+(artifacts / "SHA256SUMS").write_text("".join(checksums), encoding="ascii")

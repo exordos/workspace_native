@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreServices
 import Foundation
 
 setbuf(stdout, nil)
@@ -50,13 +51,23 @@ print("Hosted desktop accessibility=\(AXIsProcessTrusted()) key events=\(CGPrefl
 guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else {
     throw fail("The test runner lacks Accessibility or PostEvent permission for window and clipboard input.")
 }
-var rawWindows: CFTypeRef?
-guard AXUIElementCopyAttributeValue(a11y, kAXWindowsAttribute as CFString, &rawWindows) == .success,
-      let windows = rawWindows as? [AXUIElement], let primary = windows.first,
-      AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success,
-      waitFor(5, { windowBounds(pid) == nil }) else {
-    throw fail("The primary window did not minimize.")
+// WindowServer can expose the new surface before Qt publishes its AX window.
+var primaryWindow: AXUIElement?
+guard waitFor(15, {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(a11y, kAXWindowsAttribute as CFString, &value) == .success,
+          let windows = value as? [AXUIElement] else { return false }
+    primaryWindow = windows.first { window in
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(window, kAXMinimizedAttribute as CFString, &settable) == .success && settable.boolValue
+    }
+    return primaryWindow != nil
+}), let primary = primaryWindow else {
+    throw fail("Qt did not expose a minimizable accessible window.")
 }
+let minimized = AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+guard minimized == .success else { throw fail("The primary window refused to minimize: " + String(minimized.rawValue)) }
+guard waitFor(10, { windowBounds(pid) == nil }) else { throw fail("The minimized primary window remained on the desktop.") }
 let secondary = Process()
 secondary.executableURL = executable
 try secondary.run()
@@ -66,6 +77,37 @@ guard waitFor(15, { !secondary.isRunning }), secondary.terminationStatus == 0,
     throw fail("The second launch did not restore the original application.")
 }
 print("A second launch restored the original minimized window.")
+
+let bundleURL = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+let bundle = Bundle(url: bundleURL)
+let types = bundle?.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
+guard bundle?.object(forInfoDictionaryKey: "CFBundleDevelopmentRegion") as? String == "en",
+      bundle?.object(forInfoDictionaryKey: "CFBundleAllowMixedLocalizations") as? Bool == true,
+      bundle?.object(forInfoDictionaryKey: "NSPrincipalClass") as? String == "NSApplication",
+      bundle?.object(forInfoDictionaryKey: "NSSupportsAutomaticGraphicsSwitching") as? Bool == true,
+      let minimumSystem = bundle?.object(forInfoDictionaryKey: "LSMinimumSystemVersion") as? String,
+      !minimumSystem.isEmpty else { throw fail("The package lost its Qt macOS bundle metadata.") }
+let declaresWorkspaceLinks = types.contains { ($0["CFBundleURLSchemes"] as? [String])?.contains("ew") == true }
+guard declaresWorkspaceLinks, LSRegisterURL(bundleURL as CFURL, true) == noErr else {
+    throw fail("The installed bundle did not register as a Workspace URL handler.")
+}
+for key in ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"] {
+    guard let purpose = bundle?.object(forInfoDictionaryKey: key) as? String, !purpose.isEmpty else {
+        throw fail("Missing media permission text for " + key)
+    }
+}
+let workspaceLink = "ew://open/org/example/project/11111111-1111-4111-8111-111111111111/inbox"
+guard AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success,
+      waitFor(5, { windowBounds(pid) == nil }) else { throw fail("The window did not minimize before opening the URL.") }
+let openURL = Process()
+openURL.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+openURL.arguments = ["-a", bundleURL.path, workspaceLink]
+try openURL.run()
+openURL.waitUntilExit()
+guard openURL.terminationStatus == 0, waitFor(10, { app.isRunning && windowBounds(pid) != nil }) else {
+    throw fail("Opening the Workspace URL did not restore the original packaged window.")
+}
+print("Launch Services delivered the Workspace URL to the original minimized application.")
 
 func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
     var value: CFTypeRef?

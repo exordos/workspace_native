@@ -274,6 +274,9 @@ foreach(default_login_org IN ITEMS URL NAME)
     endif()
 endforeach()
 target_link_libraries(workspace-native PRIVATE workspace-native-ui workspace-native-desktop OpenSSL::SSL)
+if(WIN32)
+    target_link_libraries(workspace-native PRIVATE shell32)
+endif()
 if(APPLE)
     # QML loads the SVG image reader at runtime. macdeployqt discovers that
     # plugin from the app's QtSvg framework dependency.
@@ -286,6 +289,7 @@ qt_add_qml_module(workspace-native
     NO_GENERATE_QMLTYPES
     QML_FILES ${native_qml_files})
 set_target_properties(workspace-native PROPERTIES
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/macos-info.plist.in"
     MACOSX_BUNDLE_BUNDLE_NAME "Workspace Native"
     MACOSX_BUNDLE_GUI_IDENTIFIER "com.exordos.workspace.native.preview"
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
