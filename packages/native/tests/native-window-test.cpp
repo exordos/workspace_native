@@ -32501,6 +32501,70 @@ private slots:
     // open, narrows through level/source/search filters with the reference
     // "x of y entries" label, resets, clears back to the empty state and
     // exports the snapshot JSON through the save dialog.
+    void diagnosticsActionsSupportTabKeyboardAndAccessiblePress()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowOwnStatusFixture fixture;
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        controller.showSection("diagnostics");
+        QTRY_VERIFY(visibleItem("diagnosticsViewLogsButton"));
+        auto *view = visibleItem("diagnosticsViewLogsButton");
+        auto *accessible = QAccessible::queryAccessibleInterface(view);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::Button);
+        QCOMPARE(accessible->text(QAccessible::Name), QStringLiteral("View logs"));
+        auto *actions = accessible->actionInterface();
+        QVERIFY(actions && actions->actionNames().contains(QAccessibleActionInterface::pressAction()));
+
+        auto *previous = view->nextItemInFocusChain(false);
+        QVERIFY(previous && previous != view);
+        previous->forceActiveFocus(Qt::BacktabFocusReason);
+        for (const auto *id : {"diagnosticsViewLogsButton", "diagnosticsRefreshButton",
+                              "diagnosticsCopyReportButton", "diagnosticsCopySnapshotButton"}) {
+            QTest::keyClick(window, Qt::Key_Tab);
+            auto *item = visibleItem(id);
+            QVERIFY(item);
+            QTRY_VERIFY(item->hasActiveFocus());
+            QVERIFY(item->property("visualFocus").toBool());
+        }
+        view->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(visibleItem("logsModalHeader"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("logsModalHeader"));
+        actions->doAction(QAccessibleActionInterface::pressAction());
+        QTRY_VERIFY(visibleItem("logsModalHeader"));
+
+        controller.appendSessionLog("info", "app", "keyboard export");
+        auto *modalRefresh = visibleItem("logsRefreshButton");
+        QVERIFY(modalRefresh);
+        modalRefresh->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY(visibleItem("logsClearButton")->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(controller.diagnosticsSessionLogEntries().isEmpty());
+        controller.appendSessionLog("info", "app", "keyboard export");
+        modalRefresh->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY(visibleItem("logsExportButton")->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(visibleItem("fileNameTextField"));
+        QTest::keyClick(visibleItem("fileNameTextField")->window(), Qt::Key_Escape);
+    }
+
     void diagnosticsLogViewerModalFiltersClearAndExports()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());

@@ -389,6 +389,9 @@ element-wise.
   transport failures log scope `api` (4xx warn, 5xx/transport error) with
   method/path/status data; transport offline/online flips log scope
   `connection-health`.
+- The header and log-dialog buttons follow the Tab order. Their focus outline
+  uses the accent color. Enter, Space and an assistive device's Press action
+  activate the focused button. Export opens the same file chooser as a click.
 - QML (`qml/NativeDiagnosticsPage.qml`): header gains the `View logs`
   `HeaderButton` (first action, `diagnosticsViewLogsButton`) and the Log
   counts card gains its `View logs` button (`h-7 rounded-md bg-bg px-2
