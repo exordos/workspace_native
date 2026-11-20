@@ -27,6 +27,12 @@ The Electron reference keeps the macOS Dock text empty for unread messages and s
 
 On Windows the overlay is a transparent 16 × 16 icon containing an orange circle with a two-pixel radius. Its accessible description follows the current application language. The Windows acceptance window checks for added and removed orange pixels on Explorer's taskbar. A separate Windows check compares the notification area and its overflow panel as the tray icon changes to unread and back. On macOS the check reads the image installed on the native status item.
 
+Windows associates an overlay and progress with a particular taskbar button.
+Explorer announces the initial button and its replacement through
+`TaskbarButtonCreated`. The native window retains its latest unread and
+progress values so the replacement can display them without another
+notification or download event. [Microsoft’s taskbar interface](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-itaskbarlist3)
+
 The shell adapter accepts download progress from the existing updater bridge. The macOS check reads the native progress indicator on the Dock tile. The Windows check captures Explorer's taskbar while the progress bar appears and clears. The current release updater supports Linux x86_64 and reports that updates are unavailable on other platforms. The Windows and macOS checks therefore supply controlled progress values to the shell adapter. A signed Windows or macOS update channel requires its own distribution and installation acceptance.
 
 [Desktop shell ownership decision](decisions/0011-native-desktop-shell.md)
