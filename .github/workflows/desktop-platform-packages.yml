@@ -132,5 +132,8 @@ jobs:
           destination="$RUNNER_TEMP/Workspace relocated"
           mkdir -p "$destination"
           ditto -x -k archive/workspace-native-macos-arm64.zip "$destination"
+          drivers="$destination/workspace-native.app/Contents/PlugIns/sqldrivers"
+          test -f "$drivers/libqsqlite.dylib"
+          test "$(find "$drivers" -name '*.dylib' | wc -l | tr -d ' ')" = 1
           codesign --verify --deep --strict "$destination/workspace-native.app"
           swift packages/native/tests/platform-package/macos-window.swift "$destination/workspace-native.app/Contents/MacOS/workspace-native"

@@ -51,6 +51,14 @@ else:
     app = stage / "workspace-native.app"
     if not (app / "Contents/MacOS/workspace-native").is_file():
         sys.exit("The macOS package is missing its application bundle.")
+    # The client opens only SQLite databases. macdeployqt can also copy a
+    # Mimer plugin that links to an external SDK missing on clean Macs.
+    sql_drivers = app / "Contents/PlugIns/sqldrivers"
+    if not (sql_drivers / "libqsqlite.dylib").is_file():
+        sys.exit("The macOS package is missing the Qt SQLite driver.")
+    for driver in sql_drivers.glob("libqsql*.dylib"):
+        if driver.name != "libqsqlite.dylib":
+            driver.unlink()
     run("codesign", "--force", "--deep", "--sign", "-", app)
     run("codesign", "--verify", "--deep", "--strict", app)
     run("ditto", "-c", "-k", "--sequesterRsrc", stage, archive)
