@@ -503,7 +503,7 @@ class Desktop:
         field = self.lookup("serverInput").get_text_iface()
         self.until(
             lambda: field is not None
-            and field.get_text(0, -1) == self.config["origin"],
+            and self.atspi.Text.get_text(field, 0, -1) == self.config["origin"],
             "organization-field-mismatch",
             3,
         )
