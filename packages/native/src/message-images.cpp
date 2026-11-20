@@ -199,7 +199,16 @@ quint64 MessageImages::acquire(const QString &urn)
         Entry entry; entry.order = entry.touched = ++m_order; m_entries.insert(uuid, entry);
     }
     const auto token = ++m_nextLease; const auto scope = m_scope;
-    auto &entry = m_entries[uuid]; ++entry.consumers; entry.touched = ++m_order;
+    auto &entry = m_entries[uuid];
+    if (entry.handoff) {
+        // The held demand becomes this lease, so a later replacement gets a fresh interval.
+        entry.handoff->stop();
+        entry.handoff->deleteLater();
+        entry.handoff = nullptr;
+    } else {
+        ++entry.consumers;
+    }
+    entry.touched = ++m_order;
     const bool retry = entry.phase == Phase::Failed || entry.phase == Phase::TransportFailed;
     if (retry) { entry.phase = Phase::Queued; entry.order = entry.touched; }
     m_leases.insert(token, uuid);
@@ -236,13 +245,21 @@ void MessageImages::release(quint64 token)
 {
     const auto lease = m_leases.find(token); if (lease == m_leases.end()) return;
     const auto uuid = lease.value(); m_leases.erase(lease);
-    const auto entry = m_entries.constFind(uuid);
-    if (entry != m_entries.cend() && entry->consumers == 1 && entry->job) {
+    auto entry = m_entries.find(uuid);
+    if (entry != m_entries.end() && entry->consumers == 1 && entry->job) {
         // A model refresh destroys and recreates the visible image delegate.
         // Allow the replacement delegate to be incubated on the next frames.
-        QTimer::singleShot(100, this, [this, uuid, scope = m_scope] {
-            if (scope == m_scope) releaseConsumer(uuid);
+        auto *timer = new QTimer(this);
+        timer->setSingleShot(true);
+        entry->handoff = timer;
+        connect(timer, &QTimer::timeout, this, [this, uuid, timer, scope = m_scope] {
+            timer->deleteLater();
+            auto current = m_entries.find(uuid);
+            if (scope != m_scope || current == m_entries.end() || current->handoff != timer) return;
+            current->handoff = nullptr;
+            releaseConsumer(uuid);
         });
+        timer->start(100);
         return;
     }
     releaseConsumer(uuid);
