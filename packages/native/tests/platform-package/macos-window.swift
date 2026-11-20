@@ -95,7 +95,7 @@ guard waitFor(15, { field = addressField(a11y); return field != nil }),
     throw fail("The accessible login address field could not be focused.")
 }
 let pasteboard = NSPasteboard.general
-let text = "https://cassi-package.invalid/clipboard"
+let text = "Cassi clipboard | Привет"
 pasteboard.clearContents()
 pasteboard.setString(text, forType: .string)
 command(0, pid) // Command+A

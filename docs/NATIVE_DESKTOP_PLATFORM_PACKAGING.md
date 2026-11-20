@@ -23,7 +23,7 @@ The package targets follow the [Qt QML deployment documentation](https://doc.qt.
 
 ## Clean-desktop interaction
 
-Each platform test minimizes the existing window and launches the unpacked executable a second time. The second process exits after the original process acknowledges activation. The test observes the original window restored, focuses the accessible Server address field, pastes text through the real OS clipboard and copies a new selection back. Windows uses UI Automation and Ctrl+V/C. macOS uses the Accessibility API and Command+V/C. The reserved `.invalid` address is used only as text and is never submitted.
+Each platform test minimizes the existing window and launches the unpacked executable a second time. The second process exits after the original process acknowledges activation. The test observes the original window restored, focuses the accessible Server address field, pastes text through the real OS clipboard and copies a new selection back. Windows uses UI Automation and Ctrl+V/C. macOS uses the Accessibility API and Command+V/C. The selection includes Cyrillic and spaces and cannot be submitted as a server address.
 
 | Capability | Windows x64 | macOS arm64 |
 | --- | --- | --- |
