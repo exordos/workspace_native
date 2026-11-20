@@ -255,6 +255,24 @@ class Controls(unittest.TestCase):
             [call("organizationNextButton"), call("organizationNextButton")],
         )
 
+    def test_restore_timeout_identifies_the_last_auth_response_from_this_launch(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "live-workspace-acceptance.py"))
+        desktop = object.__new__(runner["Desktop"])
+        desktop.lock = threading.Lock()
+        desktop.until = Mock(side_effect=runner["Blocked"]("saved-session-restore"))
+        def response(status):
+            return {"event": "response", "category": "auth", "status": status}
+        for current, expected in [
+            ([response(502)], "restore-auth-http-502"),
+            ([response(401)], "restore-auth-http-401"),
+            ([response(502), response(200)], "saved-session-restore"),
+            ([{"event": "response", "category": "image", "status": 503}], "saved-session-restore"),
+        ]:
+            with self.subTest(expected=expected):
+                desktop.events = [response(503), {"event": "launch"}, *current]
+                with self.assertRaisesRegex(runner["Blocked"], "^" + expected + "$"):
+                    desktop.wait_for_restored_session(30)
+
     def test_wrong_visible_organization_stops_before_submitting_credentials(self):
         runner = runpy.run_path(
             str(
