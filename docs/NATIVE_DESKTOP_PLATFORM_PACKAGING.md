@@ -1,8 +1,10 @@
 # Windows and macOS desktop packages
 
-Build the existing native CMake application in Release mode with Qt 6.10.2 on Windows x64, Intel macOS and Apple Silicon macOS. On Windows the portable ZIP keeps the executable in `bin` with the Qt plugins and QML imports under the installation prefix. On macOS the ZIP preserves the application bundle, symlinks and executable permissions. Both archives include the bundled license notices.
+Build the existing native CMake application in Release mode with Qt 6.10.2 on Windows x64, Windows ARM64, Intel macOS and Apple Silicon macOS. On Windows the portable ZIP keeps the executable in `bin` with the Qt plugins and QML imports under the installation prefix. On macOS the ZIP preserves the application bundle, symlinks and executable permissions. Both archives include the bundled license notices.
 
 The repository workflow builds each platform on its own GitHub-hosted runner and stores the archive and SHA-256 digest as workflow artifacts. A fresh runner downloads that platform's artifacts, verifies the digest, extracts the archive into a path with spaces and launches the packaged executable with its native desktop backend. It verifies a visible, nonempty window owned by that process. The macOS launch job also checks the runner architecture and verifies that the application executable contains the matching Mach-O slice. The smoke runner installs no Qt SDK or build dependencies.
+
+The Windows ARM64 job uses the native Qt 6.10.2 kit and the ARM64 OpenSSL triplet. Qt publishes WebEngine as a separate archive. The job verifies its pinned SHA-256 digest and installs it into the same Qt prefix. On a fresh Windows 11 ARM runner the launch check reads the PE machine fields of the client, Qt Core, Qt WebEngine Core and its helper process. It also calls the Windows process architecture API before measuring the visible window. A successful run records package and startup coverage. [Qt WebEngine package metadata](https://download.qt.io/online/qtsdkrepository/windows_arm64/extensions/qtwebengine/6102/msvc2022_arm64/Updates.xml)
 
 | Acceptance | Windows x64 | macOS arm64 |
 | --- | --- | --- |
