@@ -21,7 +21,7 @@ private slots:
         const QString privateText = "private-person@example.invalid?token=fixture-private";
         const QVariantMap nested { { "password", privateText }, { "path", "/home/private/private-note.txt" } };
         const QVariantMap counts { { "error", 510 }, { "info", nested }, { "warn", privateText }, { "other", nested } };
-        service.prepare(privateText, privateText, privateText, { { "levels", counts }, { "requests", 2 }, { "medianMs", 90 }, { "p95Ms", 110 }, { "slowest", nested } });
+        service.prepare(privateText, privateText, privateText, { { "levels", counts }, { "classes", QVariantMap{{"api", 499}, {"realtime", 4}, {privateText, 40}} }, { "requests", 2 }, { "medianMs", 90 }, { "p95Ms", 110 }, { "slowest", nested } });
         QTRY_VERIFY(!service.preview().isEmpty());
         const auto bytes = service.preview().toUtf8();
         QVERIFY(bytes.size() < 65536);
@@ -29,6 +29,10 @@ private slots:
         QCOMPARE(data.value("schemaVersion").toInt(), 1);
         QCOMPARE(data.value("eventCounts").toObject().value("error").toInt(), 500);
         QCOMPARE(data["apiLatency"].toObject()["p95Ms"].toInt(), 110);
+        const auto classes = data["eventClasses"].toObject();
+        QCOMPARE(classes["api"].toInt(), 499);
+        QCOMPARE(classes["realtime"].toInt(), 1);
+        QVERIFY(!classes.contains(privateText));
         auto env = data.value("environment").toObject();
         QCOMPARE(env.value("display").toString(), "unavailable");
         QVERIFY(!bytes.contains("fixture-private") && !bytes.contains("/home/private"));

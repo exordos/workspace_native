@@ -2,12 +2,19 @@
 
 #include <QJsonObject>
 #include <QObject>
+#include <QStringList>
 #include <QUrl>
 #include <QVariantMap>
 #include <atomic>
 #include <memory>
 
 namespace workspace {
+
+inline const QStringList &supportEventClasses()
+{
+    static const QStringList names{"api", "auth", "connection-health", "realtime", "storage", "rendering", "update", "other"};
+    return names;
+}
 
 class SupportReport final : public QObject {
     Q_OBJECT
