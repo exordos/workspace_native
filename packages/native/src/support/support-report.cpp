@@ -76,6 +76,18 @@ namespace {
         return build;
     }
 
+    QJsonObject boundedCounts(const QVariantMap &source, const QStringList &names)
+    {
+        QJsonObject result;
+        int remaining = 500;
+        for (const auto &name : names) {
+            const int count = qBound(0, QJsonValue::fromVariant(source.value(name)).toInt(), remaining);
+            result[name] = count;
+            remaining -= count;
+        }
+        return result;
+    }
+
     QByteArray collect(const QString& display, const QString& language, const QString& theme,
         const QJsonObject& measurements, const std::atomic_bool& cancelled)
     {
@@ -92,6 +104,7 @@ namespace {
             { "collectedAt", now.toUTC().toString(Qt::ISODateWithMs) },
             { "utcOffsetSeconds", now.offsetFromUtc() }, { "build", buildIdentity(cancelled) },
             { "environment", environment }, { "eventCounts", measurements.value("levels").isObject() ? measurements.value("levels") : QJsonValue(QJsonValue::Null) },
+            { "eventClasses", measurements.value("classes").isObject() ? measurements.value("classes") : QJsonValue(QJsonValue::Null) },
             { "apiLatency", measurements.value("latency").isObject() ? measurements.value("latency") : QJsonValue(QJsonValue::Null) } };
         const auto bytes = QJsonDocument(report).toJson();
         return !cancelled.load() && bytes.size() <= MaxReportBytes ? bytes : QByteArray { };
@@ -119,16 +132,8 @@ void SupportReport::prepare(const QString& display, const QString& language, con
     cancel();
     QJsonObject measurements;
     if (!sourceCounts.isEmpty()) {
-        const auto levels = sourceCounts.value("levels").toMap();
-        QJsonObject counts;
-        int remaining = 500;
-        for (const auto& level : { "debug", "info", "warn", "error" }) {
-            const auto value = QJsonValue::fromVariant(levels.value(level));
-            const int count = qBound(0, value.toInt(), remaining);
-            counts[level] = count;
-            remaining -= count;
-        }
-        measurements["levels"] = counts;
+        measurements["levels"] = boundedCounts(sourceCounts.value("levels").toMap(), {"debug","info","warn","error"});
+        measurements["classes"] = boundedCounts(sourceCounts.value("classes").toMap(), supportEventClasses());
         const auto number = [&](const char* field) { return QJsonValue::fromVariant(sourceCounts.value(field)).toInt(-1); };
         const int n = qBound(0, number("requests"), 200);
         const int median = number("medianMs"), p95 = number("p95Ms");

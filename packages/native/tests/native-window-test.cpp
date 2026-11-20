@@ -36008,7 +36008,11 @@ private slots:
         QTRY_VERIFY(!save->isEnabled());
         click(window, visibleItem("supportPrepare"));
         QTRY_VERIFY(save->isEnabled());
-        const auto counts = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object()["eventCounts"].toObject();
+        const auto report = QJsonDocument::fromJson(preview->property("text").toString().toUtf8()).object();
+        const auto counts = report["eventCounts"].toObject();
+        const auto classes = report["eventClasses"].toObject();
+        if (authenticated) QVERIFY(classes["other"].toInt() < 24);
+        else QCOMPARE(classes["other"].toInt(), 24);
         QVERIFY(counts.contains("error"));
         if (authenticated) QVERIFY(counts["error"].toInt() < 24);
         else QCOMPARE(counts["error"].toInt(), 24);

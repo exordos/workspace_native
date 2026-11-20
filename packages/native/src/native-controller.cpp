@@ -7234,8 +7234,11 @@ QVariantMap NativeController::diagnosticsSupportMeasurements() const
     for (qsizetype i = m_apiLatencySamples.size() - m_supportLatencyCount; i < m_apiLatencySamples.size(); ++i)
         durations.append(m_apiLatencySamples.at(i).second);
     const auto latency = diagnostics::summarizeLatency(durations);
-    return {{"levels", m_sessionLog.supportEventCounts()}, {"requests", latency.sampleCount},
-            {"medianMs", latency.medianMs}, {"p95Ms", latency.p95Ms}};
+    auto summary = m_sessionLog.supportEventCounts();
+    summary.insert("requests", latency.sampleCount);
+    summary.insert("medianMs", latency.medianMs);
+    summary.insert("p95Ms", latency.p95Ms);
+    return summary;
 }
 
 QVariantList NativeController::diagnosticsSessionLogEntries() const

@@ -17,8 +17,10 @@ can inspect that output and redirect it to a file of your choice.
 Schema 1 contains a random report ID, application version, the executable's
 SHA-256 when available, package channel when identified, time and UTC offset, OS family, CPU architecture, Qt
 version, display platform, language and theme. Missing data has an explicit
-unavailable value. Optional counts use fixed severity names from the existing
-session log. Optional timings summarize up to 200 requests in the current session
+unavailable value. Optional counts group the current session’s events by severity and by source.
+The fixed source names cover API, authentication, connection health, realtime,
+storage, rendering and updates. Unrecognized scopes contribute only to `other`.
+These counts describe events recorded by the client during this session. Optional timings summarize up to 200 requests in the current session
 with median and 95th percentile latency. The exporter accepts up to 500 events and emits at most 64 KiB.
 The binary fingerprint reads at most 128 MiB within a two-second processing
 budget. Report preparation runs on a worker. Abandoning the form invalidates
