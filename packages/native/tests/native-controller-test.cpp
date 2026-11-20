@@ -24315,7 +24315,7 @@ private slots:
     void overlayBannerRealtimeReconnectClearsTransportOffline()
     {
         // Handler captures must outlive the Fixture and every deferred send.
-        QVector<std::function<void()>> heldCatchUps;
+        QVector<std::function<void()>> heldCatchUps, heldHistory;
         auto holdNextCatchUp = std::make_shared<bool>(false);
         Fixture fixture; fixture.extraTopic = true;
         RealtimeGateway gateway(fixture.server.serverPort());
@@ -24351,12 +24351,21 @@ private slots:
         // The websocket reconnect completes without observing any JSON
         // response; a healthy realtime link must not leave the offline
         // banner set on top of live sync state.
+        // Recovery retries the interrupted first page. Keep its HTTP outcome
+        // pending while observing what the successful websocket reconnect does.
+        fixture.messages = [&](const Request &) {
+            Response reply{QJsonArray{}};
+            reply.defer = [&](std::function<void()> send) { heldHistory.append(std::move(send)); };
+            return reply;
+        };
         const auto catchUps = heldCatchUps;
         heldCatchUps.clear();
         for (const auto &send : catchUps)
             send();
         QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), QString("live"), 15000);
         QTRY_COMPARE(fixture.controller.connectionPhase(), QString("online"));
+        QTRY_VERIFY(!heldHistory.isEmpty());
+        for (const auto &send : std::exchange(heldHistory, {})) send();
     }
 
     // --- Issue #144: top bar workspace session switcher -------------------
