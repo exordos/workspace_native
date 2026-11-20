@@ -33721,7 +33721,9 @@ private slots:
         const auto peerMessage = [&](const QString &uuid, bool read, int second) {
             auto entry = message(QStringLiteral("Peer pending %1").arg(second), uuid);
             entry["is_own"] = false;
-            entry["user_uuid"] = peer;
+            // user_uuid stays the conversation owner: the read_up_to confirmation
+            // response is rejected when it disagrees with the session owner
+            // (native-controller.cpp sendReadRequest guard).
             entry["author_uuid"] = peer;
             entry["read"] = read;
             entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
