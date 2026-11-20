@@ -86,10 +86,16 @@ Item {
     function participantCount(count) {
         return count === 1 ? qsTr("%n participant", "", count) : qsTr("%n participants", "", count)
     }
+    readonly property bool votersEligible: Boolean(poll) && !readOnly && !poll.isAnonymous
+    function retireHiddenVoters() {
+        if (!votersEligible && poll && previewStore && messageUuid)
+            previewStore.retire(messageUuid)
+    }
+    onVotersEligibleChanged: retireHiddenVoters()
     readonly property var voters: voterLoader.item
     Loader {
         id: voterLoader
-        active: card.visible && Boolean(card.poll) && !card.readOnly && !card.poll.isAnonymous
+        active: card.visible && card.votersEligible
         sourceComponent: Component { NativePollVoters { hostCard: card } }
     }
     readonly property string summaryText: summaryVisible
@@ -238,6 +244,7 @@ Item {
         card.armDeadline()
     }
     Component.onCompleted: {
+        retireHiddenVoters()
         card.seenRevision = Number(poll && poll.state ? poll.state.revision : 0)
         card.armDeadline()
     }
@@ -351,7 +358,7 @@ Item {
                                 readonly property bool selectable: card.canSelect(questionBlock.question, optionRow.option.uuid)
                                 // During an options-model churn the delegate incubates
                                 // before it is parented; guard the size bindings.
-                                width: Math.max(0, optionEntry.width - (voterButton.visible ? voterButton.width + 4 : 0))
+                                width: Math.max(0, optionEntry.width - (optionEntry.preview.length ? voterButton.width + 4 : 0))
                                 height: optionRowInner.height + 8
                                 // Reference parity: disabled when !canAct || busy || !canSelect
                                 // (workspace-message-poll-question.ui.tsx:190-195).
@@ -480,10 +487,13 @@ Item {
                             Button {
                                 id: voterButton
                                 objectName: "poll-voters-option-" + optionEntry.modelData.uuid + "-" + card.messageUuid
-                                anchors.right: parent.right
-                                visible: optionEntry.preview.length > 0
-                                width: visible ? Math.min(optionEntry.width / 2, 28 + 20 * (optionEntry.preview.length - 1)) : 0
-                                height: 28
+                                visible: questionBlock.results && Boolean(card.voters)
+                                x: optionEntry.preview.length ? optionEntry.width - width : optionAggregate.x
+                                y: optionEntry.preview.length ? 0 : optionAggregate.y
+                                width: optionEntry.preview.length
+                                    ? Math.min(optionEntry.width / 2, 28 + 20 * (optionEntry.preview.length - 1))
+                                    : optionAggregate.width
+                                height: optionEntry.preview.length ? 28 : optionAggregate.height
                                 padding: 0
                                 Accessible.name: qsTr("Who chose “%1”").arg(optionEntry.modelData.text)
                                 onClicked: card.voters.showFor(questionBlock.question, optionEntry.modelData, false)

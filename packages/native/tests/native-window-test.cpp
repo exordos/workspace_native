@@ -28578,6 +28578,86 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(visibleItem(content, "poll-voters-answer"));
     }
 
+    void pollVoterCountOpensAfterAnUnavailablePreview()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.closesAt.clear(); server.closed = true; server.resultsVisibility = "always";
+        int attempts = 0, pages = 0;
+        server.voters = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            if (query.queryItemValue("page_limit") == "5") { ++attempts; return {QJsonArray{}, 503}; }
+            ++pages; return {QJsonArray{QJsonObject{{"uuid", userId}}}};
+        };
+        scene.start();
+        QTRY_VERIFY(attempts >= 1);
+        QVERIFY(!visibleItem(scene.content(), "poll-voters-summary-" + server.messageUuid));
+        auto *count = visibleItem(scene.content(), "poll-voters-option-" + pollBubbleOptionOne + "-" + server.messageUuid);
+        QVERIFY(count);
+        scene.click(count);
+        QTRY_COMPARE(pages, 1);
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-voter-row-" + userId));
+    }
+
+    void pollVoterPreviewBudgetSurvivesEviction()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.resultsVisibility = "always"; server.closesAt.clear();
+        int requests = 0;
+        server.voters = [&](const Request &) -> Response { ++requests; return {QJsonArray{}}; };
+        scene.start();
+        QTRY_COMPARE(requests, 2);
+        auto *store = scene.window->findChild<QObject *>("poll-voter-preview-store"); QVERIFY(store);
+        auto *engine = qmlEngine(store); QVERIFY(engine);
+        const auto records = store->property("polls").value<QJSValue>();
+        const QString stamp = records.property(server.messageUuid).property("revision").toString();
+        QVERIFY(!stamp.isEmpty());
+        QVariantList jobs;
+        for (const auto &option : {pollBubbleOptionOne, pollBubbleOptionTwo})
+            jobs << QVariantMap{{"questionId",pollBubbleQuestionOne},{"optionId",option}};
+        const auto ensure = [&](const QString &id, const QString &version, const QVariantList &work) {
+            auto object = engine->newQObject(store);
+            const auto result = object.property("ensure").callWithInstance(object,
+                {id, version, engine->toScriptValue(work), QJSValue(double(server.revision))});
+            QVERIFY2(!result.isError(),qPrintable(result.toString()));
+        };
+        for (int i = 0; i < 51; ++i) ensure(QStringLiteral("cached-poll-%1").arg(i), QString::number(i), {});
+        QVERIFY(store->property("polls").value<QJSValue>().property(server.messageUuid).isUndefined());
+        ensure(server.messageUuid, stamp, jobs);
+        QTest::qWait(150);
+        QCOMPARE(requests, 2);
+    }
+
+    void pollVoterQueuesStopWhenResultsBecomeAnonymous()
+    {
+        PollBubbleScene scene;
+        auto &server = scene.fixture;
+        server.resultsVisibility = "always"; server.closesAt.clear();
+        for (int i = 0; i < 4; ++i) {
+            const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            server.addedOptions.append({id,QString::number(i)});
+            server.extraOptionCounts[id] = 1;
+        }
+        QVector<std::function<void()>> replies;
+        server.voters = [&](const Request &) -> Response {
+            Response held{QJsonArray{QJsonObject{{"uuid", userId}}}};
+            held.defer = [&](std::function<void()> deliver) { replies.append(std::move(deliver)); };
+            return held;
+        };
+        scene.start();
+        QTRY_COMPARE(replies.size(), 3);
+        server.anonymous = true; ++server.revision;
+        auto updated = server.row(); updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        QTRY_VERIFY(pollItemText(scene.content(), "poll-subtitle-" + server.messageUuid).contains("Anonymous"));
+        for (int i = 0; i < 3; ++i) replies.at(i)();
+        QTest::qWait(150);
+        QCOMPARE(replies.size(), 3);
+        QVERIFY(!visibleItem(scene.content(), "poll-voter-preview-" + pollBubbleOptionOne + "-" + userId));
+    }
+
     void pollVoterFallbackBudgetAndConcurrency()
     {
         PollBubbleScene scene;

@@ -14,7 +14,8 @@ Popup {
     // This session key includes the API generation even when the same account signs in again.
     readonly property string owner: controller ? controller.ownStatusContextKey : ""
     readonly property string identity: JSON.stringify([owner, hostCard.messageUuid])
-    readonly property string revision: JSON.stringify([identity, (hostCard.poll && hostCard.poll.state ? hostCard.poll.state.revision : 0),
+    readonly property var pollRevision: hostCard.poll && hostCard.poll.state ? hostCard.poll.state.revision : 0
+    readonly property string revision: JSON.stringify([identity, pollRevision,
         questions.map(q => [q.uuid, hostCard.stateFor(q)])])
     property string questionId: ""
     property string optionId: ""
@@ -59,7 +60,7 @@ Popup {
                     jobs.push({questionId:q.uuid, optionId:o.uuid})
             }
         }
-        hostCard.previewStore.ensure(hostCard.messageUuid, revision, jobs)
+        hostCard.previewStore.ensure(hostCard.messageUuid, revision, jobs, pollRevision)
     }
     function cancelPage() {
         const tag = pageRequest

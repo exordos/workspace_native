@@ -5,9 +5,13 @@ import QtQuick
 // Share that request and its result across delegates of the same poll revision.
 Item {
     id: store
+    objectName: "poll-voter-preview-store"
     required property var controller
     readonly property string sessionKey: controller.ownStatusContextKey
     property var polls: ({})
+    // Keep only issued option keys after evicting the actual voter identities.
+    // Revisiting the same backend revision cannot spend its preview budget twice.
+    property var issuedByPoll: ({})
     property var requests: ({})
     property int change: 0
     property int serial: 0
@@ -17,6 +21,7 @@ Item {
         const tags = Object.keys(requests)
         requests = {}
         polls = {}
+        issuedByPoll = {}
         change++
         tags.forEach(tag => controller.cancelPollVoterRequest(tag))
     }
@@ -31,13 +36,16 @@ Item {
             }
         }
     }
-    function ensure(id, revision, jobs) {
+    function ensure(id, revision, jobs, pollRevision) {
         if (!sessionKey || !id) return
         if (polls[id] && polls[id].revision === revision) return
         retire(id)
         // Retire requests and cached identities when a poll leaves the recent set.
         if (Object.keys(polls).length >= 50) retire(Object.keys(polls)[0])
-        polls[id] = {revision:revision, queue:jobs, inFlight:0, options:{}}
+        const receipt = issuedByPoll[id]
+        if (receipt && receipt.revision !== pollRevision)
+            delete issuedByPoll[id]
+        polls[id] = {revision:revision, pollRevision:pollRevision, queue:jobs, inFlight:0, options:{}}
         change++
         pump(id)
     }
@@ -46,8 +54,16 @@ Item {
         if (!row) return
         while (row.queue.length && row.inFlight < 3) {
             const job = row.queue.shift()
+            const key = job.questionId + ":" + job.optionId
+            let receipt = issuedByPoll[id]
+            if (!receipt) {
+                receipt = {revision:row.pollRevision, keys:[]}
+                issuedByPoll[id] = receipt
+            }
+            if (receipt.keys.length >= 5 || receipt.keys.includes(key)) continue
+            receipt.keys.push(key)
             const tag = "poll-preview-" + String(++serial)
-            requests[tag] = {id:id, key:job.questionId + ":" + job.optionId}
+            requests[tag] = {id:id, key:key}
             row.inFlight++
             controller.loadPollVoters(id, job.questionId, job.optionId, "", 5, tag)
         }

@@ -10,8 +10,10 @@ The option shows up to five overlapping 28 px avatars with 8 px overlap. Use
 the identities supplied by the poll state first. For eligible options with
 votes and no preview, request their first five voters, for at most five options
 per poll revision and at most three simultaneous requests. The conversation
-shares these requests across replacements of the same poll delegate. A failed preview
-leaves the count and explicit voter list usable.
+shares these requests across replacements of the same poll delegate. It retains
+the lookup budget for that revision when older preview identities are evicted,
+and cancels pending lookups when the poll becomes anonymous or read-only. A
+failed preview leaves the count clickable so participants can open the list.
 
 The option button opens its voter list. When the summary is visible on an open
 non-quiz poll, View votes opens the overview. The overview groups its answer
