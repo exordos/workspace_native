@@ -146,6 +146,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
 set(native_qml_files
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml
+qml/NativeKeyRequests.qml
 qml/NativeDownloadCenter.qml
 qml/NativeJitsiCard.qml
 qml/NativePollCard.qml
@@ -575,6 +576,7 @@ if(BUILD_TESTING)
         uiOrdinaryManagerRejectsFromTheActualMainAction
         uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire
         uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction
+        uiKeyRequestHistoryShowsEmptyAndIncomingRows
         uiEncryptedChatInfoDrawerShowsProtectedIdentity
         uiEncryptedChatInfoSettingsScreenNavigation
         uiEncryptedChatInfoMemberListScrollsToEnd

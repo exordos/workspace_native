@@ -1824,6 +1824,23 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+    <message>
+        <source>Could not send the key. Requests to retry: %1.</source>
+        <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
+    </message>
+    <message>
+        <source>The request could not be rejected.</source>
+        <translation>Не удалось отклонить запрос.</translation>
+    </message>
+    <message>
+        <source>This request has not been sent.</source>
+        <translation>Этот запрос ещё не отправлен.</translation>
+    </message>
+    <message>
+        <source>The key could not be sent to this device.</source>
+        <translation>Не удалось отправить ключ на это устройство.</translation>
+    </message>
+
         <message>
             <source>Some local data could not be cleared.</source>
             <translation>Не удалось очистить часть локальных данных.</translation>
@@ -4945,4 +4962,59 @@
         <message><source>Could not open Favorites.</source><translation>Не удалось открыть Избранное.</translation></message>
         <message><source>Try again</source><translation>Попробовать снова</translation></message>
     </context>
+<context>
+    <name>NativeKeyRequests</name>
+    <message>
+        <source>Sending response</source>
+        <translation>Отправляется ответ</translation>
+    </message>
+    <message>
+        <source>Security key requests (%1)</source>
+        <translation>Запросы ключа безопасности (%1)</translation>
+    </message>
+    <message>
+        <source>Showing loaded history.</source>
+        <translation>Показаны данные из загруженной истории.</translation>
+    </message>
+    <message>
+        <source>No key requests</source>
+        <translation>Нет запросов ключа</translation>
+    </message>
+    <message>
+        <source>Incoming requests (%1)</source>
+        <translation>Входящие запросы (%1)</translation>
+    </message>
+    <message>
+        <source>Granted keys (%1)</source>
+        <translation>Выданные ключи (%1)</translation>
+    </message>
+    <message>
+        <source>Rejected requests (%1)</source>
+        <translation>Отклонённые запросы (%1)</translation>
+    </message>
+    <message>
+        <source>Grant all</source>
+        <translation>Выдать всем</translation>
+    </message>
+    <message>
+        <source>Grant access to %1</source>
+        <translation>Выдать доступ: %1</translation>
+    </message>
+    <message>
+        <source>Reject request from %1</source>
+        <translation>Отклонить запрос: %1</translation>
+    </message>
+    <message>
+        <source>Check</source>
+        <translation>Проверить</translation>
+    </message>
+    <message>
+        <source>Retry</source>
+        <translation>Повторить</translation>
+    </message>
+    <message>
+        <source>Could not send the key. Requests to retry: %1.</source>
+        <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
+    </message>
+</context>
 </TS>
