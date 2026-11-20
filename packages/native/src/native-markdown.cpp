@@ -499,19 +499,51 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     // offsets carry over when the message view re-imports the exported html.
     QVariantList codeBlocks;
     {
-        QString pending;
-        int start = -1;
-        for (auto block = document.begin(); block.isValid(); block = block.next()) {
-            if (block.blockFormat().nonBreakableLines()) {
-                if (start < 0) start = block.position();
-                if (!pending.isEmpty()) pending += QLatin1Char('\n');
-                pending += block.text();
-            } else if (start >= 0) {
-                codeBlocks.append(QVariantMap{{"start", start}, {"text", pending}});
-                pending.clear(); start = -1;
-            }
+        // Each md4c <pre><code> element is one fenced block; the importer
+        // turns its N content lines into N nonBreakableLines blocks (an empty
+        // fence into none), so the per-element line counts of the generated
+        // html partition the collected blocks back into their fenced elements
+        // (review r3: adjacent fences would otherwise merge into one target)
+        // while the line flag below keeps blank lines' separators (review r3:
+        // leading blank lines would otherwise vanish from the copy payload).
+        static const QRegularExpression fencePattern(
+            QStringLiteral("<pre><code[^>]*>(.*?)</code></pre>"),
+            QRegularExpression::DotMatchesEverythingOption);
+        QList<int> fenceLines;
+        for (auto fence = fencePattern.globalMatch(QString::fromUtf8(generated)); fence.hasNext();)
+        {
+            const auto content = fence.next().captured(1);
+            fenceLines.append(content.isEmpty() ? 0 : content.count(QLatin1Char('\n')) + 1);
         }
-        if (start >= 0) codeBlocks.append(QVariantMap{{"start", start}, {"text", pending}});
+        QString pending;
+        bool lineCollected = false;
+        int start = -1;
+        int fenceIndex = 0;
+        int fenceRemaining = 0;
+        auto flushCodeBlock = [&]() {
+            if (start >= 0) codeBlocks.append(QVariantMap{{"start", start}, {"text", pending}});
+            pending.clear(); lineCollected = false; start = -1;
+        };
+        for (auto block = document.begin(); block.isValid(); block = block.next())
+        {
+            if (!block.blockFormat().nonBreakableLines())
+            {
+                flushCodeBlock(); fenceRemaining = 0; continue;
+            }
+            while (fenceIndex < fenceLines.size() && fenceLines.at(fenceIndex) == 0) ++fenceIndex;
+            if (fenceRemaining == 0)
+            {
+                flushCodeBlock();
+                start = block.position();
+                if (fenceIndex < fenceLines.size()) { fenceRemaining = fenceLines.at(fenceIndex); ++fenceIndex; }
+                else fenceRemaining = -1; // unmatched non-breakable blocks: one trailing group
+            }
+            if (fenceRemaining > 0) --fenceRemaining;
+            if (lineCollected) pending += QLatin1Char('\n');
+            pending += block.text();
+            lineCollected = true;
+        }
+        flushCodeBlock();
     }
     auto html = document.toHtml();
     const auto body = html.indexOf("<body");

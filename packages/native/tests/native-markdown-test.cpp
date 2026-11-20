@@ -191,6 +191,57 @@ private slots:
         QCOMPARE(second.blockFormat().bottomMargin(), 0);
     }
 
+    // Issue #110 review r3: the fenced-block collector must copy a block's
+    // content exactly as authored (leading blank lines survive) and must keep
+    // adjacent fenced blocks as separate copy targets.
+    void codeBlockCopyKeepsLeadingBlankLines()
+    {
+        NativeMarkdown renderer;
+        QStringList deviations;
+        const auto rendered = renderer.render("Before\n\n```bash\n\necho one\n```\n\nAfter");
+        const auto blocks = rendered.value("codeBlocks").toList();
+        if (blocks.size() != 1)
+            deviations << QStringLiteral("expected one fenced block, got %1").arg(blocks.size());
+        else
+        {
+            const auto text = blocks.first().toMap().value("text").toString();
+            if (text != QStringLiteral("\necho one"))
+                deviations << QStringLiteral("clipboard text [%1] != [\n\necho one] (displayed with markers)")
+                              .arg(QString(text).replace('\n', QStringLiteral("<NL>")));
+        }
+        for (const auto &deviation : deviations)
+            qWarning().noquote() << "codeBlockCopyKeepsLeadingBlankLines:" << deviation;
+        QCOMPARE(deviations, QStringList{});
+    }
+
+    void adjacentFencedBlocksStaySeparateCopyTargets()
+    {
+        NativeMarkdown renderer;
+        QStringList deviations;
+        const auto rendered = renderer.render("```a\nx1\n```\n```b\ny2\n```");
+        const auto blocks = rendered.value("codeBlocks").toList();
+        if (blocks.size() != 2)
+            deviations << QStringLiteral("expected two fenced copy targets, got %1 [%2]")
+                          .arg(blocks.size())
+                          .arg(QStringList([&]{ QStringList all; for (const auto &b : blocks) all << b.toMap().value("text").toString().replace('\n', QStringLiteral("<NL>")); return all; }()).join(QStringLiteral("; ")));
+        else
+        {
+            const auto first = blocks.at(0).toMap();
+            const auto second = blocks.at(1).toMap();
+            if (first.value("text").toString() != QStringLiteral("x1"))
+                deviations << QStringLiteral("first target text [%1] != [x1]").arg(first.value("text").toString());
+            if (second.value("text").toString() != QStringLiteral("y2"))
+                deviations << QStringLiteral("second target text [%1] != [y2]").arg(second.value("text").toString());
+            const auto firstStart = first.value("start").toInt();
+            const auto secondStart = second.value("start").toInt();
+            if (firstStart >= secondStart)
+                deviations << QStringLiteral("second target start %1 must follow first %2").arg(secondStart).arg(firstStart);
+        }
+        for (const auto &deviation : deviations)
+            qWarning().noquote() << "adjacentFencedBlocksStaySeparateCopyTargets:" << deviation;
+        QCOMPARE(deviations, QStringList{});
+    }
+
     void lineBreakCorrectionPreservesTaskMarkersAndCodeLines()
     {
         NativeMarkdown renderer;
