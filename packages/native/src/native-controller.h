@@ -942,6 +942,7 @@ signals:
     // subscribeLogHistory).
     void sessionLogChanged();
     void stateChanged();
+    void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
     void ownProfileSettledChanged();
     void ownAvatarSettledChanged();
@@ -1829,6 +1830,7 @@ private:
     // recorded here and replayed against the completed page, so the older
     // snapshot can never overwrite it. Reset with every refresh/load end.
     bool m_chatHeaderMembersLoading = false;
+    bool m_chatHeaderMembersKnown = false;
     QList<QPair<QString, QString>> m_chatHeaderMembersPendingEvents;
     // ---- Issue #134 user profile drawer state ----
     void refreshOwnProfileProjection(const QString &user, quint64 ticket,
@@ -1950,6 +1952,7 @@ private:
     void rememberConversation();
     void interruptOwnStatusUpdate();
     QMap<QString, QVariantMap> m_channelChoices;
+    QVariantMap m_mentionSelfChoice;
     QString m_channelDirectoryOwner;
     bool m_channelDirectoryValid = false;
     QHash<QString, DirectChat> m_directChats;

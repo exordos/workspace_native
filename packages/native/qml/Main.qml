@@ -10927,6 +10927,16 @@ ApplicationWindow {
     Popup {
         id: composerMentionPopup
         objectName: "composerMentionPopup"
+        Connections {
+            target: root.controller
+            enabled: composerMentionPopup.visible
+            function onMentionMembershipChanged() {
+                const current = composerMentionPopup.rows[composerMentionPopup.activeIndex];
+                const rows = root.controller.mentionSuggestions(composerMentionPopup.query);
+                composerMentionPopup.rows = rows;
+                composerMentionPopup.activeIndex = Math.max(0, rows.findIndex(row => row.userUuid === current?.userUuid));
+            }
+        }
         property var rows: []
         property int activeIndex: 0
         property string query: ""
@@ -11026,6 +11036,7 @@ ApplicationWindow {
                                         color: root.colors["bg"]
                                         Text {
                                             id: mentionOutsideLabel
+                                            objectName: "composerMentionOutsideLabel" + index
                                             anchors.centerIn: parent
                                             text: qsTr("not in channel")
                                             font.pixelSize: 10
@@ -11049,6 +11060,8 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton
+                            hoverEnabled: true
+                            onEntered: composerMentionPopup.activeIndex = index
                             onClicked: composerText.insertComposerMention(mentionRow)
                         }
                     }
