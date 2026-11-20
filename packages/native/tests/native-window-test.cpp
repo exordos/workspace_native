@@ -21626,8 +21626,16 @@ private:
     }
 
     private slots:
+    void composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("english") << QStringLiteral("en");
+        QTest::newRow("russian") << QStringLiteral("ru");
+    }
+
     void composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart()
     {
+        QFETCH(QString, locale);
         const QString mentionBob = QStringLiteral("52000000-0000-4000-8000-00000000000b");
         const QString mentionBix = QStringLiteral("52000000-0000-4000-8000-0000000000c0");
         WindowChannelFixture fixture; fixture.sourceScene = true;
@@ -21636,6 +21644,8 @@ private:
                         {"email", "alice@example.invalid"}},
             QJsonObject{{"uuid", mentionBob}, {"username", "bob"}, {"first_name", "Bob"}, {"last_name", "Ray"}},
             QJsonObject{{"uuid", mentionBix}, {"username", "bix"}, {"first_name", "Bix"}, {"last_name", "Ray"}}};
+        fixture.bindings = {WindowChatHeaderCountersFixture::headerBinding(
+            WindowChatHeaderCountersFixture::headerBindingId(1), channelPeer, streamId)};
         int posts = 0, confirmations = 0;
         QJsonObject posted, saved;
         const auto fallback = fixture.server.handler;
@@ -21656,6 +21666,7 @@ private:
         };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("composer-mention.ini"));
+        preferences.setLocale(locale);
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
         QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
@@ -21666,6 +21677,8 @@ private:
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(controller.chatHeaderMemberCount(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
         QVERIFY(composer && composer->isEnabled());
         // An @ inside a word never opens the popup (reference: "does not open
@@ -21681,7 +21694,12 @@ private:
         // "a": prefix tier (Alice) first, then substring-tier matches on the
         // "Ray" surname (reference mention-suggest tiers).
         QTRY_COMPARE(mentionRowTexts(window),
-            (QStringList{QString("Alice"), QString("Bix Ray"), QString("Bob Ray")}));
+            (QStringList{QString("Alice"), QString("Bix Ray"), QString("Bob Ray"), QString("cassi")}));
+        auto *chip = mentionVisualChild(window->contentItem(), "composerMentionOutsideLabel1");
+        QVERIFY(chip && chip->isVisible());
+        QCOMPARE(chip->property("text").toString(), locale == "ru" ? QStringLiteral("не в канале") : QStringLiteral("not in channel"));
+        auto *memberChip = mentionVisualChild(window->contentItem(), "composerMentionOutsideLabel0");
+        QVERIFY(memberChip && !memberChip->isVisible());
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!mentionPopupVisible(window));
         // Two equal "B" matches, tied on every context score; the reference tie
@@ -21693,7 +21711,15 @@ private:
         QTest::keyClick(window, Qt::Key_B);
         QTRY_VERIFY(mentionPopupVisible(window));
         QTRY_COMPARE(mentionRowTexts(window), (QStringList{QString("Bix Ray"), QString("Bob Ray")}));
+        auto *popup = window->findChild<QObject *>("composerMentionPopup");
+        auto *second = mentionVisualChild(window->contentItem(), "composerMentionRow1");
+        QVERIFY(popup && second);
         QTest::keyClick(window, Qt::Key_Down);
+        QCOMPARE(popup->property("activeIndex").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Up);
+        QCOMPARE(popup->property("activeIndex").toInt(), 0);
+        QTest::mouseMove(window, second->mapToScene(QPointF(30, 20)).toPoint());
+        QTRY_COMPARE(popup->property("activeIndex").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_COMPARE(composer->property("text").toString(), QString("@Bob Ray "));
         QCOMPARE(composer->property("cursorPosition").toInt(), 9);

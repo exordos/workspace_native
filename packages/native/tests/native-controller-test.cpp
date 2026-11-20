@@ -24696,8 +24696,11 @@ private slots:
         QVERIFY(f.start());
         QVERIFY(f.controller.composerMentionsEnabled());
         // Empty query opens the full suggestion list (empty query = no filter);
-        // updateChannelDirectory drops the viewer, so only the peer remains.
-        QCOMPARE(f.controller.mentionSuggestions(QString{}).size(), 1);
+        // The composer can mention the viewer, while the creation picker offers only peers.
+        QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QString{})),
+            (QStringList{mentionUuid("0b0b"), userId}));
+        QCOMPARE(f.controller.channelMemberChoices().size(), 1);
+        QCOMPARE(f.controller.channelMemberChoices().first().toMap().value("id").toString(), mentionUuid("0b0b"));
         QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QStringLiteral("bob"))),
             (QStringList{mentionUuid("0b0b")}));
     }
@@ -24964,7 +24967,7 @@ private slots:
         // Alice wrote the newest message (recent author +4000), Bob the older one
         // (+3900); Bea and Boba carry no context and fall to locale order (mention-suggest.lib.ts).
         QCOMPARE(mentionOrder(f.controller.mentionSuggestions(QString{})),
-            (QStringList{alice, bob, bea, boba}));
+            (QStringList{alice, bob, bea, boba, userId}));
         // Membership is unknown for an ordinary channel: no outsideChannel marking.
         for (const auto &rowValue : f.controller.mentionSuggestions(QString{}))
             QVERIFY(!rowValue.toMap().contains("outsideChannel"));
@@ -24986,6 +24989,53 @@ private slots:
         QCOMPARE(rows.first().toMap().value("username").toString(), QStringLiteral("alice"));
         QVERIFY(rows.first().toMap().contains("status"));
         QVERIFY(rows.first().toMap().contains("avatarUrl"));
+    }
+
+    void mentionMembersFollowCompletedChannelBindings()
+    {
+        Fixture f;
+        f.users = [](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", userId}, {"username", "viewer"}},
+            QJsonObject{{"uuid", channelMemberA}, {"username", "amy"}},
+            QJsonObject{{"uuid", channelMemberB}, {"username", "zoe"}}}}; };
+        auto binding = creationBinding(channelMemberB, 1);
+        binding["stream_uuid"] = streamId;
+        f.bindings = [&](const Request &) { return Response{QJsonArray{binding}}; };
+        f.messages = [](const Request &) { return Response{QJsonArray{}}; };
+        QVERIFY(f.start());
+        for (const auto &row : f.controller.mentionSuggestions({}))
+            QVERIFY(!row.toMap().contains("outsideChannel"));
+        f.controller.refreshChatHeaderMembers();
+        QTRY_COMPARE(f.controller.chatHeaderMemberCount(), 1);
+        const auto ranked = f.controller.mentionSuggestions({});
+        QCOMPARE(mentionOrder(ranked), (QStringList{channelMemberB, channelMemberA, userId}));
+        QVERIFY(!ranked[0].toMap().value("outsideChannel").toBool());
+        QVERIFY(ranked[1].toMap().value("outsideChannel").toBool());
+    }
+
+    void mentionRecentAuthorsUseLastTwoHundredMessages()
+    {
+        Fixture f;
+        f.users = [](const Request &) { return Response{QJsonArray{
+            QJsonObject{{"uuid", channelMemberA}, {"username", "anna"}},
+            QJsonObject{{"uuid", channelMemberB}, {"username", "zoe"}},
+            QJsonObject{{"uuid", userId}, {"username", "viewer"}}}}; };
+        QMap<int, QJsonObject> rows;
+        for (int i = 1; i <= 210; ++i) {
+            auto row = historyMessage(i);
+            row["author_uuid"] = i == 10 ? channelMemberB : userId;
+            rows.insert(i, row);
+        }
+        f.messages = [&](const Request &request) { return historyResponse(rows, request); };
+        QVERIFY(f.start());
+        for (const int count : {100, 150, 200, 210}) {
+            f.controller.loadOlder();
+            QTRY_COMPARE(f.controller.messages().size(), count);
+        }
+        const auto ranked = mentionOrder(f.controller.mentionSuggestions({}));
+        QVERIFY(ranked.contains(channelMemberA));
+        QVERIFY(ranked.contains(channelMemberB));
+        QVERIFY(ranked.indexOf(channelMemberA) < ranked.indexOf(channelMemberB));
     }
 
     void mentionSendPathSerializesCanonicalUrns()
@@ -25010,12 +25060,12 @@ private slots:
             return Response{QJsonArray{}};
         };
         QVERIFY(f.start());
-        f.controller.setDraft(QStringLiteral("Hi @Alice!"));
+        f.controller.setDraft(QStringLiteral("Hi @Alice and @cassi!"));
         f.controller.send();
         QTRY_VERIFY_WITH_TIMEOUT(!posted.isEmpty(), 4000);
         // The wire body carries the canonical URN while the visible draft kept the name.
         QCOMPARE(posted.value("payload").toObject().value("content").toString(),
-            QStringLiteral("Hi [Alice](urn:user:%1)!").arg(alice));
+            QStringLiteral("Hi [Alice](urn:user:%1) and [cassi](urn:user:%2)!").arg(alice, userId));
         QTRY_VERIFY_WITH_TIMEOUT(f.controller.draft().isEmpty(), 4000);
     }
 
