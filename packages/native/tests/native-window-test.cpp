@@ -1478,6 +1478,11 @@ public:
     QString messageUuidTwo = QStringLiteral("8d000000-0000-4000-8000-000000000002");
     QString streamSource = "native";
     bool streamEncrypted = false;
+    bool ownPoll = false;
+    int closePosts = 0, managementStatus = 200;
+    bool holdManagement = false;
+    QJsonObject lastSettings;
+    std::function<void()> releaseManagement;
     bool secondPollOnPage = false;
     // Poll config (reference defaults per the polls contract).
     bool multipleAnswers = true;
@@ -1551,7 +1556,7 @@ public:
     QJsonObject row(const QString &id, const QString &questionText) const
     {
         return {{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
-            {"topic_uuid", topicId}, {"author_uuid", channelPeer}, {"is_own", false},
+            {"topic_uuid", topicId}, {"author_uuid", ownPoll ? userId : channelPeer}, {"is_own", ownPoll},
             {"read", true}, {"starred", false},
             {"created_at", QStringLiteral("2026-01-02T10:00:30.000Z")},
             {"payload", payload(questionText)}, {"poll_state", state()}};
@@ -1641,12 +1646,25 @@ public:
                 }
                 return response;
             }
-            if (path == actions + "update_settings/invoke") {
-                // Another actor changes the poll: a revision bump with no
-                // vote or option effects (issue #216 round-3 lock case).
-                ++settingsPosts;
-                ++revision;
-                return {row(), 200};
+            if (path == actions + "update_settings/invoke" || path == actions + "close_poll/invoke") {
+                if (path == actions + "close_poll/invoke") {
+                    ++closePosts;
+                    if (managementStatus == 200) closed = true;
+                } else {
+                    ++settingsPosts;
+                    lastSettings = request.body.value("settings").toObject();
+                    if (managementStatus == 200) {
+                        allowAddingOptions = lastSettings.value("allow_adding_options").toBool();
+                        closesAt = lastSettings.value("closes_at").toString();
+                    }
+                }
+                if (managementStatus == 200) ++revision;
+                Response response{row(), managementStatus};
+                if (holdManagement) {
+                    holdManagement = false;
+                    response.defer = [this](std::function<void()> send) { releaseManagement = std::move(send); };
+                }
+                return response;
             }
             if (path.endsWith("/streams/") && request.method == "GET") {
                 auto stream = windowChannel(streamId, QStringLiteral("Product team"));
@@ -1679,6 +1697,7 @@ public:
     {
         if (releaseVote) releaseVote();
         if (releaseAddOption) releaseAddOption();
+        if (releaseManagement) releaseManagement();
     }
 };
 
@@ -28166,6 +28185,139 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!avatarProbeCircle(card, 20));
     }
 
+    void pollManagementMenuTracksActorAndState_data()
+    {
+        QTest::addColumn<bool>("own"); QTest::addColumn<bool>("closed");
+        QTest::addColumn<bool>("expired"); QTest::addColumn<bool>("readOnly");
+        QTest::newRow("author") << true << false << false << false;
+        QTest::newRow("peer") << false << false << false << false;
+        QTest::newRow("closed") << true << true << false << false;
+        QTest::newRow("expired") << true << false << true << false;
+        QTest::newRow("encrypted") << true << false << false << true;
+    }
+
+    void pollManagementMenuTracksActorAndState()
+    {
+        QFETCH(bool, own); QFETCH(bool, closed); QFETCH(bool, expired); QFETCH(bool, readOnly);
+        PollBubbleScene scene;
+        scene.fixture.ownPoll = own; scene.fixture.closed = closed;
+        scene.fixture.closesAt = expired ? "2000-01-01T00:00:00Z" : "";
+        scene.fixture.streamEncrypted = readOnly;
+        scene.start();
+        auto *bubble = visibleItem(scene.content(), "message-" + scene.fixture.messageUuid);
+        QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        auto *menu = scene.window->findChild<QObject *>("messageMenu");
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->property("visible").toBool());
+        for (const auto &name : {"pollSettingsAction", "pollCloseAction"}) {
+            auto *action = scene.window->findChild<QObject *>(name);
+            QVERIFY(action);
+            QCOMPARE(action->property("visible").toBool(), own && !closed && !expired && !readOnly);
+        }
+    }
+
+    void pollManagementClosesWhenItsSourceIsDeleted()
+    {
+        PollBubbleScene scene;
+        scene.fixture.ownPoll = true;
+        scene.fixture.closesAt.clear();
+        scene.start();
+        const auto id = scene.fixture.messageUuid;
+        auto *bubble = visibleItem(scene.content(), "message-" + id); QVERIFY(bubble);
+        QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+            bubble->mapToScene(QPointF(10, 12)).toPoint());
+        QTRY_VERIFY(visibleItem(scene.content(), "pollSettingsAction"));
+        scene.click(visibleItem(scene.content(), "pollSettingsAction"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", QJsonObject{{"kind", "message.deleted"}, {"uuid", id},
+                {"stream_uuid", streamId}, {"topic_uuid", topicId}}}}));
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        QCOMPARE(scene.fixture.settingsPosts, 0);
+    }
+
+    void pollManagementCloseHoldAndRetryAndSettingsPayload_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QString("en"), QString("ru")})
+            for (const auto &mode : {QString("light"), QString("dark")})
+                QTest::newRow(qPrintable(locale + "-" + mode)) << locale << mode;
+    }
+
+    void pollManagementCloseHoldAndRetryAndSettingsPayload()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        PollBubbleScene scene;
+        scene.preferences.setLocale(locale); scene.preferences.setMode(mode);
+        auto &fixture = scene.fixture;
+        fixture.ownPoll = true; fixture.closesAt.clear();
+        scene.start();
+        const auto openAction = [&](const QString &name) {
+            auto *bubble = visibleItem(scene.content(), "message-" + fixture.messageUuid);
+            QVERIFY(bubble);
+            QTest::mouseClick(scene.window, Qt::RightButton, Qt::NoModifier,
+                bubble->mapToScene(QPointF(10, 12)).toPoint());
+            QTRY_VERIFY(visibleItem(scene.content(), name));
+            scene.click(visibleItem(scene.content(), name));
+        };
+        openAction("pollSettingsAction");
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QCOMPARE(pollItemText(scene.content(), "poll-management-title"), locale == "ru" ? QString("Изменить опрос") : QString("Edit poll"));
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        auto *date = visibleItem(scene.content(), "poll-management-date"); QVERIFY(date);
+        date->setProperty("text", "2000-01-01");
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-invalid"));
+        QCOMPARE(fixture.settingsPosts, 0);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        openAction("pollSettingsAction");
+        QVERIFY(!visibleItem(scene.content(), "poll-management-date"));
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        date = visibleItem(scene.content(), "poll-management-date"); QVERIFY(date);
+        date->setProperty("text", "2099-11-15");
+        visibleItem(scene.content(), "poll-management-time")->setProperty("text", "12:30");
+        scene.click(visibleItem(scene.content(), "poll-management-add-options"));
+        fixture.holdManagement = true; fixture.managementStatus = 503;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 1);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QVERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(!visibleItem(scene.content(), "poll-management-submit")->isEnabled());
+        auto releaseSettings = std::move(fixture.releaseManagement); QVERIFY(releaseSettings); releaseSettings();
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-error"));
+        fixture.managementStatus = 200;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 2);
+        QVERIFY(!fixture.lastSettings.value("allow_adding_options").toBool());
+        QVERIFY(QDateTime::fromString(fixture.lastSettings.value("closes_at").toString(), Qt::ISODateWithMs).isValid());
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        openAction("pollSettingsAction");
+        scene.click(visibleItem(scene.content(), "poll-management-deadline"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.settingsPosts, 3);
+        QVERIFY(fixture.lastSettings.value("closes_at").isNull());
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        fixture.managementStatus = 503;
+        fixture.holdManagement = true;
+        openAction("pollCloseAction");
+        QCOMPARE(pollItemText(scene.content(), "poll-management-title"), locale == "ru" ? QString("Завершить опрос?") : QString("Close poll?"));
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.closePosts, 1);
+        QVERIFY(!visibleItem(scene.content(), "poll-management-submit")->isEnabled());
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QVERIFY(visibleItem(scene.content(), "poll-management-submit"));
+        auto releaseClose = std::move(fixture.releaseManagement); QVERIFY(releaseClose); releaseClose();
+        QTRY_VERIFY(visibleItem(scene.content(), "poll-management-error"));
+        fixture.managementStatus = 200;
+        scene.click(visibleItem(scene.content(), "poll-management-submit"));
+        QTRY_COMPARE(fixture.closePosts, 2);
+        QTRY_VERIFY(!visibleItem(scene.content(), "poll-management-submit"));
+        QVERIFY(fixture.closed);
+    }
+
     void pollBubbleClosedShowsResultsAndNoControls()
     {
         PollBubbleScene scene;
@@ -28389,8 +28541,13 @@ QTRY_VERIFY(create->property("enabled").toBool());
             "poll-option-0-1-" + scene.fixture.messageUuid));
         // Another actor changes the poll settings: the poll revision bumps
         // while our vote request is still waiting for its own response.
-        scene.controller.updatePollSettings(scene.fixture.messageUuid, QString(), true);
-        QTRY_COMPARE(scene.fixture.settingsPosts, 1);
+        ++scene.fixture.revision;
+        auto updated = scene.fixture.row();
+        updated["kind"] = "message.updated";
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", updated}}));
+        QTRY_COMPARE(scene.controller.messages().first().toMap().value("poll").toMap().value("state")
+            .toMap().value("revision").toLongLong(), scene.fixture.revision);
         QTest::qWait(150);
         QVERIFY2(pollItemDisabled(scene.content(),
             "poll-option-0-1-" + scene.fixture.messageUuid),

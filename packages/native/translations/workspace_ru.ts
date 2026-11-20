@@ -102,6 +102,8 @@
             <source>Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.</source>
             <translation>Очистить кэш сообщений и все локальные настройки? Вход и сохранённые организации останутся. Приложение перезагрузится.</translation>
         </message>
+    <message><source>Poll settings</source><translation>Настройки опроса</translation></message>
+    <message><source>Close poll</source><translation>Завершить опрос</translation></message>
     <message>
         <source>Profile is still loading. Try again in a moment.</source>
         <translation>Профиль ещё загружается. Попробуйте через пару секунд.</translation>
@@ -4274,6 +4276,23 @@
             <translation>%1 звонит</translation>
         </message>
     </context>
+<context>
+    <name>NativePollManagementDialog</name>
+    <message><source>Close poll?</source><translation>Завершить опрос?</translation></message>
+    <message><source>Edit poll</source><translation>Изменить опрос</translation></message>
+    <message><source>Participants will no longer be able to vote or change their answers.</source><translation>Участники больше не смогут голосовать или менять свои ответы.</translation></message>
+    <message><source>Poll closing date</source><translation>Дата завершения опроса</translation></message>
+    <message><source>Remove deadline</source><translation>Убрать дату</translation></message>
+    <message><source>Set a deadline</source><translation>Установить дату</translation></message>
+    <message><source>Time</source><translation>Время</translation></message>
+    <message><source>Choose a future date</source><translation>Выберите дату в будущем</translation></message>
+    <message><source>Allow adding options</source><translation>Разрешить добавление вариантов</translation></message>
+    <message><source>Participants can add answer options</source><translation>Участники могут добавлять варианты ответов</translation></message>
+    <message><source>Could not save the change. Please try again.</source><translation>Не удалось сохранить изменение. Попробуйте ещё раз.</translation></message>
+    <message><source>Cancel</source><translation>Отмена</translation></message>
+    <message><source>Close poll</source><translation>Завершить опрос</translation></message>
+    <message><source>Save</source><translation>Сохранить</translation></message>
+</context>
     <context>
         <name>NativePollDialog</name>
         <message>

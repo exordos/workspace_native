@@ -27171,6 +27171,37 @@ private slots:
 
     // ---- Issue #214 polls foundation ----
 
+    void pollManagementUsesVerifiedAuthorAndRejectsPeerActions_data()
+    {
+        QTest::addColumn<bool>("author"); QTest::addColumn<bool>("ownFlag");
+        QTest::newRow("author-without-convenience-flag") << true << false;
+        QTest::newRow("peer-with-inconsistent-flag") << false << true;
+    }
+
+    void pollManagementUsesVerifiedAuthorAndRejectsPeerActions()
+    {
+        QFETCH(bool, author); QFETCH(bool, ownFlag);
+        Fixture fixture;
+        const auto id = pollFixtureUuid(81);
+        auto poll = pollMessageDto(id, 3, false);
+        poll["author_uuid"] = author ? userId : pollFixtureUuid(82);
+        poll["is_own"] = ownFlag;
+        auto payload = poll["payload"].toObject(); payload["closes_at"] = QJsonValue::Null; poll["payload"] = payload;
+        int posts = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.method == "POST") { ++posts; return {QJsonObject{}, 403}; }
+            return {QJsonArray{poll}};
+        };
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.controller.canManagePoll(id), author);
+        QSignalSpy failure(&fixture.controller, &NativeController::pollActionFailed);
+        fixture.controller.closePoll(id);
+        QTRY_COMPARE(failure.size(), 1);
+        QCOMPARE(posts, author ? 1 : 0);
+        QCOMPARE(failure.first().at(2).toString(), author ? QString("http-403") : QString("not-available"));
+        QVERIFY(!modelMessage(fixture.controller, id).value("poll").toMap().value("state").toMap().value("isClosed").toBool());
+    }
+
     void pollMessageArrivesEndToEndWithEveryConfigField()
     {
         Fixture fixture;
