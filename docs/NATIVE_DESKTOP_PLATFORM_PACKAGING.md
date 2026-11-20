@@ -20,3 +20,16 @@ Both archives carry the Qt SQLite driver used by the cache, diagnostics and key 
 CMake installs the application using Qt's QML deployment script. The package jobs build the pinned Markdown and keychain libraries against the same Qt kit. OpenSSL supplies the existing native TLS and HPKE APIs. The Windows and macOS smoke checks run independently so a failure on either platform remains visible.
 
 The package targets follow the [Qt QML deployment documentation](https://doc.qt.io/qt-6/qt-generate-deploy-qml-app-script.html).
+
+## Clean-desktop interaction
+
+Each platform test minimizes the existing window and launches the unpacked executable a second time. The second process exits after the original process acknowledges activation. The test observes the original window restored, focuses the accessible Server address field, pastes text through the real OS clipboard and copies a new selection back. Windows uses UI Automation and Ctrl+V/C. macOS uses the Accessibility API and Command+V/C. The reserved `.invalid` address is used only as text and is never submitted.
+
+| Capability | Windows x64 | macOS arm64 |
+| --- | --- | --- |
+| Start in a relocated archive, restore the original window, clipboard text in both directions | PASS on Windows Server 2022 | PASS on macOS 15 |
+| OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
+| Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
+| Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
+
+The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).

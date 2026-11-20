@@ -65,7 +65,7 @@ guard waitFor(15, { !secondary.isRunning }), secondary.terminationStatus == 0,
       waitFor(10, { app.isRunning && windowBounds(pid) != nil }) else {
     throw fail("The second launch did not restore the original application.")
 }
-print("A second launch restored the original hidden application.")
+print("A second launch restored the original minimized window.")
 
 func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
     var value: CFTypeRef?
