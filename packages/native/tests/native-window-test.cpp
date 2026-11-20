@@ -25978,10 +25978,14 @@ private:
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
-        window->resize(1280, 800); QTRY_COMPARE(window->width(), 1280);
+        window->resize(1280, 800);
+        // The call snapshots the default PiP bounds when the user joins.
+        QTRY_COMPARE(controller.callWindow()->bounds(), QRect(32, 32, 1216, 736));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         // Join from the card: the store opens the shell expanded in a scrim.
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        const auto callCard = QStringLiteral("call-card-") + messageId;
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
+        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
         auto *surface = visibleItem(window->contentItem(), QStringLiteral("callWindowSurface"));
@@ -26028,7 +26032,7 @@ private:
         };
         auto assertPipBounds = [&window](QQuickWindow *pip, const QRect &expected) {
             QVERIFY(pip);
-            QCOMPARE(QRect(pip->x(), pip->y(), pip->width(), pip->height()), expected);
+            QTRY_COMPARE_WITH_TIMEOUT(QRect(pip->x(), pip->y(), pip->width(), pip->height()), expected, 2000);
             QVERIFY(pip->contentItem());
             QVERIFY(visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         };
@@ -26729,7 +26733,9 @@ private:
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         QVERIFY(fixture.start(controller));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("call-card-") + messageId));
+        const auto callCard = QStringLiteral("call-card-") + messageId;
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), callCard), 5000);
+        clickReadyItem(window, visibleItem(window->contentItem(), callCard));
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         auto *button = visibleItem(window->contentItem(), QStringLiteral("callWindowFullscreenButton"));
         QVERIFY(button);
