@@ -33848,6 +33848,148 @@ private slots:
         QVERIFY(!pendingPulse->property("running").toBool());
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
+
+    // Issue #113 review (finding 4639122138): the property-level checks in
+    // readRequestPulseStates cannot prove the accent wash is actually visible:
+    // Qt Quick paints a negative-z child behind its parent Rectangle's fill,
+    // so an overlay at z: -1 is fully hidden under the bubble fill. This case
+    // samples RENDERED PIXELS in the deterministic reduced-motion state (the
+    // wash freezes at the static 0.2 opacity, so there is no animation timing
+    // race) and asserts a pixel inside the bubble fill area carries the accent
+    // blended over the fill instead of the plain fill color.
+    void readRequestPulseOverlayPaintsAboveBubbleFill()
+    {
+        const QString peer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString readUuid = "8b000000-0000-4000-8000-000000000001";
+        const QString unreadOne = "8b000000-0000-4000-8000-000000000002";
+        const QString unreadTwo = "8b000000-0000-4000-8000-000000000003";
+        const auto peerMessage = [&](const QString &uuid, bool read, int second) {
+            auto entry = message(QStringLiteral("Peer pending %1").arg(second), uuid);
+            entry["is_own"] = false;
+            entry["author_uuid"] = peer;
+            entry["read"] = read;
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(second).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        QVector<QJsonObject> history{
+            peerMessage(readUuid, true, 1),
+            peerMessage(unreadOne, false, 2),
+            peerMessage(unreadTwo, false, 3),
+        };
+        const auto findHistory = [&history](const QString &uuid) {
+            const auto row = std::find_if(history.cbegin(), history.cend(),
+                [&](const QJsonObject &entry) { return entry.value("uuid").toString() == uuid; });
+            return row == history.cend() ? QJsonObject{} : *row;
+        };
+        auto readGate = std::make_shared<std::vector<std::function<void()>>>();
+        MockServer server;
+        server.handler = [&, readGate](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/")
+                return {QJsonArray{windowChannel(streamId, "Synthetic pulse channel")}};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return {windowChannel(streamId, "Synthetic pulse channel")};
+            if (path.endsWith("/users/")) return {QJsonArray{}};
+            if (path == "/api/workspace/v1/messenger/stream_topics/")
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "Synthetic topic")}};
+            if (path == "/api/workspace/v1/messenger/stream_topics/" + topicId)
+                return {windowChannelTopic(topicId, streamId, "Synthetic topic")};
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto boundaryUuid = path.section('/', -4, -4);
+                auto confirmed = findHistory(boundaryUuid);
+                if (confirmed.isEmpty()) return {QJsonObject{}, 404};
+                confirmed["read"] = true;
+                return Response{confirmed, 200, 0, {},
+                    [readGate](std::function<void()> send) { readGate->push_back(std::move(send)); }};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                QJsonArray page;
+                for (auto it = history.crbegin(); it != history.crend(); ++it) page.append(*it);
+                return {page};
+            }
+            return sessionResponse(request);
+        };
+        QTemporaryDir preferencesDirectory; QVERIFY(preferencesDirectory.isValid());
+        NativePreferences preferences(preferencesDirectory.filePath("read-request-pulse-pixels.ini"));
+        preferences.setLocale("en");
+        preferences.setMode("light");
+        // The reduced-motion branch freezes the overlay at the static 0.2 wash:
+        // that static state is exactly the deterministic frame to sample.
+        preferences.setPrefersReducedMotionOverride(true);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([guard = QPointer<QQuickWindow>(window), &engine] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Read-request pulse pixel window did not settle before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.messages().size(), 3);
+
+        auto *content = window->contentItem();
+        auto *bubble = visibleItem(content, "message-" + unreadTwo); QVERIFY(bubble);
+        auto *overlay = visibleItem(content, "message-read-pulse-" + unreadTwo); QVERIFY(overlay);
+        // Static reduced-motion wash: opacity frozen at 0.2, animation off.
+        QVERIFY(qAbs(overlay->property("opacity").toDouble() - 0.2) < 0.001);
+
+        // Present one more frame and read the painted surface back.
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped); QVERIFY(frame.isValid());
+        window->update(); QTRY_VERIFY(!frame.isEmpty());
+        const QImage pixels = window->grabWindow(); QVERIFY(!pixels.isNull());
+        const qreal dpr = window->devicePixelRatio();
+
+        const auto colors = window->property("colors").toMap();
+        QVERIFY(!colors.isEmpty());
+        const QColor fill(colors.value(QStringLiteral("msg-bg")).toString());
+        const QColor accent(colors.value(QStringLiteral("accent")).toString());
+        QVERIFY(fill.isValid() && accent.isValid());
+        QVERIFY(fill != accent);
+        // Sample inside the bubble's right padding strip: inside both the fill
+        // and the fill-anchored overlay, but clear of the text content column.
+        const QPointF scene = bubble->mapToScene(QPointF(bubble->width() - 5.0, bubble->height() / 2.0));
+        const QPoint at(int(scene.x() * dpr), int(scene.y() * dpr));
+        QVERIFY2(pixels.rect().contains(at), qPrintable(QStringLiteral("sample (%1,%2) outside grab %3x%4")
+            .arg(at.x()).arg(at.y()).arg(pixels.size().width()).arg(pixels.size().height())));
+        const QColor actual = pixels.pixelColor(at);
+        const auto mix = [](const QColor &over, const QColor &base, double t) {
+            return QColor(qRound(over.red() * t + base.red() * (1.0 - t)),
+                qRound(over.green() * t + base.green() * (1.0 - t)),
+                qRound(over.blue() * t + base.blue() * (1.0 - t)));
+        };
+        const auto channelDistance = [](const QColor &a, const QColor &b) {
+            return std::abs(a.red() - b.red()) + std::abs(a.green() - b.green())
+                + std::abs(a.blue() - b.blue());
+        };
+        // The 0.2 accent wash over the fill, versus the plain fill (the state
+        // where the overlay is buried under the bubble and paints nothing).
+        const QColor tinted = mix(accent, fill, 0.2);
+        qDebug() << "read-request pulse pixel at" << at
+                 << "actual" << actual.name(QColor::HexRgb)
+                 << "plain fill" << fill.name(QColor::HexRgb)
+                 << "expected tint" << tinted.name(QColor::HexRgb);
+        QVERIFY2(channelDistance(actual, fill) > 10, qPrintable(QStringLiteral(
+            "bubble fill pixel carries the plain fill color %1: the read-request "
+            "overlay paints behind the bubble fill and is hidden")
+            .arg(actual.name(QColor::HexRgb))));
+        QVERIFY2(channelDistance(actual, tinted) <= 12, qPrintable(QStringLiteral(
+            "bubble fill pixel %1 is not the 0.2 accent wash %2 over fill %3")
+            .arg(actual.name(QColor::HexRgb), tinted.name(QColor::HexRgb), fill.name(QColor::HexRgb))));
+
+        QTRY_VERIFY_WITH_TIMEOUT(!readGate->empty(), 5000);
+        for (auto &send : *readGate) send();
+        readGate->clear();
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
 };
 
 
