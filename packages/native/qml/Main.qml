@@ -7059,6 +7059,7 @@ component NativeMentionChip: Item {
                         flushWheelDistance()
                         return false
                     }
+                    if (moving) cancelFlick()
                     pendingWheelDistance += to - from
                     Qt.callLater(flushWheelDistance)
                     return true

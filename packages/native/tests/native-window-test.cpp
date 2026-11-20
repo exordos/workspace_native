@@ -28537,6 +28537,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QCOMPARE(moved.size(), 0);
             QVERIFY(settle());
             QVERIFY(qAbs(list->property("contentY").toReal() - beforeBurst - first) <= 1.0);
+            // Start real list inertia, then reverse a wheel notch in the same turn.
+            QVERIFY(QMetaObject::invokeMethod(list, "flick", Q_ARG(qreal, 0), Q_ARG(qreal, 900)));
+            QVERIFY(list->property("flicking").toBool());
+            const auto flickStart = list->property("contentY").toReal();
+            for (const int angle : {notchAngle, -notchAngle}) {
+                QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, angle),
+                    Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+                QCoreApplication::sendEvent(window, &wheel);
+            }
+            QVERIFY(settle());
+            QVERIFY2(qAbs(list->property("contentY").toReal() - flickStart) <= 1.0,
+                     "A balanced wheel reversal must stop previously active inertia");
         }
         QVERIFY(qAbs(other->property("contentY").toReal() - otherStart) <= 0.01);
     }
