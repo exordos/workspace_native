@@ -238,9 +238,11 @@ class Controls(unittest.TestCase):
         }
         desktop.fill = Mock()
         desktop.lookup = Mock()
-        desktop.lookup.return_value.get_text_iface.return_value.get_text.return_value = (
-            "https://elsewhere.invalid"
-        )
+        field = desktop.lookup.return_value.get_text_iface.return_value
+        # PyGObject exposes Accessible.get_text() (no offsets) on this proxy.
+        field.get_text.side_effect = lambda: field
+        desktop.atspi = Mock()
+        desktop.atspi.Text.get_text.return_value = "https://elsewhere.invalid"
         desktop.click = Mock()
 
         def until(predicate, reason, seconds=15):
