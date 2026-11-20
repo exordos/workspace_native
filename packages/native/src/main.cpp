@@ -40,6 +40,10 @@
 #include <QWindow>
 #include <openssl/ssl.h>
 #include <limits>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <shobjidl.h>
+#endif
 
 namespace {
 
@@ -78,6 +82,10 @@ int main(int argc, char **argv)
             && output.write(report) == report.size() && output.flush() ? 0 : 1;
     }
     QGuiApplication::setDesktopFileName("com.exordos.workspace.native.preview");
+#ifdef Q_OS_WIN
+    if (FAILED(SetCurrentProcessExplicitAppUserModelID(QGuiApplication::desktopFileName().toStdWString().c_str())))
+        qWarning("Could not set the Windows application identity.");
+#endif
     QApplication app(argc, argv);
     // Source parity: the last argument that validates as an external deep link
     // wins on cold start, mirroring the Electron startup argv scan.

@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/desktop-platform-packages.yml
       - packages/native/CMakeLists.txt
+      - packages/native/packaging/windows-*
       - packages/native/resources/macos-info.plist.in
       - packages/native/src/main.cpp
       - packages/native/src/native-instance.*
@@ -41,6 +42,7 @@ jobs:
         include:
           - { platform: windows-x64, runner: windows-2022, arch: win64_msvc2022_64 }
           - { platform: macos-arm64, runner: macos-15, arch: clang_64 }
+          - { platform: macos-x64, runner: macos-15-intel, arch: clang_64 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -97,6 +99,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Prepare the per-user Windows Installer tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'workspace-cpack'
+          python -m pip install --only-binary=:all: --no-deps --target $tools cmake==4.3.4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "WORKSPACE_CPACK=$tools/cmake/data/bin/cpack.exe" >> $env:GITHUB_ENV
+          if (!(Get-Command candle.exe -ErrorAction SilentlyContinue) -and !(Test-Path "$env:WIX/bin/candle.exe")) {
+            $archive = Join-Path $env:RUNNER_TEMP 'wix314-binaries.zip'
+            Invoke-WebRequest https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile $archive
+            if ((Get-FileHash $archive).Hash -ne '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31') { throw 'Unexpected WiX toolset checksum.' }
+            $wix = Join-Path $env:RUNNER_TEMP 'workspace-wix'
+            Expand-Archive -LiteralPath $archive -DestinationPath $wix
+            "WIX=$wix" >> $env:GITHUB_ENV
+          }
+      - name: Check ownership of removed files across two Windows installer versions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packages/native/tests/platform-package/windows-installer-upgrade.ps1
       - name: Build and archive the desktop application
         run: python packages/native/scripts/build-desktop-package.py
       - uses: actions/upload-artifact@v4
@@ -116,7 +138,8 @@ jobs:
       matrix:
         include:
           - { platform: windows-x64, runner: windows-2022 }
-          - { platform: macos-arm64, runner: macos-15 }
+          - { platform: macos-arm64, runner: macos-15, cpu: arm64 }
+          - { platform: macos-x64, runner: macos-15-intel, cpu: x86_64 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     steps:
@@ -132,7 +155,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $archive = Get-Item archive/workspace-native-windows-x64.zip
+          $archive = Get-Item "archive/workspace-native-${{ matrix.platform }}.zip"
           $expected = ((Get-Content archive/SHA256SUMS) -split "\s+")[0]
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) { throw "Archive checksum mismatch" }
           $destination = Join-Path $env:RUNNER_TEMP "Workspace relocated"
@@ -141,13 +164,19 @@ jobs:
           if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
           ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
           python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-updater
+      - name: Install, launch and uninstall the Windows application for the current user
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packages/native/tests/platform-package/windows-installer.ps1 -Installer "archive/workspace-native-${{ matrix.platform }}-setup.msi"
       - name: Verify and run the relocated macOS application
         if: runner.os == 'macOS'
         run: |
           (cd archive && shasum -a 256 -c SHA256SUMS)
           destination="$RUNNER_TEMP/Workspace relocated"
           mkdir -p "$destination"
-          ditto -x -k archive/workspace-native-macos-arm64.zip "$destination"
+          test "$(uname -m)" = "${{ matrix.cpu }}"
+          ditto -x -k "archive/workspace-native-${{ matrix.platform }}.zip" "$destination"
+          lipo "$destination/workspace-native.app/Contents/MacOS/workspace-native" -verify_arch "${{ matrix.cpu }}"
           drivers="$destination/workspace-native.app/Contents/PlugIns/sqldrivers"
           test -f "$drivers/libqsqlite.dylib"
           test "$(find "$drivers" -name '*.dylib' | wc -l | tr -d ' ')" = 1
