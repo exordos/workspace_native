@@ -16,7 +16,10 @@ artifacts = build / "archives"
 windows = sys.platform == "win32"
 if not windows and sys.platform != "darwin":
     sys.exit("Run the platform packaging job on Windows or macOS.")
-generator = ["-G", "Visual Studio 17 2022", "-A", "x64"] if windows else ["-G", "Ninja"]
+windows_arm64 = windows and os.environ.get("WORKSPACE_PACKAGE_PLATFORM") == "windows-arm64"
+generator = ["-G", "Ninja"]
+if windows:
+    generator = ["-A", "ARM64"] if windows_arm64 else ["-G", "Visual Studio 17 2022", "-A", "x64"]
 qt = Path(os.environ["QT_ROOT_DIR"])
 openssl = Path(os.environ["WORKSPACE_OPENSSL_PREFIX"])
 if not qt.is_dir() or not openssl.is_dir():
@@ -41,7 +44,7 @@ install("application", root / "packages/native", stage, "-DBUILD_TESTING=OFF",
         f"-DWORKSPACE_NATIVE_PYTHON3={sys.executable}")
 artifacts.mkdir(parents=True, exist_ok=True)
 if windows:
-    name = "workspace-native-windows-x64"
+    name = "workspace-native-windows-arm64" if windows_arm64 else "workspace-native-windows-x64"
 else:
     machine = platform.machine()
     mac_arch = {"arm64": "arm64", "x86_64": "x64"}.get(machine)
