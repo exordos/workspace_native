@@ -38,11 +38,15 @@ keep their existing calculations.
 `expandedComposerToolbarStaysInsideTheWindow` renders empty and short drafts in
 both locales and themes, requires every complete button to fit inside the shell
 and window before pointer input, and checks typing/deleting a multiline draft,
-collapse/expansion and window resizing. Its real Bold click also checks draft
+collapse/expansion and window resizing. At the 700×600 minimum window size the expanded row scrolls horizontally.
+Moving keyboard focus reveals the whole focused action. Its real Bold click also checks draft
 mutation, restored editor focus/caret and absence of message sends. These are
 local Linux Qt Quick fixture checks, not live-service or other-platform acceptance.
 
 ## Actions and exact insert text (message-composer-toolbar.ui.tsx:40-320)
+
+The AI control is visible while composing a new message or reply. Editing an
+existing message hides the control.
 
 Order in the expanded toolbar: toggle, AI, separator, [link, bold, italic,
 strikethrough] (flush group), separator, [numbered list, bulleted list],

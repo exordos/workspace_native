@@ -20946,6 +20946,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QFETCH(QString, mode);
         WindowChannelFixture fixture;
         fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                    && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId)
+                return {QJsonArray{message("Editable message")}};
+            return fallback(request);
+        };
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("composer-ai.ini"));
         preferences.setLocale(locale);
@@ -21043,6 +21050,60 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!open(attachments));
         QCOMPARE(controller.draft(), QString("preserved draft"));
         QCOMPARE(sent.size(), 0);
+
+        window->resize(window->minimumSize());
+        QTRY_COMPARE(window->size(), window->minimumSize());
+        auto *toolbar = view("composerToolbarRow");
+        auto *spoiler = item(window->contentItem(), "composerFormatSpoiler");
+        QVERIFY(toolbar && spoiler);
+        const auto withinToolbar = [&](QQuickItem *button) {
+            const auto rect = button->mapRectToItem(toolbar, QRectF(QPointF{}, button->size()));
+            return QRectF(QPointF{}, toolbar->size()).contains(rect);
+        };
+        QVERIFY(withinToolbar(ai));
+        QTRY_VERIFY(QRectF(QPointF{}, window->size()).contains(
+            toolbar->mapRectToScene(QRectF(QPointF{}, toolbar->size()))));
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!painted.isEmpty());
+        const auto scrollTo = [&](QQuickItem *button, int angle) {
+            for (int i = 0; i < 12 && !withinToolbar(button); ++i) {
+                const auto center = toolbar->mapToScene({toolbar->width() / 2, toolbar->height() / 2});
+                const auto before = toolbar->property("contentX").toReal();
+                QTest::wheelEvent(window, center, QPoint(angle, 0));
+                if (!QTest::qWaitFor([&] {
+                        return toolbar->property("contentX").toReal() != before || withinToolbar(button);
+                    }, 300))
+                    continue;
+                QTRY_VERIFY(!toolbar->property("moving").toBool());
+            }
+            QVERIFY2(withinToolbar(button), qPrintable(QString("%1 at x=%2, toolbar width=%3, scroll=%4 of %5")
+                .arg(button->objectName()).arg(button->mapToItem(toolbar, QPointF{}).x()).arg(toolbar->width())
+                .arg(toolbar->property("contentX").toReal()).arg(toolbar->property("contentWidth").toReal())));
+        };
+        scrollTo(spoiler, -720);
+        if (QTest::currentTestFailed()) return;
+        auto *editor = view("messageComposer");
+        QVERIFY(editor);
+        click(window, editor);
+        QTest::keyClick(window, Qt::Key_End);
+        click(window, spoiler);
+        QTRY_COMPARE(controller.draft(), QString("preserved draft||||"));
+        click(window, editor);
+        for (int i = 0; i < 10 && window->activeFocusItem() != spoiler; ++i)
+            QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_COMPARE(window->activeFocusItem(), spoiler);
+        QTRY_VERIFY(withinToolbar(spoiler));
+        scrollTo(ai, 720);
+        if (QTest::currentTestFailed()) return;
+        click(window, ai);
+        QTRY_VERIFY(open(notice));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!open(notice));
+        QVERIFY(controller.beginEditMessage(messageId));
+        QTRY_VERIFY(!view("composerAiButton"));
+        controller.cancelEditMessage();
+        QTRY_VERIFY(view("composerAiButton"));
     }
 
     void composerToolbarKeyboardNavigationPreservesSelection_data()

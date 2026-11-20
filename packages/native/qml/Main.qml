@@ -11279,18 +11279,42 @@ component NativeMentionChip: Item {
                     // Issue #122: the expandable bottom toolbar (message-composer-toolbar.ui.tsx).
                     // COMPOSER_TOOLBAR_SEND_CLEARANCE mr-[52px] from the composer's right edge
                     // (40px send control + 12px row gap) and the pl-2 leading inset.
-                    Item {
+                    Flickable {
                         id: composerToolbarRow
                         objectName: "composerToolbarRow"
                         Layout.fillWidth: true
                         Layout.preferredHeight: 32
                         Layout.rightMargin: 52
                         visible: root.preferences.composerToolbarExpanded
+                        clip: true
+                        contentWidth: Math.max(width, composerToolbarActions.implicitWidth + 8)
+                        contentHeight: height
+                        flickableDirection: Flickable.HorizontalFlick
+                        boundsBehavior: Flickable.StopAtBounds
+                        onVisibleChanged: if (!visible) contentX = 0
+                        Connections {
+                            target: root
+                            function onActiveFocusItemChanged() {
+                                const focused = root.activeFocusItem;
+                                if (!focused || composerToolbarRow.contentWidth <= composerToolbarRow.width)
+                                    return;
+                                for (let owner = focused; owner; owner = owner.parent) {
+                                    if (owner === composerToolbarActions) {
+                                        const x = focused.mapToItem(composerToolbarRow.contentItem, 0, 0).x;
+                                        if (x < composerToolbarRow.contentX)
+                                            composerToolbarRow.contentX = x;
+                                        else if (x + focused.width > composerToolbarRow.contentX + composerToolbarRow.width)
+                                            composerToolbarRow.contentX = x + focused.width - composerToolbarRow.width;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                         RowLayout {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: 8
+                            id: composerToolbarActions
+                            x: 8
+                            width: composerToolbarRow.contentWidth - x
+                            height: composerToolbarRow.height
                             spacing: 8
                             NativeIconButton {
                                 objectName: "composerToolbarCollapse"
@@ -11308,6 +11332,7 @@ component NativeMentionChip: Item {
                                 objectName: "composerAiButton"
                                 colors: root.colors
                                 help: qsTr("AI assistant")
+                                visible: !root.controller.editingMessageId.length
                                 implicitWidth: 32
                                 implicitHeight: 32
                                 enabled: root.composerAvailable && composerText.enabled
