@@ -1966,7 +1966,7 @@ component NativeMentionChip: Item {
                                 Layout.fillWidth: true
                                 implicitHeight: 40
                                 rightPadding: 40
-                                enabled: !root.controller.busy && !root.controller.organizationLoading
+                                enabled: !root.controller.busy
                                 text: root.controller.organizationRealm
                                 onTextChanged: {
                                     if (text !== root.controller.organizationRealm)
@@ -2129,8 +2129,8 @@ component NativeMentionChip: Item {
                 Loader {
                     objectName: "realmPreviewLoader"
                     visible: active && !loginCard.savedAccountsOnly
-                    active: root.controller.projects.length === 0
-                        && Object.keys(root.controller.organizationSettings).length > 0
+                    active: Boolean((root.controller.organizationSettings.realmName || "").trim()
+                        || root.controller.organizationSettings.realmIconUrl)
                     Layout.fillWidth: true
                     sourceComponent: Rectangle {
                         objectName: "realmPreviewCard"
@@ -2166,12 +2166,11 @@ component NativeMentionChip: Item {
                             Text {
                                 objectName: "realmPreviewName"
                                 Layout.alignment: Qt.AlignHCenter
-                                text: root.controller.organizationSettings.realmName
-                                    || root.controller.organizationSettings.organizationOrigin
-                                    || ""
+                                text: root.controller.organizationSettings.realmName || ""
+                                visible: text.trim().length > 0
                                 textFormat: Text.PlainText
                                 color: root.colors["text-primary"]
-                                font.pixelSize: 16
+                                font.pixelSize: 14
                                 font.weight: Font.Medium
                                 wrapMode: Text.Wrap
                                 horizontalAlignment: Text.AlignHCenter

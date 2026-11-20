@@ -11109,7 +11109,7 @@ void NativeController::organizationInputChanged(const QString &text)
     // one invalidates the check, the pending advance and the error slot.
     const auto origin = organizationOriginFor(text);
     const auto originKey = origin.isEmpty() ? QString{} : origin.toString();
-    if (originKey == m_checkedOrganizationOrigin)
+    if (!originKey.isEmpty() && originKey == m_checkedOrganizationOrigin)
         return;
     ++m_organizationAttempt;
     m_organizationLoading = false;
@@ -11122,7 +11122,27 @@ void NativeController::organizationInputChanged(const QString &text)
     emit stateChanged();
 }
 
+bool NativeController::rejectMismatchedLoginOrganization(const QUrl &origin)
+{
+    QString org, project;
+    if (!linkedMessageTarget(&org, &project) || org == workspace::orgRouteIdFromOrigin(origin))
+        return false;
+    ++m_organizationAttempt;
+    m_organizationLoading = false;
+    m_pendingOrganizationOrigin.clear();
+    m_checkedOrganizationOrigin.clear();
+    m_organizationSettings.clear();
+    m_error = tr("Sign in to an account for the organization and project in this link.");
+    emit stateChanged();
+    return true;
+}
+
 void NativeController::discoverOrganization(const QString &text)
+{
+    discoverLoginOrganization(text, 0);
+}
+
+void NativeController::discoverLoginOrganization(const QString &text, quint64 linkSerial)
 {
     if (authenticated())
         return;
@@ -11140,16 +11160,26 @@ void NativeController::discoverOrganization(const QString &text)
         }
         return;
     }
+    if (rejectMismatchedLoginOrganization(origin))
+        return;
     const auto originKey = origin.toString();
     const auto attempt = ++m_organizationAttempt;
     m_organizationLoading = true;
     emit stateChanged();
     QPointer<NativeController> guard(this);
-    m_session->fetchOrganizationSettings(origin, [guard, attempt, originKey, this](
+    m_session->fetchOrganizationSettings(origin, [guard, attempt, originKey, linkSerial, this](
             bool ok, QVariantMap raw, QString error) {
         if (!guard || attempt != m_organizationAttempt)
             return;
         m_organizationLoading = false;
+        if (linkSerial != 0 && linkSerial != m_deepLinkSerial) {
+            // A newer link arrived while this automatic discovery was pending.
+            m_pendingOrganizationOrigin.clear();
+            m_organizationRealm.clear();
+            emit stateChanged();
+            if (guard) discoverInitialLinkedOrganization();
+            return;
+        }
         if (ok) {
             QVariantMap settings;
             settings.insert(QStringLiteral("organizationOrigin"), originKey);
@@ -11193,6 +11223,8 @@ void NativeController::continueFromOrganization(const QString &text)
         emit stateChanged();
         return;
     }
+    if (rejectMismatchedLoginOrganization(origin))
+        return;
     const auto originKey = origin.toString();
     if (originKey == m_checkedOrganizationOrigin) {
         // Reference: a completed check either reveals credentials or repeats
@@ -16447,8 +16479,42 @@ void NativeController::openMessageLink(const QString &url)
     const bool clearedFailure = std::exchange(m_profileLinkFailed, false);
     const QPointer<NativeController> guard(this);
     if (clearedFailure) emit stateChanged();
-    if (!guard || serial != m_deepLinkSerial || defer) return;
+    if (!guard || serial != m_deepLinkSerial) return;
+    if (defer) {
+        discoverInitialLinkedOrganization();
+        return;
+    }
     applyDeepLink(url);
+}
+
+void NativeController::discoverInitialLinkedOrganization()
+{
+    if (authenticated() || busy() || m_loginStep != QLatin1String("organization")
+        || m_organizationLoading || !m_organizationRealm.isEmpty()) return;
+    QString org, project;
+    if (!linkedMessageTarget(&org, &project)) return;
+
+    // The route segment can represent more than one deployment origin. Resolve
+    // it only against configured and saved origins, as the desktop reference does.
+    QStringList candidates{m_defaultOrganizationUrl};
+    for (const auto &account : m_session->savedAccounts())
+        candidates.append(account.server.toString());
+    QSet<QUrl> matches;
+    for (const auto &candidate : candidates) {
+        auto origin = organizationOriginFor(candidate);
+        if (origin.isEmpty() || !m_api->canSetServer(origin) || workspace::orgRouteIdFromOrigin(origin) != org)
+            continue;
+        if ((origin.scheme() == QLatin1String("https") && origin.port() == 443)
+            || (origin.scheme() == QLatin1String("http") && origin.port() == 80))
+            origin.setPort(-1);
+        matches.insert(origin);
+    }
+    if (matches.size() != 1) return;
+
+    const auto origin = matches.constBegin()->toString();
+    m_error.clear();
+    m_pendingOrganizationOrigin = origin;
+    discoverLoginOrganization(origin, m_deepLinkSerial);
 }
 
 void NativeController::applyDeepLink(const QString &url)
