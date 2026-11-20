@@ -15072,13 +15072,16 @@ mv -Tf "$root/.current-new" "$root/current"
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls_data()
     {
         QTest::addColumn<bool>("startup");
-        QTest::newRow("manual-continue") << false;
-        QTest::newRow("automatic-startup") << true;
+        QTest::addColumn<bool>("accountList");
+        QTest::newRow("manual-continue") << false << false;
+        QTest::newRow("automatic-startup") << true << false;
+        QTest::newRow("saved-account-list") << false << true;
     }
 
     void rememberedAccountResumesAndRemovesThroughVisibleQuickControls()
     {
         QFETCH(bool, startup);
+        QFETCH(bool, accountList);
         QTemporaryDir directory;
         NativePreferences preferences(directory.filePath("preferences.ini"));
         WindowSecrets backend;
@@ -15126,6 +15129,19 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *content = window->contentItem();
         QTRY_VERIFY_WITH_TIMEOUT(item(content, "resume-" + saved.id), 1000);
         QCOMPARE(item(content, "remembered-label-" + saved.id)->property("text").toString(), saved.projectName);
+        auto *home = visibleItem(content, "savedAccountsBackButton");
+        QVERIFY(home);
+        click(window, home);
+        QTRY_VERIFY(visibleItem(content, "resume-" + saved.id));
+        QVERIFY(!visibleItem(content, "serverInput"));
+        QVERIFY(!controller.authenticated());
+        auto *add = visibleItem(content, "savedAccountsAddServer");
+        QVERIFY(add);
+        if (!accountList) {
+            click(window, add);
+            QTRY_VERIFY(visibleItem(content, "serverInput"));
+        }
+        QCOMPARE(controller.savedAccounts().size(), 1);
         backend.holdRead = true;
         backend.readError = SessionSecretStore::Error::Unavailable;
         if (startup) {
@@ -15135,9 +15151,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.busy());
         QVERIFY(!item(content, "resume-" + saved.id)->isEnabled());
         QVERIFY(!item(content, "forget-" + saved.id)->isEnabled());
-        QVERIFY(!item(content, "serverInput")->isEnabled());
+        if (!accountList) QVERIFY(!item(content, "serverInput")->isEnabled());
         backend.finishRead();
         QTRY_VERIFY(!controller.error().isEmpty());
+        QVERIFY(hasVisibleText(content, controller.error()));
         QVERIFY(!controller.authenticated());
         QCOMPARE(controller.savedAccounts().size(), 1);
         QCOMPARE(requests, 0);
@@ -17553,8 +17570,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("projectLoginButton"));
         QCOMPARE(controller.error(), QString());
         QVERIFY(!controller.authenticated());
-        // The wizard back affordance returns to the organization step.
-        click(window, item(content, "projectBackButton"));
+        auto *credentialsBack = visibleItem(content, "projectCredentialsBackButton");
+        QVERIFY(credentialsBack);
+        click(window, credentialsBack);
+        QTRY_VERIFY(visibleItem(content, "userInput"));
+        QCOMPARE(item(content, "userInput")->property("text").toString(), QString("synthetic-user"));
+        QCOMPARE(item(content, "passwordInput")->property("text").toString(), QString());
+        QCOMPARE(controller.organizationRealm(), server.origin().toString());
+        QCOMPARE(session.projects().size(), 0);
+        QVERIFY(!controller.authenticated());
+        // The top organization link still returns to address selection.
+        click(window, item(content, "loginBackButton"));
         QTRY_VERIFY(item(content, "serverInput"));
         QVERIFY(!controller.authenticated());
         window->close();

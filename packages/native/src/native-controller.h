@@ -513,7 +513,7 @@ public:
     // Login wizard organization step (docs/NATIVE_DESKTOP_LOGIN.md).
     QString loginStep() const { return m_loginStep; }
     QString projectPreselection() const;
-    QString loginUsername() const { return m_session->loginName(); }
+    QString loginUsername() const;
     QString organizationRealm() const { return m_organizationRealm; }
     bool organizationLoading() const { return m_organizationLoading; }
     QVariantMap organizationSettings() const { return m_organizationSettings; }
@@ -2268,7 +2268,9 @@ private:
     quint64 m_nextConversationOpening = 0;
     QTimer m_anchorHighlight;
     QString m_error;
-    bool m_startingWizardLogin = false;
+    void leaveLoginStep(const QString &step);
+    bool m_preserveLoginWizard = false;
+    QString m_previousLoginName;
     QString m_loginStep = QStringLiteral("organization");
     QString m_organizationRealm;
     QString m_checkedOrganizationOrigin;
