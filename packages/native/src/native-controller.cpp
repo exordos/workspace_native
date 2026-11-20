@@ -57,6 +57,7 @@ static const QString messenger = "/api/workspace/v1/messenger";
 // Issue #83: reference fixed system folder UUIDs
 // (workspace_ui 61dacef7 entities/messenger/messenger-folder-system-type.lib.ts).
 static const QString allChatsFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000000");
+static QString sidebarStatusEmojiDisplay(const QString &raw);
 static const QString personalFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000001");
 static const QString channelsFolderUuid = QStringLiteral("00000000-0000-0000-0000-000000000002");
 
@@ -12342,12 +12343,16 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // Issue #89: the chat header caption's online half reads the raw
         // directory status (selectOnlineUserCount), so a changed status must
         // re-notify the stateChanged consumers that gate the caption.
-        const auto previousStatus = m_names.value(id).status;
-        m_names.insert(id, makeUserPresentation(name.isEmpty() ? username : name, payload, true,
-            m_channelDirectoryOwner == owner ? m_names.value(id) : UserPresentation{}));
-        if (previousStatus != m_names.value(id).status) emit stateChanged();
+        const auto previous = m_names.value(id);
+        const auto updated = makeUserPresentation(name.isEmpty() ? username : name, payload, true,
+            m_channelDirectoryOwner == owner ? previous : UserPresentation{});
+        m_names.insert(id, updated);
+        if (previous.status != updated.status) emit stateChanged();
+        if (!current()) return true;
         if (directPeerVisible && (peerDisplayName(id) != previousName || userAvatar(id) != previousAvatar
-            || userPresence(id) != previousPresence)) emit streamsChanged();
+            || userPresence(id) != previousPresence || previous.statusText.trimmed() != updated.statusText.trimmed()
+            || sidebarStatusEmojiDisplay(previous.statusEmoji) != sidebarStatusEmojiDisplay(updated.statusEmoji)))
+            emit streamsChanged();
         if (!current()) return true;
         emit messagesChanged();
         if (!current()) return true;
@@ -12988,7 +12993,6 @@ void NativeController::persistStreams()
 
 // Forward declaration for the direct-row status emoji display port (issue #96);
 // the definition lives next to the other row projection helpers below.
-static QString sidebarStatusEmojiDisplay(const QString &raw);
 
 QVariantList NativeController::streams() const
 {
