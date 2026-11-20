@@ -69,7 +69,7 @@ QVariantMap textPart(MessageDocument &document, int first, int last,
     const auto tail = part.lastBlock();
     auto format = tail.blockFormat(); format.setBottomMargin(0);
     QTextCursor(tail).setBlockFormat(format);
-    QVariantMap result{{"kind", "text"}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
+    QVariantMap result{{"kind", "text"}, {"start", first}, {"html", htmlBody(part.toHtml())}, {"plain", part.toPlainText()}};
     // Issue #110 review r3 (finding 4639247928): the copy targets a media-split
     // body renders per text part. The part document re-imports the exported
     // fragment 1:1 (one element per block), so a block entirely inside this
@@ -412,6 +412,143 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
     generated.replace("\n</code></pre>", "</code></pre>");
     generated.replace("<del>", "<s>");
     generated.replace("</del>", "</s>");
+    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the reference renders
+    // [label](urn:user:uuid) as a mention chip whose text carries the "@"
+    // prefix, while title="silent" suppresses it (workspace_ui 61dacef
+    // workspace-message-render.lib.ts:342-352). The Qt HTML import discards
+    // the link title, so the token is consumed here on the md4c output and
+    // the ordered urn list is exposed to the view as "mentions".
+    QStringList mentionUrns;
+    QStringList mentionLabels;
+    {
+        // Issue #109 review F1/F5 (cid 4639284110, cid 4639284135): the
+        // original anchor regex rejected HTML tags inside labels, so MD4C
+        // output for formatted labels was silently dropped; its overlapping
+        // single-character/entity alternatives also backtracked exponentially
+        // when a repeated-entity label was followed by a nested tag (1 s of
+        // the UI render path for one crafted message in measurement). Anchor
+        // recognition is now a linear scan: find the anchor open, validate
+        // the urn and optional silent title, then pair the closing tag while
+        // tracking only nested <a> depth (non-anchor tags cannot affect it).
+        static const QRegularExpression anchorStart(QStringLiteral("<a href=\"urn:user:"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression anchorHead(QStringLiteral(
+            "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\""),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression openAnchor(QStringLiteral("<a(?=[\\s/>])"),
+            QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression closeAnchor(QStringLiteral("</a(?=[\\s/>])"),
+            QRegularExpression::CaseInsensitiveOption);
+        // The TextEdit shows the parsed plain text, so the "@" prefix decision
+        // and the QML run search both need the label with its formatting tags
+        // removed and its entities decoded back to the visible characters.
+        const auto plainLabel = [](const QString &labelHtml) {
+            auto text = labelHtml;
+            text.remove(QRegularExpression(QStringLiteral("<[^>]*>")));
+            text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+            text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+            text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+            text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+            // Round-4 review N2 (cid 4640681111): the previous loop searched
+            // the remaining label for a semicolon for every ampersand, so a
+            // long label without semicolons rescanned its suffix O(n^2) on
+            // the UI render path. One pass now copies every non-entity byte
+            // once and decodes in place. A numeric reference is accepted only
+            // when its digits are immediately terminated by a semicolon, with
+            // the same full-body validation and (0, 0x10FFFF] range as before.
+            QString decoded;
+            decoded.reserve(text.size());
+            qsizetype at = 0;
+            while (at < text.size()) {
+                bool handled = false;
+                if (text.at(at) == QLatin1Char('&') && at + 2 < text.size()
+                    && text.at(at + 1) == QLatin1Char('#')) {
+                    qsizetype scan = at + 2;
+                    const bool hex = text.at(scan) == QLatin1Char('x') || text.at(scan) == QLatin1Char('X');
+                    if (hex) ++scan;
+                    const qsizetype first = scan;
+                    while (scan < text.size()) {
+                        const QChar digit = text.at(scan);
+                        const bool within = (digit >= QLatin1Char('0') && digit <= QLatin1Char('9'))
+                            || (hex && ((digit >= QLatin1Char('a') && digit <= QLatin1Char('f'))
+                                || (digit >= QLatin1Char('A') && digit <= QLatin1Char('F'))));
+                        if (!within) break;
+                        ++scan;
+                    }
+                    if (scan > first && scan < text.size() && text.at(scan) == QLatin1Char(';')) {
+                        bool ok = false;
+                        const uint value = text.mid(at + 2 + (hex ? 1 : 0), scan - first).toUInt(&ok, hex ? 16 : 10);
+                        if (ok && value > 0 && value <= 0x10FFFF) {
+                            const char32_t plain = static_cast<char32_t>(value);
+                            decoded += QString::fromUcs4(&plain, 1);
+                            at = scan + 1;
+                            handled = true;
+                        }
+                    }
+                }
+                if (!handled) {
+                    decoded += text.at(at);
+                    ++at;
+                }
+            }
+            return decoded;
+        };
+        QString html = QString::fromUtf8(generated);
+        struct Anchor { int start; int length; QString uuid; QString label; };
+        QVector<Anchor> anchors;
+        int from = 0;
+        for (;;) {
+            const auto hit = anchorStart.match(html, from);
+            if (!hit.hasMatch())
+                break;
+            // Match the uuid on a short window so the "^" anchor stays valid.
+            const auto head = anchorHead.match(html.mid(hit.capturedEnd(), 40));
+            if (!head.hasMatch() || head.capturedStart() != 0) { from = hit.capturedStart() + 4; continue; }
+            int cursor = hit.capturedEnd() + head.capturedLength();
+            bool silent = false;
+            if (html.mid(cursor, 15).compare(QStringLiteral(" title=\"silent\""), Qt::CaseInsensitive) == 0) {
+                silent = true;
+                cursor += 15;
+            }
+            if (cursor >= html.size() || html.at(cursor) != QLatin1Char('>')) { from = hit.capturedStart() + 4; continue; }
+            ++cursor;
+            int closeStart = -1;
+            int closeEnd = -1;
+            int depth = 0;
+            for (int p = cursor; p < html.size(); ) {
+                const int lt = html.indexOf(QLatin1Char('<'), p);
+                if (lt < 0)
+                    break;
+                const int gt = html.indexOf(QLatin1Char('>'), lt + 1);
+                if (gt < 0)
+                    break;
+                if (closeAnchor.match(html, lt).capturedStart() == lt) {
+                    if (depth == 0) { closeStart = lt; closeEnd = gt + 1; break; }
+                    --depth;
+                } else if (openAnchor.match(html, lt).capturedStart() == lt) {
+                    ++depth;
+                }
+                p = gt + 1;
+            }
+            if (closeEnd < 0) { from = hit.capturedStart() + 4; continue; }
+            auto label = plainLabel(html.mid(cursor, closeStart - cursor));
+            if (!silent && !label.startsWith(QLatin1Char('@')))
+                label.prepend(QLatin1Char('@'));
+            mentionUrns.append(QStringLiteral("urn:user:") + head.captured(1).toLower());
+            mentionLabels.append(label);
+            anchors.append({static_cast<int>(hit.capturedStart()), static_cast<int>(closeEnd - hit.capturedStart()), head.captured(1).toLower(), label});
+            from = closeEnd;
+        }
+        // Rewriting from the back keeps the earlier anchors' offsets valid.
+        // Round-4 review N1 (cid 4640681088): the label is plain text after
+        // the decoder above (escaped markup is literal again), so it must be
+        // re-escaped here or literal "<b>" / "&" text would import as markup
+        // and alter the visible chip text.
+        for (auto it = anchors.crbegin(); it != anchors.crend(); ++it)
+            html.replace(it->start, it->length,
+                QStringLiteral("<a href=\"urn:user:%1\">%2</a>").arg(it->uuid, it->label.toHtmlEscaped()));
+        generated = html.toUtf8();
+    }
     document.setDefaultStyleSheet("pre { margin-top: 0px; margin-bottom: 0px; } "
         "ul, ol { margin-top: 0px; margin-bottom: 0px; } "
         "li { margin-top: 6px; margin-bottom: 6px; } "
@@ -570,12 +707,57 @@ QVariantMap NativeMarkdown::render(const QString &markdown, bool hideMedia)
         flushCodeBlock();
     }
     auto html = document.toHtml();
+    // Round-4 review N4 (cid 4641051847): plain-text copies of a mention
+    // label can appear earlier in the same body, so the view must locate
+    // each mention's own anchor span instead of the first text occurrence.
+    // The rendered document already carries the anchor identity: report the
+    // range of every urn:user anchor fragment in the document plain text,
+    // in document order. When the ranges cannot be aligned 1:1 with the
+    // ordered urn list (unusual crafted documents), the list stays empty
+    // and the view keeps its text search as the fallback.
+    QVariantList mentionSpans;
+    {
+        struct AnchorSpan { int start; int length; QString href; };
+        QVector<AnchorSpan> spans;
+        for (auto block = document.begin(); block.isValid(); block = block.next()) {
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const auto fragment = it.fragment();
+                if (!fragment.isValid())
+                    continue;
+                const auto format = fragment.charFormat();
+                if (!format.isAnchor())
+                    continue;
+                const auto href = format.anchorHref();
+                if (!href.startsWith(QLatin1String("urn:user:")))
+                    continue;
+                if (!spans.isEmpty() && spans.last().href == href
+                    && spans.last().start + spans.last().length == fragment.position()) {
+                    spans.last().length += fragment.length();
+                    continue;
+                }
+                spans.append({fragment.position(), fragment.length(), href});
+            }
+        }
+        bool aligned = spans.size() == mentionUrns.size();
+        for (qsizetype index = 0; aligned && index < spans.size(); ++index)
+            aligned = spans.at(index).href == mentionUrns.at(index);
+        if (aligned)
+            for (const auto &span : std::as_const(spans))
+                mentionSpans.append(QVariantMap{{"start", span.start}, {"length", span.length}});
+    }
     const auto body = html.indexOf("<body");
     const auto start = html.indexOf('>', body);
     const auto end = html.lastIndexOf("</body>");
     html = start >= 0 && end > start ? containedCodeBlocks(html.mid(start + 1, end - start - 1)) : markdown.toHtmlEscaped();
     const QVariantMap result{{"html", html}, {"plain", document.toPlainText()},
-                             {"parts", orderedImageParts(document, codeBlocks, codeBlockTails)}, {"codeBlocks", codeBlocks}};
+                             {"parts", orderedImageParts(document, codeBlocks, codeBlockTails)},
+                             {"codeBlocks", codeBlocks}, {"mentions", mentionUrns},
+                             {"mentionSpans", mentionSpans},
+                             // Issue #109 reviews F4/F6: the visible plain text of every
+                             // mention occurrence (with the same "@" prefix rules the
+                             // anchor got), in document order, so the view can locate the
+                             // occurrence inside its laid-out text without re-parsing.
+                             {"mentionLabels", mentionLabels}};
     while (m_order.size() >= 128)
         m_cache.remove(m_order.dequeue());
     m_order.enqueue(cacheKey);

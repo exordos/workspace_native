@@ -546,7 +546,7 @@ ApplicationWindow {
     // ComposerMentionTrigger.REMINDER: "@query" only counts as a mention token at
     // a line start or after whitespace/punctuation, never inside "name@example".
     function composerMentionTokenBefore(caretText) {
-        return /(?:^|[\s([{,.:;!?])(@)(\S*)$/.exec(caretText);
+        return /(?:^|[\s([{,.:;!?])([@#])(\S*)$/.exec(caretText);
     }
     // WorkspaceAvatar fallback: first character of the display name, then of
     // the username, then "?" (message-composer-mention-dropdown.ui.tsx:78).
@@ -573,7 +573,9 @@ ApplicationWindow {
         composerMentionPopup.tokenStart = composerText.selectionStart - match[2].length - 1;
         // Positional snapshot: each keystroke replaces the whole array so no
         // delegate can dangle over a refreshed C++ candidate list.
-        composerMentionPopup.rows = root.controller.mentionSuggestions(match[2]);
+        composerMentionPopup.references = match[1] === "#";
+        composerMentionPopup.rows = composerMentionPopup.references
+            ? root.controller.composerReferences(match[2]) : root.controller.mentionSuggestions(match[2]);
         composerMentionPopup.activeIndex = 0;
         root.positionComposerMentionPopup();
         composerMentionPopup.open();
@@ -1506,6 +1508,68 @@ ApplicationWindow {
         messageMenu.popup();
     }
 
+    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the reference chip is
+    // inline accent text (messenger-workspace-message-body.ui.tsx:143-153:
+    // font-medium, text-accent, no background/decoration), so the exported
+    // mention anchor span is restyled with the palette accent token here and
+    // follows the light/dark theme automatically.
+    function mentionChipHtml(html) {
+        const accent = String(root.colors["accent"] || "#7087ff");
+        return String(html).replace(/(<a href="urn:user:[0-9a-fA-F-]{36}"><span style=")[^"]*(")/g,
+            function (whole, head, tail) {
+                return head + " color:" + accent + "; font-weight:500; text-decoration:none;" + tail;
+            });
+    }
+
+// Issue #109 review F3 (cid 4639284120), round 5: the reference chip is a
+// real <button> (workspace-message-render.lib.ts:342-352), so a browser
+// user reaches it with Tab and activates it with Enter/Space
+// (workspace-message-body-interactions.hook.ts:490-496). The chip here is
+// an overlay item, so it joins the window tab chain explicitly
+// (activeFocusOnTab true) and exposes an accessible name plus Enter/Space
+// activation; no pointer is needed to reach or use it.
+component NativeMentionChip: Item {
+    required property var modelData
+    objectName: "message-mention-" + String(modelData.urn).replace("urn:user:", "")
+    x: modelData.x
+    y: modelData.y
+    width: modelData.w
+    height: modelData.h
+    visible: modelData.w > 0 && modelData.h > 0
+    activeFocusOnTab: true
+    Accessible.role: Accessible.Button
+    Accessible.name: qsTr("Open profile for %1")
+        .arg(String(modelData.label || modelData.urn).replace("urn:user:", ""))
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            event.accepted = true;
+            root.openReference(modelData.urn);
+        }
+    }
+    Keys.onReleased: (event) => {
+        if (event.key === Qt.Key_Space) {
+            event.accepted = true;
+            root.openReference(modelData.urn);
+        }
+    }
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -1
+        visible: parent.activeFocus
+        color: "transparent"
+        radius: 2
+        border.width: 2
+        border.color: root.colors["accent-soft"]
+    }
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton
+        cursorShape: Qt.PointingHandCursor
+        onPressed: parent.forceActiveFocus()
+        onClicked: root.openReference(modelData.urn)
+    }
+}
+
     // The reference keeps the "Copy link" item only for http/https hrefs
     // (isValidUrl, shared/lib/validation.ts:8,20-27); a mailto anchor right-click
     // therefore shows the plain message menu (issue #110).
@@ -1525,6 +1589,8 @@ ApplicationWindow {
             // Quote frames and inline message anchors jump to the origin (source
             // workspace-message-quote.ui.tsx:353-397 onOpenMessage contract).
             root.controller.openMessageInChat(reference.id);
+        } else if (reference.kind === "stream" && root.controller.authenticated) {
+            root.controller.openStreamReference(reference.id);
         } else if (reference.kind === "topic" && root.controller.authenticated) {
             root.controller.openTopic(reference.id, reference.stream || "");
         } else if (reference.kind === "user" && root.controller.authenticated) {
@@ -7809,6 +7875,10 @@ ApplicationWindow {
                     readonly property var rendered: root.markdown.render(encryptedLocked ? "" : keyControl ? controlLabel
                         : String(modelData.displayContent !== undefined ? modelData.displayContent : modelData.content))
                     readonly property var imageParts: rendered.parts || []
+                    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
+                    // ordered urn:user references the renderer recognised in
+                    // this body (ordered as they appear in the text).
+                    readonly property var mentionUrns: rendered.mentions || []
                     readonly property bool hasInlineImages: !!root.messageImages && !encryptedLocked && !keyControl
                         && incomingKeyRequest === null && !keyResponse && modelData.kind !== "key_announced"
                         && (modelData.kind === "markdown" || modelData.kind === "e2ee" && Boolean(modelData.decrypted))
@@ -7817,13 +7887,124 @@ ApplicationWindow {
                         ? imageParts.length && imageParts[imageParts.length - 1].kind === "text" ? String(imageParts[imageParts.length - 1].html) : ""
                         : String(rendered.html)
                     readonly property bool inlineMeta: !encryptedLocked && !keyControl && !(modelData.reactions || []).some(reaction => Number(reaction.count) > 0) && root.trailingMessageParagraph(tailHtml) >= 0
+                    // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
+                    // chip's visible painting is the rich-text anchor itself;
+                    // these transparent items supply the real hit target,
+                    // pointer cursor and accessibility for each mention urn.
+                    // Geometry comes from scanning the body TextEdit's
+                    // linkAt map (only bodies that actually carry mentions).
+                    // Inline-image bodies keep their per-part link handling.
+                    // Issue #109 reviews F4/F6 (cid 4639284127/4639284139):
+                    // the locator never samples the body area with linkAt.
+                    // Each occurrence is located by its plain label inside
+                    // the item's own laid-out text, and its geometry is read
+                    // from the text layout (positionToRectangle) while
+                    // walking only that label's characters. One rectangle is
+                    // produced per occurrence and line, bounded by the actual
+                    // link bounds. Review F2 (cid 4639284117): inline-image
+                    // bodies locate the mentions of every visible text part.
+                    readonly property var mentionLabels: rendered.mentionLabels || []
+                    // Issue #109 review N4 (cid 4641051847): the renderer
+                    // reports each mention anchor's own range in the plain
+                    // text. When that list aligns with the urn order, the
+                    // locator takes the anchor position directly, so a
+                    // plain-text copy of the label earlier in the body can
+                    // never steal the chip's hit target.
+                    readonly property var mentionSpans: rendered.mentionSpans || []
+                    readonly property bool mentionSpansAligned: messageRow.mentionSpans.length > 0
+                        && messageRow.mentionSpans.length === messageRow.mentionUrns.length
+                    property var mentionPairs: messageRow.mentionUrns.map(
+                        (urn, index) => ({ urn: urn, label: String(messageRow.mentionLabels[index] || ""),
+                            anchorStart: messageRow.mentionSpansAligned
+                                ? Number(messageRow.mentionSpans[index].start) : -1,
+                            anchorLength: messageRow.mentionSpansAligned
+                                ? Number(messageRow.mentionSpans[index].length) : 0 }))
+                    property var mentionTargets: locateMentionTargets()
+                    function mentionRectsIn(item, pairs, overlay) {
+                        const out = [];
+                        if (!item || !item.visible || item.width <= 0 || pairs.length === 0)
+                            return out;
+                        const full = String(item.getText(0, item.length));
+                        let cursor = 0;
+                        for (const pair of pairs) {
+                            const label = pair.label;
+                            if (!label.length)
+                                continue;
+                            let found = -1;
+                            let end = -1;
+                            if (Number.isInteger(pair.anchorStart) && pair.anchorStart >= 0
+                                && pair.anchorStart + pair.anchorLength <= full.length) {
+                                found = pair.anchorStart;
+                                end = found + pair.anchorLength;
+                            } else {
+                                found = full.indexOf(label, cursor);
+                                if (found < 0)
+                                    found = full.indexOf(label);
+                                if (found < 0)
+                                    continue;
+                                end = found + label.length;
+                            }
+                            cursor = end;
+                            let i = found;
+                            while (i < end) {
+                                const top = item.positionToRectangle(i);
+                                let j = i;
+                                while (j + 1 < end && Math.abs(item.positionToRectangle(j + 1).y - top.y) < 0.5)
+                                    ++j;
+                                // Issue #109 review N3 (cid 4641051840): the
+                                // right edge is the layout cursor just after
+                                // this line's last character when that cursor
+                                // still sits on the line; when the run wraps,
+                                // it is the last character's own rectangle
+                                // edge. The old fallback shrank every line
+                                // rect to about 8 px at the line start.
+                                const after = item.positionToRectangle(j + 1);
+                                const lastChar = j > i ? item.positionToRectangle(j) : top;
+                                const right = Math.abs(after.y - top.y) < 0.5
+                                    ? after.x : lastChar.x + lastChar.width;
+                                const origin = item.mapToItem(overlay, top.x, top.y);
+                                out.push({ urn: pair.urn, label: label,
+                                    x: origin.x, y: origin.y,
+                                    w: Math.max(6, right - top.x + 1), h: Math.max(12, top.height) });
+                                i = j + 1;
+                            }
+                        }
+                        return out;
+                    }
+                    function locateMentionTargets() {
+                        if (!messageRow.hasInlineImages)
+                            return mentionRectsIn(messageBody, messageRow.mentionPairs, bodyMentionOverlay);
+                        const out = [];
+                        if (!mediaMessageBody.visible || mediaMessageBody.width <= 0
+                            || messageRow.mentionPairs.length === 0)
+                            return out;
+                        let consumed = 0;
+                        for (let i = 0; i < imageRuns.count && consumed < messageRow.mentionPairs.length; ++i) {
+                            const run = imageRuns.itemAt(i);
+                            const part = run ? run.part : null;
+                            if (!part || String(part.kind) !== "text")
+                                continue;
+                            const count = String(part.html || "").split("<a href=\"urn:user:").length - 1;
+                            if (count <= 0)
+                                continue;
+                            // The TextEdit for each part starts at zero; translate
+                            // anchor positions from the original document.
+                            const pairs = messageRow.mentionPairs.slice(consumed, consumed + count)
+                                .map(pair => ({ urn: pair.urn, label: pair.label,
+                                    anchorStart: pair.anchorStart - part.start, anchorLength: pair.anchorLength }));
+                            consumed += count;
+                            for (const rect of mentionRectsIn(run.textPart, pairs, mediaMentionOverlay))
+                                out.push(rect);
+                        }
+                        return out;
+                    }
                     function imagePartHtml(part, index) {
-                        const html = String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;');
+                        const html = root.mentionChipHtml(String(part.html || "").replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;'));
                         return inlineMeta && index === imageParts.length - 1 ? root.reserveMessageTime(html, modelData.time) : html;
                     }
                     // Text.lineHeight does not affect Qt RichText. Apply the
                     // desktop paragraph leading only to renderer-owned p styles.
-                    readonly property string bodyHtml: String(rendered.html).replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;')
+                    readonly property string bodyHtml: root.mentionChipHtml(String(rendered.html).replace(/<p style="/g, '<p style="line-height:20px;-qt-line-height-type:fixed;'))
                     readonly property string displayHtml: inlineMeta ? root.reserveMessageTime(bodyHtml, modelData.time) : bodyHtml
                     readonly property string callUrl: !keyControl && !encryptedLocked
                         && modelData.kind === "markdown" && !hasInlineImages
@@ -7869,6 +8050,9 @@ ApplicationWindow {
                         if (messageBody.forceLayout) messageBody.forceLayout();
                         mediaMessageBody.forceLayout();
                         bubbleContent.forceLayout();
+                        // Issue #109 review F4/F6: the locator reads the laid-out
+                        // text, so rebind it after the forced layout passes settle.
+                        messageRow.mentionTargets = Qt.binding(() => locateMentionTargets());
                     }
                     Component.onCompleted: {
                         settleGeometry();
@@ -8787,6 +8971,29 @@ ApplicationWindow {
                                 color: messageRow.keyControl ? root.colors.accent : root.colors["text-primary"]
                                 palette.link: root.colors.accent
                                 onLinkActivated: link => root.openReference(link)
+                                // Test seam (issue #109 review F6): counts the
+                                // linkAt samples the mention locator performs
+                                // for this body, so window cases can assert
+                                // the locator's work stays bounded.
+                                property int linkAtProbes: 0
+                                // Issue #109: transparent per-mention hit
+                                // targets aligned with the rich-text anchors
+                                // (see docs/NATIVE_DESKTOP_MENTION_CHIPS.md).
+                                // Children of the body item keep the bubble
+                                // Column layout untouched.
+                                Item {
+                                    id: bodyMentionOverlay
+                                    objectName: messageRow.hasInlineImages
+                                        ? "" : "message-mentions-" + String(messageRow.modelData.id)
+                                    visible: !messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    width: 0
+                                    height: 0
+                                    z: 2
+                                    Repeater {
+                                        model: messageRow.mentionTargets
+                                        delegate: NativeMentionChip {}
+                                    }
+                                }
                             }
                             Column {
                                 id: mediaMessageBody
@@ -8815,6 +9022,7 @@ ApplicationWindow {
                                         required property var modelData
                                         required property int index
                                         readonly property var part: modelData
+                                        readonly property Item textPart: textRun
                                         // Issue #110 review r3 (#460/F3): the text
                                         // run's laid-out document. The reference
                                         // resolves right-clicked anchors and code
@@ -8831,21 +9039,20 @@ ApplicationWindow {
                                         readonly property real imageWrapperHeight: Math.min(180, picture.height + 10)
                                         width: mediaMessageBody.width
                                         height: part.kind === "image" ? imageWrapperHeight + 8 : textRun.contentHeight + textRun.bottomPadding
-                                        Text {
+                                        TextEdit {
                                             id: textRun
                                             objectName: "mediaTextRun-" + messageRow.modelData.id + "-" + index
                                             visible: imageRun.part.kind === "text"
                                             width: parent.width
                                             height: contentHeight + bottomPadding
                                             text: messageRow.imagePartHtml(imageRun.part, imageRun.index)
-                                            textFormat: Text.RichText
-                                            wrapMode: Text.Wrap
+                                            textFormat: TextEdit.RichText
+                                            readOnly: true
+                                            cursorVisible: false
+                                            wrapMode: TextEdit.Wrap
                                             font.pixelSize: 14
-                                            lineHeightMode: Text.FixedHeight
-                                            lineHeight: 20
                                             bottomPadding: messageRow.inlineMeta && imageRun.index === messageRow.imageParts.length - 1 ? 2 : 0
-                                            color: root.colors["text-primary"]
-                                            linkColor: root.colors.accent
+                                            palette.link: root.colors.accent
                                             onLinkActivated: link => root.openReference(link)
                                             Accessible.ignored: true
                                         }
@@ -8884,6 +9091,21 @@ ApplicationWindow {
                                                 && (!root.controller.messageHistoryReady || messageList.openingApplied)
                                             onOpened: root.openReference(reference, picture.failed)
                                         }
+                                    }
+                                }
+                                Item {
+                                    id: mediaMentionOverlay
+                                    objectName: messageRow.hasInlineImages
+                                        ? "message-mentions-" + String(messageRow.modelData.id) : ""
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    visible: messageRow.hasInlineImages && messageRow.mentionTargets.length > 0
+                                    width: 0
+                                    height: 0
+                                    z: 2
+                                    Repeater {
+                                        model: messageRow.mentionTargets
+                                        delegate: NativeMentionChip {}
                                     }
                                 }
                             }
@@ -10558,11 +10780,11 @@ ApplicationWindow {
                                         const start = composerMentionPopup.tokenStart;
                                         if (start < 0 || !row || typeof row !== "object")
                                             return;
-                                        const visible = String(row.visibleText || row.displayName);
-                                        const next = text.slice(0, start) + "@" + visible
-                                            + " " + text.slice(selectionEnd);
-                                        const caret = start + 1 + visible.length + 1;
-                                        root.controller.recordMentionPick(String(row.userUuid));
+                                        const insertion = row.markdown || ("@" + String(row.visibleText || row.displayName));
+                                        const next = text.slice(0, start) + insertion + " " + text.slice(selectionEnd);
+                                        const caret = start + insertion.length + 1;
+                                        if (!row.markdown)
+                                            root.controller.recordMentionPick(String(row.userUuid));
                                         const owner = root.controller.ownStatusContextKey;
                                         const stream = root.controller.selectedStream, topic = root.controller.selectedTopic;
                                         root.controller.draft = next;
@@ -10620,10 +10842,18 @@ ApplicationWindow {
                                             return;
                                         }
                                         const editing = root.controller.editingMessageId.length > 0;
-                                        if (event.key === Qt.Key_V && (event.modifiers & (Qt.ControlModifier | Qt.MetaModifier))
-                                            && !(event.modifiers & (Qt.AltModifier | Qt.GroupSwitchModifier))
-                                            && (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments())) {
-                                            event.accepted = true;
+                                        if (event.matches(StandardKey.Paste)) {
+                                            if (clipboardFilesDialog.openForClipboard() || root.controller.pasteAttachments()) {
+                                                event.accepted = true;
+                                                return;
+                                            }
+                                            const converted = root.controller.composerReferenceClipboardText();
+                                            if (converted.length) {
+                                                const at = selectionStart;
+                                                remove(at, selectionEnd);
+                                                insert(at, converted);
+                                                event.accepted = true;
+                                            }
                                         } else if (composerMentionPopup.visible && event.key === Qt.Key_Escape) {
                                             // Mention navigation comes first (message-composer-write-body-keydown.lib.ts).
                                             composerMentionPopup.close();
@@ -11230,9 +11460,10 @@ ApplicationWindow {
     Popup {
         id: composerMentionPopup
         objectName: "composerMentionPopup"
+        property bool references: false
         Connections {
             target: root.controller
-            enabled: composerMentionPopup.visible
+            enabled: composerMentionPopup.visible && !composerMentionPopup.references
             function onMentionMembershipChanged() {
                 const current = composerMentionPopup.rows[composerMentionPopup.activeIndex];
                 const rows = root.controller.mentionSuggestions(composerMentionPopup.query);
@@ -11295,18 +11526,19 @@ ApplicationWindow {
                             // WorkspaceAvatar size="sm": 32px circle, 12px initials,
                             // first character of the display name (username fallback).
                             Rectangle {
-                                Layout.preferredWidth: 32
-                                Layout.preferredHeight: 32
+                                Layout.preferredWidth: composerMentionPopup.references ? 28 : 32
+                                Layout.preferredHeight: composerMentionPopup.references ? 28 : 32
                                 Layout.alignment: Qt.AlignVCenter
-                                radius: 16
+                                radius: composerMentionPopup.references ? 4 : 16
                                 color: root.colors["bg"]
                                 Text {
                                     anchors.centerIn: parent
-                                    text: String(root.composerMentionInitials(mentionRow))
+                                    text: mentionRow.kind === "topic" ? "›" : String(root.composerMentionInitials(mentionRow))
                                     font.pixelSize: 12
                                     color: root.colors["text-primary"]
                                 }
                                 PresenceBadge {
+                                    visible: !composerMentionPopup.references
                                     presence: String(mentionRow.status || "")
                                 }
                             }
@@ -11351,7 +11583,8 @@ ApplicationWindow {
                                 Text {
                                     objectName: "composerMentionSecondary" + index
                                     Layout.fillWidth: true
-                                    text: mentionRow.username ? "@" + String(mentionRow.username)
+                                    text: composerMentionPopup.references ? String(mentionRow.secondary || "")
+                                        : mentionRow.username ? "@" + String(mentionRow.username)
                                         : String(mentionRow.email || "")
                                     visible: text.length > 0
                                     elide: Text.ElideRight
