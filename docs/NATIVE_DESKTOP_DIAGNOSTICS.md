@@ -154,3 +154,9 @@ must set the cleanup flag so the reader releases and drains before the
 releaser and worker joins — otherwise an early failure joins a releaser still
 waiting for `removalRequested` and hangs the case forever (PR #289,
 thread 4575792864).
+
+The Linux keyboard check opens Diagnostics from the account menu and reaches
+View logs with real Tab input. A sidebar avatar and its topic expander each
+take a Tab stop. The check follows the actual focus path until it reaches the
+header or repeats a control. It then checks the exact order of the refresh and
+copy actions, keyboard activation, the accessible press action and modal export.
