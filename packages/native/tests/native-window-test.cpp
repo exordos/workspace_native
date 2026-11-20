@@ -30350,14 +30350,35 @@ private slots:
         // (sidebar-workspace.ui.tsx:455-462). The native avatar action must expose a
         // focus policy, the accessible Press action, and real keyboard activation -
         // not only the pointer.
-        QVERIFY((avatar->focusPolicy() & Qt::TabFocus) == Qt::TabFocus);
-        auto *actions = iface->actionInterface(); QVERIFY(actions);
+        // Issue #442: opening a chat re-publishes the sidebar rows (the topic load
+        // folds into the row projection through the #97 topic edge), and each
+        // publish rebinds the QVariantList-backed sidebar model and recreates the
+        // delegates. Handles to the avatar row or its accessible interface
+        // therefore have to be re-queried after every async phase; the old raw
+        // `avatar`/`iface`/`actions` pointers dangled across the post-click
+        // publishes, which read as garbage focus policies and as an intermittent
+        // SIGSEGV (use-after-free) on tip.
+        QAccessibleInterface *liveIface = nullptr;
+        QVERIFY(QTest::qWaitFor([&liveIface, &window, &streamId] {
+            auto *live = visibleItem("streamAvatar-" + streamId);
+            if (!live || (live->focusPolicy() & Qt::TabFocus) != Qt::TabFocus) return false;
+            liveIface = QAccessible::queryAccessibleInterface(live);
+            return liveIface != nullptr;
+        }));
+        QVERIFY((visibleItem("streamAvatar-" + streamId)->focusPolicy() & Qt::TabFocus) == Qt::TabFocus);
+        auto *actions = liveIface->actionInterface(); QVERIFY(actions);
         QVERIFY(actions->actionNames().contains(QAccessibleActionInterface::pressAction()));
         // Assistive-technology route: the accessible Press action opens the stream.
         click(window,visibleItem("stream-"+streamId));
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.selectedTopic(),secondTopicId);
-        actions->doAction(QAccessibleActionInterface::pressAction());
+        QVERIFY(QTest::qWaitFor([&liveIface, &window, &streamId] {
+            auto *live = visibleItem("streamAvatar-" + streamId);
+            if (!live) return false;
+            liveIface = QAccessible::queryAccessibleInterface(live);
+            return liveIface && liveIface->actionInterface();
+        }));
+        liveIface->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.selectedTopic().isEmpty());
         QCOMPARE(controller.selectedStream(),streamId);
@@ -30365,8 +30386,12 @@ private slots:
         click(window,visibleItem("stream-"+streamId));
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.selectedTopic(),secondTopicId);
-        avatar->forceActiveFocus(Qt::TabFocusReason);
-        QTRY_VERIFY(avatar->hasActiveFocus());
+        QVERIFY(QTest::qWaitFor([&window, &streamId] {
+            auto *live = visibleItem("streamAvatar-" + streamId);
+            if (!live) return false;
+            live->forceActiveFocus(Qt::TabFocusReason);
+            return live->hasActiveFocus();
+        }));
         QTest::keyClick(window,Qt::Key_Space);
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(controller.selectedTopic().isEmpty());
