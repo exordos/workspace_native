@@ -154,7 +154,17 @@ jobs:
           set -euo pipefail
           apt-get install --no-install-recommends -y tigervnc-standalone-server openbox xauth x11-utils pulseaudio qt6-gtk-platformtheme fonts-noto-core libgl1-mesa-dri libglib2.0-bin xdg-desktop-portal xdg-desktop-portal-gtk
           cmake --build build/linux-release --parallel "$(nproc)"
-          bash packages/native/tests/full-linux-gate.sh build/linux-release
+          # Hosted container jobs run as root with a runner-owned home. PulseAudio
+          # and desktop portals use the identity and home of a real desktop user.
+          useradd --create-home --user-group --shell /bin/bash cassi-native-ci
+          mkdir -p build/linux-release/Testing
+          chown -R cassi-native-ci:cassi-native-ci build/linux-release/Testing
+          if [[ ! -S /run/dbus/system_bus_socket ]]; then
+            mkdir -p /run/dbus
+            system_bus_pid=$(dbus-daemon --system --fork --nopidfile --print-pid=1)
+            trap 'kill "$system_bus_pid"' EXIT
+          fi
+          runuser -u cassi-native-ci -- bash packages/native/tests/full-linux-gate.sh build/linux-release
 
       - name: Package installed runtime
         shell: bash
