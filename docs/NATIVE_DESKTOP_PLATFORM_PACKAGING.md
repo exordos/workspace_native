@@ -23,6 +23,19 @@ CMake installs the application using Qt's QML deployment script. The package job
 
 The package targets follow the [Qt QML deployment documentation](https://doc.qt.io/qt-6/qt-generate-deploy-qml-app-script.html).
 
+## Clean-desktop interaction
+
+Each platform test minimizes the existing window and launches the unpacked executable a second time. The second process exits after the original process acknowledges activation. The test observes the original window restored, focuses the accessible Server address field, pastes text through the real OS clipboard and copies a new selection back. Windows uses UI Automation and Ctrl+V/C. macOS uses the Accessibility API and Command+V/C. The selection includes Cyrillic and spaces and cannot be submitted as a server address.
+
+| Capability | Windows x64 | macOS arm64 |
+| --- | --- | --- |
+| Start in a relocated archive, restore the original window, clipboard text in both directions | PASS on Windows Server 2022 | PASS on macOS 15 |
+| OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
+| Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
+| Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
+
+The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).
+
 ## Native shell acceptance
 
 The Electron reference keeps the macOS Dock text empty for unread messages and selects the normal or dotted Dock image. During a call it keeps the normal icon and shows a telephone badge. Ending the call restores the current unread image. The application-wide numeric badge call in the reference runs on Linux. The macOS check reads the actual AppKit icon pixels and Dock badge after each transition and compares both images with the reference PNGs.

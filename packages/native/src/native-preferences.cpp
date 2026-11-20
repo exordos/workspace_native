@@ -627,6 +627,7 @@ bool NativePreferences::resetLocalSettings()
     m_sidebarWidth = 299;
     m_cacheLimitGb = 10;
     m_composerToolbarExpanded = false;
+    m_hotkeys.load(settingsGroup());
     loadAppearance();
     loadAuthIdleTimeout();
     loadChatLayout();
