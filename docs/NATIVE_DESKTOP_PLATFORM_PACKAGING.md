@@ -1,8 +1,8 @@
 # Windows and macOS desktop packages
 
-Build the existing native CMake application in Release mode with Qt 6.10.2 on Windows x64 and macOS arm64. On Windows the portable ZIP keeps the executable in `bin` with the Qt plugins and QML imports under the installation prefix. On macOS the ZIP preserves the application bundle, symlinks and executable permissions. Both archives include the bundled license notices.
+Build the existing native CMake application in Release mode with Qt 6.10.2 on Windows x64, Intel macOS and Apple Silicon macOS. On Windows the portable ZIP keeps the executable in `bin` with the Qt plugins and QML imports under the installation prefix. On macOS the ZIP preserves the application bundle, symlinks and executable permissions. Both archives include the bundled license notices.
 
-The repository workflow builds each platform on its own GitHub-hosted runner and stores the archive and SHA-256 digest as workflow artifacts. A fresh runner downloads that platform's artifacts, verifies the digest, extracts the archive into a path with spaces and launches the packaged executable with its native desktop backend. It verifies a visible, nonempty window owned by that process. The smoke runner installs no Qt SDK or build dependencies.
+The repository workflow builds each platform on its own GitHub-hosted runner and stores the archive and SHA-256 digest as workflow artifacts. A fresh runner downloads that platform's artifacts, verifies the digest, extracts the archive into a path with spaces and launches the packaged executable with its native desktop backend. It verifies a visible, nonempty window owned by that process. The macOS launch job also checks the runner architecture and verifies that the application executable contains the matching Mach-O slice. The smoke runner installs no Qt SDK or build dependencies.
 
 | Acceptance | Windows x64 | macOS arm64 |
 | --- | --- | --- |
