@@ -1,4 +1,5 @@
 #include "native-call-awareness.h"
+#include "call/native-call-window.h"
 
 #include <QCoreApplication>
 #include <QDBusMessage>
@@ -75,6 +76,31 @@ void CallAwareness::start(const QDBusConnection &bus)
     // tooltip state machine keeps working, the same degrade posture the
     // reference power paths use (PowerWatcher, issue #78).
     m_bus = bus;
+}
+
+void CallAwareness::start(JitsiCallWindowController &window, const QDBusConnection &bus)
+{
+    if (m_started)
+        return;
+    start(bus);
+    const auto syncState = [this, &window] {
+        if (window.embedState() == JitsiCallWindowController::Ready) {
+            callStarted(window.parsedRoomName(), -1);
+            if (window.participantCount() >= 0)
+                callParticipantsUpdated(window.participantCount());
+        } else if (callActive()) {
+            callEnded();
+        }
+    };
+    connect(&window, &JitsiCallWindowController::embedStateChanged, this, syncState);
+    connect(&window, &JitsiCallWindowController::participantCountChanged, this, [this, &window] {
+        callParticipantsUpdated(window.participantCount());
+    });
+    connect(&window, &QObject::destroyed, this, [this] {
+        if (callActive())
+            callEnded();
+    });
+    syncState();
 }
 
 QString CallAwareness::sanitizeRoomName(const QString &raw)
