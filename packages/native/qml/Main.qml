@@ -11869,8 +11869,8 @@ component NativeMentionChip: Item {
                                 colors: root.colors
                                 asset: "composer-visibility.svg"
                                 help: messageComposerShell.preview ? qsTranslate("ComposerMode", "Write") : qsTranslate("ComposerMode", "Preview")
-                                Accessible.checkable: true
-                                Accessible.checked: messageComposerShell.preview
+                                checkable: true
+                                checked: messageComposerShell.preview
                                 iconColor: messageComposerShell.preview ? root.colors["icon-active"] : root.colors["composer-icon"]
                                 implicitWidth: 32
                                 implicitHeight: 32
@@ -11902,8 +11902,8 @@ component NativeMentionChip: Item {
                                 implicitHeight: 32
                                 enabled: root.composerAvailable && composerText.enabled
                                 focusPolicy: Qt.StrongFocus
-                                Accessible.checkable: true
-                                Accessible.checked: composerAiNotice.visible
+                                checkable: true
+                                checked: composerAiNotice.visible
                                 contentItem: Text {
                                     text: "AI"
                                     font.pixelSize: 20

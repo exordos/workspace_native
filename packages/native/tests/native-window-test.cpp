@@ -21486,6 +21486,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerPreviewShowsTheBodyItSends()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         QFETCH(bool, inlineFile);
@@ -21633,6 +21638,11 @@ mv -Tf "$root/.current-new" "$root/current"
 
     void composerAiNoticeTracksItsTriggerAndOtherPickers()
     {
+        const bool accessibilityWasActive = QAccessible::isActive();
+        const auto restoreAccessibility = qScopeGuard([accessibilityWasActive] {
+            QAccessible::setActive(accessibilityWasActive);
+        });
+        QAccessible::setActive(true);
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         WindowChannelFixture fixture;

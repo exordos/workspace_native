@@ -167,3 +167,7 @@ through `composer.aiTemporarilyUnavailable`. The four window test rows check
 the actual button, Escape and pointer dismissal, the return to keyboard focus,
 and the file and emoji pickers with an unchanged draft. Native scheduling
 and saved-snippet controls have no entry point in this composer yet.
+
+Preview and AI assistant expose the checked state of the underlying Qt button.
+A screen reader can identify both toggles when it connects before the window
+opens and can follow their state as the preview or notice opens and closes.
