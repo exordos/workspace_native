@@ -1112,7 +1112,18 @@ static QPointF topicLinkPoint(QQuickItem *text, const QString &expected)
             QString href;
             if (!QMetaObject::invokeMethod(text, "linkAt", Q_RETURN_ARG(QString, href), Q_ARG(qreal, x), Q_ARG(qreal, y)))
                 return QPointF(-1, -1);
-            if (href == expected) return QPointF(x, y);
+            if (href != expected) continue;
+            int position = -1;
+            if (!QMetaObject::invokeMethod(text, "positionAt", Q_RETURN_ARG(int, position),
+                Q_ARG(qreal, x), Q_ARG(qreal, y)) || position < 0) continue;
+            const auto first = rectAt(text, position);
+            const auto next = rectAt(text, position + 1);
+            // Aim at the glyph itself. The hovered Reply pill overlaps the bubble's top edge.
+            const auto centerX = first.y() == next.y() ? (first.x() + next.x()) / 2 : x;
+            const auto centerY = first.center().y();
+            if (QMetaObject::invokeMethod(text, "linkAt", Q_RETURN_ARG(QString, href),
+                Q_ARG(qreal, centerX), Q_ARG(qreal, centerY)) && href == expected)
+                return QPointF(centerX, centerY);
         }
     }
     return QPointF(-1, -1);
@@ -13227,6 +13238,10 @@ mv -Tf "$root/.current-new" "$root/current"
                 if (scenario == "quick-keyboard") {
                     bubble->forceActiveFocus(Qt::TabFocusReason);
                     QTest::keyClick(window, Qt::Key_Tab);
+                    auto *reply = item(content, "quickReply-" + messageId);
+                    QVERIFY(reply);
+                    QTRY_VERIFY(reply->hasActiveFocus());
+                    QTest::keyClick(window, Qt::Key_Tab);
                     auto *viewport = item(content, "quick-reactions-" + messageId);
                     QVERIFY(viewport);
                     QTRY_VERIFY(viewport->hasActiveFocus());
@@ -17986,7 +18001,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *back = item(content, "projectCredentialsBackButton");
         QVERIFY(back);
         QCOMPARE(back->height(), 36.);
-        QCOMPARE(back->mapToScene(QPointF()).y() - item(content, "projectLoginButton")->mapToScene(QPointF(0, 36)).y(), 16.);
+        QTRY_COMPARE(back->mapToScene(QPointF()).y() - item(content, "projectLoginButton")->mapToScene(QPointF(0, 36)).y(), 16.);
         QTest::mouseMove(window, QPoint(2, 2));
         QTRY_COMPARE(QQmlProperty(back, "background.color").read().value<QColor>().alpha(), 0);
         // The first project is preselected with the organization suffix (U+2014
@@ -17997,6 +18012,34 @@ mv -Tf "$root/.current-new" "$root/current"
         // Select trigger geometry: h-10 px-3 rounded-lg (listbox.lib.ts:6-9).
         QCOMPARE(select->height(), qreal(40));
         QVERIFY(select->width() > 100);
+        const auto image = window->grabWindow().scaled(window->size());
+        QVERIFY(!image.isNull());
+        const auto muted = window->property("colors").value<QVariantMap>().value("text-muted").value<QColor>();
+        QVERIFY(muted.isValid());
+        const auto selectCenter = select->mapToScene(QPointF(select->width() - 20, select->height() / 2)).toPoint();
+        const auto *backLink = item(content, "projectBackButton");
+        QVERIFY(backLink);
+        const auto backCenter = backLink->mapToScene(QPointF(8, backLink->height() / 2)).toPoint();
+        auto tintedInk = [&](QPoint center) {
+            QRect bounds;
+            for (int y = -9; y <= 9; ++y) {
+                for (int x = -9; x <= 9; ++x) {
+                    const auto color = image.pixelColor(center + QPoint(x, y));
+                    if (qAbs(color.red() - muted.red()) < 32 && qAbs(color.green() - muted.green()) < 32
+                        && qAbs(color.blue() - muted.blue()) < 32)
+                        bounds |= QRect(x, y, 1, 1);
+                }
+            }
+            return bounds.size();
+        };
+        const auto downInk = tintedInk(selectCenter);
+        QVERIFY2(downInk.width() >= 12 && downInk.width() <= 16 && downInk.height() >= 6 && downInk.height() <= 9,
+            qPrintable(QString("Expected a muted, wide chevron, got %1×%2").arg(downInk.width()).arg(downInk.height())));
+        QVERIFY(tintedInk(backCenter).height() >= 12);
+        select->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(select->hasActiveFocus());
+        QCOMPARE(QQmlProperty(select, "background.border.color").read().value<QColor>(),
+                 QColor(window->property("colors").toMap().value("accent").toString()));
         QCOMPARE(QQmlProperty(select, "radius").read().toReal(), 8.);
         // Submit is enabled once a selection exists and shows the step copy
         // auth.login / auth.loginLoading.
@@ -31150,7 +31193,10 @@ private slots:
         QVERIFY(view("sidebarActivityList"));
         for (const auto *id : {"inbox", "favorites", "starred", "mentions", "drafts"})
             QVERIFY(view(QString("activityRow-%1").arg(id)));
-        // Reference card geometry: 46 px rows (30 px chip + p-2), 30 px chips.
+        // The first frame after expansion includes the RowLayout's 30 px chip geometry.
+        QSignalSpy expandedFrame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!expandedFrame.isEmpty());
         QCOMPARE(view("activityRow-starred")->height(), qreal(46));
         auto *chip = view("activityChip-inbox"); QVERIFY(chip);
         QCOMPARE(chip->width(), qreal(30)); QCOMPARE(chip->height(), qreal(30));
@@ -33083,7 +33129,11 @@ private slots:
         QCOMPARE(savedWindowBounds(path), normal);
         QTest::keyClick(&window, Qt::Key_F11);
         QTRY_VERIFY_WITH_TIMEOUT(window.visibility() == QWindow::FullScreen, 5000);
+        // Qt reports fullscreen as soon as it sends the request. Wait for
+        // the compositor to place the window before testing the return trip.
+        QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), window.screen()->geometry(), 5000);
         QTest::keyClick(&window, Qt::Key_F11);
+        QTRY_COMPARE_WITH_TIMEOUT(window.windowState(), Qt::WindowNoState, 5000);
         QTRY_COMPARE_WITH_TIMEOUT(window.geometry(), normal, 5000);
         // The user moves the window the moment it is back, while the gate
         // is still open: every geometry event the move emits re-arms the
