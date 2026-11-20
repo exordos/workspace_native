@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+import urllib.request
 
 
 HERE = Path(__file__).resolve().parent
@@ -194,10 +195,13 @@ def scenario(executable):
             thread = threading.Thread(target=fixture.serve_forever, daemon=True)
             thread.start()
             try:
-                # Establish that the runner's native TLS client trusts the same
-                # test origin before asking the package to use it.
-                run("curl.exe" if WINDOWS else "/usr/bin/curl", "--noproxy", "*", "--fail", "--silent",
-                    origin + "/api/workspace/v1/messenger/server_settings", stdout=subprocess.DEVNULL)
+                # Verify the independent test issuer, server certificate, IP SAN
+                # and organization response before starting the real application.
+                control = ssl.create_default_context(cafile=folder / "ca.pem")
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                                     urllib.request.HTTPSHandler(context=control))
+                with opener.open(origin + "/api/workspace/v1/messenger/server_settings", timeout=5) as response:
+                    check(json.load(response)["realm_name"] == "Cassi package fixture", "The TLS fixture returned the wrong realm")
                 fixture.settings_count = 0
                 for mode in ("login", "restore"):
                     with (folder / (mode + ".log")).open("wb") as log:
