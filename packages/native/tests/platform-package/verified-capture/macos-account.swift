@@ -92,6 +92,40 @@ case "login":
     try fill("Password", "package-demo")
     try press("Next")
     try press("Login")
+case "choose-file":
+    try press("General Chat: Cassi hosted channel")
+    try press("Attach files")
+    _ = try control("Open", kAXButtonRole as String)
+    let board = NSPasteboard.general
+    board.clearContents()
+    board.setString(origin, forType: .string)
+    func dialogKey(_ key: CGKeyCode, _ modifiers: CGEventFlags = []) {
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)!
+            event.flags = modifiers
+            event.post(tap: .cghidEventTap)
+        }
+    }
+    dialogKey(5, [.maskCommand, .maskShift])
+    let goTo = Date().addingTimeInterval(6)
+    var field: AXUIElement?
+    repeat {
+        if let elem = attr(root, kAXFocusedUIElementAttribute as CFString), CFGetTypeID(elem) == AXUIElementGetTypeID() {
+            let focus = elem as! AXUIElement
+            if attr(focus, kAXRoleAttribute as CFString) as? String == kAXTextFieldRole as String { field = focus; break }
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    } while Date() < goTo
+    guard let location = field else { throw fail("The AppKit Go to Folder location field did not appear.") }
+    dialogKey(9, .maskCommand)
+    let paste = Date().addingTimeInterval(3)
+    while attr(location, kAXValueAttribute as CFString) as? String != origin, Date() < paste {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    guard attr(location, kAXValueAttribute as CFString) as? String == origin else { throw fail("The chooser did not accept the file name.") }
+    dialogKey(36)
+    try press("Open")
+    print("Selected the synthetic file through the AppKit open panel.")
 case "join-call":
     try press("General Chat: Cassi hosted channel")
     try press("Join call")

@@ -83,6 +83,30 @@ switch ($Mode) {
         Press 'Next'
         Press 'Login'
     }
+    'choose-file' {
+        Press 'General Chat: Cassi hosted channel'
+        Press 'Attach files'
+        $type = [System.Windows.Automation.AutomationElement]
+        $dialogFilter = [System.Windows.Automation.AndCondition]::new(
+            [System.Windows.Automation.PropertyCondition]::new($type::ClassNameProperty, '#32770'),
+            [System.Windows.Automation.PropertyCondition]::new($type::ProcessIdProperty, $ApplicationPid))
+        $deadline = (Get-Date).AddSeconds(15)
+        do {
+            $dialog = $type::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $dialogFilter)
+            if ($dialog) { break }
+            Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $deadline)
+        if (!$dialog) { throw 'The Microsoft common file chooser did not appear.' }
+        $typeFilter = [System.Windows.Automation.PropertyCondition]::new($type::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Edit)
+        $edit = @($dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants, $typeFilter) |
+            Where-Object { $_.Current.Name -eq 'File name:' -or $_.Current.AutomationId -eq '1148' })
+        if ($edit.Count -ne 1) { throw 'The native file name field was not unique.' }
+        $edit[0].SetFocus()
+        $edit[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Origin)
+        Key '{ENTER}'
+        Write-Output 'Selected the synthetic file in a Microsoft common file dialog.'
+    }
     'join-call' {
         Press 'General Chat: Cassi hosted channel'
         Press 'Join call'

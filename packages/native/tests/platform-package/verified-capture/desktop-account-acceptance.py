@@ -1,4 +1,6 @@
 """Sign in to a loopback TLS fixture with the normal Windows/macOS preview executable."""
+from email import policy
+from email.parser import BytesParser
 import argparse
 import contextlib
 import ctypes
@@ -46,6 +48,8 @@ class SessionFixture(ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
         self.capture = None
+        self.selected_file = None
+        self.uploaded = False
         self.refresh = secrets.token_hex(24)
         self.base = secrets.token_hex(22)
         self.access = secrets.token_hex(23)
@@ -103,6 +107,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         fixture = self.server
         length = int(self.headers.get("Content-Length") or 0)
+        if self.path == "/api/workspace/v1/messenger/files/" and fixture.selected_file:
+            check(self.headers.get("Authorization") == "Bearer " + fixture.access, "Unauthenticated file selection")
+            content_type = self.headers.get("Content-Type", "")
+            check(0 < length < 65536 and content_type.startswith("multipart/form-data;"), "Unexpected file body")
+            headers = ("Content-Type: " + content_type + "\r\n\r\n").encode()
+            parts = BytesParser(policy=policy.default).parsebytes(headers + self.rfile.read(length))
+            files = [part for part in parts.iter_parts() if part.get_filename()]
+            check(len(files) == 1, "Expected one selected file")
+            selected = fixture.selected_file
+            data = selected.read_bytes()
+            check(files[0].get_filename() == selected.name and files[0].get_payload(decode=True) == data,
+                  "The application did not upload the selected file intact")
+            fixture.uploaded = True
+            self.reply(201, {"uuid": str(uuid.uuid4()), "stream_uuid": fixture.capture.stream,
+                             "name": selected.name, "content_type": "text/plain", "size_bytes": len(data),
+                             "hash": hashlib.sha256(data).hexdigest()})
+            return
         body = json.loads(self.rfile.read(length) or "{}")
         if self.path != TOKEN_ROUTE:
             self.reply(404, {})
@@ -222,7 +243,7 @@ def scenario(executable, check_updater, check_capture):
             fixture.tls = context
             print("Trusted an ephemeral loopback TLS fixture.", flush=True)
             origin = "https://127.0.0.1:" + str(fixture.server_port)
-            if check_capture:
+            if check_capture or os.environ.get("CASSI_HOSTED_CHOOSER"):
                 fixture.capture = HostedCapture(PROJECT, USER, origin)
                 devices = capture_inventory()
                 print("Native capture devices:", devices, flush=True)
@@ -255,6 +276,12 @@ def scenario(executable, check_updater, check_capture):
                                 if check_updater:
                                     drive(app.pid, "update", origin)
                                     print("The installed application reported its unsupported update channel in App version.", flush=True)
+                                if os.environ.get("CASSI_HOSTED_CHOOSER"):
+                                    fixture.selected_file = folder / "selected package fixture.txt"
+                                    fixture.selected_file.write_text("Selected in an actual OS dialog " + uuid.uuid4().hex)
+                                    drive(app.pid, "choose-file", str(fixture.selected_file))
+                                    wait_for(lambda: fixture.uploaded, "The selected file did not reach the organization")
+                                    print("The installed application's system chooser returned the exact file and bytes.", flush=True)
                                 if check_capture:
                                     drive(app.pid, "join-call", origin)
                                     results = fixture.capture.results
