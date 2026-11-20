@@ -20988,6 +20988,9 @@ mv -Tf "$root/.current-new" "$root/current"
                 const auto compactAxis = expandToggle->mapToItem(window->contentItem(), QPointF{}).x();
                 click(window, expandToggle);
                 QTRY_VERIFY(toolbar->isVisible());
+                QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+                window->update();
+                QTRY_VERIFY(!painted.isEmpty());
                 auto *collapseToggle = view("composerToolbarCollapse"); QVERIFY(collapseToggle);
                 // COMPOSER_LEADING_CONTROLS_INSET pl-2: the collapse toggle
                 // sits 8px from the toolbar row's left edge.
