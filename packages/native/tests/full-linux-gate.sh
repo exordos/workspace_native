@@ -12,9 +12,6 @@ export XDG_CURRENT_DESKTOP=Openbox NO_AT_BRIDGE=1 QT_ACCESSIBILITY=0
 export XAUTHORITY="$state/Xauthority" XDG_RUNTIME_DIR="$state/runtime"
 export XDG_CONFIG_HOME="$state/config" XDG_CACHE_HOME="$state/cache" XDG_DATA_HOME="$state/data"
 unset WAYLAND_DISPLAY
-mkdir -m 700 "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
-touch "$XAUTHORITY"
-xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(mcookie)"
 display_pid=
 wm_pid=
 pulse_pid=
@@ -25,10 +22,14 @@ cleanup() {
     rm -rf -- "$state"
 }
 trap cleanup EXIT
+mkdir -m 700 "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
+touch "$XAUTHORITY"
+xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(mcookie)"
 Xtigervnc "$DISPLAY" -geometry 1440x900 -depth 24 -auth "$XAUTHORITY" \
     -nolisten tcp -noreset -rfbport -1 -rfbunixpath "$state/vnc" -rfbunixmode 0600 -localhost &
 display_pid=$!
 for _ in {1..100}; do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
+kill -0 "$display_pid"
 xdpyinfo >/dev/null
 openbox &
 wm_pid=$!
