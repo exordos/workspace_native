@@ -33694,6 +33694,158 @@ private slots:
         QTRY_VERIFY(!panel->property("visible").toBool());
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
+
+    // Issue #113 (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md): an inbound bubble
+    // that is not yet marked read carries an accent read-request pulse: the
+    // overlay renders, its animation runs while the window is active, stops
+    // when activation moves away, and reduced motion swaps the pulse for the
+    // static 0.2 wash. The read_up_to response is held by a defer gate so the
+    // unread window is deterministic (reference workspace-message-read-request-pulse).
+    void readRequestPulseStates_data()
+    {
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<bool>("reducedMotion");
+        QTest::newRow("light") << QStringLiteral("light") << false;
+        QTest::newRow("dark") << QStringLiteral("dark") << false;
+        QTest::newRow("light-reduced-motion") << QStringLiteral("light") << true;
+    }
+
+    void readRequestPulseStates()
+    {
+        QFETCH(QString, mode);
+        QFETCH(bool, reducedMotion);
+        const QString peer = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const QString readUuid = "8b000000-0000-4000-8000-000000000001";
+        const QString unreadOne = "8b000000-0000-4000-8000-000000000002";
+        const QString unreadTwo = "8b000000-0000-4000-8000-000000000003";
+        const auto peerMessage = [&](const QString &uuid, bool read, int second) {
+            auto entry = message(QStringLiteral("Peer pending %1").arg(second), uuid);
+            entry["is_own"] = false;
+            entry["user_uuid"] = peer;
+            entry["author_uuid"] = peer;
+            entry["read"] = read;
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(second).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        QVector<QJsonObject> history{
+            peerMessage(readUuid, true, 1),
+            peerMessage(unreadOne, false, 2),
+            peerMessage(unreadTwo, false, 3),
+        };
+        const auto findHistory = [&history](const QString &uuid) {
+            const auto row = std::find_if(history.cbegin(), history.cend(),
+                [&](const QJsonObject &entry) { return entry.value("uuid").toString() == uuid; });
+            return row == history.cend() ? QJsonObject{} : *row;
+        };
+        auto readGate = std::make_shared<std::vector<std::function<void()>>>();
+        MockServer server;
+        server.handler = [&, readGate](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/")
+                return {QJsonArray{windowChannel(streamId, "Synthetic pulse channel")}};
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return {windowChannel(streamId, "Synthetic pulse channel")};
+            if (path.endsWith("/users/")) return {QJsonArray{}};
+            if (path == "/api/workspace/v1/messenger/stream_topics/")
+                return {QJsonArray{windowChannelTopic(topicId, streamId, "Synthetic topic")}};
+            if (path == "/api/workspace/v1/messenger/stream_topics/" + topicId)
+                return {windowChannelTopic(topicId, streamId, "Synthetic topic")};
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto boundaryUuid = path.section('/', -4, -4);
+                auto confirmed = findHistory(boundaryUuid);
+                if (confirmed.isEmpty()) return {QJsonObject{}, 404};
+                confirmed["read"] = true;
+                return Response{confirmed, 200, 0, {},
+                    [readGate](std::function<void()> send) { readGate->push_back(std::move(send)); }};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                QJsonArray page;
+                for (auto it = history.crbegin(); it != history.crend(); ++it) page.append(*it);
+                return {page};
+            }
+            return sessionResponse(request);
+        };
+        QTemporaryDir preferencesDirectory; QVERIFY(preferencesDirectory.isValid());
+        NativePreferences preferences(preferencesDirectory.filePath("read-request-pulse.ini"));
+        preferences.setLocale("en");
+        preferences.setMode(mode);
+        preferences.setPrefersReducedMotionOverride(reducedMotion);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([guard = QPointer<QQuickWindow>(window), &engine] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Read-request pulse window did not settle before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(controller.projects().size(), 1);
+        controller.openProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+        QTRY_COMPARE(controller.messages().size(), 3);
+
+        auto *content = window->contentItem();
+        const auto overlay = [content](const QString &uuid) {
+            return item(content, "message-read-pulse-" + uuid);
+        };
+        const auto pulse = [&overlay](const QString &uuid) -> QObject * {
+            auto *surface = overlay(uuid);
+            return surface ? surface->findChild<QObject *>("message-read-pulse-anim-" + uuid) : nullptr;
+        };
+        // Unread inbound bubbles render the overlay; the read-marked one does not.
+        auto *pendingSurface = visibleItem(content, "message-read-pulse-" + unreadTwo);
+        QVERIFY2(pendingSurface, "unread inbound bubble must render the read-request overlay");
+        QVERIFY(visibleItem(content, "message-read-pulse-" + unreadOne));
+        QVERIFY(!visibleItem(content, "message-read-pulse-" + readUuid));
+        // The overlay carries the palette accent token for the current mode.
+        const auto colors = window->property("colors").toMap();
+        QVERIFY(!colors.isEmpty());
+        QCOMPARE(qvariant_cast<QColor>(pendingSurface->property("color")).name(QColor::HexRgb).toLower(),
+            colors.value(QStringLiteral("accent")).toString().toLower());
+        auto *pendingPulse = pulse(unreadTwo); QVERIFY(pendingPulse);
+        if (reducedMotion) {
+            // Reference app.styles.css:269-286: reduce turns the keyframe off and
+            // freezes the overlay at the full highlight opacity (0.2).
+            QCOMPARE(pendingPulse->property("running").toBool(), false);
+            QVERIFY2(qAbs(pendingSurface->property("opacity").toDouble() - 0.2) < 0.001,
+                "reduced motion must render the static 0.2 wash");
+        } else {
+            // The pulse animation runs while the window is active...
+            QTRY_VERIFY_WITH_TIMEOUT(pendingPulse->property("running").toBool(), 3000);
+            QVERIFY(pulse(unreadOne)->property("running").toBool());
+            // ...and stops once the window goes inactive (reference activity gate:
+            // a background window stops requesting reads).
+            QQuickWindow decoy;
+            decoy.setTitle(QStringLiteral("Pulse decoy"));
+            decoy.resize(160, 120);
+            decoy.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&decoy));
+            decoy.requestActivate();
+            QTRY_VERIFY_WITH_TIMEOUT(decoy.isActive(), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(!window->isActive(), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(!pendingPulse->property("running").toBool(), 2000);
+            QVERIFY(visibleItem(content, "message-read-pulse-" + unreadTwo));
+            window->requestActivate();
+            QTRY_VERIFY_WITH_TIMEOUT(window->isActive(), 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(pendingPulse->property("running").toBool(), 2000);
+            decoy.close();
+        }
+        // Releasing the held read_up_to confirmation marks the messages read and
+        // retires the overlay: "gone after the read marking lands".
+        QTRY_VERIFY_WITH_TIMEOUT(!readGate->empty(), 5000);
+        for (auto &send : *readGate) send();
+        readGate->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem(content, "message-read-pulse-" + unreadTwo), 3000);
+        QVERIFY(!visibleItem(content, "message-read-pulse-" + unreadOne));
+        QVERIFY(!pendingPulse->property("running").toBool());
+        const bool closed = closeIncubatedTestWindow(engine, window); if (closed) closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
 };
 
 
