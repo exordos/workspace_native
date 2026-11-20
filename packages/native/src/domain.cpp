@@ -684,6 +684,38 @@ QVector<Message> mergeMessages(const QVector<Message> &existing, const QVector<M
     return result;
 }
 
+QString pollTextSnapshot(const Message &message)
+{
+    if (!message.poll) return {};
+    const auto &poll = *message.poll;
+    const auto &state = message.pollState;
+    const auto deadline = QDateTime::fromString(poll.closesAt, Qt::ISODateWithMs);
+    const bool allVisible = poll.resultsVisibility == QLatin1String("always")
+        || (state && state->isClosed)
+        || (deadline.isValid() && deadline <= QDateTime::currentDateTimeUtc());
+    QStringList blocks;
+    for (const auto &question : poll.questions) {
+        const PollQuestionState *counts = nullptr;
+        if (state) {
+            const auto votes = std::find_if(state->myVotes.cbegin(), state->myVotes.cend(),
+                [&](const PollMyVote &vote) { return vote.questionUuid == question.uuid; });
+            if (allVisible || (votes != state->myVotes.cend() && !votes->optionUuids.isEmpty())) {
+                const auto found = std::find_if(state->questions.cbegin(), state->questions.cend(),
+                    [&](const PollQuestionState &row) { return row.questionUuid == question.uuid; });
+                if (found != state->questions.cend()) counts = &*found;
+            }
+        }
+        QStringList lines{question.text};
+        for (const auto &option : question.options) {
+            auto line = QStringLiteral("• ") + option.text;
+            if (counts) line += QStringLiteral(" (%1)").arg(counts->optionCounts.value(option.uuid));
+            lines.append(line);
+        }
+        blocks.append(lines.join(QLatin1Char('\n')));
+    }
+    return blocks.join(QStringLiteral("\n\n"));
+}
+
 bool applyPollRevisionGuard(Message &incoming, const Message &previous, bool *reopenRatcheted)
 {
     if (reopenRatcheted) *reopenRatcheted = false;
