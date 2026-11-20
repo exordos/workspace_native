@@ -178,9 +178,11 @@ topic rows and preserve the viewport assertions.
 
 ### Sustained input on a slow history request
 
-For each selected conversation the controller measures the last successful
-history page request. Two consecutive upward scroll samples project how far the
-reader will travel while the next page is in flight. Prefetch keeps that
+The controller measures the last successful history page request in the
+current API session. A topic restored from disk can reuse this timing to
+request older history before a fast reader reaches the loaded edge. Two
+consecutive upward scroll samples project how far the reader will travel
+while the next page is in flight. Prefetch keeps that
 distance in addition to the normal viewport reserve, capped at four viewports
 in total. A pause, a layout jump, switching routes or restoring an anchor
 discards the velocity estimate. Programmatic restoration only rearms the next

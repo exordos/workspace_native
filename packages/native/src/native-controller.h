@@ -2441,7 +2441,8 @@ private:
     // re-armed by a note at or above the reserve, a fresh window commit, a
     // failed history request, and reset().
     bool m_olderPrefetchArmed = true;
-    quint64 m_historyTimingSelection = 0;
+    quint64 m_historyTimingGeneration = 0;
+    quint64 m_scrollSampleSelection = 0;
     qint64 m_historyPageWaitMs = 0;
     QElapsedTimer m_scrollSampleClock;
     qreal m_previousTopDistance = 0;
