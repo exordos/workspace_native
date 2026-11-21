@@ -4319,12 +4319,13 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
 }
 
 void NativeController::settleTopicAction(const QString &stream, const QString &topic,
-    const QString &action, bool ok)
+    const QString &action, bool ok, const QString &errorMessage)
 {
     const auto stateKey = stream + '|' + topic;
     auto state = m_topicActionStates.value(stateKey);
     state.remove(action + "Pending");
     if (ok) state.remove(action + "Error");
+    else if (!errorMessage.isEmpty()) state[action + "Error"] = errorMessage;
     else if (action == QLatin1String("rename"))
         state[QLatin1String("renameError")] = tr("Could not rename the topic. Please try again.");
     else if (action == QLatin1String("notifications"))
@@ -4345,6 +4346,59 @@ bool NativeController::topicActionBusy(const QString &topic) const
     for (auto it = m_topicActionRequests.cbegin(); it != m_topicActionRequests.cend(); ++it)
         if (it.key().endsWith(suffix)) return true;
     return false;
+}
+
+// Issue #645 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): session-renewal
+// fencing of topic actions, mirroring the accepted interruptFolderMutation
+// pattern (issue #423). A generation bump retires the in-flight topic-action
+// transports - the wrapper may still hand the callback a generation-fenced
+// answer (which erases arbitration but can never settle), so the sweep reads
+// the action ledger instead: it clears every pending guard (the menu / rename
+// form become usable again), projects the retryable interrupted outcome
+// (distinct from success, so the view never presents an uncertain write as a
+// definitive result), and re-reads the authoritative topic catalog because
+// the interrupted write may or may not have committed server-side. Late
+// replies stay fenced by their captured generation, so they can neither
+// settle a newer action nor touch the newly current route.
+void NativeController::interruptTopicActions()
+{
+    if (m_topicActionLedger.isEmpty()) return;
+    const auto retiring = m_topicActionLedger;
+    m_topicActionLedger.clear();
+    // Retire the arbitration entries of every generation but the current:
+    // a held mock/server response can sit un-delivered, and the wrapper's
+    // generation fence guarantees its late answer can never settle, so the
+    // sweep is the only owner that can release the single-flight slot.
+    const auto currentGeneration = QString::number(m_api->generation()) + QLatin1Char('/');
+    for (auto it = m_topicActionRequests.begin(); it != m_topicActionRequests.end();) {
+        if (it.key().startsWith(currentGeneration)) ++it;
+        else it = m_topicActionRequests.erase(it);
+    }
+    const auto owner = ownerKey();
+    bool reconciled = false;
+    for (auto it = retiring.cbegin(); it != retiring.cend(); ++it) {
+        // Sign-out / account switch: reset() owns the rest of the state.
+        if (!authenticated() || it.value() != owner) continue;
+        const auto parts = it.key().split(QLatin1Char('|'));
+        if (parts.size() != 3) continue;
+        const auto &stream = parts.at(0);
+        const auto &topic = parts.at(1);
+        const auto &action = parts.at(2);
+        const auto interrupted = action == QLatin1String("rename")
+            ? tr("The topic rename was interrupted by a session refresh. Try again.")
+            : action == QLatin1String("notifications")
+            ? tr("The topic notification change was interrupted by a session refresh. Try again.")
+            : action == QLatin1String("read")
+            ? tr("The topic read update was interrupted by a session refresh. Try again.")
+            : tr("The topic done update was interrupted by a session refresh. Try again.");
+        settleTopicAction(stream, topic, action, false, interrupted);
+        emit channelTopicActionFinished(topic, action, false);
+        emit topicActionFinished(stream, topic, action, false);
+        if (!reconciled && authenticated() && !m_stream.isEmpty()) {
+            reconciled = true;
+            loadTopics(); // reconcile-by-read: present the server's truth, not a guess
+        }
+    }
 }
 
 QVariantMap NativeController::topicActionState(const QString &stream, const QString &topic) const
@@ -4402,9 +4456,12 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
     const auto key = QString::number(generation) + '/' + topic;
     if (m_topicActionRequests.contains(key)) { report(false); return; }
     const auto token = ++m_topicActionToken;
-    m_topicActionRequests.insert(key, token);
     const auto owner = ownerKey();
+    m_topicActionRequests.insert(key, token);
+    // Issue #645: the ledger outlives the arbitration entry so the renewal
+    // sweep can settle guards the retired callback can never reach.
     const auto stateKey = stream + '|' + topic;
+    m_topicActionLedger.insert(stateKey + '|' + action, owner);
     auto state = m_topicActionStates.value(stateKey);
     state[action + "Pending"] = true;
     state.remove(action + "Error");
@@ -4417,6 +4474,7 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
         if (m_topicActionRequests.value(key) == token) m_topicActionRequests.remove(key);
         if (!authenticated() || ownerKey() != owner) return;
         const auto finish = [this, &stream, &topic, &action](bool ok) {
+            m_topicActionLedger.remove(stream + '|' + topic + '|' + action);
             settleTopicAction(stream, topic, action, ok);
             emit channelTopicActionFinished(topic, action, ok);
             emit topicActionFinished(stream, topic, action, ok);
@@ -4427,7 +4485,16 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
         const bool accepted = response.ok() && updated && updated->uuid == topic
             && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
         if (current) {
-            if (m_api->generation() != generation || m_stream != stream) return;
+            // Issue #645: a generation bump retires this transport; the
+            // interrupt sweep owns settling it. A route move does NOT strand
+            // the guard: the state key is stream|topic, so settle it without
+            // touching the newly current route's catalog.
+            if (m_api->generation() != generation) return;
+            if (m_stream != stream) {
+                if (accepted) staleCache(NativeCache::Kind::Topics, stream);
+                finish(accepted);
+                return;
+            }
             staleCache(NativeCache::Kind::Topics, stream);
             auto row = std::find_if(m_topics.begin(), m_topics.end(),
                 [&](const Topic &t) { return t.uuid == topic; });
@@ -4437,6 +4504,22 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
                 if (action == QLatin1String("read")) mentionIndexClearTopic(stream, topic);
                 emit topicsChanged();
                 emit stateChanged();
+                // The sidebar rows render from the inbox catalog while the
+                // stream is not current and from m_topics while it is, and the
+                // delegate refreshes on sidebarTopicsChanged in both cases
+                // (the #641 window cases exposed the divergence): mirror the
+                // committed row and fire the seam so both catalogs agree
+                // immediately after a successful write.
+                if (m_inboxTopics.contains(stream)) {
+                    auto inboxRows = m_inboxTopics.value(stream);
+                    auto inboxRow = std::find_if(inboxRows.begin(), inboxRows.end(),
+                        [&](const Topic &t) { return t.uuid == topic; });
+                    if (inboxRow != inboxRows.end()) {
+                        *inboxRow = *updated;
+                        m_inboxTopics.insert(stream, inboxRows);
+                    }
+                }
+                emit sidebarTopicsChanged(stream);
             } else {
                 // A newer catalog or an uncertain write is reconciled by reading.
                 loadTopics();
@@ -4445,7 +4528,9 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
             return;
         }
         if (m_api->generation() != generation) return;
-        if (!m_inboxTopics.contains(stream)) return;
+        // Issue #645: a collapsed sidebar stream still settles its guard -
+        // the row may have vanished but the pending flag must not strand.
+        if (!m_inboxTopics.contains(stream)) { finish(accepted); return; }
         staleCache(NativeCache::Kind::Topics, stream);
         auto rows = m_inboxTopics.value(stream);
         auto row = std::find_if(rows.begin(), rows.end(),
@@ -10081,6 +10166,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // delete; the retired callback can never clear the admission flag, so
         // settle the operation here with a retryable interrupted outcome.
         interruptFolderMutation();
+        // Issue #645: the same bump retires in-flight topic actions (rename,
+        // notifications, read, done); settle them as uncertain interrupted
+        // outcomes and reconcile the catalog so the topic menu and rename form
+        // become usable again under the renewed session.
+        interruptTopicActions();
+        if (!lookupGuard) return;
         // Issue #50 review 4611502344: the same bump retires an in-flight
         // Diagnostics transport ping; its wrapper callback can never settle,
         // so report the drop here: it clears the single-probe guard and lets
@@ -12022,6 +12113,7 @@ void NativeController::reset()
     m_pollSendAttempts.clear();
     m_channelTopicRequests.clear();
     m_topicActionRequests.clear();
+    m_topicActionLedger.clear();
     m_topicActionStates.clear();
     closeEditSession();
     closeReplySession();
@@ -16143,6 +16235,11 @@ void NativeController::loadTopics()
         if (!guard) return true;
         emit messagesChanged();
         if (!guard) return true;
+        // The sidebar topic delegate refreshes on the sidebarTopicsChanged
+        // seam (both catalog roles read it for the current stream), so a
+        // verified reconcile - e.g. the rename-by-read after an uncertain
+        // revision - must re-publish the row titles there too (#641).
+        if (authoritative) emit sidebarTopicsChanged(m_stream);
         if (authoritative) finishSnapshotPart(4);
         // Issue #134: the profile Message action can park a default-topic
         // open while this page is loading; resolve it against the verified

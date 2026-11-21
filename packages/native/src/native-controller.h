@@ -1898,12 +1898,20 @@ private:
     // Issue #636: one in-flight action per topic (any action), matching the
     // drawer's arbitration that pinned cases rely on. Key: "<generation>/<topic>".
     QHash<QString, quint64> m_topicActionRequests;
+    // Issue #645: action-lifetime ledger, key "<stream>|<topic>|<action>",
+    // value the dispatching owner. Unlike the arbitration entry it survives
+    // the retired callback (the wrapper can deliver a generation-fenced
+    // answer that erases arbitration but never settles), so the session-
+    // renewal sweep knows exactly which guards to settle as interrupted and
+    // can fence foreign owners.
+    QHash<QString, QString> m_topicActionLedger;
     // Guard/error projection per "<stream>|<topic>": <action>Pending and
     // <action>Error keys, consumed by the topic context menu.
     QHash<QString, QVariantMap> m_topicActionStates;
     quint64 m_topicActionToken = 0;
     void settleTopicAction(const QString &stream, const QString &topic,
-        const QString &action, bool ok);
+        const QString &action, bool ok, const QString &errorMessage = QString());
+    void interruptTopicActions();
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
     bool m_channelInfoLoading = false;
