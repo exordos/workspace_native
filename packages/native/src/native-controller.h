@@ -929,6 +929,7 @@ public:
     Q_INVOKABLE void retryDownload(const QString &id);
     Q_INVOKABLE void openDownload(const QString &id);
     Q_INVOKABLE void revealDownload(const QString &id);
+    Q_INVOKABLE QVariantMap attachmentDownload(const QString &fileUuid) const;
 
     // ---- Composer @mention suggestions (docs/NATIVE_DESKTOP_COMPOSER_MENTION.md) ----
     // Conversation context for mention ranking (MentionRankingContext in the

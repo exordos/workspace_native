@@ -1694,6 +1694,24 @@ component NativeMentionChip: Item {
         return url.startsWith("http://") || url.startsWith("https://");
     }
 
+    function handleAttachmentDownloadClick(state) {
+        // Port of handleCurrentAttachmentDownload (workspace_ui 6b9f27f
+        // workspace-message-attachment-download.lib.ts:26-34): a click while a
+        // download is active is ignored; a completed entry re-opens the saved
+        // file instead of asking for a new destination; a failed entry restarts.
+        if (!state)
+            return;
+        const id = String(state.id || "");
+        if (!id.length)
+            return;
+        if (state.status === "starting" || state.status === "downloading")
+            return;
+        if (state.status === "downloaded")
+            root.controller.openDownload(id);
+        else if (state.status === "error")
+            root.controller.retryDownload(id);
+    }
+
     function openReference(link, imageFailed) {
         const reference = root.markdown.reference(link);
         if (reference.kind === "external") {
@@ -1720,6 +1738,15 @@ component NativeMentionChip: Item {
             if ((reference.kind === "image" || reference.kind === "video") && !imageFailed
                 && root.controller.mediaViewer.openFromMessages(root.controller.messages, reference.id))
                 return;
+            // Issue #631: the coordinator's live entry for this file drives the
+            // click (ignore while active, re-open when saved, retry on error);
+            // only file references with no entry keep the plain save dialog
+            // route (docs/NATIVE_DESKTOP_ATTACHMENT_DOWNLOAD_STATE.md).
+            const attachmentState = root.controller.attachmentDownload(String(reference.id || ""));
+            if (attachmentState && Object.keys(attachmentState).length) {
+                root.handleAttachmentDownloadClick(attachmentState);
+                return;
+            }
             root.downloadOwner = root.controller.ownerKey;
             root.downloadId = reference.id;
             attachmentSaveDialog.open();
@@ -3155,6 +3182,190 @@ component NativeMentionChip: Item {
         RotationAnimator on rotation {
             from: 0; to: 360; duration: 1000; loops: Animation.Infinite
             running: ownStatusDialog.visible && ownStatusDialog.pending
+        }
+    }
+
+    // Issue #631: live coordinator state for a received file reference, ported
+    // from workspace_ui 6b9f27f attachment-card.ui.tsx:120-183 (embedded
+    // appearance: h-[58px] w-60 max-w-full gap-3 p-2 rounded-lg transparent;
+    // 40x40 rounded-lg bg preview slot; details column w-[134px] with the
+    // 12px/500 leading-14 name and 12px leading-15 status lines) and
+    // workspace-message-attachment-download.ui.tsx (label + 2 s confirmation).
+    component AttachmentDownloadStateCard: Rectangle {
+        id: downloadCard
+        required property string tag
+        required property var downloadState
+        required property string fileUuid
+        property string fileName: ""
+        property real sizeBytes: -1
+        readonly property string status: String(downloadState.status || "")
+        readonly property bool active: status === "starting" || status === "downloading"
+        readonly property int percent: Number(downloadState.percent)
+        property string confirmationId: ""
+        // Reference attachmentDownloadLabel (workspace-message-attachment-download.ui.tsx:29-45):
+        // the status part of the accessible "<fileName>. <status label>" name.
+        readonly property string statusLabel: active
+            ? (percent >= 0 ? qsTr("Downloading… %1%").arg(percent) : qsTr("Downloading…"))
+            : status === "downloaded" ? qsTr("Open")
+            : status === "error" ? qsTr("Failed") + ". " + qsTr("Retry") : ""
+        // Reference getAttachmentCardMetadata format · size line: the size is
+        // the locale-independent formatAttachmentSize ladder
+        // (attachment-card-meta.lib.ts:72-80, the same convention the upload
+        // card strip uses above the composer).
+        readonly property string metadataLine: {
+            const dot = fileName.lastIndexOf(".")
+            const extension = dot > 0 ? fileName.slice(dot + 1).toUpperCase().slice(0, 4) : qsTr("File")
+            const bytes = Number(sizeBytes)
+            if (!Number.isFinite(bytes) || bytes <= 0) return extension
+            const size = bytes < 1024 ? bytes + " B" : bytes < 1048576 ? Math.round(bytes / 1024) + " KB"
+                : bytes < 1073741824 ? (Math.round(bytes / 104857.6) / 10) + " MB"
+                : (Math.round(bytes / 107374182.4) / 10) + " GB"
+            return extension + " · " + size
+        }
+        width: Math.min(240, parent ? parent.width : 240)
+        height: 58
+        radius: 8
+        color: "transparent"
+        Accessible.role: Accessible.Button
+        Accessible.name: fileName + ". " + statusLabel
+        Accessible.onPressAction: root.handleAttachmentDownloadClick(downloadState)
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: downloadCard.active ? Qt.ArrowCursor : Qt.PointingHandCursor
+            onClicked: root.handleAttachmentDownloadClick(downloadCard.downloadState)
+        }
+        Timer {
+            id: attachmentConfirm
+            interval: 2000 // workspace-message-attachment-download.ui.tsx:10 DOWNLOAD_CONFIRMATION_MS
+            onTriggered: downloadCard.confirmationId = ""
+        }
+        function trackConfirmation() {
+            // ui.tsx:54-74: a fresh completion shows check + Open for 2 s,
+            // then the slot restores the file metadata.
+            const completed = downloadCard.status === "downloaded"
+                ? String(downloadCard.downloadState.id || "") : ""
+            if (completed !== downloadCard.confirmationId) {
+                downloadCard.confirmationId = completed
+                if (completed.length) attachmentConfirm.restart(); else attachmentConfirm.stop()
+            }
+        }
+        Component.onCompleted: trackConfirmation()
+        onStatusChanged: trackConfirmation()
+        Rectangle {
+            // AttachmentDownloadPreview: the 40x40 rounded-lg bg-bg slot that
+            // replaces the file glyph while a download entry exists.
+            x: 8; y: 9; width: 40; height: 40; radius: 8
+            color: root.colors.bg
+            Canvas {
+                id: attachmentRing
+                objectName: "attachmentCardRing-" + downloadCard.tag
+                anchors.centerIn: parent
+                width: 18; height: 18
+                visible: downloadCard.active && downloadCard.percent >= 0
+                Accessible.ignored: true
+                property int value: downloadCard.percent
+                onValueChanged: requestPaint()
+                onPaint: {
+                    // AttachmentProgressRing (attachment-card.ui.tsx:250-261):
+                    // 18x18, 3 px ring, 24 %-alpha muted track + accent arc -
+                    // the identical port the upload card ring already ships.
+                    const ctx = getContext("2d"); ctx.clearRect(0, 0, width, height);
+                    ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(9, 9, 7.5, 0, 2 * Math.PI);
+                    ctx.strokeStyle = Qt.alpha(root.colors["text-muted"], 0.24); ctx.stroke();
+                    ctx.beginPath(); ctx.arc(9, 9, 7.5, -Math.PI / 2, -Math.PI / 2 + 2 * Math.PI * value / 100);
+                    ctx.strokeStyle = root.colors.accent; ctx.stroke();
+                }
+            }
+            Canvas {
+                id: attachmentSpinner
+                objectName: "attachmentCardSpinner-" + downloadCard.tag
+                anchors.centerIn: parent
+                width: 14; height: 14
+                visible: downloadCard.active && downloadCard.percent < 0
+                Accessible.ignored: true
+                // Spinner size sm (spinner.ui.tsx:4-10): 14 px, 2 px border,
+                // border-border-subtle with the accent leading edge.
+                onPaint: {
+                    const ctx = getContext("2d"); ctx.reset(); ctx.lineWidth = 2;
+                    ctx.strokeStyle = root.colors["border-subtle"];
+                    ctx.beginPath(); ctx.arc(7, 7, 6, 0, Math.PI * 2); ctx.stroke();
+                    ctx.strokeStyle = root.colors.accent;
+                    ctx.beginPath(); ctx.arc(7, 7, 6, -Math.PI / 2, 0); ctx.stroke();
+                }
+                RotationAnimator on rotation {
+                    from: 0; to: 360; duration: 1000; loops: Animation.Infinite
+                    running: attachmentSpinner.visible
+                }
+            }
+            NativeIconButton {
+                objectName: "attachmentCardCheck-" + downloadCard.tag
+                anchors.centerIn: parent
+                width: 18; height: 18; glyphSize: 18
+                colors: root.colors; asset: "check.svg"
+                iconColor: root.colors.accent
+                focusPolicy: Qt.NoFocus; hoverEnabled: false; background: null
+                Accessible.ignored: true
+                visible: downloadCard.status === "downloaded"
+                    && downloadCard.confirmationId === String(downloadCard.downloadState.id || "")
+            }
+            NativeIconButton {
+                objectName: "attachmentCardError-" + downloadCard.tag
+                anchors.centerIn: parent
+                width: 18; height: 18; glyphSize: 18
+                colors: root.colors; asset: "attachment-upload-error.svg"
+                focusPolicy: Qt.NoFocus; hoverEnabled: false; background: null
+                Accessible.ignored: true
+                visible: downloadCard.status === "error"
+            }
+            NativeIconButton {
+                objectName: "attachmentCardGlyph-" + downloadCard.tag
+                anchors.centerIn: parent
+                width: 18; height: 18; glyphSize: 18
+                colors: root.colors; asset: "files.svg"
+                iconColor: root.colors["text-muted"]
+                focusPolicy: Qt.NoFocus; hoverEnabled: false; background: null
+                Accessible.ignored: true
+                visible: downloadCard.status === "downloaded"
+                    && downloadCard.confirmationId !== String(downloadCard.downloadState.id || "")
+            }
+        }
+        Column {
+            x: 60; y: Math.max(8, (parent.height - implicitHeight) / 2)
+            width: Math.max(0, Math.min(134, parent.width - x - 8))
+            spacing: 1
+            Text {
+                objectName: "attachmentCardName-" + downloadCard.tag
+                width: parent.width
+                text: downloadCard.fileName
+                textFormat: Text.PlainText
+                font.pixelSize: 12; font.weight: Font.Medium
+                lineHeightMode: Text.FixedHeight; lineHeight: 14
+                elide: Text.ElideRight; color: root.colors["text-primary"]
+            }
+            Text {
+                objectName: "attachmentCardDetails-" + downloadCard.tag
+                width: parent.width
+                text: downloadCard.active ? downloadCard.statusLabel
+                    : downloadCard.status === "error" ? qsTr("Failed") : downloadCard.metadataLine
+                textFormat: Text.PlainText
+                font.pixelSize: 12
+                lineHeightMode: Text.FixedHeight; lineHeight: 12
+                elide: Text.ElideRight
+                color: downloadCard.active ? root.colors["text-primary"] : root.colors["text-muted"]
+                visible: text.length > 0
+            }
+            Text {
+                objectName: "attachmentCardAction-" + downloadCard.tag
+                width: parent.width
+                text: downloadCard.status === "downloaded" ? qsTr("Open")
+                    : downloadCard.status === "error" ? qsTr("Retry") : ""
+                textFormat: Text.PlainText
+                font.pixelSize: 12
+                lineHeightMode: Text.FixedHeight; lineHeight: 12
+                elide: Text.ElideRight
+                color: root.colors.accent
+                visible: text.length > 0
+            }
         }
     }
 
@@ -8695,6 +8906,40 @@ component NativeMentionChip: Item {
                         });
                     }
                     readonly property var imageParts: rendered.parts || []
+                    // Issue #631: the coordinator's live entry for every urn:file
+                    // reference cited by this body (docs/NATIVE_DESKTOP_ATTACHMENT_DOWNLOAD_STATE.md).
+                    // The binding reads controller.downloadEntries so it re-evaluates
+                    // exactly on downloadsChanged - never on the shared stateChanged
+                    // signal. The per-uuid selection semantics live in
+                    // NativeController::attachmentDownload (reference
+                    // workspace-message-attachment-download.lib.ts:12-24).
+                    readonly property var attachmentDownloads: {
+                        const entries = root.controller.downloadEntries
+                        if (!entries.length || messageRow.encryptedLocked || messageRow.keyControl)
+                            return []
+                        const body = messageRow.bodyMarkdown
+                        if (!body.includes("urn:file:"))
+                            return []
+                        const result = []
+                        const seen = []
+                        const pattern = /urn:file:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})([^)\s]*)/g
+                        let match
+                        while ((match = pattern.exec(body)) !== null) {
+                            const fileUuid = match[1].toLowerCase()
+                            if (seen.indexOf(fileUuid) >= 0) continue
+                            seen.push(fileUuid)
+                            const state = root.controller.attachmentDownload(fileUuid)
+                            if (!state || Object.keys(state).length === 0) continue
+                            const query = String(match[2] || "")
+                            const nameMatch = /[?&]name=([^&]*)/.exec(query)
+                            const sizeMatch = /[?&]size=([0-9]+)/.exec(query)
+                            let name = nameMatch ? decodeURIComponent(nameMatch[1]) : ""
+                            if (!name.length) name = String(state.fileName || "")
+                            result.push({fileUuid: fileUuid, state: state, fileName: name,
+                                sizeBytes: sizeMatch ? Number(sizeMatch[1]) : -1})
+                        }
+                        return result
+                    }
                     // Issue #109 (docs/NATIVE_DESKTOP_MENTION_CHIPS.md): the
                     // ordered urn:user references the renderer recognised in
                     // this body (ordered as they appear in the text).
@@ -10030,6 +10275,19 @@ component NativeMentionChip: Item {
                                         model: messageRow.spoilerTargets
                                         delegate: MessageSpoilerControl { row: messageRow }
                                     }
+                                }
+                            }
+                            Repeater {
+                                id: attachmentDownloadCards
+                                model: messageRow.attachmentDownloads
+                                delegate: AttachmentDownloadStateCard {
+                                    required property var modelData
+                                    tag: String(messageRow.modelData.id) + "-" + modelData.fileUuid
+                                    objectName: "attachmentCard-" + tag
+                                    downloadState: modelData.state
+                                    fileUuid: modelData.fileUuid
+                                    fileName: modelData.fileName
+                                    sizeBytes: modelData.sizeBytes
                                 }
                             }
                             Item {
