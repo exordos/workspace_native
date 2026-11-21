@@ -39,7 +39,23 @@
         <message>
             <source>Could not rename the topic. Please try again.</source>
             <translation>Не удалось переименовать тему. Попробуйте ещё раз.</translation>
-        </message>
+            </message>
+            <message>
+            <source>The topic rename was interrupted by a session refresh. Try again.</source>
+            <translation>Переименование темы прервано обновлением сессии. Повторите попытку.</translation>
+            </message>
+            <message>
+            <source>The topic notification change was interrupted by a session refresh. Try again.</source>
+            <translation>Изменение уведомлений темы прервано обновлением сессии. Повторите попытку.</translation>
+            </message>
+            <message>
+            <source>The topic read update was interrupted by a session refresh. Try again.</source>
+            <translation>Отметка темы прочитанной прервана обновлением сессии. Повторите попытку.</translation>
+            </message>
+            <message>
+            <source>The topic done update was interrupted by a session refresh. Try again.</source>
+            <translation>Обновление статуса темы прервано обновлением сессии. Повторите попытку.</translation>
+            </message>
     </context>
     <context>
         <name>SessionSwitcher</name>
