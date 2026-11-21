@@ -496,6 +496,10 @@ std::optional<Stream> parseStream(const QJsonObject &json, const QString &projec
         stream.color = quint32(color);
     stream.viewer = json.value("user_uuid").toString();
     if (json.value("default_topic_uuid").isString()) stream.defaultTopic = json.value("default_topic_uuid").toString();
+    if (json.contains("allow_key_sharing_by_holders")) {
+        stream.allowKeySharingByHolders = json.value("allow_key_sharing_by_holders").toBool();
+        stream.keySharingUpdatedMicros = *updated;
+    }
     return stream;
 }
 

@@ -3,6 +3,63 @@
 #include "support/controller-realtime-fixtures.h"
 #include "support/controller-chat-creation-fixtures.h"
 
+namespace {
+// Issue #632: an encrypted stream whose DTO completes the crypto tuple and
+// (optionally) confirms allow_key_sharing_by_holders at the given updated_at.
+inline QJsonObject keySharingStream(bool owner = true, const QJsonValue &allow = true,
+    const QString &updatedAt = QStringLiteral("2026-01-02T10:00:00.000Z"))
+{
+    auto row = creationChannel(streamId, "Key sharing fixture");
+    row["encryption"] = true;
+    row["current_encryption_key_uuid"] = QStringLiteral("11111111-1111-4111-8111-111111111111");
+    if (!owner) row["owner"] = channelMemberA;
+    if (allow.isNull()) row.remove("allow_key_sharing_by_holders");
+    else row["allow_key_sharing_by_holders"] = allow;
+    row["updated_at"] = updatedAt;
+    return row;
+}
+
+class KeySharingToggleFixture {
+public:
+    Fixture fixture;
+    QJsonObject row{keySharingStream()};
+    int puts = 0;
+    int putStatus = 200, putDelay = 0;
+    QJsonObject putBody;
+    QString putEchoUpdated = QStringLiteral("2026-01-02T10:00:05.000100Z");
+    std::function<void(QJsonObject &)> alterPut;
+    bool start()
+    {
+        fixture.streams = [this](const Request &) { return Response{QJsonArray{row}}; };
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [this, fallback](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "PUT" && path == "/api/workspace/v1/messenger/streams/" + streamId) {
+                ++puts; putBody = request.body;
+                auto echo = row;
+                echo["allow_key_sharing_by_holders"] = putBody.value("allow_key_sharing_by_holders");
+                echo["updated_at"] = putEchoUpdated;
+                if (alterPut) alterPut(echo);
+                return {echo, putStatus, putDelay, {}};
+            }
+            if (request.method == "GET" && path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return {row, 200, 0, {}};
+            return fallback(request);
+        };
+        return fixture.start();
+    }
+    // Realtime stream snapshot envelope, the shape the reference applier and
+    // the e2ee fixtures use (payload carries the full stream DTO + kind).
+    QJsonObject snapshot(const QJsonObject &dto, const QString &kind = "stream.updated")
+    {
+        auto payload = dto; payload["kind"] = kind;
+        return {{"uuid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+            {"project_id", projectId}, {"user_uuid", userId}, {"payload", payload}};
+    }
+    QVariantMap projection() const { return fixture.controller.chatKeySharing(); }
+};
+} // namespace
+
 class ControllerEncryptedChannelsTest final : public NativeControllerTestHarness {
     Q_OBJECT
 private slots:
@@ -1492,6 +1549,136 @@ private slots:
 #else
         QSKIP("built without the Main.qml source contract path");
 #endif
+    }
+
+    // ---- Issue #632: encrypted channel key-sharing toggle ----
+    // (docs/NATIVE_DESKTOP_KEY_SHARING_TOGGLE.md)
+
+    void keySharingProjectionIsOwnerOnlyAndRequiresEncryptedDto()
+    {
+        KeySharingToggleFixture owner; QVERIFY(owner.start());
+        // DTO parse: allow_key_sharing_by_holders=true confirms checked=true.
+        auto map = owner.projection();
+        QCOMPARE(map.value("checked").toBool(), true);
+        QCOMPARE(map.value("disabled").toBool(), false);
+        owner.fixture.controller.setChatKeySharing(false);
+        QTRY_VERIFY(!owner.projection().value("disabled").toBool());
+        QCOMPARE(owner.projection().value("checked").toBool(), false);
+        // Owner-only editability (editableStreamKeySharing): another owner's
+        // encrypted stream never exposes the map.
+        KeySharingToggleFixture other; other.row = keySharingStream(false); QVERIFY(other.start());
+        QVERIFY(other.projection().isEmpty());
+        other.fixture.controller.setChatKeySharing(true);
+        QCOMPARE(other.puts, 0); // the mutation is refused without a request
+        // A DTO without the flag keeps the setting unknown: hidden, no toggle.
+        KeySharingToggleFixture missing; missing.row = keySharingStream(true, QJsonValue::Null); QVERIFY(missing.start());
+        QVERIFY(missing.projection().isEmpty());
+        // A plain (unencrypted) stream hides the row even for its owner.
+        KeySharingToggleFixture plain; plain.row = keySharingStream(true, true);
+        plain.row["encryption"] = false; QVERIFY(plain.start());
+        QVERIFY(plain.projection().isEmpty());
+    }
+
+    void keySharingToggleCommitsOnVerifiedReadback()
+    {
+        KeySharingToggleFixture test; QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+        test.putDelay = 150;
+        controller.setChatKeySharing(false);
+        QTRY_VERIFY(test.puts == 1);
+        // Pending scope: the switch is disabled while the request is in flight
+        // (encrypted-chat-info-connected.ui.tsx:254).
+        QTRY_VERIFY(test.projection().value("disabled").toBool());
+        QCOMPARE(test.putBody, (QJsonObject{{"allow_key_sharing_by_holders", false}}));
+        QTRY_VERIFY(!test.projection().value("disabled").toBool());
+        QCOMPARE(test.projection().value("checked").toBool(), false);
+        QVERIFY(controller.chatKeySharingError().isEmpty());
+        // Toggling back flips the committed value and sends the new flag.
+        controller.setChatKeySharing(true);
+        QTRY_COMPARE(test.puts, 2);
+        QCOMPARE(test.putBody, (QJsonObject{{"allow_key_sharing_by_holders", true}}));
+        QTRY_VERIFY(test.projection().value("checked").toBool());
+        QVERIFY(controller.chatKeySharingError().isEmpty());
+        // One in-flight request per stream: a second click while pending is
+        // refused until the first settles.
+        test.putDelay = 150;
+        controller.setChatKeySharing(false);
+        QTRY_VERIFY(test.projection().value("disabled").toBool());
+        controller.setChatKeySharing(true);
+        QTRY_COMPARE(test.puts, 3);
+        QTest::qWait(250); // the refused click never becomes a request
+        QCOMPARE(test.puts, 3);
+        QTRY_VERIFY(!test.projection().value("disabled").toBool());
+    }
+
+    void keySharingToggleFailureKeepsPreviousValueAndNotices()
+    {
+        KeySharingToggleFixture test; QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        test.putStatus = 503;
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        QTRY_VERIFY(!test.projection().value("disabled").toBool());
+        // Reference toast (channel.keySharingUpdateFailed): the previous value
+        // survives the failed write and the notice names the failure.
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+        QCOMPARE(controller.chatKeySharingError(), QStringLiteral("Could not update key sharing."));
+        // A later successful toggle clears the notice and commits.
+        test.putStatus = 200;
+        controller.setChatKeySharing(false);
+        QTRY_VERIFY(test.projection().value("checked").toBool() == false);
+        QVERIFY(controller.chatKeySharingError().isEmpty());
+    }
+
+    void keySharingToggleUnverifiedReadbackIsAFailure()
+    {
+        KeySharingToggleFixture test; QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        // The echo confirms the wrong flag (messenger-sidebar-actions
+        // .lib.ts:614-621 readback verification): treat as failure, no commit.
+        test.alterPut = [](QJsonObject &echo) { echo["allow_key_sharing_by_holders"] = true; };
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        QTRY_VERIFY(!test.projection().value("disabled").toBool());
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+        QCOMPARE(controller.chatKeySharingError(), QStringLiteral("Could not update key sharing."));
+        // An echo describing another user's stream is refused the same way.
+        test.alterPut = [](QJsonObject &echo) { echo["user_uuid"] = channelMemberA; };
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 2);
+        QTRY_VERIFY(controller.chatKeySharingError() == QStringLiteral("Could not update key sharing."));
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+    }
+
+    void keySharingRealtimeSnapshotsRespectTheConfirmedValue()
+    {
+        KeySharingToggleFixture test; QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        // Confirm false at updated_at 10:00:05.000100Z (the PUT echo).
+        controller.setChatKeySharing(false);
+        QTRY_VERIFY(test.projection().value("checked").toBool() == false);
+        // Older snapshot (same millisecond, smaller fraction): the confirmed
+        // value wins - the reference sub-millisecond tiebreak.
+        auto stale = keySharingStream(true, true, QStringLiteral("2026-01-02T10:00:05.000050Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(stale)));
+        QCOMPARE(test.projection().value("checked").toBool(), false);
+        // A snapshot without the flag at a newer stamp also preserves it.
+        auto noFlag = keySharingStream(true, QJsonValue::Null, QStringLiteral("2026-01-02T10:00:06.000Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(noFlag)));
+        QCOMPARE(test.projection().value("checked").toBool(), false);
+        // A genuinely newer fraction in the same millisecond may overwrite.
+        auto tie = keySharingStream(true, true, QStringLiteral("2026-01-02T10:00:05.000200Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(tie)));
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+        // A newer snapshot with the flag overwrites the confirmed value.
+        auto newer = keySharingStream(true, false, QStringLiteral("2026-01-02T10:00:07.000Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(newer)));
+        QCOMPARE(test.projection().value("checked").toBool(), false);
+        // And the new confirmed stamp now protects the newer value too.
+        auto staleAgain = keySharingStream(true, true, QStringLiteral("2026-01-02T10:00:06.500Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(staleAgain)));
+        QCOMPARE(test.projection().value("checked").toBool(), false);
     }
 };
 

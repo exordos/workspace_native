@@ -137,6 +137,13 @@ struct Stream {
     // direct stream's default topic exactly as the reference resolver does.
     QString defaultTopic;
     QString viewer;
+    // Issue #632 (workspace_ui messenger-adapters.lib.ts:52-57): the stream
+    // DTO's allow_key_sharing_by_holders is tri-state - absent means the
+    // setting is unknown and the owner-only toggle stays unavailable. A
+    // present value is confirmed at the DTO's updated_at instant, kept at the
+    // same microsecond resolution the reference ms+fraction tiebreak uses.
+    std::optional<bool> allowKeySharingByHolders;
+    std::optional<qint64> keySharingUpdatedMicros;
 };
 
 // Issue #134 profile Message/Call target resolution, a port of

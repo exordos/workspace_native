@@ -103,6 +103,14 @@ Item {
     readonly property bool settingsScreen: page.chatScreen === "settings"
     readonly property bool keyScreen: page.chatScreen === "key"
     readonly property bool localKeyScreen: page.chatScreen === "local-key"
+    // Issue #632: owner-only key-sharing switch state (encrypted-chat-info-
+    // connected.ui.tsx:231-275 useChannelKeySharing). Empty map = not
+    // editable (non-owner, plain stream, or DTO without the flag): the row
+    // stays hidden.
+    readonly property var keySharing: controller.chatKeySharing
+    readonly property bool keySharingVisible: page.keySharing && page.keySharing.checked !== undefined
+    readonly property bool keySharingChecked: page.keySharingVisible && Boolean(page.keySharing.checked)
+    readonly property bool keySharingDisabled: !page.keySharingVisible || Boolean(page.keySharing.disabled)
 
     // ---- Key management projections (issue #244) ----
     readonly property var chatEncryption: controller.encryption
@@ -645,6 +653,79 @@ Item {
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
                 color: page.colors["text-muted"]
+            }
+
+            // Issue #632 key-sharing switch row (encrypted-chat-info.ui.tsx
+            // :399-421): PanelMenuRow role=switch - the same 44 px row as the
+            // keys row, right switch track h-5 w-9 (36x20) rounded-full
+            // bg-accent / bg-border-subtle, knob h-4 w-4 (16x16) at left/top
+            // 0.5 (2 px) translated 16 px when checked. The controller map is
+            // empty (row hidden) unless the encrypted stream is owned by the
+            // viewer and its DTO confirms the setting (issue #632 States:
+            // visible only for the stream owner of an encrypted stream).
+            Button {
+                id: keySharingRow
+                objectName: "protectedChatKeySharingRow"
+                width: settingsFlow.width
+                height: 44
+                padding: 0
+                hoverEnabled: true
+                visible: page.keySharingVisible
+                enabled: !page.keySharingDisabled
+                Accessible.name: qsTr("Allow members to share keys")
+                Accessible.role: Accessible.Switch
+                Accessible.checkable: true
+                Accessible.checked: page.keySharingChecked
+                contentItem: Item {
+                    anchors.fill: parent
+                    Text {
+                        objectName: "protectedChatKeySharingLabel"
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Allow members to share keys")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 14
+                        font.weight: Font.Medium
+                        color: page.colors["text-primary"]
+                    }
+                    Rectangle {
+                        objectName: "protectedChatKeySharingSwitch"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 36
+                        height: 20
+                        radius: 10
+                        color: page.keySharingChecked
+                            ? page.colors["accent"] : page.colors["border-subtle"]
+                        Rectangle {
+                            objectName: "protectedChatKeySharingKnob"
+                            width: 16
+                            height: 16
+                            radius: 8
+                            x: 2 + (page.keySharingChecked ? 16 : 0)
+                            y: 2
+                            color: "#ffffff"
+                        }
+                    }
+                }
+                background: Rectangle {
+                    radius: 6
+                    color: keySharingRow.hovered ? page.colors["sidebar-item-hover"] : "transparent"
+                }
+                onClicked: page.controller.setChatKeySharing(!page.keySharingChecked)
+            }
+            // Failure surfaces the reference toast text (channel.
+            // keySharingUpdateFailed) through the inline channel-info action
+            // notice pattern this drawer already uses (notice-base token).
+            Text {
+                objectName: "protectedChatKeySharingError"
+                visible: text.length > 0
+                width: settingsFlow.width
+                text: page.controller.chatKeySharingError
+                textFormat: Text.PlainText
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+                color: page.colors["notice-base"]
             }
 
             // PanelMenuRow: py-1.5 around a min-h-8 gap-2 row (44 px), icon in a

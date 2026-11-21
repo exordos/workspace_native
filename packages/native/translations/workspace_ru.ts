@@ -1860,6 +1860,10 @@
     </context>
     <context>
         <name>workspace::NativeController</name>
+        <message>
+            <source>Could not update key sharing.</source>
+            <translation>Не удалось изменить настройку передачи ключей.</translation>
+        </message>
         <message><source>Retry</source><translation>Повторить</translation></message>
     <message>
         <source>Could not send the key. Requests to retry: %1.</source>
@@ -4685,6 +4689,10 @@
     </context>
     <context>
         <name>NativeEncryptedChatInfo</name>
+        <message>
+            <source>Allow members to share keys</source>
+            <translation>Разрешить участникам делиться ключами</translation>
+        </message>
         <message numerus="yes">
             <source>%n participant</source>
             <translation>
