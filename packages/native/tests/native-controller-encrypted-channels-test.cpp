@@ -29,6 +29,11 @@ public:
     QJsonObject putBody;
     QString putEchoUpdated = QStringLiteral("2026-01-02T10:00:05.000100Z");
     std::function<void(QJsonObject &)> alterPut;
+    // Test-owned gate for the ambiguous-failure reconcile GET: when set, the
+    // stream detail GET is held until the test releases it, so a newer value
+    // can deterministically land while that answer is still in flight.
+    bool deferReconcile = false;
+    std::function<void()> releaseReconcile;
     bool start()
     {
         fixture.streams = [this](const Request &) { return Response{QJsonArray{row}}; };
@@ -45,8 +50,16 @@ public:
                 if (alterPut) alterPut(echo);
                 return {echo, putStatus, putDelay, {}};
             }
-            if (request.method == "GET" && path == "/api/workspace/v1/messenger/streams/" + streamId)
+            if (request.method == "GET" && path == "/api/workspace/v1/messenger/streams/" + streamId) {
+                if (deferReconcile) {
+                    Response held{row};
+                    held.defer = [this](std::function<void()> send) {
+                        releaseReconcile = std::move(send);
+                    };
+                    return held;
+                }
                 return {row, 200, 0, {}};
+            }
             return fallback(request);
         };
         return fixture.start();
@@ -1740,6 +1753,30 @@ private slots:
         QTRY_COMPARE(test.puts, 1);
         QCOMPARE(controller.chatKeySharingError(), QStringLiteral("Could not update key sharing."));
         QTRY_VERIFY(test.projection().value("checked").toBool() == false);
+    }
+
+    // exo-review findings 1+2 on PR #655: the ambiguous-failure reconcile GET
+    // must not roll back a newer value that landed while that GET was in
+    // flight (reference timestamp precedence, :622-624 stale-echo contract).
+    void keySharingStaleReconcileGetKeepsNewerValue()
+    {
+        KeySharingToggleFixture test;
+        test.putStatus = 503; // ambiguous write; the server committed nothing
+        test.deferReconcile = true; // hold the reconcile answer in flight
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        QTRY_VERIFY(static_cast<bool>(test.releaseReconcile));
+        // A genuinely newer realtime value lands while the GET is in flight.
+        auto newer = keySharingStream(true, false, QStringLiteral("2026-01-02T10:00:07Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(newer)));
+        QCOMPARE(test.projection().value("checked").toBool(), false);
+        // The stale reconcile answer (allow=true at the older stamp) arrives
+        // now: it must be dropped, not resurrect the old flag.
+        test.releaseReconcile();
+        QTest::qWait(300);
+        QCOMPARE(test.projection().value("checked").toBool(), false);
     }
 };
 
