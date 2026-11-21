@@ -16,7 +16,7 @@ namespace {
     constexpr Definition catalog[] = { { "navigation.back", "Alt+ArrowLeft" },
         { "navigation.forward", "Alt+ArrowRight" }, { "navigation.messenger", "" }, { "navigation.calendar", "" },
         { "navigation.mail", "" }, { "navigation.calls", "" }, { "navigation.activity", "" },
-        { "navigation.folderList", "" }, { "interface.theme", "" }, { "interface.help", "Mod+/" },
+        { "navigation.chatSearch", "Mod+K" }, { "navigation.folderList", "" }, { "interface.theme", "" }, { "interface.help", "Mod+/" },
         { "interface.sidebar", "Mod+\\" }, { "interface.infoPanel", "Mod+." },
         { "interface.quoteMessage", "Ctrl+L" }, { "composer.editLastMessage", "ArrowUp" },
         { "composer.bold", "Mod+B" }, { "composer.italic", "Mod+I" }, { "composer.strike", "Mod+Shift+X" },

@@ -38,6 +38,7 @@ Dialog {
         case "navigation.mail": return qsTr("Mail")
         case "navigation.calls": return qsTr("Calls")
         case "navigation.activity": return qsTr("Activity")
+        case "navigation.chatSearch": return qsTr("Search chats")
         case "navigation.folderList": return qsTr("Folder list")
         case "interface.theme": return qsTr("Change theme")
         case "interface.help": return qsTr("Help")
