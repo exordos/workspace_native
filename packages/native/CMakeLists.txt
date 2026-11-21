@@ -72,6 +72,7 @@ add_library(workspace-native-core STATIC
     src/call/incoming-call-lifecycle.cpp src/call/incoming-call-lifecycle.h
     src/native-call-bridge.cpp src/native-call-bridge.h
     src/media-viewer.cpp src/media-viewer.h
+    src/chat-background.cpp src/chat-background.h
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
     src/realtime-client.cpp src/realtime-client.h
