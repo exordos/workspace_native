@@ -28,34 +28,6 @@
             <source>Sign in to an account for the organization and project in this link.</source>
             <translation>Войдите в аккаунт организации и проекта, указанных в ссылке.</translation>
         </message>
-    <message>
-            <source>Could not update the topic notifications. Please try again.</source>
-            <translation>Не удалось обновить уведомления темы. Попробуйте ещё раз.</translation>
-        </message>
-        <message>
-            <source>Could not mark the topic as read. Please try again.</source>
-            <translation>Не удалось отметить тему как прочитанную. Попробуйте ещё раз.</translation>
-        </message>
-        <message>
-            <source>Could not rename the topic. Please try again.</source>
-            <translation>Не удалось переименовать тему. Попробуйте ещё раз.</translation>
-            </message>
-            <message>
-            <source>The topic rename was interrupted by a session refresh. Try again.</source>
-            <translation>Переименование темы прервано обновлением сессии. Повторите попытку.</translation>
-            </message>
-            <message>
-            <source>The topic notification change was interrupted by a session refresh. Try again.</source>
-            <translation>Изменение уведомлений темы прервано обновлением сессии. Повторите попытку.</translation>
-            </message>
-            <message>
-            <source>The topic read update was interrupted by a session refresh. Try again.</source>
-            <translation>Отметка темы прочитанной прервана обновлением сессии. Повторите попытку.</translation>
-            </message>
-            <message>
-            <source>The topic done update was interrupted by a session refresh. Try again.</source>
-            <translation>Обновление статуса темы прервано обновлением сессии. Повторите попытку.</translation>
-            </message>
     </context>
     <context>
         <name>SessionSwitcher</name>
@@ -1889,6 +1861,14 @@
     <context>
         <name>workspace::NativeController</name>
         <message><source>Retry</source><translation>Повторить</translation></message>
+        <message><source>Could not mark the topic as read. Please try again.</source><translation>Не удалось отметить топик как прочитанный. Попробуйте ещё раз.</translation></message>
+        <message><source>Could not rename the topic. Please try again.</source><translation>Не удалось переименовать топик. Попробуйте ещё раз.</translation></message>
+        <message><source>Could not update the topic notifications. Please try again.</source><translation>Не удалось обновить уведомления топика. Попробуйте ещё раз.</translation></message>
+        <message><source>Could not update the topic. Please try again.</source><translation>Не удалось обновить топик. Попробуйте ещё раз.</translation></message>
+        <message><source>The topic rename was interrupted by a session refresh. Try again.</source><translation>Переименование топика прервано обновлением сессии. Повторите попытку.</translation></message>
+        <message><source>The topic notification change was interrupted by a session refresh. Try again.</source><translation>Изменение уведомлений топика прервано обновлением сессии. Повторите попытку.</translation></message>
+        <message><source>The topic read update was interrupted by a session refresh. Try again.</source><translation>Отметка топика прочитанным прервана обновлением сессии. Повторите попытку.</translation></message>
+        <message><source>The topic done update was interrupted by a session refresh. Try again.</source><translation>Обновление статуса топика прервано обновлением сессии. Повторите попытку.</translation></message>
     <message>
         <source>Could not send the key. Requests to retry: %1.</source>
         <translation>Не удалось отправить ключ. Запросов для повторной попытки: %1.</translation>
