@@ -737,7 +737,12 @@ ApplicationWindow {
     readonly property var aggregateTopics: root.controller.topics.filter(topic => String(topic.name || "").trim().length > 0)
     property string sidebarQuery: ""
     readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
-    onNormalizedSidebarQueryChanged: root.controller.setSidebarSearchQuery(normalizedSidebarQuery)
+    onNormalizedSidebarQueryChanged: {
+        root.controller.setSidebarSearchQuery(normalizedSidebarQuery)
+        // PR #639 finding 4652076279: a query change invalidates every
+        // pending focus retry queued for the previous search.
+        ++root.sidebarSearchFocusSession
+    }
     // Issue #100: the reference sidebar catalog state machine projection
     // (docs/NATIVE_DESKTOP_SIDEBAR_STATES.md).
     readonly property var sidebarCatalogState: root.controller.sidebarCatalogState
@@ -5060,6 +5065,23 @@ component NativeMentionChip: Item {
     // previousFocusRef - remembered when the hotkey focuses the field.
     property var sidebarSearchPreviousFocus: null
 
+    // PR #639 finding 4652076279: focusSidebarSearchTarget retries focus on
+    // Qt.callLater while a row incubates. Every navigation captures this
+    // session into its target; a retry whose session no longer matches drops
+    // itself. Cancel, query edits, a refreshed sidebar model, and any focus
+    // move each bump it, so a stale retry can never steal focus.
+    property int sidebarSearchFocusSession: 0
+    // Focus session change: the user moved focus themselves (click, tab) or
+    // a focused delegate was destroyed mid-chain - either way a pending
+    // automatic focus claim is no longer wanted.
+    onActiveFocusItemChanged: ++root.sidebarSearchFocusSession
+    Connections {
+        target: root.controller
+        // Model change: rows shift indices when the filtered list refreshes,
+        // so any captured (row, name) target is stale.
+        function onSidebarStreamsChanged() { ++root.sidebarSearchFocusSession }
+    }
+
     function cancelSidebarSearch() {
         // Reference sidebar-search-header.ui.tsx:18-32: an unfocused field
         // with an empty query falls through; otherwise the query clears, the
@@ -5068,6 +5090,9 @@ component NativeMentionChip: Item {
         const inputFocused = sidebarSearch.activeFocus
         if (!inputFocused && !root.sidebarQuery.length)
             return false
+        // PR #639 finding 4652076279: cancelling ends the focus session even
+        // when the query was already empty (no query-change signal fires).
+        ++root.sidebarSearchFocusSession
         root.sidebarQuery = ""
         const previous = root.sidebarSearchPreviousFocus
         root.sidebarSearchPreviousFocus = null
@@ -5144,6 +5169,11 @@ component NativeMentionChip: Item {
     }
 
     function focusSidebarSearchTarget(target, step, attempt) {
+        // PR #639 finding 4652076279: only claim focus for the search
+        // session that queued this retry; cancel, query edits, model
+        // refreshes and focus moves bump sidebarSearchFocusSession.
+        if (target.session !== undefined && target.session !== root.sidebarSearchFocusSession)
+            return false
         streamList.positionViewAtIndex(target.row, ListView.Contain)
         streamList.forceLayout()
         const delegate = streamList.itemAtIndex(target.row)
@@ -5182,7 +5212,11 @@ component NativeMentionChip: Item {
         // the whole filtered list and scrolls its target into view.
         const wrapped = index === -1 && step === -1 ? targets.length - 1
             : (index + step + targets.length) % targets.length
-        return root.focusSidebarSearchTarget(targets[wrapped], step, 0)
+        // The retry chain must belong to this exact search/focus session
+        // (PR #639 finding 4652076279); any later bump drops it.
+        const target = targets[wrapped]
+        target.session = root.sidebarSearchFocusSession
+        return root.focusSidebarSearchTarget(target, step, 0)
     }
 
     function handleChatEscape(event) {

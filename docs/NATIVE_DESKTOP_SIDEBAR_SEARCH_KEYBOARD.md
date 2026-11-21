@@ -165,3 +165,14 @@ Catalog inventory updates in `native-hotkeys-test.cpp` accompany the new
 `navigation.chatSearch` row. Existing pinned expectations are otherwise
 untouched. Synthetic local HTTP/UI checks do not establish live Workspace,
 installed-package, Wayland or Windows/macOS acceptance.
+
+## Retry invalidation (PR #639 review finding 4652076279)
+
+`focusSidebarSearchTarget` walks rows that may still incubate and retries
+focus on `Qt.callLater`. Every navigation captures a
+`sidebarSearchFocusSession` token into its target object; a retry whose token
+no longer matches the current session drops itself before touching focus.
+The session is bumped by: any query change, a successful `cancelSidebarSearch`
+(including the empty-query case), `controller.sidebarStreams` changing, and
+any change of the window's `activeFocusItem`. Pinned by
+`sidebarSearchPendingFocusRetryInvalidatedByQueryChange`.
