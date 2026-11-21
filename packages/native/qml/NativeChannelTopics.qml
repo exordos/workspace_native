@@ -10,9 +10,13 @@ Column {
     required property var colors
     property bool expanded: true
     readonly property var rows: controller.channelInfoTopics.filter(t => !t.done)
-    property var target: null
-    property string pendingAction: ""
-    property bool failed: false
+
+    // Issue #636 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): the row menu
+    // lives in the shared NativeTopicContextMenu surface hosted by the drawer
+    // page; this block only reports which row asked for it. The reference
+    // trigger is right-click capture + keyboard Menu
+    // (workspace-topic-context-menu.ui.tsx).
+    signal requestTopicMenu(var topic, var anchor, real x, real y)
 
     function label(name) {
         const text = String(name).trim()
@@ -23,34 +27,6 @@ Column {
         if (mode === "follow") return qsTr("Followed")
         if (mode === "unmute") return qsTr("Unmuted")
         return qsTr("Default")
-    }
-    function context(row, anchor, x, y) {
-        if (pendingAction) return
-        target = row
-        failed = false
-        menu.popup(anchor, x, y)
-    }
-    function act(action, value) {
-        if (!target || pendingAction) return
-        pendingAction = action
-        controller.applyChannelTopicAction(target.id, action, value || "")
-    }
-    Connections {
-        target: block.controller
-        function onChannelTopicActionFinished(id, action, ok) {
-            if (!block.target || block.target.id !== id || block.pendingAction !== action) return
-            block.pendingAction = ""
-            block.failed = !ok
-            if (ok && rename.visible) rename.close()
-        }
-        function onStateChanged() {
-            if (block.target && !block.rows.some(t => t.id === block.target.id)) {
-                menu.close()
-                rename.close()
-                block.target = null
-                block.pendingAction = ""
-            }
-        }
     }
     Button {
         id: toggle
@@ -93,10 +69,13 @@ Column {
             Accessible.name: block.label(modelData.name)
             Accessible.description: notification
             onClicked: block.controller.selectTopic(modelData.id)
-            Keys.onMenuPressed: block.context(modelData, row, 12, row.height)
+            Keys.onMenuPressed: block.requestTopicMenu(row.modelData, row, 12, row.height)
+            // Issue #647: the tap's row-local `position` is already in the
+            // row's coordinates; Button does not expose mapFromScene to QML.
             TapHandler {
                 acceptedButtons: Qt.RightButton
-                onTapped: point => block.context(row.modelData, row, point.position.x, point.position.y)
+                onTapped: point => block.requestTopicMenu(row.modelData, row,
+                    point.position.x, point.position.y)
             }
             background: Rectangle { radius: 6; color: row.hovered || row.visualFocus ? block.colors["card-bg-active"] : "transparent" }
             contentItem: RowLayout {
@@ -137,28 +116,6 @@ Column {
                     ToolTip.visible: hover.hovered; ToolTip.text: row.notification
                 }
             }
-        }
-    }
-    Text { visible: block.failed; width: parent.width; wrapMode: Text.Wrap; color: block.colors.danger; text: qsTr("Could not update the topic. Please try again.") }
-    Menu {
-        id: menu
-        enabled: !block.pendingAction
-        MenuItem { text: qsTr("Default"); onTriggered: block.act("notifications", "default") }
-        MenuItem { objectName: "channelTopicMuteAction"; text: qsTr("Muted"); onTriggered: block.act("notifications", "mute") }
-        MenuItem { text: qsTr("Unmuted"); onTriggered: block.act("notifications", "unmute") }
-        MenuItem { text: qsTr("Followed"); onTriggered: block.act("notifications", "follow") }
-        MenuItem { visible: !!block.target && block.target.unread > 0; height: visible ? implicitHeight : 0; text: qsTr("Mark as read"); onTriggered: block.act("read") }
-        MenuItem { text: qsTr("Rename topic"); onTriggered: { nameField.text = block.target.name; rename.open() } }
-        MenuItem { text: qsTr("Mark topic as done"); onTriggered: block.act("toggle_done") }
-    }
-    Dialog {
-        id: rename
-        parent: Overlay.overlay; anchors.centerIn: parent; modal: true; focus: true
-        title: qsTr("Rename topic")
-        contentItem: ColumnLayout {
-            TextField { id: nameField; Layout.fillWidth: true; enabled: !block.pendingAction }
-            Button { text: qsTr("Save"); enabled: !block.pendingAction && nameField.text.trim().length > 0; onClicked: block.act("rename", nameField.text) }
-            Button { text: qsTr("Cancel"); enabled: !block.pendingAction; onClicked: rename.close() }
         }
     }
 }
