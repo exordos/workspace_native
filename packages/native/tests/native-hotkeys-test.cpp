@@ -75,6 +75,32 @@ private slots:
         QKeyEvent altgr(QEvent::KeyPress, Qt::Key_B, Qt::GroupSwitchModifier);
         QVERIFY(NativeHotkeys::fromEvent(altgr).isEmpty());
     }
+    void newlyIntroducedDefaultKeepsExistingOverride()
+    {
+        // Review finding on PR #639 (issue #628): navigation.chatSearch gained
+        // the Mod+K default. A user who previously assigned Mod+K to another
+        // action (that chord was free back then) must keep their override; the
+        // freshly introduced default must not silently evict it on load.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        {
+            QSettings seeded(dir.filePath("keys.ini"), QSettings::IniFormat);
+            seeded.setValue("scope/hotkeys/overrides/navigation.messenger", "Mod+K");
+            seeded.sync();
+        }
+        QSettings ini(dir.filePath("keys.ini"), QSettings::IniFormat);
+        NativeHotkeys keys(ini);
+        keys.load("scope");
+        QCOMPARE(keys.binding("navigation.messenger"), QStringLiteral("Mod+K"));
+        // While shadowed by the user's override the new default stays unbound.
+        QCOMPARE(keys.binding("navigation.chatSearch"), QString());
+        // The chord can never be double-assigned, and resetting the override
+        // hands the chord back to the new default.
+        QCOMPARE(keys.validate("navigation.chatSearch", QStringLiteral("Mod+K")), QStringLiteral("conflict"));
+        QVERIFY(keys.reset("navigation.messenger").isEmpty());
+        QCOMPARE(keys.binding("navigation.messenger"), QString());
+        QCOMPARE(keys.binding("navigation.chatSearch"), QStringLiteral("Mod+K"));
+    }
 };
 QTEST_GUILESS_MAIN(NativeHotkeysTest)
 #include "native-hotkeys-test.moc"
