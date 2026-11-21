@@ -126,6 +126,45 @@ Controller contract (`NativeController`):
 States: rows stay enabled for other topics while one topic has a write in
 flight; light+dark, ru+en.
 
+## Session-renewal fencing and action lifetime (issue #645)
+
+- Same-account token renewal bumps the API generation, and the request
+  wrapper never lets a retired-generation callback settle a topic action.
+  The generation-change handler therefore calls `interruptTopicActions()`:
+  every ledger entry (`<stream>|<topic>|<action>` -> dispatching owner)
+  settles as a retryable interrupted outcome (`<action>Pending` cleared,
+  `<action>Error` = "...was interrupted by a session refresh. Try again."),
+  `topicActionFinished`/`channelTopicActionFinished` fire with `ok=false`,
+  and the current stream's catalog is reconciled by a re-read because the
+  interrupted write may have committed server-side (the interrupted name is
+  never presented as a definitive success; the saved truth comes from the
+  GET). Sign-out and account switches are left to `reset()`. Late replies
+  stay fenced by their captured generation and token-keyed arbitration
+  entry, so they can neither settle a newer action nor touch the newly
+  current route. This mirrors the accepted folder precedent
+  (`interruptFolderMutation`, issue #423).
+- A route move must not strand a guard: when the reply arrives after
+  another stream became current, the action settles against its own
+  `stream|topic` state without touching the new route's catalog; a
+  collapsed sidebar stream settles its guard the same way.
+- A successful write on the selected stream mirrors the committed row into
+  the sidebar inbox catalog (`sidebarTopicsChanged`) so sidebar titles and
+  badges stay true immediately after rename/read/done/notification writes.
+- Rename dialog close policy stays `NoAutoClose` only while a rename is
+  actually pending; the interrupted settle re-enables Cancel/Save/Esc so
+  the form can be retried or dismissed without reopening the workspace.
+
+## Trigger coordinates (issue #647)
+
+- Right-click entry uses the pointer handler's row-local `point.position`
+  (already control-local). `mapFromScene` is not invokable on a
+  QQC2 Button in this runtime; calling it threw a TypeError before the
+  menu opened (reproduced under Qt 6.10.2, window case
+  `topicContextMenuOpensFromRightClickAndMenuKey` fails RED without this).
+  `open()` receives the click point relative to the anchor and maps it
+  into the menu parent; the keyboard Menu-key entry keeps its anchor-based
+  point.
+
 ## Tests
 
 - `native-controller-topics-test.cpp` (native-native-controller group):
