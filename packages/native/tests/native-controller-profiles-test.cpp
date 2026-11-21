@@ -2875,6 +2875,82 @@ private slots:
             if (send) send();
     }
 
+    // Issue #645 review (comment 4653853398): the renewal-triggered reconcile
+    // read may complete BEFORE the interrupted write commits on the server.
+    // When that write's reply then arrives, the server state can no longer
+    // change, so the drawer rows must be reconciled a second time - otherwise
+    // the committed value never reaches the UI.
+    void topicActionRenewalReconcilesAfterHeldWriteCommits()
+    {
+        Fixture f;
+        QVector<std::function<void()>> release;
+        int renamePosts = 0;
+        int topicReads = 0;
+        QString serverName = QStringLiteral("Original");
+        const auto topicPath = QStringLiteral("/api/workspace/v1/messenger/stream_topics/") + topicId;
+        bool armRotate = false;
+        f.topics = [&](const Request &) {
+            ++topicReads;
+            return Response{QJsonArray{creationTopic(topicId, streamId, serverName)}};
+        };
+        f.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (armRotate && request.body.value("grant_type") == "refresh_token") {
+                auto token = response.data.toObject();
+                token.insert("access_token", QStringLiteral("synthetic-renewed-645b"));
+                response.data = token;
+            }
+            return response;
+        };
+        const auto base = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "PUT" && request.target.path() == topicPath) {
+                ++renamePosts;
+                const auto committed = request.body.value("name").toString();
+                const auto row = creationTopic(topicId, streamId, committed);
+                return Response{row, 200, 0, {}, [&release, &serverName, committed](std::function<void()> send) {
+                    release.append([&, committed, send = std::move(send)] {
+                        // The server can commit only now, after the renewal.
+                        serverName = committed;
+                        send();
+                    });
+                }};
+            }
+            return base(request);
+        };
+        QVERIFY(f.start());
+        auto &c = f.controller;
+        QTRY_VERIFY(!c.topics().isEmpty());
+        const auto topicRow = [&](const QString &id) {
+            for (const auto &value : c.topics())
+                if (value.toMap().value("id").toString() == id) return value.toMap();
+            return QVariantMap{};
+        };
+        QCOMPARE(topicRow(topicId).value("name").toString(), QStringLiteral("Original"));
+        QSignalSpy finished(&c, &NativeController::channelTopicActionFinished);
+        c.applyChannelTopicAction(topicId, "rename", "Renamed late");
+        QTRY_COMPARE(renamePosts, 1);
+        QCOMPARE(release.size(), 1);
+        QSignalSpy renewed(&f.session, &Session::authenticated);
+        armRotate = true;
+        f.session.requestRefresh();
+        QTRY_COMPARE(renewed.size(), 1);
+        QTRY_COMPARE(finished.size(), 1); // the interrupted result from the renewal
+        // The renewal's reconcile read answers while the write is still held
+        // uncommitted: the row settles back to the pre-write name.
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(topicRow(topicId).value("name").toString(), QStringLiteral("Original"));
+        const auto readsBefore = topicReads;
+        release[0](); // commits on the server; the fenced reply arrives.
+        // The fenced reply proves the server settled: the rows must be read
+        // once more and show the committed name.
+        QTRY_COMPARE_WITH_TIMEOUT(topicRow(topicId).value("name").toString(),
+            QStringLiteral("Renamed late"), 3000);
+        QCOMPARE(topicReads, readsBefore + 1); // exactly one reconcile, no storm
+        QTest::qWait(250);
+        QCOMPARE(topicReads, readsBefore + 1);
+    }
+
     void chatHeaderRetriesInitialMemberFailure_data()
     {
         QTest::addColumn<QString>("edge");
