@@ -40821,6 +40821,104 @@ private slots:
         QCOMPARE(window->property("sidebarQuery").toString(), QStringLiteral("alpha"));
     }
 
+    void sidebarSearchArrowsScrollThroughOffscreenResults_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("english-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("russian-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void sidebarSearchArrowsScrollThroughOffscreenResults()
+    {
+        // Issue #648 (PR #639 follow-up): the arrow ring must cover ALL
+        // filtered results and scroll the focus target into view
+        // (positionViewAtIndex-style), not just the rows already inside the
+        // viewport. Reporter: 8 matches, space for 3, cycle was 0->1->2->0
+        // with scroll stuck at 0.
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        QStringList scrollIds;
+        const QStringList scrollNames = { "Scroll One", "Scroll Two", "Scroll Three", "Scroll Four",
+            "Scroll Five", "Scroll Six", "Scroll Seven", "Scroll Eight" };
+        for (int index = 0; index < scrollNames.size(); ++index)
+            scrollIds << QStringLiteral("92000000-0000-4000-8000-0000000000e%1").arg(index + 1, 1, 10, QLatin1Char('0'));
+        QJsonArray rows;
+        for (int index = 0; index < scrollIds.size(); ++index)
+            rows.append(windowChannel(scrollIds.at(index), scrollNames.at(index)));
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/")) return {rows};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) return {QJsonArray{}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-scroll.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Scrolling search arrows teardown", __FILE__, __LINE__);
+        });
+        // Short window so the ListView shows only a few of the eight rows.
+        window->resize(1440, 300); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-scroll", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 8);
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        auto *list = item(window->contentItem(), "streamList"); QVERIFY(list);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "scroll");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + scrollIds.first()), 2000);
+        QTRY_VERIFY(list->property("contentHeight").toDouble() > list->height() * 1.5);
+        // More matches than viewport: at scroll 0 some rows are below the fold
+        // (realized with their mid-point under the viewport edge, or not
+        // realized at all), which the viewport-scoped ring could never reach.
+        int belowFold = 0;
+        for (const auto &id : scrollIds) {
+            auto *row = item(window->contentItem(), "stream-" + id);
+            if (!row || row->mapToItem(list, 0, 0).y() + row->height() / 2.0 > list->height())
+                ++belowFold;
+        }
+        QVERIFY(belowFold >= 2);
+        const auto listScroll = [list] { return list->property("contentY").toDouble(); };
+        const auto focusName = [window] {
+            auto *focused = window->activeFocusItem();
+            return focused ? focused->objectName() : QString();
+        };
+        // ArrowDown walks the whole filtered list; past the fold the view
+        // scrolls with the focus (reference: DOM focus scrolls the item into
+        // view, sidebar-workspace-search.lib.ts:27-30).
+        const double scrollAtStart = listScroll();
+        for (int row = 0; row < scrollIds.size(); ++row) {
+            QTest::keyClick(window, Qt::Key_Down);
+            QTRY_VERIFY_WITH_TIMEOUT(
+                (item(window->contentItem(), "stream-" + scrollIds.at(row))
+                    && item(window->contentItem(), "stream-" + scrollIds.at(row))->hasActiveFocus()),
+                3000);
+        }
+        QVERIFY(listScroll() > scrollAtStart);
+        // The last row really arrived at, then ArrowDown wraps back to the
+        // first row and the view scrolls back up.
+        QCOMPARE(focusName(), QStringLiteral("stream-") + scrollIds.last());
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            (item(window->contentItem(), "stream-" + scrollIds.first())
+                && item(window->contentItem(), "stream-" + scrollIds.first())->hasActiveFocus()),
+            3000);
+        QTRY_VERIFY_WITH_TIMEOUT(listScroll() <= scrollAtStart, 3000);
+        // ArrowUp from the first row wraps to the last (below-the-fold) row.
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            (item(window->contentItem(), "stream-" + scrollIds.last())
+                && item(window->contentItem(), "stream-" + scrollIds.last())->hasActiveFocus()),
+            3000);
+        QTRY_VERIFY_WITH_TIMEOUT(listScroll() > scrollAtStart, 3000);
+    }
+
     void sidebarSearchEscapeClearsQueryAndRestoresFocus()
     {
         WindowChannelFixture fixture;
