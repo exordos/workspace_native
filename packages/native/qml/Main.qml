@@ -6467,18 +6467,20 @@ component NativeMentionChip: Item {
                             // Issue #636: the topic context menu opens on right
                             // click and the keyboard Menu key (reference
                             // right-click capture + keyboard Menu). open()
-                            // takes anchor-local coordinates.
+                            // takes anchor-local coordinates. Issue #647: the
+                            // tap's row-local `position` IS the control-local
+                            // point - Button does not expose mapFromScene to
+                            // QML (calling it threw before the menu opened).
                             Keys.onMenuPressed: {
                                 event.accepted = true
-                                root.sidebarTopicMenu.open(streamDelegate.modelData.id, topicButton.modelData.id,
+                                sidebarTopicMenu.open(streamDelegate.modelData.id, topicButton.modelData.id,
                                     topicButton, Qt.point(topicButton.width, topicButton.height / 2))
                             }
                             TapHandler {
                                 acceptedButtons: Qt.RightButton
                                 onTapped: point => {
-                                    const local = topicButton.mapFromScene(point.scenePoint)
-                                    root.sidebarTopicMenu.open(streamDelegate.modelData.id,
-                                        topicButton.modelData.id, topicButton, local)
+                                    sidebarTopicMenu.open(streamDelegate.modelData.id,
+                                        topicButton.modelData.id, topicButton, point.position)
                                 }
                             }
                             background: Rectangle {

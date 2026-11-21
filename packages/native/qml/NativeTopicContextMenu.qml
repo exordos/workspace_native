@@ -102,7 +102,11 @@ Item {
     }
 
     function open(rowStream, topic, anchor, point) {
-        if (!controller.authenticated || !controller.ownerKey.length) return
+        // authenticated() alone gates the session: ownerKey stays empty for
+        // synthetic accounts (isUuid-failed user), so a length precondition
+        // would wedge the menu; owner drift while open is fenced by the
+        // targetOwner comparison in the state-changed handler below.
+        if (!controller.authenticated) return
         targetStream = rowStream
         targetTopic = topic
         targetOwner = controller.ownerKey
@@ -317,6 +321,9 @@ Item {
     Popup {
         id: topicRenameDialog
         objectName: "topicRenameDialog"
+        // Same surface-tag contract as topicMenu: the test hooks identify the
+        // hosting surface on the popup itself, not on the object path.
+        property string dialogSurface: block.surface
         parent: Overlay.overlay
         x: Math.round((Overlay.overlay.width - width) / 2)
         y: Math.round((Overlay.overlay.height - height) / 2)

@@ -70,12 +70,12 @@ Column {
             Accessible.description: notification
             onClicked: block.controller.selectTopic(modelData.id)
             Keys.onMenuPressed: block.requestTopicMenu(row.modelData, row, 12, row.height)
+            // Issue #647: the tap's row-local `position` is already in the
+            // row's coordinates; Button does not expose mapFromScene to QML.
             TapHandler {
                 acceptedButtons: Qt.RightButton
-                onTapped: point => {
-                    const local = row.mapFromScene(point.scenePoint)
-                    block.requestTopicMenu(row.modelData, row, local.x, local.y)
-                }
+                onTapped: point => block.requestTopicMenu(row.modelData, row,
+                    point.position.x, point.position.y)
             }
             background: Rectangle { radius: 6; color: row.hovered || row.visualFocus ? block.colors["card-bg-active"] : "transparent" }
             contentItem: RowLayout {
