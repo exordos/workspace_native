@@ -1206,6 +1206,116 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(slotDone(), 4000);
         release();
     }
+
+    void topicActionLateReplyReconcilesSidebarStream()
+    {
+        // Review finding 4654745629: a late reply to an interrupted sidebar
+        // write may commit only AFTER the renewal's reconcile read and the
+        // sweep's sidebar re-hydration already answered. The late reply
+        // proves the server settled the write, so the retired write's TARGET
+        // stream must be re-read too - reloading only the selected stream
+        // leaves the committed row missing from that sidebar slot.
+        Fixture fixture;
+        const auto peerStream = QStringLiteral("96410000-0000-4000-8000-000000000001");
+        const auto peerTopic = QStringLiteral("96410000-0000-4000-8000-000000000002");
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", peerStream}, {"project_id", projectId},
+                    {"name", "Peer channel"}, {"encryption", false}}}};
+        };
+        QJsonObject peerDto{{"uuid", peerTopic}, {"project_id", projectId},
+            {"stream_uuid", peerStream}, {"name", "Peer topic"},
+            {"notification_mode", "default"}, {"is_done", false}};
+        int peerReads = 0;
+        bool armRotate = false;
+        fixture.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (armRotate && request.body.value("grant_type") == "refresh_token") {
+                auto token = response.data.toObject();
+                token.insert("access_token", QStringLiteral("sidebar-641-late-renewed"));
+                response.data = token;
+            }
+            return response;
+        };
+        fixture.topics = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == peerStream) {
+                ++peerReads;
+                QJsonArray rows;
+                rows.append(peerDto);
+                return Response{rows};
+            }
+            QJsonArray rows;
+            rows.append(QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}});
+            return Response{rows};
+        };
+        int posts = 0;
+        std::function<void()> release;
+        const auto base = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/"
+                    + peerTopic + "/actions/toggle_done/invoke") {
+                ++posts;
+                // The server commits only when the held reply is released:
+                // both the renewal reconcile and the sweep's re-hydration
+                // answer while the write is still uncommitted.
+                Response response{peerDto};
+                response.defer = [&](auto finish) {
+                    release = [&, finish = std::move(finish)] {
+                        peerDto["is_done"] = true;
+                        finish();
+                    };
+                };
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start({}, 2));
+        fixture.controller.toggleSidebarStream(peerStream);
+        const auto slotDone = [&] {
+            const auto rows = fixture.controller.sidebarTopicState(peerStream, true).value("rows").toList();
+            for (const auto &value : rows) {
+                const auto row = value.toMap();
+                if (row.value("id").toString() == peerTopic)
+                    return row.value("done").toBool();
+            }
+            return false;
+        };
+        QTRY_VERIFY(fixture.controller.sidebarTopicState(peerStream, true).value("rows").toList().size() == 1);
+        QVERIFY(!slotDone());
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(peerStream, peerTopic, "toggle_done", "");
+        QTRY_COMPARE(posts, 1);
+        QVERIFY(bool(release));
+        // Same-owner renewal via the real refresh flow: the generation bumps
+        // and the AwaitReply dispatch survives it, so the held reply lands
+        // later with the settled verdict.
+        armRotate = true;
+        QSignalSpy renewed(&fixture.session, &Session::authenticated);
+        fixture.session.requestRefresh();
+        QTRY_COMPARE(renewed.size(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &args : finished)
+                if (args.at(0).toString() == peerStream && args.at(1).toString() == peerTopic
+                    && args.at(2).toString() == "toggle_done" && !args.at(3).toBool())
+                    return true;
+            return false;
+        })(), 4000);
+        // The sweep re-hydrated the slot while the write was still uncommitted.
+        QTRY_VERIFY(peerReads >= 2);
+        QVERIFY(!slotDone());
+        const auto readsBefore = peerReads;
+        release(); // The server commits exactly here; the fenced reply arrives.
+        // The late reply proves the server settled: that stream must be
+        // re-read exactly once - the selected route is not the target.
+        QTRY_VERIFY_WITH_TIMEOUT(slotDone(), 4000);
+        QCOMPARE(peerReads, readsBefore + 1);
+        QTest::qWait(250);
+        QCOMPARE(peerReads, readsBefore + 1);
+    }
 };
 
 QTEST_MAIN(ControllerTopicsTest)
