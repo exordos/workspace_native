@@ -598,7 +598,12 @@ if(BUILD_TESTING)
     # Original189 cases plus42 additive observer/resolver/lifecycle/disclosure data.
     # Measured old suite359.164s + new42 focus130.768s + RT control17.018s;
     # 25% headroom rounded up to30s:660s. Individual waits stay unchanged.
-    set_tests_properties(native-native-e2ee-read PROPERTIES TIMEOUT 660)
+    # Ceiling re-measured after the 0.42.0 upstream growth: the group runs
+    # 657.58 s standalone on an idle host (issue #650), so the old 660 s
+    # ceiling left ~2 s of margin and timed out the full pre-tag gate under
+    # any concurrent load. Same headroom recipe as before: 657.6 s * 1.25
+    # = 822 s, rounded up to 900 s. Individual waits stay unchanged.
+    set_tests_properties(native-native-e2ee-read PROPERTIES TIMEOUT 900)
     # Reuse the real TLS/source-JS fixture for the visible encrypted UI slice.
     # The explicit functions keep the existing core and pulse suite separate.
     add_executable(native-e2ee-ui-test tests/native-e2ee-read-test.cpp)
