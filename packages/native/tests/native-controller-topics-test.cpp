@@ -889,6 +889,145 @@ private slots:
         QTRY_VERIFY(!fixture.controller.topicActionBusy(topicId));
         QTRY_VERIFY(!fixture.controller.topicActionBusy(secondTopicId));
     }
+
+    // ---- Issue #645: session-renewal fencing of topic actions ----
+    // docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md: a same-owner token
+    // renewal retires the held action's transport (the request wrapper never
+    // answers the retired callback), so the generation-change sweep must
+    // settle the guard as an uncertain interrupted outcome, reconcile the
+    // catalog from the server, fence the late reply, and let the renewed
+    // session act on the same topic again without a workspace restart.
+    void topicActionRenameInterruptedBySameOwnerRenewalSettlesUncertainAndReconciles()
+    {
+        Fixture fixture;
+        QJsonObject dto{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "Native topic"}, {"unread_count", 0}, {"active_unread_count", 0},
+            {"passive_unread_count", 0}, {"notification_mode", "default"}, {"is_done", false}};
+        fixture.topics = [&](const Request &) { QJsonArray rows; rows.append(dto); return Response{rows}; };
+        const auto base = fixture.server.handler;
+        int renames = 0;
+        bool deferFirst = true;
+        std::function<void()> release;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "PUT"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/" + topicId) {
+                ++renames;
+                // The server commits the write on arrival; only the reply is
+                // held - exactly the interruption the reporter reproduced.
+                dto["name"] = request.body.value("name").toString();
+                Response response{dto};
+                if (deferFirst) {
+                    deferFirst = false;
+                    response.defer = [&](auto finish) { release = std::move(finish); };
+                }
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(streamId, topicId, "rename", "Renewed name");
+        QTRY_COMPARE(renames, 1);
+        QVERIFY(bool(release));
+        QVERIFY(fixture.controller.topicActionState(streamId, topicId).value("renamePending").toBool());
+        // Same-owner renewal: a replacement access token bumps the generation.
+        fixture.api.setAccessToken("topic-645-renewed-access-token");
+        // AC1: the held rename settles as an interrupted outcome distinct from
+        // success (zero completion signals was the reported bug).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &args : finished)
+                if (args.at(0).toString() == streamId && args.at(1).toString() == topicId
+                    && args.at(2).toString() == "rename" && !args.at(3).toBool())
+                    return true;
+            return false;
+        })(), 4000);
+        auto state = fixture.controller.topicActionState(streamId, topicId);
+        QCOMPARE(state.value("renamePending").toBool(), false);
+        QCOMPARE(state.value("renameError").toString(),
+            QString("The topic rename was interrupted by a session refresh. Try again."));
+        QVERIFY(!fixture.controller.topicActionBusy(topicId));
+        // The catalog is reconciled from the server, not guessed: the
+        // interrupted write committed, so the saved name is the truth.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &value : fixture.controller.topics())
+                if (value.toMap().value("id").toString() == topicId)
+                    return value.toMap().value("name").toString() == "Renewed name";
+            return false;
+        })(), 4000);
+        const auto finishedAfterSettle = finished.count();
+        // The late reply of the retired generation must not re-settle anything.
+        release();
+        QTest::qWait(300);
+        QCOMPARE(finished.count(), finishedAfterSettle);
+        state = fixture.controller.topicActionState(streamId, topicId);
+        QCOMPARE(state.value("renamePending").toBool(), false);
+        // AC2: the renewed session acts on the same topic again with no reset.
+        fixture.controller.applyTopicAction(streamId, topicId, "rename", "Final name");
+        QTRY_COMPARE(renames, 2);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &args : finished)
+                if (args.at(0).toString() == streamId && args.at(1).toString() == topicId
+                    && args.at(2).toString() == "rename" && args.at(3).toBool())
+                    return true;
+            return false;
+        })(), 4000);
+        state = fixture.controller.topicActionState(streamId, topicId);
+        QCOMPARE(state.value("renamePending").toBool(), false);
+        QVERIFY(state.value("renameError").toString().isEmpty());
+    }
+
+    void topicActionHeldReplyAfterRouteMoveLeavesNoPermanentPending()
+    {
+        // AC (issue #645, #641 head): navigating to another channel while a
+        // rename reply is in flight must not strand the original topic's
+        // pending flag, and the late reply must not touch the new route.
+        Fixture fixture;
+        const auto peerStream = QStringLiteral("96200000-0000-4000-8000-000000000001");
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", peerStream}, {"project_id", projectId},
+                    {"name", "Peer channel"}, {"encryption", false}}}};
+        };
+        int renames = 0;
+        std::function<void()> release;
+        const auto base = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "PUT"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/" + topicId) {
+                ++renames;
+                Response response{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Moved-on name"}}};
+                response.defer = [&](auto finish) { release = std::move(finish); };
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start({}, 2));
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(streamId, topicId, "rename", "Moved-on name");
+        QTRY_COMPARE(renames, 1);
+        QVERIFY(bool(release));
+        QVERIFY(fixture.controller.topicActionState(streamId, topicId).value("renamePending").toBool());
+        fixture.controller.selectStream(peerStream);
+        QTRY_VERIFY(!fixture.controller.busy());
+        release();
+        // The settled guard proves the reply landed on the retired route
+        // without stranding the original topic's pending flag.
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !fixture.controller.topicActionState(streamId, topicId).value("renamePending").toBool(), 4000);
+        QVERIFY(!fixture.controller.topicActionBusy(topicId));
+        bool sawOk = false;
+        for (const auto &args : finished)
+            if (args.at(0).toString() == streamId && args.at(1).toString() == topicId
+                && args.at(2).toString() == "rename" && args.at(3).toBool())
+                sawOk = true;
+        QVERIFY(sawOk);
+        // The new route's catalog was not rewritten by the old route's reply:
+        // the peer stream's topics still come from its own catalog response.
+        QCOMPARE(fixture.controller.selectedStream(), peerStream);
+    }
 };
 
 QTEST_MAIN(ControllerTopicsTest)
