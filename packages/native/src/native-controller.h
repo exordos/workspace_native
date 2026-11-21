@@ -109,6 +109,13 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList channelInfoMembers READ channelInfoMembers NOTIFY stateChanged)
     Q_PROPERTY(int channelInfoMemberCount READ channelInfoMemberCount NOTIFY stateChanged)
     Q_PROPERTY(int channelInfoOnlineCount READ channelInfoOnlineCount NOTIFY stateChanged)
+    // Issue #632 (docs/NATIVE_DESKTOP_KEY_SHARING_TOGGLE.md): the encrypted
+    // channel owner-only key-sharing switch. The map carries {checked,
+    // disabled} only while the row is editable (encrypted stream owned by the
+    // viewer whose DTO confirms allow_key_sharing_by_holders); an empty map
+    // means the row is hidden. Reuses stateChanged: no new NOTIFY signals.
+    Q_PROPERTY(QVariantMap chatKeySharing READ chatKeySharing NOTIFY stateChanged)
+    Q_PROPERTY(QString chatKeySharingError READ chatKeySharingError NOTIFY stateChanged)
     // Issue #89 (docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md): the member +
     // online projection behind the chat header caption. Selection-scoped:
     // both reads report 0 unless the loaded bindings belong to the current
@@ -745,6 +752,11 @@ public:
                                              const QString &value = {});
     Q_INVOKABLE void setChannelInfoNotificationMode(const QString &mode);
     Q_INVOKABLE void removeChannelInfoMember(const QString &bindingUuid);
+    // Issue #632: owner-only encrypted key-sharing toggle (PUT with readback
+    // verification, confirmed-value precedence over realtime snapshots).
+    Q_INVOKABLE void setChatKeySharing(bool allow);
+    QVariantMap chatKeySharing() const;
+    QString chatKeySharingError() const { return m_chatKeySharingError; }
     Q_INVOKABLE void addChannelInfoMembers(const QStringList &userUuids);
     Q_INVOKABLE void resetChannelInfoAddState();
     // ---- Issue #134 profile drawer ----
@@ -1892,6 +1904,11 @@ private:
     QHash<QString, quint64> m_channelInfoAddInFlight;
     quint64 m_channelInfoAddToken = 0;
     QString m_channelInfoAddError;
+    // Issue #632: key-sharing toggle state, one in-flight request per stream
+    // with a token guard mirroring the notification-mode mutation.
+    QHash<QString, quint64> m_chatKeySharingInFlight;
+    quint64 m_chatKeySharingToken = 0;
+    QString m_chatKeySharingError;
     int m_channelInfoAddSettled = 0;
     // ---- Issue #89 chat header member projection ----
     // docs/NATIVE_DESKTOP_CHAT_HEADER_COUNTERS.md. The member uuids belong

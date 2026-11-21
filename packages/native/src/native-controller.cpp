@@ -4252,6 +4252,7 @@ void NativeController::refreshChannelInfo()
         m_channelInfoMembers.clear();
         m_channelInfoMemberError.clear();
         m_channelInfoNotificationError.clear();
+        m_chatKeySharingError.clear();
         m_channelInfoRemoving.clear();
     }
     const auto ticket = ++m_channelInfoTicket;
@@ -4416,6 +4417,72 @@ void NativeController::updateStreamNotificationMode(QString id, const QString &m
         if (!confirmed && result.completedAfterTokenRenewal) {
             // The renewal's catalog may have been read before the write
             // settled. A failed response can still follow a server commit.
+            refresh();
+            if (!guard) return;
+        }
+        emit stateChanged();
+    }, ApiClient::TokenRenewal::AwaitReply);
+}
+
+// Issue #632 (docs/NATIVE_DESKTOP_KEY_SHARING_TOGGLE.md): encrypted-chat-info
+// connected wrapper state (encrypted-chat-info-connected.ui.tsx:231-275). An
+// empty map hides the row: the setting exists only for an encrypted stream
+// owned by the viewer (ownerUuid = dto.owner, messenger-adapters.lib.ts:37)
+// whose DTO confirms allow_key_sharing_by_holders.
+QVariantMap NativeController::chatKeySharing() const
+{
+    const auto *stream = channelInfoStreamRow();
+    if (!stream || !stream->encrypted || !stream->allowKeySharingByHolders
+        || !stream->security || stream->security->owner != m_session->user()) return {};
+    return {{"checked", *stream->allowKeySharingByHolders},
+            {"disabled", m_chatKeySharingInFlight.contains(stream->uuid)}};
+}
+
+void NativeController::setChatKeySharing(bool allow)
+{
+    const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [this](const Stream &row) { return row.uuid == m_stream; });
+    const Stream *stream = entry == m_streams.cend() ? nullptr : &*entry;
+    // editableStreamKeySharing (messenger-stream-key-sharing.lib.ts:3-10):
+    // encryption && ownerUuid == userUuid && the DTO carries the flag.
+    if (!authenticated() || !stream || !stream->encrypted || !stream->allowKeySharingByHolders
+        || !stream->security || stream->security->owner != m_session->user()) return;
+    const auto id = stream->uuid;
+    if (m_chatKeySharingInFlight.contains(id)) return;
+    const auto owner = ownerKey();
+    const auto generation = m_api->generation();
+    const auto token = ++m_chatKeySharingToken;
+    m_chatKeySharingInFlight.insert(id, token);
+    m_chatKeySharingError.clear();
+    emit stateChanged();
+    request("PUT", messenger + "/streams/" + id,
+        QJsonObject{{"allow_key_sharing_by_holders", allow}}, {},
+        [this, owner, generation, id, token, allow](const ApiResult &result) {
+        if (!authenticated() || ownerKey() != owner || m_chatKeySharingInFlight.value(id) != token
+            || (m_api->generation() != generation && !result.completedAfterTokenRenewal)) return;
+        m_chatKeySharingInFlight.remove(id);
+        // Readback verification (messenger-sidebar-actions.lib.ts:614-621):
+        // the echo must describe this stream, carry the runtime user's
+        // user_uuid, and confirm the requested flag; anything else keeps the
+        // previous value and reports the reference toast.
+        const auto parsed = result.ok() && result.data.isObject()
+            ? parseStream(result.data.toObject(), m_session->project()) : std::optional<Stream>{};
+        const auto row = std::find_if(m_streams.begin(), m_streams.end(),
+            [&id](const Stream &stream) { return stream.uuid == id; });
+        const bool confirmed = parsed && parsed->uuid == id && parsed->viewer == m_session->user()
+            && parsed->allowKeySharingByHolders == allow && row != m_streams.end();
+        const QPointer<NativeController> guard(this);
+        if (confirmed) {
+            *row = *parsed;
+            m_chatKeySharingError.clear();
+            emit streamsChanged();
+        } else if (m_stream == id) {
+            m_chatKeySharingError = tr("Could not update key sharing.");
+        }
+        if (!guard) return;
+        if (!confirmed && result.completedAfterTokenRenewal) {
+            // A renewed-token reply can still follow a server commit; let the
+            // authoritative catalog settle the row.
             refresh();
             if (!guard) return;
         }
@@ -12377,9 +12444,23 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         emit messagesChanged();
     } else if (kind == "stream.created" || kind == "stream.updated" || kind == "stream.read") {
         ++m_streamRevision;
-        const auto stream = parseStream(payload, m_session->project());
+        auto stream = parseStream(payload, m_session->project());
         if (!stream || (stream->archived && !creationStreamDto(payload, m_session->project(), m_session->user(), false)))
             return false;
+        // Issue #632 (messenger-stream-key-sharing.lib.ts:12-43): a realtime
+        // snapshot may not clobber a locally confirmed key-sharing value. The
+        // microsecond stamp carries the same resolution as the reference
+        // millisecond + padded-fraction tiebreak, so "not strictly newer"
+        // preserves the confirmed value on the boundary too.
+        for (const auto &row : std::as_const(m_streams)) {
+            if (row.uuid != stream->uuid) continue;
+            if (row.keySharingUpdatedMicros && (!stream->keySharingUpdatedMicros
+                || *stream->keySharingUpdatedMicros <= *row.keySharingUpdatedMicros)) {
+                stream->allowKeySharingByHolders = row.allowKeySharingByHolders;
+                stream->keySharingUpdatedMicros = row.keySharingUpdatedMicros;
+            }
+            break;
+        }
         if (kind != "stream.read") {
             const QPointer<NativeController> openingGuard(this);
             noteTopicOpeningStream(*stream);
