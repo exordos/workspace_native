@@ -194,7 +194,7 @@ avatar rails and actual avatar images still require acceptance.
   complete Workspace rendering parity.
 - Native message ownership follows the [desktop bubble](https://github.com/exordos/workspace_ui/blob/95495b10b828f853c9e770b47216073eb973fa95/packages/web/src/widgets/workspace-message-list/workspace-message-bubble-presentation.ui.tsx):
   the author is the current verified viewer **or** the server own flag is true.
-  [Controller regressions](../packages/native/tests/native-controller-test.cpp)
+  [Controller regressions](../packages/native/tests/native-controller-history-test.cpp)
   cover all four author/flag combinations and the corresponding edit/delete
   guards. This view rule does not replace the stricter server facts required to
   confirm a locally sent message. Matched visual fixtures use a distinct peer
