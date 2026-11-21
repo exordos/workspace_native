@@ -41,6 +41,32 @@ private slots:
         QCOMPARE(restored.binding("composer.bold"), "Mod+B");
         QVERIFY(restored.binding("interface.theme").isEmpty());
     }
+    void invalidStoredOverrideCannotShadowDefault()
+    {
+        // Review finding on PR #639 (comment 4651140462): with composer.bold
+        // holding an invalid stored chord and interface.theme holding Mod+B,
+        // the theme override must not survive and shadow the bold default
+        // that the invalid override was blocking. Pruning the invalid value
+        // must restore the default and drop the now-conflicting override.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        {
+            QSettings seeded(dir.filePath("keys.ini"), QSettings::IniFormat);
+            seeded.setValue("scope/hotkeys/overrides/composer.bold", "not a chord");
+            seeded.setValue("scope/hotkeys/overrides/interface.theme", "Mod+B");
+            seeded.sync();
+        }
+        QSettings ini(dir.filePath("keys.ini"), QSettings::IniFormat);
+        NativeHotkeys keys(ini);
+        keys.load("scope");
+        QCOMPARE(keys.binding("composer.bold"), QStringLiteral("Mod+B"));
+        QVERIFY(keys.binding("interface.theme").isEmpty());
+        // The restored default must own its chord: re-assigning the shadowing
+        // value is rejected, and the invalid override was pruned for real.
+        QCOMPARE(keys.validate("interface.theme", QStringLiteral("Mod+B")), QStringLiteral("conflict"));
+        QVERIFY(keys.reset("composer.bold").isEmpty());
+        QCOMPARE(keys.binding("composer.bold"), QStringLiteral("Mod+B"));
+    }
     void reservedAndPhysicalPositions()
     {
         QTemporaryDir dir;
