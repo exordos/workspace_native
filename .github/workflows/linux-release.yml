@@ -287,6 +287,81 @@ jobs:
           ctest --test-dir build/headless -L '${{ matrix.include_label }}' -LE '${{ matrix.exclude_label }}'
           --parallel ${{ matrix.workers }} --output-on-failure --no-tests=error
 
+  full-gate:
+    # The whole CTest suite (gui + headless + controller) runs in CI as parallel
+    # shards, each with its own private Xvnc/Openbox desktop, so a green PR or
+    # master push already covers what the local pre-release gate used to cover.
+    # Each shard runs the stride slice -I <shard>,<total>,<shards> of the full
+    # test list; slices are equal-sized by registration order.
+    name: Full gate shard ${{ matrix.shard }}
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    permissions:
+      contents: read
+    timeout-minutes: 75
+    env: *linux-env
+    steps:
+      - *mirror
+      - *dependencies
+      - name: Install desktop gate dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install --no-install-recommends -y \
+            tigervnc-standalone-server openbox xauth x11-utils pulseaudio \
+            qml6-module-qtwebengine qml6-module-qtwebchannel qt6-gtk-platformtheme \
+            fonts-noto-core fonts-noto-color-emoji libgl1-mesa-dri libglib2.0-bin \
+            xdg-desktop-portal xdg-desktop-portal-gtk
+      - *checkout
+      - name: Restore compiler cache for the full gate
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: linux-release-ccache-v1-${{ github.sha }}
+          restore-keys: linux-release-ccache-v1-
+      - name: Configure and build the full gate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S packages/native -B build/linux-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/linux-release --parallel "$(nproc)"
+          ccache --show-stats
+      - name: Run the gate shard on a private Xvnc and Openbox desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd --create-home --user-group --shell /bin/bash cassi-native-ci
+          mkdir -p build/linux-release/Testing
+          chown -R cassi-native-ci:cassi-native-ci build/linux-release/Testing
+          if [[ ! -S /run/dbus/system_bus_socket ]]; then
+            mkdir -p /run/dbus
+            system_bus_pid=$(dbus-daemon --system --fork --nopidfile --print-pid=1)
+            trap 'kill "$system_bus_pid"' EXIT
+          fi
+          total=$(ctest --test-dir build/linux-release -N | sed -n 's/^Total Tests: *//p')
+          [[ -n "${total}" ]]
+          runuser -u cassi-native-ci -- bash packages/native/tests/full-linux-gate.sh \
+            build/linux-release -I "${{ matrix.shard }},${total},6"
+
+  full-gate-linux:
+    name: full-gate-linux
+    needs: full-gate
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: Check all full gate shard results
+        env:
+          RESULT: ${{ needs.full-gate.result }}
+        run: test "$RESULT" = success
+
   quick-linux:
     needs: headless-tests
     if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}

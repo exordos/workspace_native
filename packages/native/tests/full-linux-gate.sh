@@ -2,6 +2,9 @@
 # Run CTest on a private 1440x900 desktop in the Linux release container.
 set -euo pipefail
 build_dir=${1:?expected a CMake build directory}
+shift
+# Optional extra CTest filters (e.g. -I <start>,<end>,<stride> for CI shards).
+ctest_extra=("$@")
 if [[ -e /tmp/.X11-unix/X30 || -e /tmp/.X30-lock ]]; then
     printf '%s\n' 'The release gate needs its own display :30' >&2
     exit 1
@@ -74,7 +77,7 @@ cat > "$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf" <<'EOF'
 [preferred]
 default=gtk
 EOF
-ctest_args=(--test-dir "$build_dir" --parallel "$(nproc)" --output-on-failure --no-tests=error)
+ctest_args=(--test-dir "$build_dir" --parallel "$(nproc)" --output-on-failure --no-tests=error "${ctest_extra[@]}")
 gdbus call --session --timeout 30 --dest org.freedesktop.portal.Desktop \
     --object-path /org/freedesktop/portal/desktop --method org.freedesktop.portal.Settings.Read \
     org.freedesktop.appearance color-scheme
