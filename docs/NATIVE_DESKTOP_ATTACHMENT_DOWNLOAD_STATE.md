@@ -102,7 +102,11 @@ file/image/video click opens `attachmentSaveDialog` (`openReference`,
 `qml/Main.qml:1697-1727`). Two scoped changes:
 
 1. When a download entry exists for a file uuid referenced by a message
-   (`urn:file:<uuid>` scan of the row's `bodyMarkdown`), the bubble renders a
+   through a Markdown attachment link that the renderer actually produced
+   (issue #646: the projection scans the rendered body's
+   `<a href="urn:file:<uuid>">` anchors, not raw `urn:file` substrings of the
+   row's `bodyMarkdown`, so a literal identifier in a code span, a fenced
+   block or plain text never mounts a card), the bubble renders a
    compact embedded card (`attachmentCard-<messageId>-<uuid>`) below the body,
    mirroring the reference frame: width `min(240, bubble)`, height 58,
    transparent, radius 8, `40x40` radius-8 `bg` preview slot at x8/y9,

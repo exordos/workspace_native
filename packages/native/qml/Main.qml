@@ -8926,24 +8926,36 @@ component NativeMentionChip: Item {
                     // signal. The per-uuid selection semantics live in
                     // NativeController::attachmentDownload (reference
                     // workspace-message-attachment-download.lib.ts:12-24).
+                    // Issue #646: the reference set comes from the anchors the
+                    // Markdown renderer actually produced, not from raw
+                    // urn:file substrings of bodyMarkdown. The raw scan could
+                    // not see link/code boundaries, so a literal identifier in
+                    // plain text, an inline code span or a fenced block
+                    // mounted a card whenever a matching download existed. In
+                    // the parser output urn:file appears inside an <a href>
+                    // only for a real attachment link, so scanning
+                    // rendered.html keeps the projection on the visible body.
                     readonly property var attachmentDownloads: {
                         const entries = root.controller.downloadEntries
                         if (!entries.length || messageRow.encryptedLocked || messageRow.keyControl)
                             return []
-                        const body = messageRow.bodyMarkdown
-                        if (!body.includes("urn:file:"))
+                        const html = String(rendered.html || "")
+                        if (!html.includes("urn:file:"))
                             return []
                         const result = []
                         const seen = []
-                        const pattern = /urn:file:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})([^)\s]*)/g
+                        const pattern = /<a href="urn:file:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})([^"]*)"/gi
                         let match
-                        while ((match = pattern.exec(body)) !== null) {
+                        while ((match = pattern.exec(html)) !== null) {
                             const fileUuid = match[1].toLowerCase()
                             if (seen.indexOf(fileUuid) >= 0) continue
                             seen.push(fileUuid)
                             const state = root.controller.attachmentDownload(fileUuid)
                             if (!state || Object.keys(state).length === 0) continue
-                            const query = String(match[2] || "")
+                            // The renderer escapes the ampersand separators
+                            // inside the href attribute; restore them before
+                            // reading the name/size fallbacks.
+                            const query = String(match[2] || "").replace(/&amp;/g, "&")
                             const nameMatch = /[?&]name=([^&]*)/.exec(query)
                             const sizeMatch = /[?&]size=([0-9]+)/.exec(query)
                             // Review 4650261681: the card opens the saved file by
