@@ -6737,6 +6737,25 @@ component NativeMentionChip: Item {
                                 if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(topicButton, -1))
                                     event.accepted = true
                             }
+                            // Issue #636: the topic context menu opens on right
+                            // click and the keyboard Menu key (reference
+                            // right-click capture + keyboard Menu). open()
+                            // takes anchor-local coordinates. Issue #647: the
+                            // tap's row-local `position` IS the control-local
+                            // point - Button does not expose mapFromScene to
+                            // QML (calling it threw before the menu opened).
+                            Keys.onMenuPressed: {
+                                event.accepted = true
+                                sidebarTopicMenu.open(streamDelegate.modelData.id, topicButton.modelData.id,
+                                    topicButton, Qt.point(topicButton.width, topicButton.height / 2))
+                            }
+                            TapHandler {
+                                acceptedButtons: Qt.RightButton
+                                onTapped: point => {
+                                    sidebarTopicMenu.open(streamDelegate.modelData.id,
+                                        topicButton.modelData.id, topicButton, point.position)
+                                }
+                            }
                             background: Rectangle {
                                 radius: 6
                                 color: root.controller.selectedTopic === topicButton.modelData.id ? root.colors["card-bg-active"] : topicButton.hovered ? root.colors["sidebar-item-hover"] : root.colors["card-bg"]
@@ -13907,6 +13926,16 @@ component NativeMentionChip: Item {
             enabled: root.streamMenuState.canArchive
             onTriggered: root.openChatAction("archive")
         }
+    }
+
+    // Issue #636 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): sidebar topic
+    // row menu. A sibling of the row lists like streamMenu - the delegate only
+    // opens it, so no items materialize inside a menu at open time.
+    NativeTopicContextMenu {
+        id: sidebarTopicMenu
+        objectName: "sidebarTopicMenuSurface"
+        controller: root.controller
+        colors: root.colors
     }
 
     Popup {
