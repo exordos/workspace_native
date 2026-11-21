@@ -11187,6 +11187,120 @@ private slots:
             "contentHeight must cover only the active screen");
     }
 
+    // ---- Issue #632: key-sharing switch on the encrypted settings screen ----
+    // (docs/NATIVE_DESKTOP_KEY_SHARING_TOGGLE.md)
+    void uiEncryptedChatInfoKeySharingRowIsOwnerOnly() {
+        ProtectedChatInfoScene scene("en", "dark", true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Key sharing owner-only window did not close", __FILE__, __LINE__);
+        });
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        // The fixture stream belongs to the Issuer: no toggle row for the viewer.
+        QVERIFY(!scene.item("protectedChatKeySharingRow"));
+        // The viewer owning the stream is not enough while the DTO keeps the
+        // setting unknown (allow_key_sharing_by_holders absent): still hidden.
+        scene.f.stream["owner"] = userId;
+        {
+            auto event = cryptoEvent(scene.f.stream);
+            auto payload = event.value("payload").toObject();
+            payload["kind"] = "stream.updated"; event["payload"] = payload;
+            QVERIFY(scene.f.controller.applyRealtimeEvent(event));
+            QTest::qWait(200);
+            QVERIFY(!scene.item("protectedChatKeySharingRow"));
+        }
+        // Owner plus a DTO confirming the setting reveals the row live.
+        scene.f.stream["allow_key_sharing_by_holders"] = true;
+        {
+            auto event = cryptoEvent(scene.f.stream);
+            auto payload = event.value("payload").toObject();
+            payload["kind"] = "stream.updated"; event["payload"] = payload;
+            QVERIFY(scene.f.controller.applyRealtimeEvent(event));
+            QTRY_VERIFY(scene.item("protectedChatKeySharingRow"));
+        }
+        QCOMPARE(scene.text("protectedChatKeySharingLabel"),
+            QStringLiteral("Allow members to share keys"));
+    }
+
+    void uiEncryptedChatInfoOwnerKeySharingSwitchGeometryAndToggle() {
+        ProtectedChatInfoScene scene("ru", "light", true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Key sharing switch window did not close", __FILE__, __LINE__);
+        });
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("protectedChatIdentity"));
+        encryptedUiClick(scene.require("protectedChatSettingsButton"));
+        QTRY_VERIFY(scene.item("protectedChatSettingsScreen"));
+        // The viewer owns the stream and its DTO confirms allow=true.
+        scene.f.stream["owner"] = userId;
+        scene.f.stream["allow_key_sharing_by_holders"] = true;
+        {
+            auto event = cryptoEvent(scene.f.stream);
+            auto payload = event.value("payload").toObject();
+            payload["kind"] = "stream.updated"; event["payload"] = payload;
+            QVERIFY(scene.f.controller.applyRealtimeEvent(event));
+            QTRY_VERIFY(scene.item("protectedChatKeySharingRow"));
+        }
+        QCOMPARE(scene.text("protectedChatKeySharingLabel"),
+            QStringLiteral("Разрешить участникам делиться ключами"));
+        auto *row = scene.require("protectedChatKeySharingRow");
+        QCOMPARE(row->height(), qreal(44)); // PanelMenuRow py-1.5 around min-h-8
+        // Switch geometry per encrypted-chat-info.ui.tsx:399-421: track h-5 w-9
+        // rounded-full, knob h-4 w-4 at left/top 0.5, translate-x-4 checked.
+        auto *track = scene.require("protectedChatKeySharingSwitch");
+        QCOMPARE(track->width(), qreal(36));
+        QCOMPARE(track->height(), qreal(20));
+        QCOMPARE(track->property("radius").toReal(), qreal(10));
+        auto *knob = scene.require("protectedChatKeySharingKnob");
+        QCOMPARE(knob->width(), qreal(16));
+        QCOMPARE(knob->height(), qreal(16));
+        const QColor accent(scene.evaluate("root.colors.accent").toString());
+        const QColor borderSubtle(scene.evaluate("root.colors['border-subtle']").toString());
+        QVERIFY(accent.isValid()); QVERIFY(borderSubtle.isValid());
+        // Checked: the knob sits at left-0.5 + translate-x-4 (x = 18) and the
+        // track carries the accent token.
+        QCOMPARE(scene.rect("protectedChatKeySharingKnob", track).value("x").toDouble(), 18.0);
+        QCOMPARE(scene.rect("protectedChatKeySharingKnob", track).value("y").toDouble(), 2.0);
+        QCOMPARE(scene.color("protectedChatKeySharingSwitch"), accent);
+        int puts = 0, failPuts = 1;
+        QJsonObject putBody;
+        const auto previous = scene.f.http.handler;
+        scene.f.http.handler = [&](const Request &request) {
+            if (request.method == "PUT"
+                && request.target.path() == "/api/workspace/v1/messenger/streams/" + streamId) {
+                ++puts; putBody = request.body;
+                if (failPuts > 0) { --failPuts; return Response{QJsonObject{}, 503}; }
+                auto echo = scene.f.stream;
+                echo["allow_key_sharing_by_holders"] = request.body.value("allow_key_sharing_by_holders");
+                echo["updated_at"] = QStringLiteral("2026-01-02T10:00:30.000Z");
+                return Response{echo, 200};
+            }
+            return previous(request);
+        };
+        // A failing write keeps the previous value and shows the reference
+        // toast text in the drawer locale (channel.keySharingUpdateFailed).
+        encryptedUiClick(row);
+        QTRY_COMPARE(puts, 1);
+        QCOMPARE(putBody, (QJsonObject{{"allow_key_sharing_by_holders", false}}));
+        QTRY_VERIFY(scene.text("protectedChatKeySharingError")
+            == QStringLiteral("Не удалось изменить настройку передачи ключей."));
+        QCOMPARE(scene.rect("protectedChatKeySharingKnob", track).value("x").toDouble(), 18.0);
+        QCOMPARE(scene.color("protectedChatKeySharingSwitch"), accent);
+        // The successful retry commits: knob slides to left-0.5 (x = 2), the
+        // track falls back to border-subtle, and the notice clears.
+        encryptedUiClick(scene.require("protectedChatKeySharingRow"));
+        QTRY_COMPARE(puts, 2);
+        QTRY_COMPARE(scene.text("protectedChatKeySharingError"), QString());
+        QCOMPARE(scene.rect("protectedChatKeySharingKnob", track).value("x").toDouble(), 2.0);
+        QTRY_COMPARE(scene.color("protectedChatKeySharingSwitch"), borderSubtle);
+    }
+
     // Reviewer finding 4575277281: when the protected drawer's member flow
     // exceeds the viewport the member section must grow the scroll content, so
     // the last member card stays reachable at the maximum scroll offset. The
