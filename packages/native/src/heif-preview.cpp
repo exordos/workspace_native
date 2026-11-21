@@ -2,6 +2,12 @@
 
 #include <QRegularExpression>
 
+#ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
+#include <libheif/heif.h>
+#include <memory>
+#include <mutex>
+#endif
+
 namespace workspace {
 
 namespace {
@@ -105,5 +111,97 @@ bool heifSniffFtyp(const QByteArray &headerBytes)
     }
     return genericCompatible;
 }
+
+#ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
+namespace {
+
+// Ubuntu builds libheif with the codec plugins in a separate directory that
+// the library does NOT auto-register: without heif_load_plugins the HEVC
+// decoder stays invisible and every preview decode fails. Run once per
+// process over every directory libheif itself reports (built-in path plus
+// LIBHEIF_PLUGIN_PATHS, which the installed runtime uses for the bundled
+// plugin tree).
+void ensureHeifPluginsLoaded()
+{
+    static std::once_flag loadedOnce;
+    std::call_once(loadedOnce, [] {
+        if (const char *const *dirs = heif_get_plugin_directories()) {
+            for (int i = 0; dirs[i] != nullptr; ++i) {
+                const heif_plugin_info *infos[16] = {};
+                int count = 0;
+                heif_load_plugins(dirs[i], infos, &count, 16);
+            }
+        }
+    });
+}
+
+} // namespace
+
+bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error)
+{
+    out = QImage();
+    if (bytes.isEmpty()) {
+        error = QStringLiteral("heic preview: empty payload");
+        return false;
+    }
+    if (bytes.size() > kHeifMaxFileBytes) {
+        error = QStringLiteral("heic preview: file above 25 MiB cap");
+        return false;
+    }
+    ensureHeifPluginsLoaded();
+    heif_context *context = heif_context_alloc();
+    if (!context) {
+        error = QStringLiteral("heic preview: libheif context allocation failed");
+        return false;
+    }
+    auto contextGuard = std::unique_ptr<heif_context, void (*)(heif_context *)>(
+        context, [](heif_context *c) { heif_context_free(c); });
+    if (heif_error read = heif_context_read_from_memory(context, bytes.constData(),
+            bytes.size(), nullptr); read.code != heif_error_Ok) {
+        error = QStringLiteral("heic preview: %1").arg(QString::fromLatin1(read.message));
+        return false;
+    }
+    heif_image_handle *handle = nullptr;
+    if (heif_error found = heif_context_get_primary_image_handle(context, &handle);
+        found.code != heif_error_Ok) {
+        error = QStringLiteral("heic preview: %1").arg(QString::fromLatin1(found.message));
+        return false;
+    }
+    auto handleGuard = std::unique_ptr<heif_image_handle, void (*)(const heif_image_handle *)>(
+        handle, [](const heif_image_handle *h) { heif_image_handle_release(h); });
+    heif_image *image = nullptr;
+    if (heif_error decoded = heif_decode_image(handle, &image, heif_colorspace_RGB,
+            heif_chroma_interleaved_RGBA, nullptr); decoded.code != heif_error_Ok) {
+        error = QStringLiteral("heic preview: %1").arg(QString::fromLatin1(decoded.message));
+        return false;
+    }
+    auto imageGuard = std::unique_ptr<heif_image, void (*)(const heif_image *)>(
+        image, [](const heif_image *i) { heif_image_release(i); });
+    int stride = 0;
+    const uint8_t *pixels = heif_image_get_plane(image, heif_channel_interleaved, &stride);
+    if (!pixels) {
+        error = QStringLiteral("heic preview: decoder returned no RGBA plane");
+        return false;
+    }
+    out = QImage(pixels, heif_image_handle_get_width(handle),
+        heif_image_handle_get_height(handle), stride, QImage::Format_RGBA8888).copy();
+    if (out.isNull()) {
+        error = QStringLiteral("heic preview: image copy failed");
+        return false;
+    }
+    error = QString();
+    return true;
+}
+#else
+bool heifDecodeRgba(const QByteArray &, QImage &out, QString &error)
+{
+    // Only reachable on non-Linux builds without libheif provisioned
+    // (desktop-platform-packages open item); Linux configure makes libheif
+    // a hard requirement, so shipped binaries always decode.
+    out = QImage();
+    error = QStringLiteral("heic preview: libheif not available in this build");
+    return false;
+}
+#endif
 
 } // namespace workspace
