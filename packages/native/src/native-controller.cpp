@@ -4338,7 +4338,7 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
         emit channelTopicActionFinished(id, action, false);
         return;
     }
-    m_channelTopicRequests.insert(key);
+    m_channelTopicRequests.insert(key, ChannelTopicAction{id, action, generation});
     const auto revision = m_topicRevision;
     request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
         m_channelTopicRequests.remove(key);
@@ -4361,6 +4361,29 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
         }
         emit channelTopicActionFinished(id, action, accepted);
     });
+}
+
+// Issue #645: a generation bump silences the wrapper callbacks of everything that
+// rode the retired credential, so pending channel topic actions must be settled
+// from the renewal itself with a retryable interrupted result. Actions that rode
+// the surviving generation (a same-token renewal) stay untouched - their replies
+// still arrive and settle normally. Returns whether anything was retired, so the
+// caller can re-read the drawer rows the interrupted write may have changed on
+// the server.
+bool NativeController::interruptChannelTopicActions()
+{
+    QVector<ChannelTopicAction> retired;
+    for (auto it = m_channelTopicRequests.begin(); it != m_channelTopicRequests.end();) {
+        if (it->generation != m_api->generation()) {
+            retired.append(*it);
+            it = m_channelTopicRequests.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (const auto &entry : retired)
+        emit channelTopicActionFinished(entry.id, entry.action, false);
+    return !retired.isEmpty();
 }
 
 void NativeController::setChannelInfoNotificationMode(const QString &mode)
@@ -10083,6 +10106,11 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // delete; the retired callback can never clear the admission flag, so
         // settle the operation here with a retryable interrupted outcome.
         interruptFolderMutation();
+        // Issue #645: the same bump retires a channel topic action (rename, read,
+        // done, notifications); its retired callback can never settle the drawer,
+        // so report the interrupted result here and, for a same-owner renewal,
+        // re-read the rows the interrupted write may have committed server-side.
+        if (interruptChannelTopicActions() && sameOwnerRenewal) loadTopics();
         // Issue #50 review 4611502344: the same bump retires an in-flight
         // Diagnostics transport ping; its wrapper callback can never settle,
         // so report the drop here: it clears the single-probe guard and lets

@@ -1892,7 +1892,11 @@ private:
     void loadChannelInfoPage(const QString &marker, quint64 ticket, const QString &stream,
                              QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers);
     QString m_channelInfoStreamId;
-    QSet<QString> m_channelTopicRequests;
+    // Issue #645: a topic action rides the generation that dispatched it; once that
+    // generation is retired its wrapper callback can never fire, so keep the identity
+    // needed to settle the UI operation from the renewal itself.
+    struct ChannelTopicAction { QString id; QString action; quint64 generation; };
+    QHash<QString, ChannelTopicAction> m_channelTopicRequests;
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
     bool m_channelInfoLoading = false;
@@ -2313,6 +2317,7 @@ private:
     void interruptFeedRequest();
     // Issue #423: settle a folder mutation retired by a generation bump.
     void interruptFolderMutation();
+    bool interruptChannelTopicActions();
     void resetFeed();
     QVariantList feedRows() const;
     QString feedRowContext(const Message &message) const;
