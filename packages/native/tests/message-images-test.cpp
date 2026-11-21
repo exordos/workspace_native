@@ -18,6 +18,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTest>
+#include <QThread>
 
 using namespace workspace;
 using namespace workspace::test;
@@ -191,6 +192,8 @@ private slots:
     void invalidSvgAndPixelOverflow();
     void heicBytesPreviewThroughPipeline();
     void corruptHeicSettlesFileCardWithoutRefetch();
+    void heicDecodeWatchdogSettlesFileCardAndIgnoresLateResult();
+    void shortTimeoutNeverSettlesNonHeicDecode();
     void entryLeasePipelineAndExactCancellation();
     void repeatedDelegateReplacementRenewsTheTransferHandoff();
     void byteLruAndPinnedAdmissionRecover();
@@ -453,6 +456,50 @@ void MessageImagesTest::corruptHeicSettlesFileCardWithoutRefetch()
     QVERIFY(f.images.imageUrl(urn()).isEmpty());
     QTest::qWait(250);
     QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,1);
+    f.images.release(lease);
+}
+
+void MessageImagesTest::heicDecodeWatchdogSettlesFileCardAndIgnoresLateResult()
+{
+    // Issue #638 sec 3: a HEIC decode that does not report within the timeout
+    // settles the entry Failed (file card) without interrupting the shared
+    // worker: the pipeline slot frees while the decode is still running and the
+    // late worker result is discarded, exactly once settled. The gate + the
+    // shortened timeout reproduce the 15 s path deterministically (6x margin:
+    // 50 ms watchdog vs a >=300 ms guaranteed worker stall).
+    Fixture f; QVERIFY(f.start()); f.bytes = heicFixture();
+    const auto restore = qScopeGuard([] { MessageImages::setDecodeGateForTests(nullptr); });
+    f.images.setDecodeTimeoutMsForTests(50);
+    MessageImages::setDecodeGateForTests([](const QByteArray &) { QThread::msleep(300); });
+    QSignalSpy revisions(&f.images, &MessageImages::revisionChanged);
+    const auto lease = f.images.acquire(urn()); QVERIFY(lease);
+    QTRY_VERIFY(f.images.failed(urn())); // settles while the worker is still stalled
+    QVERIFY(f.images.imageUrl(urn()).isEmpty());
+    QCOMPARE(f.images.stats().pipelineJobs, 0); // slot released before the worker reports
+    const auto settled = revisions.count();
+    QTest::qWait(450); // the stalled decode completes and reports for a retired ticket
+    QVERIFY(f.images.failed(urn()));
+    QVERIFY(f.images.imageUrl(urn()).isEmpty());
+    QCOMPARE(f.images.stats().decodeJobs, 0);
+    QCOMPARE(revisions.count(), settled); // the late result settles nothing
+    QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,1);
+    f.images.release(lease);
+}
+
+void MessageImagesTest::shortTimeoutNeverSettlesNonHeicDecode()
+{
+    // The watchdog guards the HEIC preview path only (reference scope): a plain
+    // PNG that legitimately outlives the shortened timeout still settles Ready.
+    Fixture f; QVERIFY(f.start());
+    const auto restore = qScopeGuard([] { MessageImages::setDecodeGateForTests(nullptr); });
+    f.images.setDecodeTimeoutMsForTests(50);
+    MessageImages::setDecodeGateForTests([](const QByteArray &) { QThread::msleep(200); });
+    const auto lease = f.images.acquire(urn()); QVERIFY(lease);
+    QTest::qWait(150); // any armed 50 ms watchdog would have fired twice by now
+    QVERIFY(!f.images.failed(urn()));
+    QTRY_VERIFY(!f.images.imageUrl(urn()).isEmpty());
+    QVERIFY(!f.images.failed(urn()));
+    QCOMPARE(f.binaryGets,1);
     f.images.release(lease);
 }
 

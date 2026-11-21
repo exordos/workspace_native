@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QThread>
 #include <QVariantMap>
+#include <functional>
 #include <memory>
 
 class QQuickImageProvider;
@@ -51,6 +52,12 @@ public:
     quint64 revision() const { return m_revision; }
     quint64 scopeRevision() const { return m_scopeRevision; }
     Stats stats() const; // C++ resource witness only, not a QML debug model.
+    // Test seams (issue #638 sec 3): the gate runs on the serial decode worker
+    // before each decode so a test can hold the lane deterministically; the
+    // timeout shortens the HEIC decode watchdog that production keeps at
+    // kHeifDecodeTimeoutMs. Neither changes behaviour with defaults installed.
+    static void setDecodeGateForTests(std::function<void(const QByteArray &)> gate);
+    void setDecodeTimeoutMsForTests(int ms);
     // Caller transfers this provider to QQmlEngine. It never calls this manager.
     QQuickImageProvider *createImageProvider() const;
 signals:
@@ -80,6 +87,7 @@ private:
     QPointer<FileClient> m_files;
     QByteArray m_owner;
     qint64 m_retainedBytes = 0;
+    int m_decodeTimeoutMs = 0;
     QString m_scope;
     quint64 m_generation = 0, m_revision = 0, m_scopeRevision = 0, m_nextLease = 0, m_nextJob = 0, m_order = 0;
     bool m_active = false, m_draining = false, m_stopping = false;
