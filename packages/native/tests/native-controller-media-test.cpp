@@ -1,6 +1,10 @@
 #include "image-decode-fixtures.h"
+#include "support/heif-test-fixtures.h"
 #include "support/native-test-harness.h"
 #include "support/controller-media-fixtures.h"
+
+#include <QImage>
+#include <QUrl>
 
 class ControllerMediaTest final : public NativeControllerTestHarness {
     Q_OBJECT
@@ -229,6 +233,80 @@ private slots:
         viewer->close();
         viewer->markSlotDisplayError(0);
         QCOMPARE(viewer->count(), 0);
+    }
+
+    // Issue #638 sec 4.2: a HEIC image slot renders its staged original into
+    // a decoded PNG on the render thread (QML Image cannot read ISO-BMFF);
+    // the display URL points at the render, the staged original stays on
+    // disk for download-by-uuid, and the metadata name is reported.
+    void mediaViewerHeifSlotDisplaysDecodedRender()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/heic";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(),
+            QStringLiteral("ready"), 8000);
+        const auto ready = viewer->items().at(0).toMap();
+        QCOMPARE(ready.value("name").toString(), QStringLiteral("photo.heic"));
+        QCOMPARE(ready.value("uuid").toString(), mvFileA); // download-by-uuid stays enabled
+        const QUrl display(ready.value("url").toString());
+        QVERIFY(display.isLocalFile());
+        QVERIFY(display.toLocalFile().endsWith(QStringLiteral("slot-0-heif.png"))); // render, not the original
+        const QImage image(display.toLocalFile());
+        QVERIFY(!image.isNull());
+        QCOMPARE(image.size(), QSize(48, 32));
+        QCOMPARE(image.pixelColor(24, 16), QColor(0x46, 0x82, 0xb4));
+        viewer->close();
+    }
+
+    // A corrupt HEIC container lands on display-error with the uuid kept
+    // (file-card parity: download stays the reference's escape hatch), never
+    // on load-error and never ready.
+    void mediaViewerCorruptHeifSlotReplacesWithDisplayErrorKeepingUuid()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicTruncatedFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/heic";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(),
+            QStringLiteral("display-error"), 8000);
+        const auto failed = viewer->items().at(0).toMap();
+        QCOMPARE(failed.value("url").toString(), QString());
+        QCOMPARE(failed.value("uuid").toString(), mvFileA);
+        viewer->close();
     }
 
     // --- Issue #79: copy image to clipboard (docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md) ---

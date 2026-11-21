@@ -10,6 +10,9 @@ namespace workspace {
 inline constexpr qint64 kHeifMaxFileBytes = qint64(25) * 1024 * 1024;
 inline constexpr int kHeifDecodeTimeoutMs = 15000;
 inline constexpr int kHeifFtypHeaderLimit = 4096;
+// Decode pixel budget: matches the shared preview cap; a container claiming
+// huge dimensions inside a bounded file is rejected before decoding.
+inline constexpr qint64 kHeifMaxDecodePixels = qint64(16) * 1000 * 1000;
 
 // Metadata predicate (reference isHeicAttachment): MIME fast path first,
 // filename regex only when the MIME is absent or a binary placeholder.
@@ -22,7 +25,9 @@ bool heifSniffFtyp(const QByteArray &header);
 // system libheif (HEVC via the libde265 plugin); returns false with a
 // human-readable reason on any failure so callers fall back to the file card
 // exactly like the reference display-error path. Bytes above kHeifMaxFileBytes
-// are rejected before the library sees them.
-bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error);
+// are rejected before the library sees them, and an image above
+// kHeifMaxDecodePixels is rejected before the canvas is materialised.
+bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error,
+    qint64 maxSourcePixels = kHeifMaxDecodePixels);
 
 } // namespace workspace

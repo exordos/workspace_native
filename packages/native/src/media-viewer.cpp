@@ -1,11 +1,13 @@
 #include "media-viewer.h"
 
 #include "file-client.h"
+#include "heif-preview.h"
 #include "native-controller.h"
 #include "native-markdown.h"
 
 #include <QFileInfo>
 #include <QFile>
+#include <QImageWriter>
 #include <QPair>
 #include <QSet>
 #include <QTemporaryDir>
@@ -14,9 +16,61 @@
 
 namespace workspace {
 
+namespace {
+bool stagedFileLooksHeif(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    return heifSniffFtyp(file.read(kHeifFtypHeaderLimit));
+}
+} // namespace
+
+// Decode-thread render for HEIC image slots (issue #638 sec 4.2): the staged
+// ORIGINAL stays untouched on disk (download-by-uuid saves it verbatim); this
+// writes a PNG render next to it and the slot's display URL points at the
+// render instead. Any failure (oversize above the reference 25 MiB cap,
+// corrupt container, pixel budget, missing plugin) yields an empty path so
+// the slot lands on the display-error state with download still enabled.
+class MediaViewerHeifRenderer final : public QObject {
+    Q_OBJECT
+public slots:
+    void render(int slot, quint64 generation, const QString &path, const QString &outPath)
+    {
+        bool ok = false;
+        if (!QThread::currentThread()->isInterruptionRequested()) {
+            const QFileInfo info(path);
+            if (info.exists() && info.size() > 0 && info.size() <= kHeifMaxFileBytes) {
+                QFile file(path);
+                QImage image;
+                QString error;
+                if (file.open(QIODevice::ReadOnly)
+                    && heifDecodeRgba(file.readAll(), image, error)) {
+                    QImageWriter writer(outPath, "PNG");
+                    ok = writer.write(image);
+                }
+            }
+        }
+        QMetaObject::invokeMethod(this, [this, slot, generation, outPath, ok] {
+            emit rendered(slot, generation, ok ? outPath : QString{});
+        }, Qt::QueuedConnection);
+    }
+signals:
+    void rendered(int slot, quint64 generation, const QString &displayPath);
+};
+
 MediaViewerModel::MediaViewerModel(NativeController *controller, QObject *parent)
     : QObject(parent), m_controller(controller), m_markdown(std::make_unique<NativeMarkdown>(this))
 {
+    auto *renderer = new MediaViewerHeifRenderer;
+    m_decoder = renderer; renderer->moveToThread(&m_decodeThread);
+    m_decodeThread.setObjectName("mediaViewerHeifRenderer");
+    connect(&m_decodeThread, &QThread::finished, renderer, &QObject::deleteLater);
+    connect(this, &MediaViewerModel::heifRenderRequested, renderer, &MediaViewerHeifRenderer::render,
+        Qt::QueuedConnection);
+    connect(renderer, &MediaViewerHeifRenderer::rendered, this, &MediaViewerModel::heifRendered,
+        Qt::QueuedConnection);
+    m_decodeThread.start();
     if (controller) {
         // The reference viewer auto-closes when its conversation scope changes
         // (workspace-media-viewer.hook.ts:129-135); session end closes too.
@@ -33,7 +87,10 @@ MediaViewerModel::MediaViewerModel(NativeController *controller, QObject *parent
 
 MediaViewerModel::~MediaViewerModel()
 {
+    m_stopping = true;
+    if (m_decoder) disconnect(m_decoder, nullptr, this, nullptr);
     closeSession();
+    m_decodeThread.requestInterruption(); m_decodeThread.quit(); m_decodeThread.wait();
 }
 
 void MediaViewerModel::setFileClient(FileClient *files)
@@ -241,19 +298,7 @@ void MediaViewerModel::startSlot(int slot)
     const QPointer<MediaViewerModel> self(this);
     const auto uuid = m_slots[slot].uuid;
     const auto operation = m_files->download(uuid, destination, [self, slot, generation](const FileResult &result) {
-        if (!self || generation != self->m_generation || slot >= self->m_slots.size())
-            return;
-        auto &target = self->m_slots[slot];
-        if (result.ok()) {
-            target.state = QStringLiteral("ready");
-            target.url = QUrl::fromLocalFile(result.path).toString();
-            target.name = result.metadata.name.isEmpty() ? QFileInfo(result.path).fileName() : result.metadata.name;
-        } else {
-            target.state = QStringLiteral("load-error");
-            target.url.clear();
-            target.name.clear();
-        }
-        emit self->mediaViewerChanged();
+        if (self) self->slotDownloaded(slot, generation, result);
     });
     // Synchronous local failures complete before the id returns; a retired
     // session (close during this call) already cleared the slots.
@@ -261,4 +306,55 @@ void MediaViewerModel::startSlot(int slot)
         m_slots[slot].operation = operation;
 }
 
+void MediaViewerModel::slotDownloaded(int slot, quint64 generation, const FileResult &result)
+{
+    if (!m_open || generation != m_generation || slot >= m_slots.size())
+        return;
+    auto &target = m_slots[slot];
+    if (result.ok()) {
+        target.name = result.metadata.name.isEmpty() ? QFileInfo(result.path).fileName() : result.metadata.name;
+        if (target.kind == QLatin1String("image") && stagedFileLooksHeif(result.path)) {
+            // Issue #638 sec 4.2: the ISO-BMFF original cannot be rendered by
+            // QML Image, so the slot stays loading while the worker writes a
+            // decoded PNG render; a failed render lands on display-error
+            // (reference replaceItem), download-by-uuid still saves the
+            // untouched original staged here.
+            const auto outPath = m_directory && m_directory->isValid()
+                ? m_directory->filePath(QStringLiteral("slot-%1-heif.png").arg(slot)) : QString{};
+            if (!outPath.isEmpty()) {
+                emit heifRenderRequested(slot, generation, result.path, outPath);
+                emit mediaViewerChanged(); // the metadata name is visible while rendering
+                return;
+            }
+            target.state = QStringLiteral("display-error");
+            target.url.clear();
+        } else {
+            target.state = QStringLiteral("ready");
+            target.url = QUrl::fromLocalFile(result.path).toString();
+        }
+    } else {
+        target.state = QStringLiteral("load-error");
+        target.url.clear();
+        target.name.clear();
+    }
+    emit mediaViewerChanged();
+}
+
+void MediaViewerModel::heifRendered(int slot, quint64 generation, const QString &displayPath)
+{
+    if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
+        return;
+    auto &target = m_slots[slot];
+    if (target.state != QLatin1String("loading"))
+        return; // replaced meanwhile (close, explicit mark): the late render is discarded
+    if (displayPath.isEmpty())
+        target.state = QStringLiteral("display-error"); // uuid stays downloadable (reference replaceItem)
+    else {
+        target.state = QStringLiteral("ready");
+        target.url = QUrl::fromLocalFile(displayPath).toString();
+    }
+    emit mediaViewerChanged();
+}
+
 } // namespace workspace
+#include "media-viewer.moc"

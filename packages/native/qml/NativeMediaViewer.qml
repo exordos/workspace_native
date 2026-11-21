@@ -338,9 +338,15 @@ Popup {
         ViewerButton {
             objectName: "mediaViewer-download"
             asset: "download.svg"
-            // Actions are unusable until the slot display URL exists
+            // Download follows the file uuid, never the display URL: the
+            // reference keeps it enabled for an image slot whose display
+            // failed (media-viewer-overlay.ui.tsx:64-68 downloadEnabled —
+            // the #638 HEIC render-error case). Slots that never staged
+            // (load-error) and video display-errors stay gated
             // (media-viewer-actions.lib.ts:71-79).
-            enabled: viewerRoot.currentSlot.state === "ready"
+            enabled: (viewerRoot.currentSlot.state === "ready"
+                    || (viewerRoot.currentSlot.state === "display-error"
+                        && viewerRoot.currentSlot.kind === "image"))
                 && String(viewerRoot.currentSlot.uuid || "").length > 0
             Accessible.name: qsTr("Download")
             onClicked: viewerRoot.requestDownload(String(viewerRoot.currentSlot.uuid))
