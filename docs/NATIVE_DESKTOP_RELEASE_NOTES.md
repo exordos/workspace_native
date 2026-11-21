@@ -5,6 +5,7 @@
 - Inspect poll voters when the poll allows it, manage an open poll you created, and include a plain-text summary when quoting or forwarding a poll.
 - Older messages load ahead of backward scrolling. Incoming messages can arrive while a page loads, and the client keeps your place when it inserts the older rows.
 - Customize window shortcuts in Settings. From Diagnostics or the sign-in screen, you can also preview a local support report and choose what to save.
+- Attachment cards in chat show live download state: a progress ring with percent while a file saves, Open once it is on disk, and Retry when a download fails.
 
 The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
 
