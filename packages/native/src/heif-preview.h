@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QImage>
 #include <QString>
 
 namespace workspace {
@@ -16,5 +17,12 @@ bool heifLooksLikeHeic(const QString &fileName, const QString &contentType);
 
 // Content sniff (reference hasHeicFileType) over the first ISO-BMFF bytes.
 bool heifSniffFtyp(const QByteArray &header);
+
+// Decode HEIC/HEIF bytes to a packed RGBA8888 preview image. Backed by the
+// system libheif (HEVC via the libde265 plugin); returns false with a
+// human-readable reason on any failure so callers fall back to the file card
+// exactly like the reference display-error path. Bytes above kHeifMaxFileBytes
+// are rejected before the library sees them.
+bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error);
 
 } // namespace workspace

@@ -16,6 +16,18 @@ find_package(Qt6 6.10 REQUIRED COMPONENTS Core Concurrent Gui Widgets Network Qm
 find_package(Qt6Keychain REQUIRED)
 find_package(md4c CONFIG REQUIRED)
 find_package(OpenSSL 3.2 REQUIRED COMPONENTS Crypto SSL)
+# HEIC previews (#638): REQUIRED on Linux, the only shipping platform; the
+# desktop-platform-packages jobs provision it like md4c (open item in
+# docs/NATIVE_DESKTOP_HEIC_PREVIEWS.md), so non-Linux stays QUIET.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBHEIF QUIET IMPORTED_TARGET libheif)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET PkgConfig::LIBHEIF)
+    message(FATAL_ERROR
+        "libheif development package is required on Linux (HEIC previews #638): "
+        "install libheif-dev (with libheif-plugin-libde265 for HEVC decoding)")
+endif()
 qt_standard_project_setup(REQUIRES 6.8)
 
 if(WIN32 OR APPLE)
@@ -94,6 +106,10 @@ target_compile_definitions(workspace-native-core PRIVATE
     WORKSPACE_NATIVE_CALL_INCOMING_VARIANT="${WORKSPACE_CALL_INCOMING_MODAL_VARIANT}")
 target_link_libraries(workspace-native-core PUBLIC Qt6::Core Qt6::Gui Qt6::Network Qt6::WebSockets Qt6::Sql Qt6::DBus)
 target_link_libraries(workspace-native-core PRIVATE workspace-message-time Qt6::Concurrent Qt6::Multimedia Qt6Keychain::Qt6Keychain md4c::md4c-html OpenSSL::Crypto)
+if(TARGET PkgConfig::LIBHEIF)
+    target_link_libraries(workspace-native-core PRIVATE PkgConfig::LIBHEIF)
+    target_compile_definitions(workspace-native-core PRIVATE WORKSPACE_NATIVE_WITH_LIBHEIF)
+endif()
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
 endif()
@@ -171,6 +187,10 @@ set(native_md4c_license)
 if(native_md4c_VERSION)
     set(native_md4c_license --component "md4c=${native_md4c_VERSION}")
 endif()
+set(native_libheif_license)
+if(LIBHEIF_VERSION)
+    set(native_libheif_license --component "libheif=${LIBHEIF_VERSION}")
+endif()
 set(native_licenses_json "${CMAKE_CURRENT_BINARY_DIR}/licenses/licenses.json")
 add_custom_command(OUTPUT "${native_licenses_json}"
     COMMAND "${WORKSPACE_NATIVE_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/collect-native-licenses.py"
@@ -178,7 +198,7 @@ add_custom_command(OUTPUT "${native_licenses_json}"
         --component "qt6-base=${Qt6Core_VERSION}" --component "qt6-declarative=${Qt6Qml_VERSION}"
         --component "qt6-multimedia=${Qt6Multimedia_VERSION}" --component "qt6-svg=${Qt6Svg_VERSION}"
         --component "qt6-websockets=${Qt6WebSockets_VERSION}" --component "qtkeychain=${Qt6Keychain_VERSION}"
-        --component "openssl=${OPENSSL_VERSION}" ${native_md4c_license}
+        --component "openssl=${OPENSSL_VERSION}" ${native_md4c_license} ${native_libheif_license}
     DEPENDS scripts/collect-native-licenses.py VERBATIM)
 set_source_files_properties("${native_licenses_json}" PROPERTIES GENERATED TRUE)
 qt_add_resources(workspace-native-ui native_licenses PREFIX /workspace/licenses

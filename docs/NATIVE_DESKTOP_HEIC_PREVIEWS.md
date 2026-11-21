@@ -60,10 +60,23 @@ libraries instead (same precedent as `libmd4c`):
   dataset (the `native-about-policy` / `licenses-dataset-test` catalog must name
   both, mirroring the reference `LICENSES.md` + bundled `heic-license.txt`).
 
-Decode call shape: `heif_read_from_memory` -> `heif_context_get_primary_image_handle`
--> `heif_decode_image` (RGBA) -> `QImage` (copy, `Format_RGBA8888` then
-`convertToFormat_ARGB32` semantics as today). Rotation follows the EXIF orientation
-already applied by the image pipeline; natural size reported post-decode.
+* Decode call shape: `heif_read_from_memory` -> `heif_context_get_primary_image_handle`
+  -> `heif_decode_image` (RGBA) -> `QImage` (copy, `Format_RGBA8888` then
+  `convertToFormat_ARGB32` semantics as today). Rotation follows the EXIF orientation
+  already applied by the image pipeline; natural size reported post-decode.
+* Plugin registration (implementation finding, libheif 1.21.2 Ubuntu): the
+  library does NOT auto-register its codec plugins from
+  `LIBHEIF_PLUGIN_DIRECTORY`; without an explicit `heif_load_plugins` pass the
+  HEVC decoder is invisible and every decode fails. `heifDecodeRgba` runs it
+  once per process over `heif_get_plugin_directories()` (built-in path +
+  `LIBHEIF_PLUGIN_PATHS`). The packaged runtime must therefore ship the
+  libheif plugin tree and point `LIBHEIF_PLUGIN_PATHS` (or the deploy-bundled
+  equivalent) at it - the open installed-runtime check below covers exactly this.
+* Scope refinement: `REQUIRED` at configure time applies to Linux (the shipping
+  release platform). The macOS/Windows `desktop-platform-packages` jobs do not
+  provision libheif yet, so non-Linux builds compile a decode fallback that
+  reports "libheif not available" (file-card behavior); provisioning libheif
+  there is tracked with the packaging items below.
 
 ## 3. Caps, queue, cancellation (reference `heic-preview.lib.ts`)
 

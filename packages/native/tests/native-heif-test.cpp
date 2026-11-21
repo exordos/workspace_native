@@ -3,6 +3,8 @@
 // (isHeicAttachment + hasHeicFileType) and heic-preview.lib.ts caps.
 #include "heif-preview.h"
 
+#include <QColor>
+#include <QSize>
 #include <QStringList>
 #include <QTest>
 
@@ -54,6 +56,40 @@ QByteArray ftypBox(const QByteArray &major, const QList<QByteArray> &compat = {}
 }
 
 } // namespace
+
+// Reference e2e fixture (workspace_ui e0194ff e2e/mocks/fixtures/
+// solid-color.heic, sha256 2a210a049069363a27fb14b0b01e909ac34625ac
+// 04a76f7b2f48196b3eb6aaa2): ftyp major "heic", 48x32, solid #4682b4.
+QByteArray heicFixture()
+{
+    return QByteArray::fromBase64(
+        "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAWltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0"
+        "AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MAAAAAREAAAQABAAAAAAGNAAEAAAAAAAAA"
+        "HAAAACNpaW5mAAAAAAABAAAAFWluZmUCAAAAAAEAAGh2YzEAAAAA6WlwcnAAAADKaXBjbwAAAHZodmNDA"
+        "QNwAAAAAAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQAqQgEBA3"
+        "AAAAMAkAAAAwAAAwAeoCCBBZbq5Ka5uAhoMCAAAAMDIAAAAwAhYgABAAZEAcFzwIkAAAAUaXNwZQAAAAA"
+        "AAABAAAAAQAAAAChjbGFwAAAAMAAAAAEAAAAgAAAAAf////AAAAAC////4AAAAAIAAAAQcGl4aQAAAAAD"
+        "CAgIAAAAF2lwbWEAAAAAAAAAAQABBIECBIMAAAAkbWRhdAAAABgoAa8TgPgQ4af/6+or/iu1f9ZCb86KQz4=");
+}
+
+QByteArray heicCorruptFixture()
+{
+    return QByteArray::fromBase64(
+        "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAWltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0"
+        "AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MAAAAAREAAAQABAAAAAAGNAAEAAAAAAAAA"
+        "HAAAACNpaW5mAAAAAAABAAAAFWluZmUCAAAAAAEAAGh2YzEAAAAA6WlwcnAAAADKaXBjbwAAAHZodmNDA"
+        "QNwAAAAAAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQAqQgEBA3"
+        "AAAAMAkAAAAwAAAwAeoCCBBZbq5Ka5uAhoMCAAAAMDIAAAAwAhYgABAAZEAcFzwIkAAAAUaXNwZQAA/1o"
+        "AAABAAAAAQAAAAChjbGFwAAAAMAAAAAEAAAAgAAAAAf////AAAAAC////4AAAAAIAAAAQcGl4aQAAAAAD"
+        "CAgIAAAAF2lwbWEAAAAAAAAAAQABBIECBIMAAAAkbWRhdAAAABgoAa8TgPgQ4af/6+or/iu1f9ZCb86KQz4=");
+}
+
+QByteArray heicTruncatedFixture()
+{
+    return QByteArray::fromBase64(
+        "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAWltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0"
+        "AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MA");
+}
 
 class NativeHeifTest : public QObject
 {
@@ -198,6 +234,67 @@ private slots:
         QCOMPARE(kHeifMaxFileBytes, qint64(25) * 1024 * 1024);
         QCOMPARE(kHeifDecodeTimeoutMs, 15000);
         QCOMPARE(kHeifFtypHeaderLimit, 4096);
+    }
+
+    // The reference app's own e2e fixture (workspace_ui e0194ff
+    // e2e/mocks/fixtures/solid-color.heic, sha256 2a210a049069363a..., 425 B):
+    // a solid #4682b4 48x32 image. Embedded as base64 so the group needs no
+    // file I/O and the bytes are review-inspectable.
+    // Also pins the sniff/DECODE split: a corrupt-payload file with a valid
+    // ftyp header still SNIFFS as HEIC (libheif does not validate the payload
+    // at container level), so the surfaces decide via the decode verdict, not
+    // the sniff - same split as the reference isHeicAttachment vs previewFailed.
+    void decodeReferenceFixture()
+    {
+        QCOMPARE(heifSniffFtyp(heicFixture()), true);
+        QImage image;
+        QString error;
+        QVERIFY2(heifDecodeRgba(heicFixture(), image, error), qPrintable(error));
+        QCOMPARE(image.size(), QSize(48, 32));
+        QCOMPARE(image.format(), QImage::Format_RGBA8888);
+        QCOMPARE(image.pixelColor(0, 0), QColor(0x46, 0x82, 0xb4));
+        QCOMPARE(image.pixelColor(47, 31), QColor(0x46, 0x82, 0xb4));
+    }
+
+    // The flipped bytes sit in the ancillary 'ispe' box, not in mdat: libheif
+    // (like the reference's bundled decoder) ignores that and still finds a
+    // HEIC container, so the surfaces must route on the decode verdict and the
+    // sniff result is only the metadata fast path.
+    void corruptAncillaryBytesStillSniffAsHeic()
+    {
+        QCOMPARE(heifSniffFtyp(heicCorruptFixture()), true);
+    }
+
+    void decodeRejectsCorruptInput_data()
+    {
+        QTest::addColumn<QByteArray>("bytes");
+        QTest::newRow("truncated") << heicTruncatedFixture();
+        QTest::newRow("empty") << QByteArray();
+        QTest::newRow("not-an-image") << QByteArray(4096, 'z');
+        QTest::newRow("non-heic-valid-utf8")
+            << QByteArray("a valid utf-8 text payload but no ISO-BMFF container anywhere in sight.");
+    }
+
+    void decodeRejectsCorruptInput()
+    {
+        QFETCH(QByteArray, bytes);
+        QImage image;
+        QString error;
+        QVERIFY(!heifDecodeRgba(bytes, image, error));
+        QVERIFY(image.isNull());
+        QVERIFY(!error.isEmpty());
+    }
+
+    void decodeRejectsOversizeWithoutLibrary()
+    {
+        // A byte blob above the 25 MiB cap must be refused up front (reference
+        // MAX_FILE_BYTES); this never reaches libheif, so the blob content is
+        // irrelevant and cannot leak into the digest.
+        const QByteArray oversize = heicFixture() + QByteArray(int(kHeifMaxFileBytes), 'z');
+        QImage image;
+        QString error;
+        QVERIFY(!heifDecodeRgba(oversize, image, error));
+        QVERIFY(image.isNull());
     }
 };
 
