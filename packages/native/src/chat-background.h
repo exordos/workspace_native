@@ -48,6 +48,19 @@ public:
     // apply calls above with a default Value.
     bool resetChat(const QString &chatKey) { return applyChat(chatKey, Value{}); }
 
+    // Image upload pipeline, reference prepareChatBackground (chat-background.lib.ts:81):
+    // declared type must be jpeg/png/webp, 1 B .. 8 MiB, magic signature must
+    // match the declared type (shared/lib/validation.ts:52-68), the decoded
+    // raster must be valid with width*height <= 24 MP; output is JPEG (q80)
+    // on white fill downscaled to fit 1600x1600, under the stored cap.
+    // error codes: type / size / decode / storage.
+    struct Prepared {
+        bool ok = false;
+        QString dataUrl;
+        QString error;
+    };
+    static Prepared prepareImage(const QByteArray &bytes, const QString &declaredMime);
+
     // Reference restore rules over the stored raw JSON string (also the
     // contract test surface). Returns the normalized {"global":...,"chats":{}}
     // object; everything malformed collapses to the empty preferences.

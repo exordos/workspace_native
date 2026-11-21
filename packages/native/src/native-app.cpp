@@ -8,6 +8,7 @@
 #include "native-cache-service.h"
 #include "native-drafts.h"
 #include "avatar-images.h"
+#include "chat-background.h"
 #include "message-images.h"
 #include <QQuickImageProvider>
 
@@ -179,6 +180,16 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     QObject::connect(controller, &NativeController::stateChanged, preferences, [controller, preferences] {
         preferences->setOwner(controller->ownerKey());
     });
+    // Issue #637: chat backgrounds live in the same per-owner local store as
+    // preferences; owner switching reloads that owner's stored values (the
+    // setOwner no-op guard keeps this off the binding budget when it repeats).
+    auto *chatBackground = new ChatBackground(&preferences->settings(), &engine);
+    chatBackground->setOwner(controller->ownerKey());
+    QObject::connect(controller, &NativeController::stateChanged, chatBackground,
+                     [controller, chatBackground] {
+                         chatBackground->setOwner(controller->ownerKey());
+                     });
+    engine.rootContext()->setContextProperty("nativeChatBackground", chatBackground);
     QObject::connect(controller, &NativeController::reactionAdded, preferences,
                      [preferences](const QString &, const QString &emoji, const QString &owner,
                                    const QString &, const QString &) {
