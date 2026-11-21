@@ -42,6 +42,10 @@ class MediaViewerHeifRenderer final : public QObject {
 public slots:
     void render(int slot, quint64 generation, const QString &path, const QString &outPath)
     {
+        // #670 re-review: the bounded wait measures from the moment this
+        // serial worker takes the render, not from the download; queued
+        // renders must not burn their timeout behind an earlier job.
+        emit started(slot, generation);
         bool ok = false;
         if (!QThread::currentThread()->isInterruptionRequested()) {
             if (g_heifRenderGateForTests)
@@ -63,6 +67,7 @@ public slots:
         }, Qt::QueuedConnection);
     }
 signals:
+    void started(int slot, quint64 generation);
     void rendered(int slot, quint64 generation, const QString &displayPath);
 };
 
@@ -74,6 +79,8 @@ MediaViewerModel::MediaViewerModel(NativeController *controller, QObject *parent
     m_decodeThread.setObjectName("mediaViewerHeifRenderer");
     connect(&m_decodeThread, &QThread::finished, renderer, &QObject::deleteLater);
     connect(this, &MediaViewerModel::heifRenderRequested, renderer, &MediaViewerHeifRenderer::render,
+        Qt::QueuedConnection);
+    connect(renderer, &MediaViewerHeifRenderer::started, this, &MediaViewerModel::renderStarted,
         Qt::QueuedConnection);
     connect(renderer, &MediaViewerHeifRenderer::rendered, this, &MediaViewerModel::heifRendered,
         Qt::QueuedConnection);
@@ -117,6 +124,13 @@ void MediaViewerModel::setHeifRenderGateForTests(std::function<void()> gate)
 void MediaViewerModel::setHeifRenderTimeoutMsForTests(int ms)
 {
     m_renderTimeoutMs = ms;
+}
+
+void MediaViewerModel::renderStarted(int slot, quint64 generation)
+{
+    if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
+        return; // retired or replaced session: the existing fences discard the render
+    armHeifRenderWatchdog(slot); // the bounded wait measures the render, not the queue
 }
 
 void MediaViewerModel::armHeifRenderWatchdog(int slot)
@@ -392,7 +406,9 @@ void MediaViewerModel::slotDownloaded(int slot, quint64 generation, const FileRe
             const auto outPath = m_directory && m_directory->isValid()
                 ? m_directory->filePath(QStringLiteral("slot-%1-heif.png").arg(slot)) : QString{};
             if (!outPath.isEmpty()) {
-                armHeifRenderWatchdog(slot);
+                // The bounded wait is armed by renderStarted when the serial
+                // worker takes this slot (#670 re-review): queue time behind
+                // an earlier render must not consume it.
                 emit heifRenderRequested(slot, generation, result.path, outPath);
                 emit mediaViewerChanged(); // the metadata name is visible while rendering
                 return;

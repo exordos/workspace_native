@@ -109,9 +109,11 @@ libraries instead (same precedent as `libmd4c`):
   actually retires it, so a stalled decode cannot make `drain()` pile further
   encoded payloads onto a busy worker (#670 findings 1/4).
 * The media viewer HEIC render is bounded by the same 15 s watchdog (#670
-  finding 2): a stalled render settles the slot as `display-error` (uuid stays
-  downloadable, reference `replaceItem`), and the late render result is
-  discarded by the existing generation/state fences.
+  finding 2), armed when the serial worker STARTS the render (#670 re-review):
+  queue time behind an earlier render never consumes a slot's timeout. A
+  stalled render settles the slot as `display-error` (uuid stays downloadable,
+  reference `replaceItem`), and the late render result is discarded by the
+  existing generation/state fences.
 * HEIC decodes share the single serial decode lane (no parallel HEIC storms);
   an in-flight preview is cancelled by scope invalidation (sign-out / project
   switch / viewer close) exactly like the current image jobs' scope leases.

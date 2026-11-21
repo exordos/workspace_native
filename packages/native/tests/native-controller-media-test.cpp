@@ -352,6 +352,51 @@ private slots:
         viewer->close();
     }
 
+    // #670 re-review: the render watchdog measures from the moment the serial
+    // worker STARTS the render, never from the download. A slot queued behind
+    // a stalled render must not burn its timeout in the queue: it stays
+    // loading while queued and settles ready once its own render runs.
+    void mediaViewerQueuedHeifRenderKeepsItsTimeoutUntilWorkerStart()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                if (request.target.path().contains(mvFileB))
+                    QThread::msleep(150); // slot B joins the serial render queue after A has begun
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/heic";
+                return result;
+            }
+            const auto uuid = request.target.path().contains(mvFileB) ? mvFileB : mvFileA;
+            return Response{QJsonObject{{"uuid", uuid}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        int calls = 0;
+        MediaViewerModel::setHeifRenderGateForTests([&calls] { if (++calls == 1) QThread::msleep(300); });
+        const auto restore = qScopeGuard([] { MediaViewerModel::setHeifRenderGateForTests(nullptr); });
+        viewer->setHeifRenderTimeoutMsForTests(100);
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA) << mediaViewerRow("m2", mvFileB);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        // Slot A: its render started and stalled, so it times out ~100 ms later.
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(),
+            QStringLiteral("display-error"), 2000);
+        // Slot B spent all of that queued behind the stalled worker. Its own
+        // render begins when A's stall ends and succeeds within its timeout,
+        // so it must end ready (at the previous head the download-armed timer
+        // expired while B was still queued and pinned display-error).
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(1).toMap().value("state").toString(),
+            QStringLiteral("ready"), 3000);
+        viewer->close();
+    }
+
     // --- Issue #79: copy image to clipboard (docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md) ---
     // Mirrors the Electron clipboard:writeImage handler measured at workspace_ui
     // 61dacef7 (main.ts:1054-1067, cap main.ts:50): over-cap payloads are
