@@ -4746,7 +4746,15 @@ void NativeController::setChatKeySharing(bool allow)
             && *row->keySharingUpdatedMicros > *parsed->keySharingUpdatedMicros;
         const QPointer<NativeController> guard(this);
         if (confirmed && !staleEcho) {
-            *row = *parsed;
+            // PR #655 review: the verified echo is a request-time snapshot -
+            // merging the whole row would regress unrelated fields a realtime
+            // event stamped newer while the PUT was in flight. The reference
+            // (messenger-sidebar-actions.lib.ts:626-631) spreads only the
+            // key-sharing changes onto the latest row, with updatedAt as the
+            // max of both; mirror that exactly.
+            row->allowKeySharingByHolders = parsed->allowKeySharingByHolders;
+            row->keySharingUpdatedMicros = parsed->keySharingUpdatedMicros;
+            row->updatedMicros = std::max(row->updatedMicros, parsed->updatedMicros);
             m_chatKeySharingError.clear();
             emit streamsChanged();
         } else if (!confirmed && m_stream == id) {
