@@ -4506,6 +4506,13 @@ void NativeController::setChatKeySharing(bool allow)
                 const auto at = std::find_if(m_streams.begin(), m_streams.end(),
                     [&id](const Stream &stream) { return stream.uuid == id; });
                 if (at == m_streams.end()) return;
+                // PR #655 review: this answer can arrive after a realtime
+                // event or a later successful toggle already settled a newer
+                // value. Apply the same timestamp precedence as the stale PUT
+                // echo above (:622-624): a row stamped newer than the snapshot
+                // this GET captured wins, and the stale answer is dropped.
+                if (at->keySharingUpdatedMicros && settled->keySharingUpdatedMicros
+                    && *at->keySharingUpdatedMicros > *settled->keySharingUpdatedMicros) return;
                 *at = *settled;
                 emit streamsChanged();
                 emit stateChanged();
