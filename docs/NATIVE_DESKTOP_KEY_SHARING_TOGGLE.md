@@ -79,14 +79,20 @@ contract. Geometry therefore comes from the reference code measurements above.
   value and its timestamp are carried into the merged row.
 - Controller: `chatKeySharing` QVariantMap projection (`checked`, `disabled`;
   empty when the row must be hidden: not the channel stream, not encrypted,
-  DTO without the field, or `security->owner != current user` - the reference
-  `ownerUuid = dto.owner` comparison), `chatKeySharingError` string, and
+  DTO without the field, or the DTO's `owner` differs from the current user -
+  the reference `ownerUuid = dto.owner` comparison, kept independent of the
+  optional crypto witness), `chatKeySharingError` string, and
   `setChatKeySharing(bool)` mirroring `updateStreamNotificationMode`:
   token-guarded in-flight state, `PUT messenger/streams/{uuid}` with
   `{"allow_key_sharing_by_holders": allow}`, readback verification of the echo
-  (uuid, owner, requested flag), commit `*row = parsed` on success, and on any
+  (uuid, owner, requested flag), commit `*row = parsed` on success - unless a
+  local confirmation is stamped strictly newer than the echo, in which case the
+  stale echo is dropped silently (reference :622-624 status "applied") - and on
   failure keep the previous value and set
-  `tr("Could not update key sharing.")`. All notifications reuse `stateChanged`
+  `tr("Could not update key sharing.")`; after an ambiguous failure (transport
+  loss or 5xx) the stream is reconciled through a targeted `GET
+  messenger/streams/{uuid}` so a committed write self-heals without rebuilding
+  the open drawer (a token-renewal reply still settles through the catalog). All notifications reuse `stateChanged`
   (no new NOTIFY signals - binding-budget constraint from e2ee-read cases).
 - UI: `qml/NativeEncryptedChatInfo.qml` settings screen gets
   `protectedChatKeySharingRow` (Button, 44 px, hover token

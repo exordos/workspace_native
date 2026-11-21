@@ -25,6 +25,7 @@ public:
     QJsonObject row{keySharingStream()};
     int puts = 0;
     int putStatus = 200, putDelay = 0;
+    bool commitDespiteFailure = false;
     QJsonObject putBody;
     QString putEchoUpdated = QStringLiteral("2026-01-02T10:00:05.000100Z");
     std::function<void(QJsonObject &)> alterPut;
@@ -36,6 +37,8 @@ public:
             const auto path = request.target.path();
             if (request.method == "PUT" && path == "/api/workspace/v1/messenger/streams/" + streamId) {
                 ++puts; putBody = request.body;
+                if (commitDespiteFailure)
+                    row["allow_key_sharing_by_holders"] = putBody.value("allow_key_sharing_by_holders");
                 auto echo = row;
                 echo["allow_key_sharing_by_holders"] = putBody.value("allow_key_sharing_by_holders");
                 echo["updated_at"] = putEchoUpdated;
@@ -1679,6 +1682,64 @@ private slots:
         auto staleAgain = keySharingStream(true, true, QStringLiteral("2026-01-02T10:00:06.500Z"));
         QVERIFY(controller.applyRealtimeEvent(test.snapshot(staleAgain)));
         QCOMPARE(test.projection().value("checked").toBool(), false);
+    }
+
+    void keySharingStalePutEchoKeepsNewerConfirmedValue()
+    {
+        KeySharingToggleFixture test;
+        // The echo is stamped BEFORE the realtime snapshot that will land while
+        // the PUT is in flight (echo delayed, reference :622-624 stale-echo path).
+        test.putDelay = 150;
+        test.putEchoUpdated = QStringLiteral("2026-01-02T10:00:01Z");
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        // A genuinely newer realtime snapshot arrives while the PUT is pending.
+        auto newer = keySharingStream(true, true, QStringLiteral("2026-01-02T10:00:03Z"));
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(newer)));
+        // The old echo lands now, confirming the requested flag at its older
+        // stamp: the reference discards it as status "applied" - the newer
+        // value survives and no failure toast is shown.
+        QTRY_VERIFY(!test.projection().value("disabled").toBool());
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+        QVERIFY(controller.chatKeySharingError().isEmpty());
+    }
+
+    void keySharingRowIgnoresIncompleteCryptoMetadata()
+    {
+        KeySharingToggleFixture test;
+        // The crypto tuple is optional metadata: dropping provider fields hides
+        // the security witness, but the reference gate is encryption + dto.owner
+        // + the flag alone (messenger-adapters.lib.ts:37, key-sharing :3-10).
+        test.row = keySharingStream();
+        test.row.remove("provider_uuid");
+        test.row.remove("provider_identity");
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        QVERIFY(!test.projection().isEmpty());
+        QCOMPARE(test.projection().value("checked").toBool(), true);
+        QCOMPARE(test.projection().value("disabled").toBool(), false);
+        // The row stays editable: the toggle commits through the same readback.
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        QTRY_VERIFY(test.projection().value("checked").toBool() == false);
+        QVERIFY(controller.chatKeySharingError().isEmpty());
+    }
+
+    void keySharingAmbiguousFailureReconcilesWithServer()
+    {
+        KeySharingToggleFixture test;
+        // The server commits the write but its 5xx response never proves it:
+        // the failed write must reconcile the row from the authoritative catalog.
+        test.commitDespiteFailure = true;
+        test.putStatus = 503;
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        QCOMPARE(controller.chatKeySharingError(), QStringLiteral("Could not update key sharing."));
+        QTRY_VERIFY(test.projection().value("checked").toBool() == false);
     }
 };
 

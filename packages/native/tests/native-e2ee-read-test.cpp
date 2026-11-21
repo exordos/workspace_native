@@ -11278,7 +11278,11 @@ private slots:
                 if (failPuts > 0) { --failPuts; return Response{QJsonObject{}, 503}; }
                 auto echo = scene.f.stream;
                 echo["allow_key_sharing_by_holders"] = request.body.value("allow_key_sharing_by_holders");
-                echo["updated_at"] = QStringLiteral("2026-01-02T10:00:30.000Z");
+                // A real server stamps the echo at the write instant, i.e. after
+                // any state the client already saw: the fixture stream carries
+                // updated_at 10:01:00Z, so the echo must be newer or the
+                // reference-accurate stale-echo drop discards it.
+                echo["updated_at"] = QStringLiteral("2026-01-02T10:01:30.000Z");
                 return Response{echo, 200};
             }
             return previous(request);
@@ -11297,7 +11301,9 @@ private slots:
         encryptedUiClick(scene.require("protectedChatKeySharingRow"));
         QTRY_COMPARE(puts, 2);
         QTRY_COMPARE(scene.text("protectedChatKeySharingError"), QString());
-        QCOMPARE(scene.rect("protectedChatKeySharingKnob", track).value("x").toDouble(), 2.0);
+        // The knob x is a QML binding settled with the commit repaint, so read
+        // it with QTRY like the adjacent settled-state assertions.
+        QTRY_COMPARE(scene.rect("protectedChatKeySharingKnob", track).value("x").toDouble(), 2.0);
         QTRY_COMPARE(scene.color("protectedChatKeySharingSwitch"), borderSubtle);
     }
 

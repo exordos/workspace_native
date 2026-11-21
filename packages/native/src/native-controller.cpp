@@ -4433,7 +4433,7 @@ QVariantMap NativeController::chatKeySharing() const
 {
     const auto *stream = channelInfoStreamRow();
     if (!stream || !stream->encrypted || !stream->allowKeySharingByHolders
-        || !stream->security || stream->security->owner != m_session->user()) return {};
+        || stream->owner != m_session->user()) return {};
     return {{"checked", *stream->allowKeySharingByHolders},
             {"disabled", m_chatKeySharingInFlight.contains(stream->uuid)}};
 }
@@ -4446,7 +4446,7 @@ void NativeController::setChatKeySharing(bool allow)
     // editableStreamKeySharing (messenger-stream-key-sharing.lib.ts:3-10):
     // encryption && ownerUuid == userUuid && the DTO carries the flag.
     if (!authenticated() || !stream || !stream->encrypted || !stream->allowKeySharingByHolders
-        || !stream->security || stream->security->owner != m_session->user()) return;
+        || stream->owner != m_session->user()) return;
     const auto id = stream->uuid;
     if (m_chatKeySharingInFlight.contains(id)) return;
     const auto owner = ownerKey();
@@ -4471,12 +4471,18 @@ void NativeController::setChatKeySharing(bool allow)
             [&id](const Stream &stream) { return stream.uuid == id; });
         const bool confirmed = parsed && parsed->uuid == id && parsed->viewer == m_session->user()
             && parsed->allowKeySharingByHolders == allow && row != m_streams.end();
+        // Readback :622-624: a local confirmation stamped newer than the echo
+        // wins - the stale echo is dropped silently (status "applied"), so a
+        // realtime value that landed while the PUT was in flight survives it.
+        const bool staleEcho = confirmed && row->keySharingUpdatedMicros
+            && parsed->keySharingUpdatedMicros
+            && *row->keySharingUpdatedMicros > *parsed->keySharingUpdatedMicros;
         const QPointer<NativeController> guard(this);
-        if (confirmed) {
+        if (confirmed && !staleEcho) {
             *row = *parsed;
             m_chatKeySharingError.clear();
             emit streamsChanged();
-        } else if (m_stream == id) {
+        } else if (!confirmed && m_stream == id) {
             m_chatKeySharingError = tr("Could not update key sharing.");
         }
         if (!guard) return;
@@ -4485,6 +4491,25 @@ void NativeController::setChatKeySharing(bool allow)
             // authoritative catalog settle the row.
             refresh();
             if (!guard) return;
+        } else if (!confirmed && (result.transportFailed || result.status >= 500)) {
+            // Ambiguous write: a response lost in transport or a 5xx can still
+            // follow a server commit. Reconcile exactly this stream through the
+            // canonical GET - a catalog-wide refresh would rebuild the open
+            // drawer the user is standing in (window-layer proof: the key-sharing
+            // geometry case crashes when the drawer rebuilds mid-toast).
+            request("GET", messenger + "/streams/" + id, {}, {},
+                [this, owner, generation, id](const ApiResult &reconcile) {
+                if (!authenticated() || ownerKey() != owner || m_api->generation() != generation) return;
+                if (!reconcile.ok() || !reconcile.data.isObject()) return;
+                const auto settled = parseStream(reconcile.data.toObject(), m_session->project());
+                if (!settled || settled->uuid != id) return;
+                const auto at = std::find_if(m_streams.begin(), m_streams.end(),
+                    [&id](const Stream &stream) { return stream.uuid == id; });
+                if (at == m_streams.end()) return;
+                *at = *settled;
+                emit streamsChanged();
+                emit stateChanged();
+            });
         }
         emit stateChanged();
     }, ApiClient::TokenRenewal::AwaitReply);
