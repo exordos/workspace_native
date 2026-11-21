@@ -40548,6 +40548,95 @@ private slots:
             "check still visible 2.6 s after completion; the newer download recreated the delegate (old survived: %1)")
             .arg(checkBefore == checkAfter)));
     }
+
+    void literalFileIdInCodeNeverMountsDownloadCard()
+    {
+        // Issue #646: the download-card projection must come from attachment
+        // links the Markdown renderer actually produced, not from raw
+        // urn:file substrings of bodyMarkdown. A completed download for a
+        // file uuid must mount a card only in messages that carry a real
+        // Markdown link to it - never for the same uuid in literal text,
+        // an inline code span or a fenced block (docs/NATIVE_DESKTOP_ATTACHMENT_DOWNLOAD_STATE.md).
+        QTemporaryDir directory;
+        const auto literalMsgId = QStringLiteral("4f4f4f4f-4f4f-4f4f-8f4f-4f4f4f4f4f4f");
+        const auto codeMsgId = QStringLiteral("5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e");
+        // m1 carries the only real link to returnedId; m2 repeats that uuid
+        // as a code span, inside a fenced block and as plain text; m3 links
+        // messageId for real while its fenced example repeats returnedId.
+        const QString literalBody = QStringLiteral(
+            "Documenting id `urn:file:%1?name=report.txt` for the parser.\n\n"
+            "```text\nThe identifier urn:file:%1 names the file.\n```\n\n"
+            "Plain text urn:file:%1").arg(returnedId);
+        const QString codeBody = QStringLiteral(
+            "[real.txt](urn:file:%1?name=real.txt&size=2)\n\n"
+            "```text\nexample id: urn:file:%2?name=report.txt\n```").arg(messageId, returnedId);
+        MockServer server;
+        QVector<std::function<void()>> release;
+        auto cleanup = qScopeGuard([&] { for (auto &send : release) if (send) send(); });
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[report.txt](urn:file:" + returnedId + "?name=report.txt&size=2)"),
+                    message(literalBody, literalMsgId), message(codeBody, codeMsgId)}};
+            if (path.endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release.append(std::move(send)); };
+                return response;
+            }
+            if (path.contains("/files/"))
+                return Response{QJsonObject{{"uuid", path.section('/', -1)},
+                    {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        preferences.setLocale(QStringLiteral("en"));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 3);
+        // Both downloads complete, so both file uuids have a downloaded entry.
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_VERIFY(release.size() >= 1);
+        release[0](); release[0] = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        controller.downloadFile(messageId, QUrl::fromLocalFile(directory.filePath("real.txt")));
+        QTRY_VERIFY(release.size() >= 2);
+        release[1](); release[1] = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        // A real Markdown link with a completed download keeps its card.
+        QTRY_VERIFY(bool(visibleItem(content, "attachmentCard-" + messageId + '-' + returnedId)));
+        QTRY_VERIFY(bool(visibleItem(content, "attachmentCard-" + codeMsgId + '-' + messageId)));
+        // The same uuid as a code span, fenced example or plain-text mention
+        // never mounts a card, even for message m3 that also links a real file.
+        QTest::qWait(300);
+        QVERIFY2(!item(content, "attachmentCard-" + literalMsgId + '-' + returnedId),
+            "literal urn in code/text mounted a card on the documentation message");
+        QVERIFY2(!item(content, "attachmentCard-" + codeMsgId + '-' + returnedId),
+            "fenced example urn mounted a second card next to the real attachment");
+    }
 };
 
 
