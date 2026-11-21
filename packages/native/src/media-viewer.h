@@ -95,6 +95,7 @@ private:
     void startPendingSlot(int slot);
     void slotDownloaded(int slot, quint64 generation, const FileResult &result);
     void heifRendered(int slot, quint64 generation, const QString &displayPath);
+    void renderStarted(int slot, quint64 generation);
     void armHeifRenderWatchdog(int slot);
     void cancelRenderWatchdog(Slot &slot);
     void heifRenderTimeoutExpired(QTimer *timer, int slot, quint64 generation);
