@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QObject>
 #include <QString>
+#include <QThread>
 #include <QVariantList>
 
 #include <memory>
@@ -76,7 +77,8 @@ private:
     void closeSession();
     void startSlot(int slot);
     void startPendingSlot(int slot);
-
+    void slotDownloaded(int slot, quint64 generation, const FileResult &result);
+    void heifRendered(int slot, quint64 generation, const QString &displayPath);
     QPointer<NativeController> m_controller;
     QPointer<FileClient> m_files;
     std::unique_ptr<NativeMarkdown> m_markdown;
@@ -87,6 +89,14 @@ private:
     quint64 m_generation = 0;
     QString m_ownerKey, m_stream, m_topic;
     bool m_authenticated = false;
+    // Issue #638 sec 4.2: image slots whose staged bytes are HEIC get their
+    // display render decoded on a dedicated worker thread (QML Image cannot
+    // read ISO-BMFF); results are fenced by m_generation like the downloads.
+    QThread m_decodeThread;
+    QPointer<QObject> m_decoder;
+    bool m_stopping = false;
+    Q_SIGNAL void heifRenderRequested(int slot, quint64 generation, const QString &path,
+        const QString &outPath);
 };
 
 } // namespace workspace

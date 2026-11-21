@@ -137,7 +137,7 @@ void ensureHeifPluginsLoaded()
 
 } // namespace
 
-bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error)
+bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64 maxSourcePixels)
 {
     out = QImage();
     if (bytes.isEmpty()) {
@@ -169,6 +169,16 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error)
     }
     auto handleGuard = std::unique_ptr<heif_image_handle, void (*)(const heif_image_handle *)>(
         handle, [](const heif_image_handle *h) { heif_image_handle_release(h); });
+    // Pixel budget checked on the handle BEFORE decoding: a container may
+    // claim huge dimensions inside a small file, and materialising that
+    // canvas first would defeat the budget (16 MP matches the shared
+    // preview cap; the reference caps the file size only, recorded deviation).
+    const qint64 width = heif_image_handle_get_width(handle);
+    const qint64 height = heif_image_handle_get_height(handle);
+    if (maxSourcePixels > 0 && width > 0 && height > 0 && width * height > maxSourcePixels) {
+        error = QStringLiteral("heic preview: %1x%2 above pixel budget").arg(width).arg(height);
+        return false;
+    }
     heif_image *image = nullptr;
     if (heif_error decoded = heif_decode_image(handle, &image, heif_colorspace_RGB,
             heif_chroma_interleaved_RGBA, nullptr); decoded.code != heif_error_Ok) {
@@ -193,7 +203,7 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error)
     return true;
 }
 #else
-bool heifDecodeRgba(const QByteArray &, QImage &out, QString &error)
+bool heifDecodeRgba(const QByteArray &, QImage &out, QString &error, qint64)
 {
     // Only reachable on non-Linux builds without libheif provisioned
     // (desktop-platform-packages open item); Linux configure makes libheif
