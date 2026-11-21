@@ -30,13 +30,16 @@ Figma token unavailable - mockups not consulted (the token endpoint returned a
 ### 1.2 Toggle and cancel (`sidebar-search-header.ui.tsx:17-46`)
 
 - `toggle({openOnly})` (`:37-45`): if not openOnly and `cancel()` returns true,
-  stop (hotkey acts as an off-switch). Otherwise remember
-  `previousFocusRef = document.activeElement` and focus the input.
+stop (hotkey acts as an off-switch). Otherwise remember
+`previousFocusRef = document.activeElement` and focus the input.
 - `cancel()` (`:18-32`): returns false when there is no input, or when the
   input is unfocused and the query is empty (empty query falls through).
   Otherwise clears the query (`onSearchQueryChange("")`); if the input held
   focus it blurs and restores `previousFocusRef.current?.focus({ preventScroll: true })`.
-  `previousFocusRef` is reset to null afterwards.
+  `previousFocusRef` is reset to null after every successful cancel, including
+  the unfocused path, so a later session can never restore a stale target
+  (PR #639 review finding: native hoists the reset out of the focused branch
+  to match this contract).
 
 ### 1.3 Escape precedence (`layout-escape-navigation.hook.ts:25-49`)
 
@@ -55,8 +58,11 @@ and the flat list of `[data-sidebar-search-item]` nodes inside it (`:20-25`) -
 only the filtered, rendered results are in this list. Step is +1/-1
 (`:28`). With the focus on the search input itself the index is -1, so
 ArrowDown enters at `items[0]` and ArrowUp enters at `items.at(-1)` (`:29`).
-At the first/last item the sibling lookup yields `undefined` and focus stays
-(`:29-32`). The event is always consumed while a result container exists.
+At the first/last item the reference sibling lookup yields `undefined` and
+focus stays (`:29-32`); the native ring instead wraps the index at both ends
+(issue #628 acceptance requires cycling and the PR contract states
+wrap-around; PR #639 review pinned this as the deliberate native deviation).
+The event is always consumed while a result container exists.
 `Enter` on an item opens it and keeps the query (`e2e/sidebar.spec.ts:302-311`).
 
 ### 1.5 Focus ring (`sidebar-workspace.css:1-12`)
@@ -102,8 +108,9 @@ light+dark and ru+en unchanged; no new user-visible strings.
 - `toggleSidebarSearch(openOnly)` and `cancelSidebarSearch()` port
   `sidebar-search-header.ui.tsx:17-46` 1:1: `previousFocus` is
   `root.activeFocusItem` captured at toggle time and restored with
-  `forceActiveFocus()`; `cancel` clears `root.sidebarQuery` and only claims
-  the event when the field has focus or the query is non-empty.
+  `forceActiveFocus()`; `cancel` clears `root.sidebarQuery`, discards the
+  saved target on every successful cancel and only claims the event when the
+  field has focus or the query is non-empty.
 - Escape: `handleChatEscape` (the existing inbox fallback on the workspace
   RowLayout) calls `cancelSidebarSearch()` first, matching
   `layout-escape-navigation.hook.ts:29`; a second Escape falls through to the
@@ -113,9 +120,12 @@ light+dark and ru+en unchanged; no new user-visible strings.
   order (only rows rendered by the filtered model exist, so the ring walks the
   filtered results only). `moveSidebarSearchFocus(from, step)` ports
   `sidebar-workspace-search.lib.ts:27-32` including the index -1 entry points
-  (input: Down -> first row, Up -> last row) and the edge no-op. Handlers are
-  attached to `sidebarSearch` and both row button kinds via `Keys.onUpPressed`
-  / `Keys.onDownPressed`, gated on a non-empty `normalizedSidebarQuery` (the
+  (input: Down -> first row, Up -> last row); at the item edges native wraps
+  the index at both ends instead of the reference no-op, per the issue
+  acceptance "cycle" and the PR wrap-around contract (PR #639 review).
+  Handlers are attached to `sidebarSearch` and both row button kinds via
+  `Keys.onUpPressed` / `Keys.onDownPressed`, gated on a non-empty
+  `normalizedSidebarQuery` (the
   native equivalent of the `data-sidebar-search-results` container) and on the
   ctrl/meta/alt/shift filter at `:10-18`.
 - Focus ring: the rows already render the house keyboard-focus indicator
