@@ -5096,40 +5096,81 @@ component NativeMentionChip: Item {
         return !(modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier))
     }
 
-    function sidebarSearchResultItems() {
-        const origin = streamList.mapToItem(root.contentItem, 0, 0)
-        const viewportTop = origin.y
-        const viewportBottom = origin.y + streamList.height
-        const rows = []
-        const walk = node => {
-            const children = node.children
-            for (let index = 0; index < children.length; ++index) {
-                const child = children[index]
-                if (!(child instanceof Item))
-                    continue
-                const name = String(child.objectName || "")
-                if (child.visible && (name.startsWith("stream-") || name.startsWith("topic-"))) {
-                    const center = child.mapToItem(root.contentItem, child.width / 2, child.height / 2)
-                    if (center.y >= viewportTop && center.y <= viewportBottom)
-                        rows.push({item: child, y: center.y})
-                } else
-                    walk(child)
-            }
+    // Issue #648 (PR #639 fix round): the arrow ring is built from the
+    // filtered model, not from realized delegate items - rows below the fold
+    // may not be incubated at all, while the reference querySelectorAll sees
+    // every [data-sidebar-search-item] regardless of the viewport
+    // (sidebar-workspace-search.lib.ts:25-30, DOM focus scrolls the target
+    // into view).
+    function sidebarSearchTargets() {
+        const targets = []
+        const streams = root.controller.sidebarStreams
+        for (let row = 0; row < streams.length; ++row) {
+            const stream = streams[row]
+            targets.push({row: row, objectName: "stream-" + stream.id})
+            const topics = stream.searchTopics || []
+            for (let topic = 0; topic < topics.length; ++topic)
+                targets.push({row: row, objectName: "topic-" + topics[topic].id})
         }
-        walk(streamList)
-        rows.sort((left, right) => left.y - right.y)
-        return rows.map(row => row.item)
+        return targets
+    }
+
+    function findSidebarSearchRow(node, name) {
+        if (node.objectName === name)
+            return node
+        const children = node.children
+        for (let index = 0; index < children.length; ++index) {
+            const child = children[index]
+            if (!(child instanceof Item))
+                continue
+            const found = root.findSidebarSearchRow(child, name)
+            if (found)
+                return found
+        }
+        return null
+    }
+
+    function scrollSidebarSearchRowIntoView(item, step) {
+        // positionViewAtIndex aligns whole stream delegates; topic rows that
+        // spill below the fold inside a tall delegate need an item-level nudge.
+        const top = item.mapToItem(streamList, 0, 0).y
+        const bottom = top + item.height
+        if (top >= 0 && bottom <= streamList.height)
+            return
+        const max = Math.max(0, streamList.contentHeight - streamList.height)
+        const next = step > 0 ? streamList.contentY + (bottom - streamList.height)
+            : streamList.contentY + top
+        streamList.contentY = Math.min(max, Math.max(0, next))
+    }
+
+    function focusSidebarSearchTarget(target, step, attempt) {
+        streamList.positionViewAtIndex(target.row, ListView.Contain)
+        streamList.forceLayout()
+        const delegate = streamList.itemAtIndex(target.row)
+        const item = delegate ? root.findSidebarSearchRow(delegate, target.objectName) : null
+        if (item) {
+            root.scrollSidebarSearchRowIntoView(item, step)
+            item.forceActiveFocus(Qt.TabFocusReason)
+            return true
+        }
+        // A delegate incubating outside the cache window is async; retry on a
+        // later frame (focusArchiveRow uses the same position+lookup shape).
+        if (attempt < 60)
+            Qt.callLater(() => root.focusSidebarSearchTarget(target, step, attempt + 1))
+        return true
     }
 
     function moveSidebarSearchFocus(from, step) {
         if (!root.normalizedSidebarQuery.length)
             return false
-        const items = root.sidebarSearchResultItems()
-        if (!items.length)
+        const targets = root.sidebarSearchTargets()
+        if (!targets.length)
             return false
         let index = -1
-        for (let position = 0; position < items.length; ++position)
-            if (items[position] === from) {
+        // The search input itself calls with from = null (no result item).
+        const fromName = from ? from.objectName : ""
+        for (let position = 0; position < targets.length; ++position)
+            if (targets[position].objectName === fromName) {
                 index = position
                 break
             }
@@ -5137,12 +5178,11 @@ component NativeMentionChip: Item {
         // at the first row, ArrowUp at the last one; at the item edges the
         // index wraps around (issue #628 acceptance: arrows cycle the filtered
         // results; PR #639 review supersedes the reference no-op edges at
-        // sidebar-workspace-search.lib.ts:29-32).
-        const wrapped = index === -1 && step === -1 ? items.length - 1 : (index + step + items.length) % items.length
-        const next = items[wrapped]
-        if (next)
-            next.forceActiveFocus(Qt.TabFocusReason)
-        return true
+        // sidebar-workspace-search.lib.ts:29-32). Issue #648: the ring spans
+        // the whole filtered list and scrolls its target into view.
+        const wrapped = index === -1 && step === -1 ? targets.length - 1
+            : (index + step + targets.length) % targets.length
+        return root.focusSidebarSearchTarget(targets[wrapped], step, 0)
     }
 
     function handleChatEscape(event) {
