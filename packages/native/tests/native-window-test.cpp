@@ -15317,6 +15317,10 @@ mv -Tf "$root/.current-new" "$root/current"
             QCOMPARE(list->property("layoutTicket"), ticket);
         }
         if (scenario == "prepend") {
+            // Ordinary rows must not construct controls reserved for service
+            // topic boundaries or instantiate an unread divider per message.
+            QCOMPARE(itemCountWithPrefix(list, "serviceTopicDivider-"), 0);
+            QVERIFY(itemCountWithPrefix(list, "unreadDivider") <= 1);
             const QSize previousSize = window->size();
             const qreal previousHeight = list->height();
             // Ask Qt to prepare a viewport of loaded delegates ahead of input,
