@@ -4,6 +4,8 @@
 #include "support/controller-media-fixtures.h"
 
 #include <QImage>
+#include <QScopeGuard>
+#include <QThread>
 #include <QUrl>
 
 class ControllerMediaTest final : public NativeControllerTestHarness {
@@ -306,6 +308,47 @@ private slots:
         const auto failed = viewer->items().at(0).toMap();
         QCOMPARE(failed.value("url").toString(), QString());
         QCOMPARE(failed.value("uuid").toString(), mvFileA);
+        viewer->close();
+    }
+
+    // #670 review finding 2: the viewer HEIC render is bounded by the same
+    // decode timeout as message previews. A stalled render settles the slot as
+    // display-error (the uuid stays downloadable, file-card parity) while the
+    // worker is still stuck, and the late successful render is discarded -
+    // one settle per slot. The gate + shortened timeout make the 15 s path
+    // deterministic (6x margin: 50 ms watchdog vs a >=300 ms guaranteed stall).
+    void mediaViewerStalledHeifRenderTimesOutToDisplayError()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/heic";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        MediaViewerModel::setHeifRenderGateForTests([] { QThread::msleep(300); });
+        const auto restore = qScopeGuard([] { MediaViewerModel::setHeifRenderGateForTests(nullptr); });
+        viewer->setHeifRenderTimeoutMsForTests(50);
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(0).toMap().value("state").toString(),
+            QStringLiteral("display-error"), 2000); // settles while the render is still stalled
+        QTest::qWait(450); // the stalled render completes (successfully) after the timeout
+        const auto settled = viewer->items().at(0).toMap();
+        QCOMPARE(settled.value("state").toString(), QStringLiteral("display-error")); // late render discarded
+        QCOMPARE(settled.value("url").toString(), QString());
+        QCOMPARE(settled.value("uuid").toString(), mvFileA); // download-by-uuid stays enabled
         viewer->close();
     }
 

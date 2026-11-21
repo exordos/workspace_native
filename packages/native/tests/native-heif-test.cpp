@@ -201,6 +201,9 @@ private slots:
         QCOMPARE(kHeifMaxFileBytes, qint64(25) * 1024 * 1024);
         QCOMPARE(kHeifDecodeTimeoutMs, 15000);
         QCOMPARE(kHeifFtypHeaderLimit, 4096);
+        // Decode budget cap (#670 finding 3): covers 48 MP photos with margin
+        // while keeping the worst-case RGBA canvas bounded (50 MP * 4 B).
+        QCOMPARE(kHeifMaxDecodePixels, qint64(50) * 1000 * 1000);
     }
 
     // The reference app's own e2e fixture (workspace_ui e0194ff
@@ -261,6 +264,38 @@ private slots:
         QImage image;
         QString error;
         QVERIFY(!heifDecodeRgba(oversize, image, error));
+        QVERIFY(image.isNull());
+    }
+
+    // #670 review finding 3: ordinary high-resolution HEIC photos (a 48 MP
+    // iPhone Pro frame is 8064x6048 = 48.8 MP) must stay inside the decode
+    // budget. The budget predicate is the exact gate heifDecodeRgba applies
+    // to the handle dimensions before materialising the canvas (a host with
+    // no HEVC encoder cannot produce a real 48 MP fixture, and libheif takes
+    // the grid from the coded SPS, not from patchable container metadata -
+    // probed on libheif 1.21.2 - so the contract pins predicate + path).
+    void budgetAcceptsFortyEightMegapixelPhoto()
+    {
+        QString error;
+        QVERIFY(!heifPixelBudgetRejects(8064, 6048, kHeifMaxDecodePixels, error));
+        QVERIFY(error.isEmpty());
+    }
+
+    void budgetRejectsAboveCap()
+    {
+        QString error;
+        QVERIFY(heifPixelBudgetRejects(9000, 8000, kHeifMaxDecodePixels, error)); // 72 MP
+        QVERIFY(error.contains(QLatin1String("above pixel budget")));
+    }
+
+    // The live decode path honours the budget: forcing a tiny budget on the
+    // real fixture must refuse BEFORE any canvas is materialised.
+    void decodePathAppliesBudgetBeforeDecode()
+    {
+        QImage image;
+        QString error;
+        QVERIFY(!heifDecodeRgba(heicFixture(), image, error, 1000)); // 48x32 = 1536 px
+        QVERIFY(error.contains(QLatin1String("above pixel budget")));
         QVERIFY(image.isNull());
     }
 };

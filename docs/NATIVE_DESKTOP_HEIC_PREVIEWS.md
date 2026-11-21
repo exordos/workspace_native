@@ -54,7 +54,8 @@ libraries instead (same precedent as `libmd4c`):
   never silently lose previews.
 * Add both packages to the apt sets in `.github/workflows/linux-release.yml` and
   to the packaged runtime: CMake installs the `libheif-libde265.so` plugin into
-  `lib/heif-plugins` and the `libde265.so.0*` runtime libraries into `lib/`
+  `${CMAKE_INSTALL_LIBDIR}/heif-plugins` (i.e. `lib/heif-plugins` on the release
+  distro) and the `libde265.so.0*` runtime libraries into `${CMAKE_INSTALL_LIBDIR}`
   (they are dlopen'd, so Qt's ELF deployment never sees them);
   `FinalizeLinuxRuntime` gives `libheif`/`libde265` the package `$ORIGIN` and
   the plugin tree `$ORIGIN:$ORIGIN/..` so their transitive dependencies resolve
@@ -74,9 +75,13 @@ libraries instead (same precedent as `libmd4c`):
   library does NOT auto-register its codec plugins from
   `LIBHEIF_PLUGIN_DIRECTORY`; without an explicit `heif_load_plugins` pass the
   HEVC decoder is invisible and every decode fails. `heifDecodeRgba` runs it
-  once per process: the deploy-bundled tree next to the executable
-  (`lib/heif-plugins`) is tried first and is authoritative when it registers a
-  plugin; otherwise every directory `heif_get_plugin_directories()` reports
+  once per process: the deploy-bundled tree next to the executable is tried
+  first and is authoritative when it registers a plugin; its bin-relative path
+  is compiled from the configured install layout
+  (`WORKSPACE_NATIVE_HEIF_PLUGINS_SUBDIR`, derived from
+  `${CMAKE_INSTALL_LIBDIR}/heif-plugins`, #670 finding 2) so a `lib64` package
+  searches the directory the packaging actually writes; otherwise every
+  directory `heif_get_plugin_directories()` reports
   (built-in path + `LIBHEIF_PLUGIN_PATHS`) is scanned, which is what an
   unpackaged development build uses. The installed-runtime check in the probe
   (see decode backend above) covers the bundled-tree path.
@@ -90,11 +95,23 @@ libraries instead (same precedent as `libmd4c`):
 
 * `MAX_FILE_BYTES = 25 MiB`: files above it never start a decode (file card /
   `display-error`, download unaffected).
+* Pixel budget (`kHeifMaxDecodePixels = 50 MP`): checked on the handle BEFORE
+  decoding (#670 finding 3). Sized to admit ordinary high-resolution photos -
+  a 48 MP iPhone Pro frame (8064x6048 = 48.8 MP) decodes; the worst-case
+  RGBA8888 canvas stays bounded at 200 MB. libheif 1.21 exposes no scaled-decode
+  option for libde265, so the budget bounds memory rather than the decode.
 * 15 000 ms decode timeout. The reference kills the worker; natively the decode
   runs on the existing `MessageImages` decode thread (already a dedicated
   `QThread` with a serial pipeline): a `QTimer` watchdog at 15 s marks the job
   Failed if the decode has not reported (parity of user-visible behaviour; the
-  worker thread is not killed - see Deviations).
+  worker thread is not killed - see Deviations). The watchdog does not free the
+  job's pipeline accounting: the ticket stays counted until the serial worker
+  actually retires it, so a stalled decode cannot make `drain()` pile further
+  encoded payloads onto a busy worker (#670 findings 1/4).
+* The media viewer HEIC render is bounded by the same 15 s watchdog (#670
+  finding 2): a stalled render settles the slot as `display-error` (uuid stays
+  downloadable, reference `replaceItem`), and the late render result is
+  discarded by the existing generation/state fences.
 * HEIC decodes share the single serial decode lane (no parallel HEIC storms);
   an in-flight preview is cancelled by scope invalidation (sign-out / project
   switch / viewer close) exactly like the current image jobs' scope leases.

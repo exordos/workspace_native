@@ -394,13 +394,19 @@ void MessageImages::decodeWatchdogExpired(const QString &scope, quint64 job)
     // existing fence); its timer settles nothing and dies with the ticket.
     if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode || scope != m_scope) return;
     const auto uuid = ticket->uuid;
-    m_jobs.erase(ticket); // frees the pipeline slot; the late decoded() ignores this ticket
+    // #670 findings 1/4: the watchdog cannot interrupt an in-flight decode on
+    // the shared serial worker, so it must not free that worker's capacity
+    // either. The ticket stays accounted for (stats pipelineJobs/decodeJobs)
+    // until the late decoded() retires it, so drain() cannot feed further
+    // encoded payloads to a busy worker past the pipeline limit. The entry
+    // itself settles Failed right now - the user-visible timeout is unchanged.
+    ticket->watchdog = nullptr; // the fired single-shot already deleteLater'd itself
     auto entry = m_entries.find(uuid);
     if (entry != m_entries.end() && entry->job == job && entry->consumers) {
         entry->job = 0; entry->phase = Phase::Failed; // file card, like any failed decode
         notifyRevision();
     }
-    drain();
+    drain(); // capped by the still-accounted ticket until the worker exits
 }
 QString MessageImages::imageUrl(const QString &urn) const
 {
