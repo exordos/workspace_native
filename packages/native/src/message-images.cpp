@@ -1,5 +1,6 @@
 #include "message-images.h"
 #include "api-client.h"
+#include "heif-preview.h"
 #include "workspace-reference.h"
 #include "file-client.h"
 #include "native-image-input.h"
@@ -50,17 +51,31 @@ private:
 struct DecodedPreview { QImage image; QSize naturalSize; };
 DecodedPreview preview(const QByteArray &bytes)
 {
-    QBuffer buffer; buffer.setData(nativeImageReaderInput(bytes));
-    if (!buffer.open(QIODevice::ReadOnly)) return {};
-    QImageReader reader(&buffer); reader.setAutoTransform(true);
-    const auto format = reader.format().toLower();
-    if (format != "png" && format != "jpeg" && format != "jpg" && format != "gif" && format != "webp") return {};
-    const auto size = reader.size();
-    if (size.width() <= 0 || size.height() <= 0
-        || qint64(size.width()) * size.height() > MessageImages::MaximumSourcePixels) return {};
-    // One first-frame decode on the serial worker. Never retain encoded bytes
-    // or the original decoded canvas in the manager/provider cache.
-    const auto source = reader.read();
+    QImage source;
+    if (heifSniffFtyp(bytes.left(kHeifFtypHeaderLimit))) {
+        // Issue #638 sec 4.1: HEIC bytes route through the system libheif path
+        // instead of QImageReader (which cannot decode ISO-BMFF stills). Any
+        // failure - oversize (> 25 MiB cap inside heifDecodeRgba), corrupt or
+        // unsupported encoding - yields {} so the entry settles Failed and the
+        // bubble keeps the file card, mirroring the reference display-error
+        // fallback; the original bytes stay untouched for the download path.
+        QImage decoded;
+        QString error;
+        if (!heifDecodeRgba(bytes, decoded, error)) return {};
+        source = decoded;
+    } else {
+        QBuffer buffer; buffer.setData(nativeImageReaderInput(bytes));
+        if (!buffer.open(QIODevice::ReadOnly)) return {};
+        QImageReader reader(&buffer); reader.setAutoTransform(true);
+        const auto format = reader.format().toLower();
+        if (format != "png" && format != "jpeg" && format != "jpg" && format != "gif" && format != "webp") return {};
+        const auto size = reader.size();
+        if (size.width() <= 0 || size.height() <= 0
+            || qint64(size.width()) * size.height() > MessageImages::MaximumSourcePixels) return {};
+        // One first-frame decode on the serial worker. Never retain encoded bytes
+        // or the original decoded canvas in the manager/provider cache.
+        source = reader.read();
+    }
     if (source.isNull() || source.width() <= 0 || source.height() <= 0
         || qint64(source.width()) * source.height() > MessageImages::MaximumSourcePixels) return {};
     const qreal scale = std::min({qreal(1), qreal(MessageImages::MaximumPreviewWidth) / source.width(),
