@@ -40665,6 +40665,93 @@ private slots:
         QTest::keyClick(window, Qt::Key_Return);
         expectSaveDialog();
     }
+
+    void attachmentCardTabTraversalReachesCardAndActivatesByKey()
+    {
+        // Review 4652765385 (issue #629): the card must participate in the
+        // window's normal keyboard focus traversal - a Tab walker (explicitly
+        // no forceActiveFocus shortcut) has to reach the card and activate it
+        // with Enter and Space, the same way a browser user reaches the
+        // reference's real <button>. Reference workspace_ui 56f0b89
+        // workspace-message-body-interactions.hook.ts:481-521.
+        QTemporaryDir directory;
+        MockServer server;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[report.docx](urn:file:" + returnedId
+                    + "?name=report.docx&content_type=application%2Fpdf&size=1258291)")}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        const auto tag = messageId + '-' + returnedId;
+        auto *card = visibleItem(content, "attachmentCard-" + tag); QVERIFY(card);
+        auto *cardItem = qobject_cast<QQuickItem *>(card); QVERIFY(cardItem);
+        const auto expectSaveDialog = [&] {
+            QTRY_VERIFY_WITH_TIMEOUT(saveDialog->property("visible").toBool(), 4000);
+            QCOMPARE(window->property("downloadId").toString(), returnedId);
+            saveDialog->setProperty("visible", false);
+            QTest::qWait(100);
+        };
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (auto *holder = window->activeFocusItem())
+            holder->setFocus(false);
+        // Real traversal only: press Tab until the chain lands on the card.
+        const auto tabUntilCard = [&](const char *stage) {
+            for (int tab = 0; tab < 160 && !cardItem->hasActiveFocus(); ++tab)
+                QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY2(cardItem->hasActiveFocus(),
+                QString("Tab traversal must reach the attachment card (stage %1)")
+                    .arg(stage).toUtf8().constData());
+        };
+        tabUntilCard("initial");
+        QTest::keyClick(window, Qt::Key_Return);
+        expectSaveDialog();
+        // Closing the save dialog parks focus inside the composer sub-chain,
+        // so anchor the next walk on the content root and let Tab do all the
+        // traversal; Space must fire the same route.
+        window->contentItem()->forceActiveFocus();
+        tabUntilCard("after-dialog");
+        QTest::keyClick(window, Qt::Key_Space);
+        expectSaveDialog();
+        // Backward traversal passes through the card too: Shift+Tab leaves it
+        // to the message bubble that precedes it in the chain, and the walk
+        // reaches the card again from the content root (tabUntilCard above).
+        window->contentItem()->forceActiveFocus();
+        tabUntilCard("directions");
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(!cardItem->hasActiveFocus());
+        QCOMPARE(window->activeFocusItem()->objectName(), "message-" + messageId);
+    }
 };
 
 
