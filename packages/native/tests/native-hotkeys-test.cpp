@@ -17,8 +17,8 @@ private slots:
         QMap<QString, int> groups;
         for (const auto& row : keys.actions())
             ++groups[row.toMap().value("category").toString()];
-        QCOMPARE(keys.actions().size(), 18);
-        QCOMPARE(groups.value("navigation"), 8);
+        QCOMPARE(keys.actions().size(), 19);
+        QCOMPARE(groups.value("navigation"), 9);
         QCOMPARE(groups.value("interface"), 5);
         QCOMPARE(groups.value("composer"), 5);
         QCOMPARE(keys.fixed().size(), 5);

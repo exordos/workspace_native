@@ -5342,6 +5342,7 @@
         <message><source>Reset</source><translation>Сбросить</translation></message>
         <message><source>Reset all</source><translation>Сбросить все</translation></message>
         <message><source>Save</source><translation>Сохранить</translation></message>
+        <message><source>Search chats</source><translation>Поиск чатов</translation></message>
         <message><source>Search shortcuts</source><translation>Поиск сочетаний</translation></message>
         <message><source>Select text, focus a message with Tab, or point to it.</source><translation>Выделите текст, перейдите к сообщению клавишей Tab или наведите на него курсор.</translation></message>
         <message><source>Send or insert a line, depending on send settings</source><translation>Отправка или перенос строки согласно настройке отправки</translation></message>

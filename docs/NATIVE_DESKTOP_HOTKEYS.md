@@ -1,6 +1,6 @@
 # Keyboard shortcuts
 
-The native window uses the Workspace shortcut catalog. Navigation has eight
+The native window uses the Workspace shortcut catalog. Navigation has nine
 actions, the interface has five, and the composer has five. Five fixed entries
 describe standard editing and navigation keys. A binding can use Mod, which
 means Command on macOS and Control on Windows and Linux. Conflict checks
