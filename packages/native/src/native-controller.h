@@ -1582,6 +1582,10 @@ private:
     struct DownloadEntry {
         QString id, owner, fileUuid, fileName, requestedPath, path, status, error;
         qint64 received = 0, total = -1;
+        // Review 4650261678 (issue #631): wall-clock instant of the transition
+        // to "downloaded", so the card's confirmation window survives delegate
+        // recreation (0 while the entry has not completed).
+        qint64 completedAtMs = 0;
         quint64 intent = 0, retryService = 0;
         bool retrying = false;
         bool active() const { return status == "starting" || status == "downloading"; }
