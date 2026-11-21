@@ -1,8 +1,10 @@
 #include "api-client.h"
 #include "file-client.h"
 #include "file-download-staging.h"
+#include "support/heif-test-fixtures.h"
 
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -123,6 +125,8 @@ private slots:
     void writeErrorsAndDeadline();
     void absentChecksumAndEmptyDownload();
     void typedUrns();
+    void heicAttachmentUrnSemantics();
+    void heicUploadForcesImageUrnWithoutProbing();
     void streamingAcrossMultipleChunks();
     void progressObserversMayCancelOrDestroyTheTransfer_data();
     void progressObserversMayCancelOrDestroyTheTransfer();
@@ -770,6 +774,72 @@ void FileClientTest::typedUrns()
     }
     metadata.uuid = "https://other-host";
     QVERIFY(metadata.urn().isEmpty());
+}
+
+void FileClientTest::heicAttachmentUrnSemantics()
+{
+    // Reference buildWorkspaceComposerAttachmentMetadata (e0194ff): an
+    // isHeicAttachment(name, content_type) forces urnType "image" even when
+    // the MIME is absent or a binary placeholder, and skips the local
+    // dimension probe, so a HEIC urn never carries w/h.
+    FileMetadata metadata;
+    metadata.uuid = FileUuid; metadata.name = "trip.heic"; metadata.sizeBytes = 425;
+    metadata.dimensions = QSize(48, 32); // A probe result must never leak into a HEIC urn.
+    for (const auto &type : {QStringLiteral("image/heic"), QStringLiteral("application/octet-stream"), QString()}) {
+        metadata.contentType = type;
+        const auto urn = metadata.urn();
+        QVERIFY2(urn.startsWith(QString("urn:image:%1?").arg(FileUuid)), qPrintable(urn));
+        const QUrlQuery query(urn.mid(urn.indexOf('?') + 1));
+        QVERIFY2(!query.hasQueryItem("w") && !query.hasQueryItem("h"), qPrintable(urn));
+        QCOMPARE(query.queryItemValue("size"), QStringLiteral("425"));
+    }
+    metadata.name = "trip.heif"; metadata.contentType = QStringLiteral("image/heif");
+    QVERIFY(metadata.urn().startsWith(QString("urn:image:%1?").arg(FileUuid)));
+    metadata.name = "noextension"; metadata.contentType = QStringLiteral("image/heic-sequence");
+    QVERIFY(metadata.urn().startsWith(QString("urn:image:%1?").arg(FileUuid)));
+    // Non-HEIC semantics stay exactly as typedUrns measured them.
+    metadata.name = "trip.bin"; metadata.contentType = QStringLiteral("application/octet-stream");
+    QVERIFY(metadata.urn().startsWith(QString("urn:file:%1?").arg(FileUuid)));
+    metadata.name = "trip.png"; metadata.contentType = QStringLiteral("image/png");
+    const auto png = metadata.urn();
+    const QUrlQuery pngQuery(png.mid(png.indexOf('?') + 1));
+    QCOMPARE(pngQuery.queryItemValue("w"), QStringLiteral("48"));
+    QCOMPARE(pngQuery.queryItemValue("h"), QStringLiteral("32"));
+}
+
+void FileClientTest::heicUploadForcesImageUrnWithoutProbing()
+{
+    // The ORIGINAL container bytes are the upload body; the server echo names
+    // the uploaded part type (mirrors the backend), and the finished metadata
+    // still produces an image urn with no probed dimensions.
+    const auto bytes = heicFixture();
+    Server server;
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        QByteArray contentType("application/octet-stream");
+        const auto lowered = request.toLower();
+        const auto namePos = lowered.indexOf("filename=\"photo.heic\"");
+        if (namePos >= 0) {
+            const auto start = lowered.indexOf("content-type: ", namePos);
+            if (start >= 0) contentType = request.mid(start + 14, request.indexOf('\n', start) - start - 14);
+        }
+        const auto body = QJsonDocument(QJsonObject{{"uuid", FileUuid}, {"stream_uuid", StreamUuid},
+            {"name", "photo.heic"}, {"content_type", QString::fromLatin1(contentType).trimmed()},
+            {"size_bytes", bytes.size()}, {"hash", QString::fromLatin1(digest(bytes))}}).toJson(QJsonDocument::Compact);
+        Server::reply(socket, body, request.startsWith("POST") ? 201 : 200);
+    };
+    ApiClient api(nullptr, true); authorize(api, server);
+    FileClient client(&api);
+    QTemporaryDir directory;
+    const auto source = directory.filePath("photo.heic"); write(source, bytes);
+    FileResult result; bool done = false;
+    client.upload(source, StreamUuid, "photo.heic", [&](const FileResult &r) { result = r; done = true; });
+    QTRY_VERIFY(done); QVERIFY2(result.ok(), qPrintable(result.error));
+    QVERIFY(server.requests.first().contains(bytes));
+    const auto urn = result.metadata.urn();
+    QVERIFY2(urn.startsWith(QString("urn:image:%1?").arg(FileUuid)), qPrintable(urn));
+    const QUrlQuery query(urn.mid(urn.indexOf('?') + 1));
+    QVERIFY2(!query.hasQueryItem("w") && !query.hasQueryItem("h"), qPrintable(urn));
+    QCOMPARE(query.queryItemValue("size"), QString::number(bytes.size()));
 }
 
 void FileClientTest::streamingAcrossMultipleChunks()
