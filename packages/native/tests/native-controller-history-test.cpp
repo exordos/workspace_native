@@ -3382,6 +3382,36 @@ private slots:
         QCOMPARE(olderRequests, 1);
     }
 
+    void fastHistoryScrollKeepsItsCadenceAcrossLayoutRestore()
+    {
+        Fixture fixture;
+        QMap<int, QJsonObject> rows;
+        for (int n = 1; n <= 150; ++n) rows.insert(n, historyMessage(n));
+        int olderRequests = 0;
+        fixture.messages = [&](const Request &request) {
+            auto response = historyResponse(rows, request);
+            const QUrlQuery query(request.target);
+            if (query.hasQueryItem("topic_uuid")) {
+                response.delay = 500;
+                if (query.hasQueryItem("page_marker")) ++olderRequests;
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.noteScrollReserve(3400, 646);
+        QTest::qWait(25);
+        controller.noteScrollReserve(3300, 646);
+        // A timeline layout restores the anchor while the wheel is still
+        // moving. The next notch travels 100 px from the restored position.
+        controller.noteScrollRearm(2350, 646);
+        QCOMPARE(olderRequests, 0);
+        QTest::qWait(25);
+        controller.noteScrollReserve(2250, 646);
+        QTRY_COMPARE_WITH_TIMEOUT(olderRequests, 1, 250);
+        QTRY_COMPARE(controller.messages().size(), 100);
+    }
+
     void historyPrefetchFiresAtExactReserveBoundary()
     {
         Fixture fixture;
