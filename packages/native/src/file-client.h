@@ -26,6 +26,12 @@ struct FileMetadata {
     QSize dimensions;
 
     FileKind kind() const;
+    // Reference buildWorkspaceComposerAttachmentMetadata (e0194ff): an
+    // isHeicAttachment(name, content_type) forces urnType "image" even when
+    // the MIME is absent or a binary placeholder, and skips the local
+    // dimension probe, so a HEIC urn never carries w/h.
+    bool heicAttachment() const;
+    FileKind urnKind() const;
     QString urn() const;
 };
 

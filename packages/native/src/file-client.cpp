@@ -1,5 +1,6 @@
 #include "file-client.h"
 #include "file-download-staging.h"
+#include "heif-preview.h"
 #include "native-image-input.h"
 #include "api-client.h"
 
@@ -147,6 +148,18 @@ FileKind FileMetadata::kind() const
     return FileKind::File;
 }
 
+bool FileMetadata::heicAttachment() const
+{
+    return workspace::heifLooksLikeHeic(name, contentType);
+}
+
+FileKind FileMetadata::urnKind() const
+{
+    // The reference names the urnType from isHeicAttachment before consulting
+    // the content type family, so a HEIC is an image urn on every host.
+    return heicAttachment() ? FileKind::Image : kind();
+}
+
 QString FileMetadata::urn() const
 {
     if (!validUuid(uuid)) return {};
@@ -158,12 +171,16 @@ QString FileMetadata::urn() const
     // deliberately preserves '+'; encode values explicitly for interoperability.
     if (!name.isEmpty()) append("name", name);
     if (!contentType.isEmpty()) append("content_type", contentType);
-    if (kind() != FileKind::File && !dimensions.isEmpty()) {
+    // A HEIC never carries a probe result: the reference skips local
+    // dimension probing for it, so w/h must not leak into its urn either.
+    const bool heic = heicAttachment();
+    if (!heic && kind() != FileKind::File && !dimensions.isEmpty()) {
         append("w", QString::number(dimensions.width()));
         append("h", QString::number(dimensions.height()));
     }
     append("size", QString::number(sizeBytes));
-    const auto type = kind() == FileKind::Image ? "image" : kind() == FileKind::Video ? "video" : "file";
+    const auto type = urnKind() == FileKind::Image ? "image"
+        : kind() == FileKind::Video ? "video" : "file";
     return QStringLiteral("urn:%1:%2?%3").arg(QLatin1String(type), uuid.toLower(), query.join('&'));
 }
 
@@ -372,6 +389,13 @@ quint64 FileClient::upload(const QString &path, const QString &streamUuid, const
         QTimer::singleShot(300, Qt::PreciseTimer, probe, [finish] { finish({}); });
     };
     if (operation->metadata.kind() == FileKind::Image) {
+        if (operation->metadata.heicAttachment()) {
+            // The reference skips the local dimension probe for HEIC; go
+            // straight to the upload without one (the urn forces image and
+            // never carries w/h for HEIC either way).
+            startUpload(id);
+            return id;
+        }
         auto *watcher = new QFutureWatcher<QSize>(probe);
         connect(watcher, &QFutureWatcher<QSize>::finished, probe, [watcher, finish] { finish(watcher->result()); });
         startTimeout();
