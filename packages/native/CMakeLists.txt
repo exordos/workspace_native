@@ -451,8 +451,14 @@ if(BUILD_TESTING)
                 PREFIX /workspace/qml BASE qml FILES ${native_qml_files})
         endif()
         set_target_properties(${test}-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
-        add_test(NAME native-${test} COMMAND ${test}-test)
-        set_tests_properties(native-${test} PROPERTIES TIMEOUT 45)
+        if(test STREQUAL "native-window")
+            # Issue #657: the window suite is registered below as measured
+            # timing buckets, not as one 28-minute ctest entry. The binary
+            # itself is still built and linked here.
+        else()
+            add_test(NAME native-${test} COMMAND ${test}-test)
+            set_tests_properties(native-${test} PROPERTIES TIMEOUT 45)
+        endif()
         if(test STREQUAL "native-cache")
             # Whole-group runtime on the GPU-less reference stand measures 82.9-94.2s
             # across solo runs, and the suite-context run was killed at the old 90s
@@ -486,7 +492,9 @@ if(BUILD_TESTING)
             # The hosted desktop took 1455s. A Release VM took 1491s for
             # 1132 rows and a loaded local host reached only 655 rows in 1500s.
             # QtTest keeps enforcing its per-case deadlines inside this group.
-            set_tests_properties(native-${test} PROPERTIES TIMEOUT 3000)
+            # Issue #657: the group is no longer a single ctest entry, so no
+            # group-wide TIMEOUT is set here; the measured buckets below carry
+            # their own ceilings.
         elseif(test STREQUAL "native-drafts")
             # Full record/byte/metadata pressure plus retained-operation cases.
             set_tests_properties(native-${test} PROPERTIES TIMEOUT 90)
@@ -500,6 +508,27 @@ if(BUILD_TESTING)
     add_test(NAME native-native-draft-workload COMMAND native-window-test)
     set_tests_properties(native-native-draft-workload PROPERTIES TIMEOUT 180
         ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")
+    # Issue #657: native-native-window ran 1716 s in CI as a single ctest entry,
+    # dictating the wall clock of every full-gate shard. Register it instead as
+    # source-order-contiguous buckets generated from measured per-case QtTest
+    # timings (scripts/gen-test-buckets.py), each targeting well under 120 s of
+    # CI time; the stride shard slices spread the parts across shards. The
+    # headless sync guard fails with the regenerate command whenever a QtTest
+    # case is added without regenerating the checked-in bucket list.
+    include(${CMAKE_CURRENT_LIST_DIR}/tests/window-test-buckets.cmake)
+    foreach(window_bucket RANGE 1 ${WORKSPACE_NATIVE_WINDOW_BUCKETS_COUNT})
+        add_test(NAME native-native-window-part${window_bucket}
+            COMMAND native-window-test ${WORKSPACE_NATIVE_WINDOW_BUCKET_${window_bucket}})
+        set_tests_properties(native-native-window-part${window_bucket} PROPERTIES
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+    endforeach()
+    find_program(WORKSPACE_NATIVE_PYTHON3_EXECUTABLE NAMES python3 REQUIRED)
+    add_test(NAME native-window-buckets-sync
+        COMMAND ${WORKSPACE_NATIVE_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_LIST_DIR}/tests/window-buckets-sync.py
+            $<TARGET_FILE:native-window-test>
+            ${CMAKE_CURRENT_LIST_DIR}/tests/window-test-buckets.cmake)
+    set_tests_properties(native-window-buckets-sync PROPERTIES TIMEOUT 30)
     # Test-only real TLS/source-JS grant workflow; no runtime/download dependency.
     find_program(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE node REQUIRED)
     find_program(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE openssl REQUIRED)
@@ -743,7 +772,7 @@ if(BUILD_TESTING)
     # shared display (focus and keyboard-grab races), so a parallel pre-release
     # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
     # remaining suites concurrently.
-    set_tests_properties(native-native-window native-hotkeys-ui native-native-draft-workload native-native-e2ee-ui native-native-preferences
+    set_tests_properties(native-hotkeys-ui native-native-draft-workload native-native-e2ee-ui native-native-preferences
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
     set_tests_properties(native-native-desktop native-native-e2ee-read
         PROPERTIES RESOURCE_LOCK "xdisplay")
