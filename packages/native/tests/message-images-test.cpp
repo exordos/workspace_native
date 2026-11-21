@@ -1,5 +1,6 @@
 #include "message-images.h"
 #include "api-client.h"
+#include "support/heif-test-fixtures.h"
 #include "file-client.h"
 #include "session.h"
 #include "mock-server.h"
@@ -188,6 +189,8 @@ private slots:
     void firstFrameAspectAndNaturalSize();
     void invalidSvgAndPixelOverflow_data();
     void invalidSvgAndPixelOverflow();
+    void heicBytesPreviewThroughPipeline();
+    void corruptHeicSettlesFileCardWithoutRefetch();
     void entryLeasePipelineAndExactCancellation();
     void repeatedDelegateReplacementRenewsTheTransferHandoff();
     void byteLruAndPinnedAdmissionRecover();
@@ -418,6 +421,39 @@ void MessageImagesTest::reentrantRetryAndWorkerTeardown()
     QCOMPARE(alive->stats().leases,1);alive->release(first);QCOMPARE(alive->stats().leases,1);
     for(const auto &release:f.releases)release();QTRY_VERIFY(!alive->imageUrl(urn(2)).isEmpty());
     QVERIFY(alive->imageUrl(urn()).isEmpty());alive->release(nested);
+}
+
+void MessageImagesTest::heicBytesPreviewThroughPipeline()
+{
+    // Issue #638 sec 4.1: HEIC bytes route through the libheif preview path
+    // (QImageReader cannot decode ISO-BMFF stills) and settle Ready with the
+    // natural size reported post-decode. Canonical reference fixture 48x32
+    // solid #4682b4 (support/heif-test-fixtures.h).
+    Fixture f; QVERIFY(f.start()); f.bytes = heicFixture();
+    const auto lease = f.images.acquire(urn()); QVERIFY(lease);
+    QTRY_VERIFY(!f.images.imageUrl(urn()).isEmpty());
+    QVERIFY(!f.images.failed(urn()));
+    QCOMPARE(f.images.info(urn()), (QVariantMap{{"width",48},{"height",32}}));
+    std::unique_ptr<QQuickImageProvider> provider(f.images.createImageProvider());
+    const auto image = providerImage(*provider, f.images.imageUrl(urn()), {9000,9000});
+    QCOMPARE(image.size(), QSize(48,32));
+    QCOMPARE(image.pixelColor(24,16), QColor(0x46,0x82,0xb4));
+    QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,1);
+    f.images.release(lease);
+}
+
+void MessageImagesTest::corruptHeicSettlesFileCardWithoutRefetch()
+{
+    // A valid ftyp header with a truncated payload still SNIFFS as HEIC, so the
+    // decode verdict decides: the entry settles Failed (file card, download
+    // unaffected) exactly once - no refetch storm on the serial lane.
+    Fixture f; QVERIFY(f.start()); f.bytes = heicTruncatedFixture();
+    const auto lease = f.images.acquire(urn()); QVERIFY(lease);
+    QTRY_VERIFY(f.images.failed(urn()));
+    QVERIFY(f.images.imageUrl(urn()).isEmpty());
+    QTest::qWait(250);
+    QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,1);
+    f.images.release(lease);
 }
 
 QTEST_GUILESS_MAIN(MessageImagesTest)

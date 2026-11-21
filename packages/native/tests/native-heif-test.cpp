@@ -2,6 +2,7 @@
 // Reference oracle: workspace_ui e0194ff, shared/lib/heic-preview-format.lib.ts
 // (isHeicAttachment + hasHeicFileType) and heic-preview.lib.ts caps.
 #include "heif-preview.h"
+#include "support/heif-test-fixtures.h"
 
 #include <QColor>
 #include <QSize>
@@ -56,40 +57,6 @@ QByteArray ftypBox(const QByteArray &major, const QList<QByteArray> &compat = {}
 }
 
 } // namespace
-
-// Reference e2e fixture (workspace_ui e0194ff e2e/mocks/fixtures/
-// solid-color.heic, sha256 2a210a049069363a27fb14b0b01e909ac34625ac
-// 04a76f7b2f48196b3eb6aaa2): ftyp major "heic", 48x32, solid #4682b4.
-QByteArray heicFixture()
-{
-    return QByteArray::fromBase64(
-        "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAWltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0"
-        "AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MAAAAAREAAAQABAAAAAAGNAAEAAAAAAAAA"
-        "HAAAACNpaW5mAAAAAAABAAAAFWluZmUCAAAAAAEAAGh2YzEAAAAA6WlwcnAAAADKaXBjbwAAAHZodmNDA"
-        "QNwAAAAAAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQAqQgEBA3"
-        "AAAAMAkAAAAwAAAwAeoCCBBZbq5Ka5uAhoMCAAAAMDIAAAAwAhYgABAAZEAcFzwIkAAAAUaXNwZQAAAAA"
-        "AAABAAAAAQAAAAChjbGFwAAAAMAAAAAEAAAAgAAAAAf////AAAAAC////4AAAAAIAAAAQcGl4aQAAAAAD"
-        "CAgIAAAAF2lwbWEAAAAAAAAAAQABBIECBIMAAAAkbWRhdAAAABgoAa8TgPgQ4af/6+or/iu1f9ZCb86KQz4=");
-}
-
-QByteArray heicCorruptFixture()
-{
-    return QByteArray::fromBase64(
-        "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAWltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0"
-        "AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MAAAAAREAAAQABAAAAAAGNAAEAAAAAAAAA"
-        "HAAAACNpaW5mAAAAAAABAAAAFWluZmUCAAAAAAEAAGh2YzEAAAAA6WlwcnAAAADKaXBjbwAAAHZodmNDA"
-        "QNwAAAAAAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQAqQgEBA3"
-        "AAAAMAkAAAAwAAAwAeoCCBBZbq5Ka5uAhoMCAAAAMDIAAAAwAhYgABAAZEAcFzwIkAAAAUaXNwZQAA/1o"
-        "AAABAAAAAQAAAAChjbGFwAAAAMAAAAAEAAAAgAAAAAf////AAAAAC////4AAAAAIAAAAQcGl4aQAAAAAD"
-        "CAgIAAAAF2lwbWEAAAAAAAAAAQABBIECBIMAAAAkbWRhdAAAABgoAa8TgPgQ4af/6+or/iu1f9ZCb86KQz4=");
-}
-
-QByteArray heicTruncatedFixture()
-{
-    return QByteArray::fromBase64(
-        "AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAWltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0"
-        "AAAAAAAAAAAAAAAAAAAAAA5waXRtAAAAAAABAAAAImlsb2MA");
-}
 
 class NativeHeifTest : public QObject
 {
