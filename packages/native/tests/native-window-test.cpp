@@ -72,6 +72,7 @@
 #include <QSignalSpy>
 #include <QScopeGuard>
 #include <QPointer>
+#include <QQueue>
 #include <QSGRendererInterface>
 #include <QSet>
 #include <QTemporaryDir>
@@ -3426,6 +3427,7 @@ struct TopicMenuScene
     QJsonObject mainTopicDto, extraTopicDto, directTopicDto;
     bool streamMuted = false, deferNextAction = false, failNextAction = false;
     std::function<void()> pendingDeliver;
+    QQueue<std::function<void()>> deferredDelivers;
     int notifPosts = 0, readPosts = 0, renamePuts = 0, donePosts = 0;
     QJsonObject lastBody;
     TopicMenuScene()
@@ -3477,6 +3479,7 @@ struct TopicMenuScene
                     return response;
                 deferNextAction = false;
                 response.defer = [this](std::function<void()> deliver) {
+                    deferredDelivers.enqueue(deliver);
                     pendingDeliver = std::move(deliver);
                 };
                 return response;
@@ -3542,6 +3545,16 @@ struct TopicMenuScene
     {
         const auto deliver = std::exchange(pendingDeliver, nullptr);
         QVERIFY(static_cast<bool>(deliver));
+        deliver();
+    }
+    // FIFO counterpart for cases that hold MORE THAN ONE in-flight reply:
+    // release() only keeps the newest handle, so a queued older response
+    // would never settle. Existing cases (one held reply at a time) are
+    // unaffected - release() still works against the newest slot.
+    void releaseOne(bool = true)
+    {
+        QVERIFY(!deferredDelivers.isEmpty());
+        const auto deliver = deferredDelivers.dequeue();
         deliver();
     }
     static void collect(QObject *root, const QString &name, QList<QObject *> &out)
@@ -41898,6 +41911,63 @@ private slots:
         scene.release();
         QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
         QCOMPARE(noticeText(), QStringLiteral("Could not mark the topic as read. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+    }
+
+    void topicContextMenuConcurrentSameActionKeepsBothNotices()
+    {
+        // exordy finding 4652383415 (round 3): concurrent actions of the SAME
+        // kind on DIFFERENT topics must each keep their own failure notice.
+        // A pending-notice store keyed only by action lets the second
+        // dispatch overwrite the first topic's identity, so the first failed
+        // reply can no longer match its dispatch and is silently dropped.
+        // Both replies are held and settled ONE AT A TIME: the first topic's
+        // failure must open a notice while the second write is still in
+        // flight, and the second topic's failure must open one as well.
+        TopicMenuScene scene;
+        const auto notice = [&] { return scene.popup(QStringLiteral("topicActionErrorToast")); };
+        const auto noticeText = [&] {
+            auto *toast = notice();
+            return toast ? toast->property("noticeText").toString() : QString();
+        };
+        const auto countNotices = [&] {
+            QList<QObject *> found;
+            TopicMenuScene::collect(scene.window.data(),
+                QStringLiteral("sidebarTopicMenuSurface"), found);
+            for (auto *item : found)
+                return item->property("countSurfacedNotices").toInt();
+            return -1;
+        };
+        QCOMPARE(countNotices(), 0);
+        // First dispatch: Done on the Backlog topic, reply held (500).
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        auto *firstDone = scene.row(QStringLiteral("topicDoneAction"));
+        QVERIFY(firstDone);
+        scene.deferNextAction = true;
+        scene.failNextAction = true;
+        click(scene.window.data(), firstDone);
+        QTRY_COMPARE(scene.donePosts, 1);
+        // Second dispatch while the first is still in flight: same action
+        // kind (toggle_done) on the MAIN topic - this overwrite used to
+        // steal the only pending slot.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *secondDone = scene.row(QStringLiteral("topicDoneAction"));
+        QVERIFY(secondDone);
+        scene.deferNextAction = true;
+        scene.failNextAction = true;
+        click(scene.window.data(), secondDone);
+        QTRY_COMPARE(scene.donePosts, 2);
+        QVERIFY(!scene.menuOpen());
+        // Settle the FIRST held failure while the second write is in flight:
+        // the notice for the Backlog topic must surface on its own merit.
+        scene.releaseOne();
+        QTRY_VERIFY_WITH_TIMEOUT(countNotices() >= 1, 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not update the topic. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+        // The second failure then settles and keeps its own notice.
+        scene.releaseOne();
+        QTRY_VERIFY_WITH_TIMEOUT(countNotices() >= 2, 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not update the topic. Please try again."));
         QMetaObject::invokeMethod(notice(), "close");
     }
 

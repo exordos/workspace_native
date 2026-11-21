@@ -30,11 +30,19 @@ Item {
     // rename dialog keeps its inline error). Round 2: replies must be matched
     // against the DISPATCH-TIME identity, never the live target - any menu
     // reopen re-points targetStream/targetTopic, and a late failure matched
-    // against the live target gets silently suppressed. One snapshot per
-    // action (action -> [stream, topic]) so concurrent actions on one surface
-    // each keep their own feedback. Consumed by the reply handler below and
-    // reset on session drift; nothing binds to it, so no NOTIFY contract.
+    // against the live target gets silently suppressed. Round 3: the store is
+    // keyed by action AND the dispatched stream/topic identity, so concurrent
+    // actions of the same kind on different topics each keep their own slot
+    // and neither failed reply can overwrite the other's. Consumed by the
+    // reply handler below and reset on session drift; nothing binds to it, so
+    // no NOTIFY contract.
     property var dispatchedNotices: ({})
+    function noticeKey(action, stream, topic) {
+        return String(action) + "|" + String(stream) + "|" + String(topic)
+    }
+    // Test-visible oracle: every failure notice this surface actually opened.
+    // Not a binding source (nothing binds to it), so no NOTIFY contract.
+    property int countSurfacedNotices: 0
     readonly property var topicRow: stateTick >= 0 ? resolveRow() : null
     readonly property var actionState: stateTick >= 0 && targetTopic.length
         ? controller.topicActionState(targetStream, targetTopic) : ({})
@@ -161,16 +169,18 @@ Item {
             // settled error as this surface's notice. Rename failures stay
             // inside the dialog (pinned by the renewal case). Match against
             // the dispatch-time snapshot, so the notice survives any reopen
-            // (round 2 of the same finding).
-            const snapshot = block.dispatchedNotices[action]
-            if (!snapshot || String(snapshot[0]) !== String(stream)
-                || String(snapshot[1]) !== String(topic))
+            // (round 2 of the same finding), and key the slot by the FULL
+            // action identity, so a concurrent same-kind dispatch on another
+            // topic can never overwrite it (round 3 of the same finding).
+            const noticeId = block.noticeKey(action, stream, topic)
+            if (!block.dispatchedNotices[noticeId])
                 return
-            delete block.dispatchedNotices[action]
+            delete block.dispatchedNotices[noticeId]
             if (ok) return
             const noticeState = block.controller.topicActionState(stream, topic)
             const message = String(noticeState[action + "Error"] || "")
             if (!message.length) return
+            block.countSurfacedNotices++
             topicActionErrorText.text = message
             topicActionErrorToast.open()
         }
@@ -267,8 +277,9 @@ Item {
                                     const selected = levelSegment.isCurrent
                                     topicMenu.close()
                                     if (!selected) {
-                                        block.dispatchedNotices["notifications"] =
-                                            [block.targetStream, block.targetTopic]
+                                        block.dispatchedNotices[
+                                            block.noticeKey("notifications",
+                                                block.targetStream, block.targetTopic)] = true
                                         block.controller.applyTopicAction(block.targetStream, block.targetTopic,
                                             "notifications", block.modeForLevel(String(modelData)))
                                     }
@@ -292,7 +303,8 @@ Item {
             enabled: visible && !block.actionState.readPending
             onTriggered: {
                 topicMenu.close()
-                block.dispatchedNotices["read"] = [block.targetStream, block.targetTopic]
+                block.dispatchedNotices[
+                    block.noticeKey("read", block.targetStream, block.targetTopic)] = true
                 block.controller.applyTopicAction(block.targetStream, block.targetTopic, "read", "")
             }
         }
@@ -321,7 +333,8 @@ Item {
             enabled: !block.actionState.toggle_donePending
             onTriggered: {
                 topicMenu.close()
-                block.dispatchedNotices["toggle_done"] = [block.targetStream, block.targetTopic]
+                block.dispatchedNotices[
+                    block.noticeKey("toggle_done", block.targetStream, block.targetTopic)] = true
                 block.controller.applyTopicAction(block.targetStream, block.targetTopic, "toggle_done", "")
             }
         }
