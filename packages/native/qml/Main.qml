@@ -5062,15 +5062,16 @@ component NativeMentionChip: Item {
 
     function cancelSidebarSearch() {
         // Reference sidebar-search-header.ui.tsx:18-32: an unfocused field
-        // with an empty query falls through; otherwise the query clears and a
-        // focused field restores the previous focus.
+        // with an empty query falls through; otherwise the query clears, the
+        // saved previous focus is discarded after every successful cancel,
+        // and a focused field restores that target (when one was saved).
         const inputFocused = sidebarSearch.activeFocus
         if (!inputFocused && !root.sidebarQuery.length)
             return false
         root.sidebarQuery = ""
+        const previous = root.sidebarSearchPreviousFocus
+        root.sidebarSearchPreviousFocus = null
         if (inputFocused) {
-            const previous = root.sidebarSearchPreviousFocus
-            root.sidebarSearchPreviousFocus = null
             if (previous) {
                 try { previous.forceActiveFocus(Qt.OtherFocusReason) }
                 catch (error) { root.contentItem.forceActiveFocus() }
@@ -5133,8 +5134,12 @@ component NativeMentionChip: Item {
                 break
             }
         // The focused field is not a result item (index -1): ArrowDown enters
-        // at the first row, ArrowUp at the last one; item edges are no-ops.
-        const next = index === -1 && step === -1 ? items[items.length - 1] : items[index + step]
+        // at the first row, ArrowUp at the last one; at the item edges the
+        // index wraps around (issue #628 acceptance: arrows cycle the filtered
+        // results; PR #639 review supersedes the reference no-op edges at
+        // sidebar-workspace-search.lib.ts:29-32).
+        const wrapped = index === -1 && step === -1 ? items.length - 1 : (index + step + items.length) % items.length
+        const next = items[wrapped]
         if (next)
             next.forceActiveFocus(Qt.TabFocusReason)
         return true
