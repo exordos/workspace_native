@@ -134,6 +134,29 @@ to `packages/native/translations/workspace_ru.ts` in the same PR.
 * CI note: the new CTest group raises the local gate group count by one
   (the full-gate shards pick it up automatically via labels).
 
+## Composer urn semantics (this round)
+
+Reference `buildWorkspaceComposerAttachmentMetadata`
+(`workspace-composer-attachments.lib.ts:136-156` at e0194ff): an
+`isHeicAttachment(name, content_type)` hit forces the urnType `image`
+regardless of the content type family (the server may echo
+`application/octet-stream` when the browser/host MIME database does not know
+the container) and skips the local dimension probe, so a HEIC urn never
+carries `w`/`h`.
+
+Native transplant (`FileMetadata::heicAttachment()` / `urnKind()` in
+`file-client.cpp`): `FileMetadata::urn()` names the type through `urnKind()`
+(HEIC forces `image`) and omits `w`/`h` for HEIC even if a probe result is
+present; `FileClient::upload` starts the upload directly for HEIC instead of
+running the bounded `QImageReader` probe (the probe can never succeed for
+HEIC on Qt without a heif plugin, and must not leak dimensions if one ever
+ships). The composer Markdown `!` prefix follows `urnKind()` too, mirroring
+the reference `urnType === "image" ? "![...]" : "[...]"` rule. Pinned by
+`file-client-test`: `heicAttachmentUrnSemantics` (urn table incl. octet-stream
+and empty MIME, `.heif` extension, `image/heic-sequence`, non-HEIC rows
+unchanged) and `heicUploadForcesImageUrnWithoutProbing` (fixture bytes go up
+unmodified, echo guard passes, finished urn is `image` without dimensions).
+
 ## Deviations from the reference (recorded)
 
 * System libheif/libde265 instead of a vendored WASM build - the native process
@@ -148,4 +171,8 @@ to `packages/native/translations/workspace_ru.ts` in the same PR.
 
 * Verify installed runtime resolves the libde265 plugin from the bundled tree.
 * Confirm viewer download path is untouched by display-blob substitution.
-* Grep for tests asserting image MIME whitelist before enabling composer HEIC input.
+* ~~Grep for tests asserting image MIME whitelist before enabling composer
+  HEIC input.~~ Resolved: the composer attach dialog carries no MIME/name
+  whitelist (`nameFilters` exists only on diagnostics JSON dialogs), so
+  HEIC selection reaches `FileClient::upload` unfiltered; the urn semantics
+  section above governs the outcome.

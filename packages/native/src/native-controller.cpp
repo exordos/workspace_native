@@ -11131,7 +11131,7 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
         label.replace(']', "\\]");
         label.replace('\r', ' ');
         label.replace('\n', ' ');
-        const auto prefix = result.metadata.kind() == FileKind::Image ? QStringLiteral("!") : QString{};
+        const auto prefix = result.metadata.urnKind() == FileKind::Image ? QStringLiteral("!") : QString{};
         const auto attachment = prefix + '[' + label + "](<" + result.metadata.urn() + ">)";
         auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
         if (row != m_uploadEntries.end()) {
