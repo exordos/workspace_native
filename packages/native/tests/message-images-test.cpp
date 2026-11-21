@@ -461,12 +461,14 @@ void MessageImagesTest::corruptHeicSettlesFileCardWithoutRefetch()
 
 void MessageImagesTest::heicDecodeWatchdogSettlesFileCardAndIgnoresLateResult()
 {
-    // Issue #638 sec 3: a HEIC decode that does not report within the timeout
-    // settles the entry Failed (file card) without interrupting the shared
-    // worker: the pipeline slot frees while the decode is still running and the
-    // late worker result is discarded, exactly once settled. The gate + the
-    // shortened timeout reproduce the 15 s path deterministically (6x margin:
-    // 50 ms watchdog vs a >=300 ms guaranteed worker stall).
+    // Issue #638 sec 3 + #670 review findings 1/4: a HEIC decode that does not
+    // report within the timeout settles the entry Failed (file card) without
+    // interrupting the shared worker. The watchdog cannot stop the in-flight
+    // decode, so the ticket keeps its pipeline accounting until the worker
+    // actually retires the job: drain() must not feed further payloads past a
+    // busy serial worker. The late worker result is discarded, exactly once
+    // settled. The gate + the shortened timeout reproduce the 15 s path
+    // deterministically (6x margin: 50 ms watchdog vs a >=300 ms stall).
     Fixture f; QVERIFY(f.start()); f.bytes = heicFixture();
     const auto restore = qScopeGuard([] { MessageImages::setDecodeGateForTests(nullptr); });
     f.images.setDecodeTimeoutMsForTests(50);
@@ -475,11 +477,14 @@ void MessageImagesTest::heicDecodeWatchdogSettlesFileCardAndIgnoresLateResult()
     const auto lease = f.images.acquire(urn()); QVERIFY(lease);
     QTRY_VERIFY(f.images.failed(urn())); // settles while the worker is still stalled
     QVERIFY(f.images.imageUrl(urn()).isEmpty());
-    QCOMPARE(f.images.stats().pipelineJobs, 0); // slot released before the worker reports
+    // Findings 1/4: the slot stays ACCOUNTED while the worker still runs it.
+    QCOMPARE(f.images.stats().pipelineJobs, 1);
+    QCOMPARE(f.images.stats().decodeJobs, 1);
     const auto settled = revisions.count();
-    QTest::qWait(450); // the stalled decode completes and reports for a retired ticket
+    QTest::qWait(450); // the stalled decode completes and retires its ticket
     QVERIFY(f.images.failed(urn()));
     QVERIFY(f.images.imageUrl(urn()).isEmpty());
+    QCOMPARE(f.images.stats().pipelineJobs, 0); // freed by the worker, not the watchdog
     QCOMPARE(f.images.stats().decodeJobs, 0);
     QCOMPARE(revisions.count(), settled); // the late result settles nothing
     QCOMPARE(f.metadataGets,1); QCOMPARE(f.binaryGets,1);

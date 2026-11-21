@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
+#include <QStringList>
 
 #ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
 #include <libheif/heif.h>
@@ -118,6 +119,12 @@ bool heifSniffFtyp(const QByteArray &headerBytes)
 #ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
 namespace {
 
+// Default for builds that did not configure a packaged layout (the CMake
+// target defines the real value from CMAKE_INSTALL_LIBDIR, #670 finding 2).
+#ifndef WORKSPACE_NATIVE_HEIF_PLUGINS_SUBDIR
+#define WORKSPACE_NATIVE_HEIF_PLUGINS_SUBDIR "../lib/heif-plugins"
+#endif
+
 // Ubuntu builds libheif with the codec plugins in a separate directory that
 // the library does NOT auto-register: without heif_load_plugins the HEVC
 // decoder stays invisible and every preview decode fails. Run once per
@@ -137,11 +144,20 @@ void ensureHeifPluginsLoaded()
             int count = 0;
             heif_load_plugins(directory.constData(), infos, &count, 16);
         };
-        const QString bundled = QCoreApplication::applicationDirPath()
-            + QStringLiteral("/../lib/heif-plugins");
-        if (QFileInfo::exists(bundled)) {
-            loadDirectory(QDir::cleanPath(bundled).toLocal8Bit());
-            return;
+        // #670 finding 2: the packaged location follows CMAKE_INSTALL_LIBDIR
+        // (lib, lib64, ...), so the candidate path is compiled from the
+        // configured layout instead of a hardcoded ../lib.
+        const QStringList candidates{
+            QStringLiteral("/" WORKSPACE_NATIVE_HEIF_PLUGINS_SUBDIR),
+            QStringLiteral("/../lib/heif-plugins"),
+        };
+        const auto appDir = QCoreApplication::applicationDirPath();
+        for (const auto &relative : candidates) {
+            const QString bundled = QDir::cleanPath(appDir + relative);
+            if (QFileInfo::exists(bundled)) {
+                loadDirectory(bundled.toLocal8Bit());
+                return;
+            }
         }
         if (const char *const *dirs = heif_get_plugin_directories()) {
             for (int i = 0; dirs[i] != nullptr; ++i)
@@ -186,12 +202,11 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64
         handle, [](const heif_image_handle *h) { heif_image_handle_release(h); });
     // Pixel budget checked on the handle BEFORE decoding: a container may
     // claim huge dimensions inside a small file, and materialising that
-    // canvas first would defeat the budget (16 MP matches the shared
-    // preview cap; the reference caps the file size only, recorded deviation).
+    // canvas first would defeat the budget (the cap admits 48 MP photos;
+    // see kHeifMaxDecodePixels for the #670 finding 3 sizing).
     const qint64 width = heif_image_handle_get_width(handle);
     const qint64 height = heif_image_handle_get_height(handle);
-    if (maxSourcePixels > 0 && width > 0 && height > 0 && width * height > maxSourcePixels) {
-        error = QStringLiteral("heic preview: %1x%2 above pixel budget").arg(width).arg(height);
+    if (heifPixelBudgetRejects(width, height, maxSourcePixels, error)) {
         return false;
     }
     heif_image *image = nullptr;

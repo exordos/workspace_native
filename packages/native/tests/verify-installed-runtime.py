@@ -25,6 +25,22 @@ MODULES = (
 )
 
 
+def require_heif_codec_files(prefix, elf_package):
+    # HEIC previews (#638): libheif, the libde265 runtime library and the
+    # dlopen'd plugin tree must ship inside the package - the installed
+    # runtime probe additionally decodes a HEVC fixture through them. These
+    # are Linux ELF artifacts: Windows and macOS builds intentionally lack
+    # libheif, so their unpacked verification must not demand them (#670
+    # review finding: the shared unpacked check required Linux .so files for
+    # Windows executables).
+    if not elf_package:
+        return
+    for pattern, what in (("libheif.so.*", "libheif"),
+                          ("libde265.so.0*", "libde265"),
+                          ("libheif-libde265.so", "libheif libde265 plugin")):
+        assert list(prefix.rglob(pattern)), f"Missing bundled {what} (HEIC previews #638)"
+
+
 def verify(prefix, pid=None):
     prefix = prefix.resolve(strict=True)
     bundles = list(prefix.glob("*.app/Contents"))
@@ -70,18 +86,11 @@ def verify(prefix, pid=None):
     sqlite_plugins += list((plugins/"sqldrivers").glob("*qsqlite*.dylib"))
     assert sqlite_plugins, "Missing deployed SQLite cache driver"
     assert all(file.resolve().is_relative_to(prefix) for file in sqlite_plugins), "SQLite driver escapes package"
-    if not bundles:
-        # HEIC previews (#638): libheif, the libde265 runtime library and the
-        # dlopen'd plugin tree must ship inside the package - the installed
-        # runtime probe additionally decodes a HEVC fixture through them.
-        for pattern, what in (("libheif.so.*", "libheif"),
-                              ("libde265.so.0*", "libde265"),
-                              ("libheif-libde265.so", "libheif libde265 plugin")):
-            assert list(prefix.rglob(pattern)), f"Missing bundled {what} (HEIC previews #638)"
     executable_magic = b""
     if not bundles:
         with binary.open("rb") as executable:
             executable_magic = executable.read(4)
+    require_heif_codec_files(prefix, not bundles and executable_magic == b"\x7fELF")
     if executable_magic == b"\x7fELF":
         translations = runtime_prefix/paths.get("Translations", "translations")
         assert translations.resolve().is_relative_to(prefix), "Translations path escapes package"

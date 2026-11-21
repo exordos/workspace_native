@@ -7,7 +7,12 @@
 #include <QThread>
 #include <QVariantList>
 
+#include <functional>
 #include <memory>
+
+#include "heif-preview.h"
+
+class QTimer;
 
 class QTemporaryDir;
 
@@ -46,6 +51,12 @@ public:
     // Owned elsewhere; attached alongside the controller's useFiles().
     void setFileClient(FileClient *files);
 
+    // Test seams mirroring MessageImages' decode gate (#670 finding 2): the
+    // gate stalls the serial HEIC render, the timeout shortens the render
+    // watchdog. Neither changes behaviour with defaults installed.
+    static void setHeifRenderGateForTests(std::function<void()> gate);
+    void setHeifRenderTimeoutMsForTests(int ms);
+
     // Returns false (viewer untouched) when there is no image slot or the
     // requested file is not part of the collected gallery.
     Q_INVOKABLE bool openFromMessages(const QVariantList &messages, const QString &fileUuid);
@@ -72,6 +83,11 @@ private:
         QString name;  // server-provided file name once metadata resolved
         quint64 operation = 0;
         bool started = false; // video slots other than the opened one load lazily
+        // #670 finding 2: the HEIC render wait is bounded like the reference
+        // decode timeout; a stalled serial render settles display-error and a
+        // late render is discarded by the existing fences.
+        QTimer *renderTimer = nullptr;
+        bool renderPending = false;
     };
 
     void closeSession();
@@ -79,6 +95,9 @@ private:
     void startPendingSlot(int slot);
     void slotDownloaded(int slot, quint64 generation, const FileResult &result);
     void heifRendered(int slot, quint64 generation, const QString &displayPath);
+    void armHeifRenderWatchdog(int slot);
+    void cancelRenderWatchdog(Slot &slot);
+    void heifRenderTimeoutExpired(QTimer *timer, int slot, quint64 generation);
     QPointer<NativeController> m_controller;
     QPointer<FileClient> m_files;
     std::unique_ptr<NativeMarkdown> m_markdown;
@@ -94,6 +113,7 @@ private:
     // read ISO-BMFF); results are fenced by m_generation like the downloads.
     QThread m_decodeThread;
     QPointer<QObject> m_decoder;
+    int m_renderTimeoutMs = kHeifDecodeTimeoutMs; // #670 finding 2
     bool m_stopping = false;
     Q_SIGNAL void heifRenderRequested(int slot, quint64 generation, const QString &path,
         const QString &outPath);

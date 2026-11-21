@@ -136,6 +136,17 @@ target_link_libraries(workspace-native-core PRIVATE workspace-message-time Qt6::
 if(TARGET PkgConfig::LIBHEIF)
     target_link_libraries(workspace-native-core PRIVATE PkgConfig::LIBHEIF)
     target_compile_definitions(workspace-native-core PRIVATE WORKSPACE_NATIVE_WITH_LIBHEIF)
+    if(UNIX AND NOT APPLE)
+        # #670 finding 2: the packaged plugin tree is installed under
+        # ${CMAKE_INSTALL_LIBDIR}/heif-plugins; the loader must search the
+        # SAME directory the packaging hunk writes to, so the bin-relative
+        # path is compiled from the configured layout (lib, lib64, ...).
+        file(RELATIVE_PATH native_heif_plugins_relative
+            "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
+            "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/heif-plugins")
+        target_compile_definitions(workspace-native-core PRIVATE
+            WORKSPACE_NATIVE_HEIF_PLUGINS_SUBDIR="${native_heif_plugins_relative}")
+    endif()
 endif()
 if(WIN32)
     target_link_libraries(workspace-native-core PRIVATE advapi32)
