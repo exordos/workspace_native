@@ -28,6 +28,18 @@
             <source>Sign in to an account for the organization and project in this link.</source>
             <translation>Войдите в аккаунт организации и проекта, указанных в ссылке.</translation>
         </message>
+    <message>
+            <source>Could not update the topic notifications. Please try again.</source>
+            <translation>Не удалось обновить уведомления темы. Попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Could not mark the topic as read. Please try again.</source>
+            <translation>Не удалось отметить тему как прочитанную. Попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Could not rename the topic. Please try again.</source>
+            <translation>Не удалось переименовать тему. Попробуйте ещё раз.</translation>
+        </message>
     </context>
     <context>
         <name>SessionSwitcher</name>
@@ -5352,5 +5364,56 @@
         <message><source>This shortcut is reserved</source><translation>Это сочетание зарезервировано</translation></message>
         <message><source>Toggle sidebar</source><translation>Боковая панель</translation></message>
         <message><source>When the composer is empty and not editing a message</source><translation>Когда поле пустое и редактирование сообщения не активно</translation></message>
+    </context>
+    <context>
+        <name>NativeTopicContextMenu</name>
+        <message>
+            <source>Topic notifications</source>
+            <translation>Уведомления темы</translation>
+        </message>
+        <message>
+            <source>Mute</source>
+            <translation>Заглушить</translation>
+        </message>
+        <message>
+            <source>Default</source>
+            <translation>По умолчанию</translation>
+        </message>
+        <message>
+            <source>Unmute</source>
+            <translation>Включить</translation>
+        </message>
+        <message>
+            <source>Follow</source>
+            <translation>Отслеживать</translation>
+        </message>
+        <message>
+            <source>Mark as read</source>
+            <translation>Отметить как прочитанное</translation>
+        </message>
+        <message>
+            <source>Rename topic</source>
+            <translation>Переименовать тему</translation>
+        </message>
+        <message>
+            <source>Topic name</source>
+            <translation>Название темы</translation>
+        </message>
+        <message>
+            <source>Save</source>
+            <translation>Сохранить</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Mark topic as done</source>
+            <translation>Отметить тему как выполненную</translation>
+        </message>
+        <message>
+            <source>Mark topic as not done</source>
+            <translation>Снять отметку выполнения темы</translation>
+        </message>
     </context>
 </TS>

@@ -456,6 +456,17 @@ public:
     Q_INVOKABLE void requestSidebarTopics(const QString &stream);
     Q_INVOKABLE void toggleSidebarStream(const QString &stream);
 
+    // Issue #636 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): topic context
+    // menu actions, reference runWorkspaceTopicNotificationUpdate /
+    // runWorkspaceTopicRead / runWorkspaceTopicRenameRequest /
+    // runWorkspaceTopicDoneToggle (messenger-sidebar-actions.lib.ts:1083-1121).
+    // Actions: notifications (mute|unmute|default|follow), read, rename,
+    // toggle_done (and the drawer's summary) against stream/topic.
+    Q_INVOKABLE void applyTopicAction(const QString &stream, const QString &topic,
+        const QString &action, const QString &value);
+    Q_INVOKABLE bool topicActionBusy(const QString &topic) const;
+    Q_INVOKABLE QVariantMap topicActionState(const QString &stream, const QString &topic) const;
+
     Q_INVOKABLE void setSidebarSearchQuery(const QString &query);
     QString selectedFolder() const;
     QVariantList topics() const;
@@ -963,6 +974,9 @@ signals:
     void cachedSearchChanged();
     void channelInfoTopicsChanged();
     void channelTopicActionFinished(const QString &id, const QString &action, bool success);
+    void topicActionFinished(const QString &streamUuid, const QString &topicUuid,
+        const QString &action, bool success);
+    void topicActionsChanged();
     void otpCodeRejected();
     void sidebarExpansionChanged();
     void activityOpenChanged();
@@ -1881,6 +1895,15 @@ private:
                              QVector<ChannelInfoMember> accepted, QSet<QString> seenUsers);
     QString m_channelInfoStreamId;
     QSet<QString> m_channelTopicRequests;
+    // Issue #636: one in-flight action per topic (any action), matching the
+    // drawer's arbitration that pinned cases rely on. Key: "<generation>/<topic>".
+    QHash<QString, quint64> m_topicActionRequests;
+    // Guard/error projection per "<stream>|<topic>": <action>Pending and
+    // <action>Error keys, consumed by the topic context menu.
+    QHash<QString, QVariantMap> m_topicActionStates;
+    quint64 m_topicActionToken = 0;
+    void settleTopicAction(const QString &stream, const QString &topic,
+        const QString &action, bool ok);
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
     bool m_channelInfoLoading = false;

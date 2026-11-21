@@ -680,6 +680,215 @@ private slots:
         QCOMPARE(fixture.controller.viewerDisplayName(), "Cassi Updated");
         fixture.controller.logout(); QCOMPARE(fixture.controller.viewerDisplayName(), QString{});
     }
+
+    // Issue #636 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): topic context
+    // menu actions live at the controller: applyTopicAction posts the same
+    // transport as the drawer's applyChannelTopicAction (reference
+    // runWorkspaceTopic* in messenger-sidebar-actions.lib.ts:1083-1121), with a
+    // pending guard, an error state and per-topic arbitration only.
+    //
+    // RED first witness: applyTopicAction/topicActionBusy/topicActionState do
+    // not exist yet, so this case fails to compile against the controller.
+    void topicActionNotificationUpdateMapsModeUpdatesRowAndGuardsPending()
+    {
+        Fixture fixture;
+        QJsonObject dto{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "Native topic"}, {"unread_count", 3}, {"active_unread_count", 3},
+            {"passive_unread_count", 0}, {"notification_mode", "default"}, {"is_done", false}};
+        fixture.topics = [&](const Request &) { QJsonArray rows; rows.append(dto); return Response{rows}; };
+        const auto base = fixture.server.handler;
+        int posts = 0;
+        QJsonObject postedBody;
+        std::function<void()> release;
+        bool deferNext = true;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path == "/api/workspace/v1/messenger/stream_topics/"
+                + topicId + "/actions/notifications/invoke") {
+                ++posts;
+                postedBody = request.body;
+                dto["notification_mode"] = request.body.value("notification_mode").toString();
+                Response response{dto};
+                if (deferNext) {
+                    deferNext = false;
+                    response.defer = [&](auto finish) { release = std::move(finish); };
+                }
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        QSignalSpy changed(&fixture.controller, &NativeController::topicActionsChanged);
+        fixture.controller.applyTopicAction(streamId, topicId, "notifications", "follow");
+        QTRY_COMPARE(posts, 1);
+        QCOMPARE(postedBody.value("notification_mode").toString(), QString("follow"));
+        QVERIFY(fixture.controller.topicActionBusy(topicId));
+        auto state = fixture.controller.topicActionState(streamId, topicId);
+        QCOMPARE(state.value("notificationsPending").toBool(), true);
+        // Pending guard: a second notification write for the same topic is
+        // rejected without a second request (reference disables the row while
+        // pending; a silently-dropped duplicate would hang the guard).
+        fixture.controller.applyTopicAction(streamId, topicId, "notifications", "mute");
+        QCOMPARE(posts, 1);
+        QTRY_VERIFY(bool(release));
+        release();
+        QTRY_VERIFY(!fixture.controller.topicActionBusy(topicId));
+        QTRY_VERIFY(changed.count() >= 2);
+        bool sawOk = false;
+        for (const auto &args : finished)
+            if (args.at(0).toString() == streamId && args.at(1).toString() == topicId
+                && args.at(2).toString() == "notifications" && args.at(3).toBool()) sawOk = true;
+        QVERIFY(sawOk);
+        state = fixture.controller.topicActionState(streamId, topicId);
+        QCOMPARE(state.value("error").toString(), QString());
+        QTRY_VERIFY(([&] {
+            const auto rows = fixture.controller.sidebarTopicState(streamId, true).value("rows").toList();
+            return std::any_of(rows.cbegin(), rows.cend(), [](const QVariant &row) {
+                const auto map = row.toMap();
+                return map.value("id").toString() == topicId && map.value("notificationMode").toString() == "follow";
+            });
+        })());
+    }
+
+    void topicActionReadRenameAndDoneToggleUseTheReferenceTransport()
+    {
+        Fixture fixture;
+        QJsonObject dto{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "Native topic"}, {"unread_count", 2}, {"active_unread_count", 2},
+            {"passive_unread_count", 0}, {"notification_mode", "default"}, {"is_done", false}};
+        fixture.topics = [&](const Request &) { QJsonArray rows; rows.append(dto); return Response{rows}; };
+        const auto base = fixture.server.handler;
+        int reads = 0, renames = 0, dones = 0;
+        QJsonObject renameBody;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto prefix = QString("/api/workspace/v1/messenger/stream_topics/") + topicId;
+            if (request.method == "POST" && path == prefix + "/actions/read/invoke") {
+                ++reads;
+                dto["unread_count"] = 0; dto["active_unread_count"] = 0; dto["passive_unread_count"] = 0;
+                return Response{dto};
+            }
+            if (request.method == "PUT" && path == prefix) {
+                ++renames;
+                renameBody = request.body;
+                dto["name"] = request.body.value("name").toString();
+                return Response{dto};
+            }
+            if (request.method == "POST" && path == prefix + "/actions/toggle_done/invoke") {
+                ++dones;
+                dto["is_done"] = !dto.value("is_done").toBool();
+                return Response{dto};
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        // Empty rename never reaches the network (reference submitDisabled).
+        fixture.controller.applyTopicAction(streamId, topicId, "rename", "   ");
+        QCOMPARE(renames, 0);
+        fixture.controller.applyTopicAction(streamId, topicId, "read", "");
+        QTRY_COMPARE(reads, 1);
+        const auto rowsOk = [&](const auto &pred) {
+            const auto rows = fixture.controller.sidebarTopicState(streamId, true).value("rows").toList();
+            return std::any_of(rows.cbegin(), rows.cend(), pred);
+        };
+        QTRY_VERIFY(!rowsOk([&](const QVariant &row) { const auto map = row.toMap(); return map.value("id").toString() == topicId
+                && map.value("unread").toInt() > 0; }));
+        fixture.controller.applyTopicAction(streamId, topicId, "rename", "  Renamed topic  ");
+        QTRY_COMPARE(renames, 1);
+        QCOMPARE(renameBody.value("name").toString(), QString("Renamed topic"));
+        QTRY_VERIFY(rowsOk([&](const QVariant &row) { const auto map = row.toMap(); return map.value("id").toString() == topicId
+                && map.value("name").toString() == "Renamed topic"; }));
+        fixture.controller.applyTopicAction(streamId, topicId, "toggle_done", "");
+        QTRY_COMPARE(dones, 1);
+        QTRY_VERIFY(rowsOk([&](const QVariant &row) { const auto map = row.toMap(); return map.value("id").toString() == topicId
+                && map.value("done").toBool(); }));
+        fixture.controller.applyTopicAction(streamId, topicId, "toggle_done", "");
+        QTRY_COMPARE(dones, 2);
+        QTRY_VERIFY(rowsOk([&](const QVariant &row) { const auto map = row.toMap(); return map.value("id").toString() == topicId
+                && !map.value("done").toBool(); }));
+        QCOMPARE(fixture.controller.topicActionBusy(topicId), false);
+    }
+
+    void topicActionFailureReportsTheErrorStateWithoutHangingTheGuard()
+    {
+        Fixture fixture;
+        const auto base = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/actions/notifications/invoke"))
+                return Response{QJsonObject{}, 500};
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(streamId, topicId, "notifications", "follow");
+        QTRY_VERIFY(!fixture.controller.topicActionBusy(topicId));
+        QCOMPARE(finished.count(), 1);
+        QCOMPARE(finished.first().at(3).toBool(), false);
+        const auto state = fixture.controller.topicActionState(streamId, topicId);
+        QCOMPARE(state.value("notificationsError").toString(),
+            QString("Could not update the topic notifications. Please try again."));
+        QCOMPARE(state.value("notificationsPending").toBool(), false);
+    }
+
+    void topicActionPendingOnOneTopicDoesNotBlockAnotherTopic()
+    {
+        Fixture fixture;
+        fixture.extraTopic = true;
+        const auto base = fixture.server.handler;
+        int posts = 0;
+        std::function<void()> release;
+        // The catalog reflects the last written mode: when the peer-topic write
+        // settles through the reconcile-by-read (the existing revision-race
+        // contract), the re-read shows the committed server truth.
+        QHash<QString, QString> modes;
+        fixture.topics = [&](const Request &) {
+            QJsonArray rows;
+            rows.append(QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Native topic"}, {"notification_mode", modes.value(topicId, "default")}});
+            rows.append(QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Second topic"}, {"notification_mode", modes.value(secondTopicId, "default")}});
+            return Response{rows};
+        };
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.contains("/actions/notifications/invoke")) {
+                ++posts;
+                const auto mode = request.body.value("notification_mode").toString();
+                if (path.contains("/" + topicId + "/")) {
+                    modes.insert(topicId, mode);
+                    Response response{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                        {"stream_uuid", streamId}, {"name", "Native topic"}, {"notification_mode", mode}}};
+                    response.defer = [&](auto finish) { release = std::move(finish); };
+                    return response;
+                }
+                modes.insert(secondTopicId, mode);
+                return Response{QJsonObject{{"uuid", secondTopicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Second topic"}, {"notification_mode", mode}}};
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.applyTopicAction(streamId, topicId, "notifications", "follow");
+        QTRY_VERIFY(bool(release));
+        // A different topic is never blocked by a peer topic's write (pinned
+        // drawer case openingAnotherTopicMenuDuringMuteAllowsFurtherActions).
+        // The mock connection serializes replies, so acceptance is witnessed
+        // by the pending guard; the delivery itself lands after the release.
+        fixture.controller.applyTopicAction(streamId, secondTopicId, "notifications", "mute");
+        QVERIFY(fixture.controller.topicActionBusy(secondTopicId));
+        QVERIFY(fixture.controller.topicActionBusy(topicId));
+        release();
+        QTRY_COMPARE(posts, 2);
+        QTRY_VERIFY(([&] {
+            const auto rows = fixture.controller.sidebarTopicState(streamId, true).value("rows").toList();
+            return std::any_of(rows.cbegin(), rows.cend(), [](const QVariant &row) {
+                const auto map = row.toMap(); return map.value("id").toString() == secondTopicId
+                    && map.value("notificationMode").toString() == "mute"; });
+        })());
+        QTRY_VERIFY(!fixture.controller.topicActionBusy(topicId));
+        QTRY_VERIFY(!fixture.controller.topicActionBusy(secondTopicId));
+    }
 };
 
 QTEST_MAIN(ControllerTopicsTest)

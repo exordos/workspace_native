@@ -4304,6 +4304,10 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
 
 void NativeController::applyChannelTopicAction(const QString &id, const QString &action, const QString &value)
 {
+    // Issue #636: the channel drawer shares the stream-scoped topic action
+    // engine. Its original preconditions are preserved: the drawer snapshot
+    // stream must be known with a verified catalog and the target must be one
+    // of the current stream's topics (completed rows are hidden there).
     const auto *stream = channelInfoStreamRow();
     const auto current = std::find_if(m_topics.cbegin(), m_topics.cend(),
         [&](const Topic &row) { return row.uuid == id && row.stream == m_stream; });
@@ -4311,54 +4315,147 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
         emit channelTopicActionFinished(id, action, false);
         return;
     }
+    applyTopicAction(m_stream, id, action, value);
+}
+
+void NativeController::settleTopicAction(const QString &stream, const QString &topic,
+    const QString &action, bool ok)
+{
+    const auto stateKey = stream + '|' + topic;
+    auto state = m_topicActionStates.value(stateKey);
+    state.remove(action + "Pending");
+    if (ok) state.remove(action + "Error");
+    else if (action == QLatin1String("rename"))
+        state[QLatin1String("renameError")] = tr("Could not rename the topic. Please try again.");
+    else if (action == QLatin1String("notifications"))
+        state[QLatin1String("notificationsError")] = tr("Could not update the topic notifications. Please try again.");
+    else if (action == QLatin1String("read"))
+        state[QLatin1String("readError")] = tr("Could not mark the topic as read. Please try again.");
+    else
+        state[QLatin1String("toggle_doneError")] = tr("Could not update the topic. Please try again.");
+    m_topicActionStates.insert(stateKey, state);
+    // Pitfall honored: the guard's NOTIFY fires on every state transition.
+    emit topicActionsChanged();
+    emit stateChanged();
+}
+
+bool NativeController::topicActionBusy(const QString &topic) const
+{
+    const auto suffix = QLatin1Char('/') + topic;
+    for (auto it = m_topicActionRequests.cbegin(); it != m_topicActionRequests.cend(); ++it)
+        if (it.key().endsWith(suffix)) return true;
+    return false;
+}
+
+QVariantMap NativeController::topicActionState(const QString &stream, const QString &topic) const
+{
+    return m_topicActionStates.value(stream + '|' + topic);
+}
+
+void NativeController::applyTopicAction(const QString &stream, const QString &topic,
+    const QString &action, const QString &value)
+{
+    const auto report = [this, &stream, &topic, &action](bool ok) {
+        emit channelTopicActionFinished(topic, action, ok);
+        emit topicActionFinished(stream, topic, action, ok);
+    };
+    const auto trimmed = value.trimmed();
+    if (!authenticated() || !isUuid(stream) || !isUuid(topic)) { report(false); return; }
+    const bool current = stream == m_stream;
     QByteArray method = "POST";
-    QString path = messenger + "/stream_topics/" + id;
+    QString path = messenger + "/stream_topics/" + topic;
     QJsonObject body;
-    if (action == "notifications" && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
+    if (action == QLatin1String("notifications") && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
         path += "/actions/notifications/invoke";
         body.insert("notification_mode", value);
-    } else if (action == "summary" && channelInfoStream().value("canEditTopicSummary").toBool()
+    } else if (action == QLatin1String("summary") && current
+               && channelInfoStream().value("canEditTopicSummary").toBool()
                && (value == "true" || value == "false")) {
         path += "/actions/set_summary_prompt/invoke";
         body.insert("summary_enabled", value == "true");
-    } else if (action == "read" || action == "toggle_done") {
+    } else if (action == QLatin1String("read") || action == QLatin1String("toggle_done")) {
         path += "/actions/" + action + "/invoke";
-    } else if (action == "rename" && !value.trimmed().isEmpty()) {
+    } else if (action == QLatin1String("rename") && !trimmed.isEmpty()) {
         method = "PUT";
-        body.insert("name", value.trimmed());
+        body.insert("name", trimmed);
     } else {
-        emit channelTopicActionFinished(id, action, false);
+        report(false);
         return;
     }
+    // The target row must be known: the selected stream's catalog or an
+    // expanded sidebar stream's inbox catalog.
+    bool known = false;
+    if (current) {
+        known = std::any_of(m_topics.cbegin(), m_topics.cend(),
+            [&](const Topic &row) { return row.uuid == topic; });
+    } else if (m_inboxTopics.contains(stream)) {
+        const auto rows = m_inboxTopics.value(stream);
+        known = std::any_of(rows.cbegin(), rows.cend(),
+            [&](const Topic &row) { return row.uuid == topic; });
+    }
+    if (!known) { report(false); return; }
+    // Arbitration: at most one in-flight action per topic. A competing action
+    // for the same topic is rejected as finished-false without a second
+    // request (the pinned drawer retry case depends on this granularity); a
+    // peer topic is never blocked.
     const auto generation = m_api->generation();
-    const auto owner = ownerKey(), streamId = m_stream;
-    const auto key = QString::number(generation) + '/' + id;
-    if (m_channelTopicRequests.contains(key)) {
-        emit channelTopicActionFinished(id, action, false);
-        return;
-    }
-    m_channelTopicRequests.insert(key);
+    const auto key = QString::number(generation) + '/' + topic;
+    if (m_topicActionRequests.contains(key)) { report(false); return; }
+    const auto token = ++m_topicActionToken;
+    m_topicActionRequests.insert(key, token);
+    const auto owner = ownerKey();
+    const auto stateKey = stream + '|' + topic;
+    auto state = m_topicActionStates.value(stateKey);
+    state[action + "Pending"] = true;
+    state.remove(action + "Error");
+    m_topicActionStates.insert(stateKey, state);
+    emit topicActionsChanged();
+    emit stateChanged();
     const auto revision = m_topicRevision;
-    request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
-        m_channelTopicRequests.remove(key);
-        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) return;
+    request(method, path, body, {},
+        [this, current, stream, topic, action, key, token, owner, generation, revision](const ApiResult &response) {
+        if (m_topicActionRequests.value(key) == token) m_topicActionRequests.remove(key);
+        if (!authenticated() || ownerKey() != owner) return;
+        const auto finish = [this, &stream, &topic, &action](bool ok) {
+            settleTopicAction(stream, topic, action, ok);
+            emit channelTopicActionFinished(topic, action, ok);
+            emit topicActionFinished(stream, topic, action, ok);
+        };
         const auto dto = response.data.toObject();
-        const auto updated = parseTopic(dto, m_session->project(), streamId);
-        const bool accepted = response.ok() && updated && updated->uuid == id
+        const auto updated = response.ok() && response.data.isObject()
+            ? parseTopic(dto, m_session->project(), stream) : std::optional<Topic>{};
+        const bool accepted = response.ok() && updated && updated->uuid == topic
             && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
-        staleCache(NativeCache::Kind::Topics, streamId);
-        auto row = std::find_if(m_topics.begin(), m_topics.end(), [&](const Topic &t) { return t.uuid == id; });
-        if (accepted && row != m_topics.end() && revision == m_topicRevision) {
-            *row = *updated;
-            ++m_topicRevision;
-            if (action == "read") mentionIndexClearTopic(streamId, id);
-            emit topicsChanged();
-            emit stateChanged();
-        } else {
-            // A newer catalog or an uncertain write is reconciled by reading.
-            loadTopics();
+        if (current) {
+            if (m_api->generation() != generation || m_stream != stream) return;
+            staleCache(NativeCache::Kind::Topics, stream);
+            auto row = std::find_if(m_topics.begin(), m_topics.end(),
+                [&](const Topic &t) { return t.uuid == topic; });
+            if (accepted && row != m_topics.end() && revision == m_topicRevision) {
+                *row = *updated;
+                ++m_topicRevision;
+                if (action == QLatin1String("read")) mentionIndexClearTopic(stream, topic);
+                emit topicsChanged();
+                emit stateChanged();
+            } else {
+                // A newer catalog or an uncertain write is reconciled by reading.
+                loadTopics();
+            }
+            finish(accepted);
+            return;
         }
-        emit channelTopicActionFinished(id, action, accepted);
+        if (m_api->generation() != generation) return;
+        if (!m_inboxTopics.contains(stream)) return;
+        staleCache(NativeCache::Kind::Topics, stream);
+        auto rows = m_inboxTopics.value(stream);
+        auto row = std::find_if(rows.begin(), rows.end(),
+            [&](const Topic &t) { return t.uuid == topic; });
+        if (accepted && row != rows.end()) {
+            *row = *updated;
+            m_inboxTopics.insert(stream, rows);
+            emit sidebarTopicsChanged(stream);
+        }
+        finish(accepted);
     });
 }
 
@@ -11924,6 +12021,8 @@ void NativeController::reset()
     m_channelInfoNotificationInFlight.clear();
     m_pollSendAttempts.clear();
     m_channelTopicRequests.clear();
+    m_topicActionRequests.clear();
+    m_topicActionStates.clear();
     closeEditSession();
     closeReplySession();
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
