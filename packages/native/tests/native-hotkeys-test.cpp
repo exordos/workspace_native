@@ -17,8 +17,8 @@ private slots:
         QMap<QString, int> groups;
         for (const auto& row : keys.actions())
             ++groups[row.toMap().value("category").toString()];
-        QCOMPARE(keys.actions().size(), 18);
-        QCOMPARE(groups.value("navigation"), 8);
+        QCOMPARE(keys.actions().size(), 19);
+        QCOMPARE(groups.value("navigation"), 9);
         QCOMPARE(groups.value("interface"), 5);
         QCOMPARE(groups.value("composer"), 5);
         QCOMPARE(keys.fixed().size(), 5);
@@ -40,6 +40,32 @@ private slots:
         restored.load("settings/one");
         QCOMPARE(restored.binding("composer.bold"), "Mod+B");
         QVERIFY(restored.binding("interface.theme").isEmpty());
+    }
+    void invalidStoredOverrideCannotShadowDefault()
+    {
+        // Review finding on PR #639 (comment 4651140462): with composer.bold
+        // holding an invalid stored chord and interface.theme holding Mod+B,
+        // the theme override must not survive and shadow the bold default
+        // that the invalid override was blocking. Pruning the invalid value
+        // must restore the default and drop the now-conflicting override.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        {
+            QSettings seeded(dir.filePath("keys.ini"), QSettings::IniFormat);
+            seeded.setValue("scope/hotkeys/overrides/composer.bold", "not a chord");
+            seeded.setValue("scope/hotkeys/overrides/interface.theme", "Mod+B");
+            seeded.sync();
+        }
+        QSettings ini(dir.filePath("keys.ini"), QSettings::IniFormat);
+        NativeHotkeys keys(ini);
+        keys.load("scope");
+        QCOMPARE(keys.binding("composer.bold"), QStringLiteral("Mod+B"));
+        QVERIFY(keys.binding("interface.theme").isEmpty());
+        // The restored default must own its chord: re-assigning the shadowing
+        // value is rejected, and the invalid override was pruned for real.
+        QCOMPARE(keys.validate("interface.theme", QStringLiteral("Mod+B")), QStringLiteral("conflict"));
+        QVERIFY(keys.reset("composer.bold").isEmpty());
+        QCOMPARE(keys.binding("composer.bold"), QStringLiteral("Mod+B"));
     }
     void reservedAndPhysicalPositions()
     {
@@ -74,6 +100,32 @@ private slots:
         QVERIFY(NativeHotkeys::fromEvent(repeat).isEmpty());
         QKeyEvent altgr(QEvent::KeyPress, Qt::Key_B, Qt::GroupSwitchModifier);
         QVERIFY(NativeHotkeys::fromEvent(altgr).isEmpty());
+    }
+    void newlyIntroducedDefaultKeepsExistingOverride()
+    {
+        // Review finding on PR #639 (issue #628): navigation.chatSearch gained
+        // the Mod+K default. A user who previously assigned Mod+K to another
+        // action (that chord was free back then) must keep their override; the
+        // freshly introduced default must not silently evict it on load.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        {
+            QSettings seeded(dir.filePath("keys.ini"), QSettings::IniFormat);
+            seeded.setValue("scope/hotkeys/overrides/navigation.messenger", "Mod+K");
+            seeded.sync();
+        }
+        QSettings ini(dir.filePath("keys.ini"), QSettings::IniFormat);
+        NativeHotkeys keys(ini);
+        keys.load("scope");
+        QCOMPARE(keys.binding("navigation.messenger"), QStringLiteral("Mod+K"));
+        // While shadowed by the user's override the new default stays unbound.
+        QCOMPARE(keys.binding("navigation.chatSearch"), QString());
+        // The chord can never be double-assigned, and resetting the override
+        // hands the chord back to the new default.
+        QCOMPARE(keys.validate("navigation.chatSearch", QStringLiteral("Mod+K")), QStringLiteral("conflict"));
+        QVERIFY(keys.reset("navigation.messenger").isEmpty());
+        QCOMPARE(keys.binding("navigation.messenger"), QString());
+        QCOMPARE(keys.binding("navigation.chatSearch"), QStringLiteral("Mod+K"));
     }
 };
 QTEST_GUILESS_MAIN(NativeHotkeysTest)

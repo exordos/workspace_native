@@ -16,7 +16,7 @@ namespace {
     constexpr Definition catalog[] = { { "navigation.back", "Alt+ArrowLeft" },
         { "navigation.forward", "Alt+ArrowRight" }, { "navigation.messenger", "" }, { "navigation.calendar", "" },
         { "navigation.mail", "" }, { "navigation.calls", "" }, { "navigation.activity", "" },
-        { "navigation.folderList", "" }, { "interface.theme", "" }, { "interface.help", "Mod+/" },
+        { "navigation.chatSearch", "Mod+K" }, { "navigation.folderList", "" }, { "interface.theme", "" }, { "interface.help", "Mod+/" },
         { "interface.sidebar", "Mod+\\" }, { "interface.infoPanel", "Mod+." },
         { "interface.quoteMessage", "Ctrl+L" }, { "composer.editLastMessage", "ArrowUp" },
         { "composer.bold", "Mod+B" }, { "composer.italic", "Mod+I" }, { "composer.strike", "Mod+Shift+X" },
@@ -120,12 +120,45 @@ namespace {
 #else
     constexpr bool macPlatform = false;
 #endif
-    QString current(const QString& id, const QMap<QString, QString>& overrides)
+    // A catalog default is shadowed when a different action already carries a
+    // user override for exactly that chord. An override is an explicit user
+    // choice recorded earlier, so it wins over a default: introducing a new
+    // default (navigation.chatSearch's Mod+K, for example) must never silently
+    // evict an override that was valid before the default existed.
+    QSet<QString> shadowedDefaults(const QMap<QString, QString>& overrides)
+    {
+        QSet<QString> shadowed;
+        for (const auto& entry : catalog) {
+            const QString id = QLatin1String(entry.id);
+            if (overrides.contains(id) || entry.binding[0] == '\0')
+                continue;
+            for (const auto& other : catalog) {
+                const QString otherId = QLatin1String(other.id);
+                if (otherId == id || !overrides.contains(otherId))
+                    continue;
+                for (bool mac : { false, true }) {
+                    const auto lhs = parse(QLatin1String(entry.binding), mac);
+                    const auto rhs = parse(overrides.value(otherId), mac);
+                    if (lhs && rhs && lhs->text() == rhs->text())
+                        shadowed.insert(id);
+                }
+            }
+        }
+        return shadowed;
+    }
+    QString current(const QString& id, const QMap<QString, QString>& overrides, const QSet<QString>& shadowed)
     {
         const auto* entry = definition(id);
-        return entry ? overrides.value(id, QLatin1String(entry->binding)) : QString();
+        if (!entry)
+            return QString();
+        if (overrides.contains(id))
+            return overrides.value(id);
+        if (shadowed.contains(id))
+            return QString();
+        return QLatin1String(entry->binding);
     }
-    QString problem(const QString& id, const QString& value, const QMap<QString, QString>& overrides)
+    QString problem(const QString& id, const QString& value, const QMap<QString, QString>& overrides,
+        const QSet<QString>& shadowed)
     {
         if (!definition(id))
             return "invalid";
@@ -159,12 +192,16 @@ namespace {
             for (const auto& item : catalog) {
                 if (id == QLatin1String(item.id))
                     continue;
-                const auto other = parse(current(QLatin1String(item.id), overrides), mac);
+                const auto other = parse(current(QLatin1String(item.id), overrides, shadowed), mac);
                 if (other && candidate->text() == other->text())
                     return "conflict";
             }
         }
         return { };
+    }
+    QString problem(const QString& id, const QString& value, const QMap<QString, QString>& overrides)
+    {
+        return problem(id, value, overrides, shadowedDefaults(overrides));
     }
 } // namespace
 
@@ -185,11 +222,15 @@ void NativeHotkeys::load(const QString& group)
             m_overrides.insert(id, value.toString());
     }
     bool removed;
+    // Shadowing is frozen from the settings as loaded: pruning an invalid or
+    // conflicting override must not retroactively re-introduce a default that
+    // shadowed another user override (or vice versa) mid-loop.
+    const auto shadowed = shadowedDefaults(m_overrides);
     do {
         removed = false;
         for (const auto& entry : catalog) {
             const auto id = QLatin1String(entry.id);
-            if (m_overrides.contains(id) && !problem(id, m_overrides.value(id), m_overrides).isEmpty()) {
+            if (m_overrides.contains(id) && !problem(id, m_overrides.value(id), m_overrides, shadowed).isEmpty()) {
                 m_overrides.remove(id);
                 removed = true;
             }
@@ -211,7 +252,7 @@ void NativeHotkeys::rebuildBindings()
 }
 QString NativeHotkeys::binding(const QString& id) const
 {
-    return current(id, m_overrides);
+    return current(id, m_overrides, shadowedDefaults(m_overrides));
 }
 QString NativeHotkeys::validate(const QString& id, const QString& value) const
 {
@@ -267,8 +308,9 @@ QString NativeHotkeys::reset(const QString& id)
         return "invalid";
     auto next = m_overrides;
     next.remove(id);
-    const auto restored = current(id, next);
-    if (!problem(id, restored, next).isEmpty())
+    const auto shadowed = shadowedDefaults(next);
+    const auto restored = current(id, next, shadowed);
+    if (!problem(id, restored, next, shadowed).isEmpty())
         return "conflict";
     return write(next, m_enabled);
 }

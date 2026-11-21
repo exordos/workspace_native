@@ -1,6 +1,6 @@
 # Keyboard shortcuts
 
-The native window uses the Workspace shortcut catalog. Navigation has eight
+The native window uses the Workspace shortcut catalog. Navigation has nine
 actions, the interface has five, and the composer has five. Five fixed entries
 describe standard editing and navigation keys. A binding can use Mod, which
 means Command on macOS and Control on Windows and Linux. Conflict checks
@@ -15,8 +15,11 @@ behind it. Quit, fullscreen, normal copy and paste keep their native handlers.
 The settings INI stores `hotkeys/enabled` and `hotkeys/overrides/<id>` in the
 active owner's settings. An absent entry restores an action's default. An empty
 binding disables that action. The reader normalizes stored overrides until the
-remaining bindings are valid and distinct. Saving an invalid binding leaves
-the current shortcut in place.
+remaining bindings are valid and distinct. An override recorded before a
+catalog default was introduced wins over that default: the default stays
+shadowed (the action reads as unbound) instead of evicting the user's saved
+choice, and it returns when the shadowing override is reset. Saving an invalid
+binding leaves the current shortcut in place.
 
 The Settings drawer opens a searchable Keyboard shortcuts dialog with the three
 remappable sections and one fixed section. Selecting a shortcut arms its
