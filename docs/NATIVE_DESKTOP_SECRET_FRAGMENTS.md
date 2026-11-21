@@ -13,7 +13,7 @@ key-request workflow verifies current authority and owns duplicate prevention.
 With a usable key the lock toggles the fragment in place. Failed authentication
 offers retry. Closing the disclosure, leaving the conversation, changing accounts
 or removing the key clears the displayed text. Secret-bearing bodies suppress
-selection. Summaries, notifications and nested secrets use the closed placeholder.
+selection. Summaries, notifications and nested secrets use the closed placeholder. The desktop notification transport receives that placeholder for protected Markdown links and images, including percent-encoded targets. Ordinary text and Markdown keep their notification formatting.
 
 The native reference parser verifies the URN and the existing chat-crypto
 provider authenticates the envelope using its stream and key generation.

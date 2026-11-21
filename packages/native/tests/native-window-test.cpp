@@ -15316,6 +15316,22 @@ mv -Tf "$root/.current-new" "$root/current"
             emit controller.stateChanged();
             QCOMPARE(list->property("layoutTicket"), ticket);
         }
+        if (scenario == "prepend") {
+            // Ordinary rows must not construct controls reserved for service
+            // topic boundaries or instantiate an unread divider per message.
+            QCOMPARE(itemCountWithPrefix(list, "serviceTopicDivider-"), 0);
+            QVERIFY(itemCountWithPrefix(list, "unreadDivider") <= 1);
+            const QSize previousSize = window->size();
+            const qreal previousHeight = list->height();
+            // Ask Qt to prepare a viewport of loaded delegates ahead of input,
+            // including after a desktop resize on a larger display.
+            QVERIFY(list->property("cacheBuffer").toInt() >= qCeil(previousHeight));
+            window->resize(previousSize + QSize(0, 80));
+            QTRY_VERIFY(list->height() > previousHeight + 40);
+            QTRY_VERIFY(list->property("cacheBuffer").toInt() >= qCeil(list->height()));
+            window->resize(previousSize);
+            QTRY_COMPARE(list->height(), previousHeight);
+        }
         if (behavior != "incoming-bottom") {
             const auto before = list->property("contentY").toReal();
             const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
@@ -36851,21 +36867,34 @@ private slots:
         controller.selectFolder(customUuids.last());
         QTRY_COMPARE(controller.selectedFolder(), customUuids.last());
         const auto personalUuid=QStringLiteral("00000000-0000-0000-0000-000000000001");
-        const auto chipPoint=[&](const QString &name){
-            auto *chip=visibleItem(name);
-            return chip->mapToScene(QPointF(chip->width()/2,chip->height()/2)).toPoint();};
-        const auto start=chipPoint(QStringLiteral("folder-personal"));
-        QVERIFY(start.x() < strip->width());
+        // Selecting a folder rebuilds the repeater. Its Row positions the new
+        // chips during polish, before the next frame is presented.
+        const auto locateChip = [window, strip](const QString &name, QPoint &point) {
+            QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+            window->update();
+            if (!QTest::qWaitFor([&] { return !painted.isEmpty(); }, 2000))
+                return false;
+            auto *chip = visibleItem(strip, name);
+            if (!chip) return false;
+            point = chip->mapToScene(QPointF(chip->width() / 2, chip->height() / 2)).toPoint();
+            return strip->contains(strip->mapFromScene(point));
+        };
+        QPoint start;
+        QVERIFY(locateChip(QStringLiteral("folder-personal"), start));
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,start);
+        QCOMPARE(strip->property("pressedKey").toString(), QStringLiteral("personal"));
         QTest::mouseMove(window,start+QPoint(2,0));
         QTest::mouseRelease(window,Qt::LeftButton,Qt::NoModifier,start+QPoint(2,0));
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), personalUuid, 2000);
         QCOMPARE(contentX(), 0.0);
         // Back to All, then drag past the threshold: the strip scrolls and
         // the trailing click must not change the selection.
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,chipPoint(QStringLiteral("folder-all")));
+        QPoint allPoint;
+        QVERIFY(locateChip(QStringLiteral("folder-all"), allPoint));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,allPoint);
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), allUuid, 2000);
-        const auto dragFrom=chipPoint(QStringLiteral("folder-personal"));
+        QPoint dragFrom;
+        QVERIFY(locateChip(QStringLiteral("folder-personal"), dragFrom));
         QTest::mousePress(window,Qt::LeftButton,Qt::NoModifier,dragFrom);
         QTest::mouseMove(window,dragFrom+QPoint(-120,0));
         QTest::qWait(50);
@@ -36876,7 +36905,9 @@ private slots:
         QCOMPARE(controller.selectedFolder(), allUuid);
         // The suppression lasts exactly one click: the next plain click on a
         // (now shifted) chip selects normally.
-        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,chipPoint(firstChip));
+        QPoint firstPoint;
+        QVERIFY(locateChip(firstChip, firstPoint));
+        QTest::mouseClick(window,Qt::LeftButton,Qt::NoModifier,firstPoint);
         QTRY_COMPARE_WITH_TIMEOUT(controller.selectedFolder(), customUuids.first(), 2000);
     }
 
@@ -38721,15 +38752,25 @@ private slots:
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    void messageTimePanelFollowsChipWhileHistoryScrolls_data()
+    {
+        QTest::addColumn<bool>("retainDelegate");
+        QTest::newRow("offscreen-cached-chip") << true;
+        QTest::newRow("released-chip") << false;
+    }
+
     void messageTimePanelFollowsChipWhileHistoryScrolls()
     {
+        QFETCH(bool, retainDelegate);
         NativeWindowScene scene;
         QVERIFY(scene.exposeWindow());
         auto *window = scene.window;
         auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        // Exercise both ListView lifetimes after the same real wheel movement.
+        QVERIFY(list->setProperty("cacheBuffer", retainDelegate ? qCeil(list->height() * 3) : 0));
         // Choose a visible chip with room to scroll one notch while keeping
         // the reference's preferred placement above the trigger.
-        QQuickItem *chip = nullptr;
+        QPointer<QQuickItem> chip;
         for (int i = 49; i >= 0; --i) {
             auto *candidate = item(list, "message-time-" + NativeWindowScene::messageUuid(i));
             if (!candidate)
@@ -38745,7 +38786,7 @@ private slots:
         auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
         QTRY_VERIFY(panel->property("visible").toBool());
         const auto bottom = [panel] { return panel->property("y").toReal() + panel->property("height").toReal(); };
-        const auto chipY = [chip] { return chip->mapToScene(QPointF()).y(); };
+        const auto chipY = [&chip] { return chip ? chip->mapToScene(QPointF()).y() : qreal(-1); };
         QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
         const auto before = chipY();
         const auto wheelAt = list->mapToScene(QPointF(list->width() - 4, list->height() / 2));
@@ -38753,7 +38794,14 @@ private slots:
         QTRY_VERIFY(chipY() > before + 90);
         QVERIFY(panel->property("visible").toBool());
         QTRY_VERIFY(qAbs(chipY() - bottom() - 8) < 1);
+        const auto contentY = list->property("contentY").toReal();
         QTest::wheelEvent(window, wheelAt, QPoint(0, 1200));
+        QTRY_VERIFY(list->property("contentY").toReal() < contentY - 900);
+        if (retainDelegate) {
+            QTRY_VERIFY(chip && chip->mapToItem(list, QPointF()).y() >= list->height());
+        } else {
+            QTRY_VERIFY(chip.isNull());
+        }
         QTRY_VERIFY(!panel->property("visible").toBool());
     }
 

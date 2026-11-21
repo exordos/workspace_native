@@ -188,6 +188,12 @@ in total. A pause, a layout jump, switching routes or restoring an anchor
 discards the velocity estimate. Programmatic restoration only rearms the next
 user scroll. The original request coalescing and end marker still apply.
 
+The message list asks Qt Quick to cache delegates for one viewport outside
+its visible area. The buffer follows window resizes. This lets the view use
+idle frames to prepare already-loaded rows for the next burst of wheel input.
+Ordinary message delegates create the unread divider and the service-topic
+button only when their boundary is displayed.
+
 When an older page preserves the order of the existing rows, the view inserts
 its new prefix in a single model notification. It still refreshes the roles of
 retained rows, including service groups that changed at the page boundary.

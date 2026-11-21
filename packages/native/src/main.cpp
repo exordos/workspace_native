@@ -40,6 +40,10 @@
 #include <QWindow>
 #include <openssl/ssl.h>
 #include <limits>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#include <shobjidl.h>
+#endif
 
 namespace {
 
@@ -78,6 +82,10 @@ int main(int argc, char **argv)
             && output.write(report) == report.size() && output.flush() ? 0 : 1;
     }
     QGuiApplication::setDesktopFileName("com.exordos.workspace.native.preview");
+#ifdef Q_OS_WIN
+    if (FAILED(SetCurrentProcessExplicitAppUserModelID(QGuiApplication::desktopFileName().toStdWString().c_str())))
+        qWarning("Could not set the Windows application identity.");
+#endif
     QApplication app(argc, argv);
     // Source parity: the last argument that validates as an external deep link
     // wins on cold start, mirroring the Electron startup argv scan.
@@ -101,6 +109,11 @@ int main(int argc, char **argv)
     workspace::installNativeLogHandler(diagnosticsLog);
     const auto removeLogHandler = qScopeGuard(&workspace::removeNativeLogHandler);
     workspace::NativeInstance instance;
+#ifdef Q_OS_MACOS
+    app.installEventFilter(&instance);
+#endif
+    const auto earlyActivation = QObject::connect(&instance, &workspace::NativeInstance::activationRequested,
+        &app, [&startupDeepLink](const QString &url) { if (!url.isEmpty()) startupDeepLink = url; });
     const auto outcome = instance.acquireOrActivate(startupDeepLink);
     if (outcome == workspace::NativeInstance::Outcome::Secondary) return 0;
     if (outcome == workspace::NativeInstance::Outcome::Failed) {
@@ -286,6 +299,7 @@ int main(int argc, char **argv)
         if (controller.ownerKey() != badgeOwner) updateUnread();
     });
     updateUnread();
+    QObject::disconnect(earlyActivation);
     QObject::connect(&instance, &workspace::NativeInstance::activationRequested, &app,
         [&controller, activate](const QString &deepLink) {
             activate();
