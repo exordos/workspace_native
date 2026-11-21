@@ -2794,6 +2794,87 @@ private slots:
         QCOMPARE(stream.value("notification_mode").toString(), QString("mentions_only"));
     }
 
+    // Issue #645: a topic action issued before a token renewal must settle when the
+    // renewal retires the credential generation it rode, otherwise the channel drawer
+    // stays pending forever (disabled menu, dead rename form). A same-token renewal
+    // keeps the generation and must NOT interrupt the action; a late old-generation
+    // reply must never settle anything after the interrupted result.
+    void topicActionInterruptedByRenewalSettlesInterrupted_data()
+    {
+        QTest::addColumn<bool>("rotate");
+        QTest::newRow("same-token") << false;
+        QTest::newRow("rotated-token") << true;
+    }
+
+    void topicActionInterruptedByRenewalSettlesInterrupted()
+    {
+        QFETCH(bool, rotate);
+        Fixture f;
+        QVector<std::function<void()>> release;
+        int renamePosts = 0;
+        const auto topicPath = QStringLiteral("/api/workspace/v1/messenger/stream_topics/") + topicId;
+        bool armRotate = false;
+        f.authentication = [&](const Request &request) {
+            auto response = sessionResponse(request);
+            if (rotate && armRotate && request.body.value("grant_type") == "refresh_token") {
+                auto token = response.data.toObject();
+                token.insert("access_token", QStringLiteral("synthetic-renewed-645"));
+                response.data = token;
+            }
+            return response;
+        };
+        const auto base = f.server.handler;
+        f.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "PUT" && request.target.path() == topicPath) {
+                ++renamePosts;
+                auto row = QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", request.body.value("name").toString()}};
+                return Response{row, 200, 0, {}, [&release](std::function<void()> send) {
+                    release.append(std::move(send));
+                }};
+            }
+            return base(request);
+        };
+        QVERIFY(f.start());
+        auto &c = f.controller;
+        QTRY_VERIFY(!c.topics().isEmpty());
+        QSignalSpy finished(&c, &NativeController::channelTopicActionFinished);
+        c.applyChannelTopicAction(topicId, "rename", "Renamed while held");
+        QTRY_COMPARE(renamePosts, 1);
+        QCOMPARE(release.size(), 1);
+        QSignalSpy renewed(&f.session, &Session::authenticated);
+        armRotate = true;
+        f.session.requestRefresh();
+        QTRY_COMPARE(renewed.size(), 1);
+        if (rotate) {
+            // The retired callback can never fire, so the renewal itself must
+            // report the interrupted result: the drawer releases the form and
+            // the same topic can be acted on again.
+            QTRY_COMPARE(finished.size(), 1);
+            QCOMPARE(finished.at(0).at(0).toString(), topicId);
+            QCOMPARE(finished.at(0).at(1).toString(), QStringLiteral("rename"));
+            QCOMPARE(finished.at(0).at(2).toBool(), false);
+            QTRY_VERIFY(!c.busy()); // the reconcile read completes before re-acting
+            c.applyChannelTopicAction(topicId, "rename", "Second rename");
+            QTRY_COMPARE(renamePosts, 2);
+            // A delayed old-generation reply must not settle anything a second time.
+            release[0]();
+            release[0] = nullptr;
+            QTest::qWait(250);
+            QCOMPARE(finished.size(), 1);
+        } else {
+            // Same token: the generation is unchanged, the held action survives
+            // and still settles successfully when the server finally answers.
+            QVERIFY(finished.isEmpty());
+            release[0]();
+            release[0] = nullptr;
+            QTRY_COMPARE(finished.size(), 1);
+            QCOMPARE(finished.at(0).at(2).toBool(), true);
+        }
+        for (auto &send : release)
+            if (send) send();
+    }
+
     void chatHeaderRetriesInitialMemberFailure_data()
     {
         QTest::addColumn<QString>("edge");
