@@ -19,6 +19,8 @@ file(GLOB runtime_libraries
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libjpeg.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libwebp*.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libsharpyuv.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libheif.so*"
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libde265.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libmng.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/libtiff.so*"
     "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/liblcms2.so*")
@@ -38,6 +40,28 @@ foreach(library IN LISTS runtime_libraries)
         RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
     if(NOT patch_result EQUAL 0)
         message(FATAL_ERROR "Cannot set installed library runtime path: ${patch_error}")
+    endif()
+endforeach()
+# libheif codec plugins live in lib/heif-plugins and reach their host library
+# and libde265 (installed in the parent lib directory) through one extra
+# search level beyond $ORIGIN.
+file(GLOB runtime_heif_plugins
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@/heif-plugins/*.so")
+foreach(library IN LISTS runtime_heif_plugins)
+    file(REAL_PATH "${library}" actual_library)
+    cmake_path(IS_PREFIX runtime_prefix "${actual_library}" NORMALIZE within_package)
+    if(NOT within_package)
+        message(FATAL_ERROR "Refusing to adjust a runtime library outside the package")
+    endif()
+    if(actual_library IN_LIST processed_libraries)
+        continue()
+    endif()
+    list(APPEND processed_libraries "${actual_library}")
+    execute_process(
+        COMMAND "@WORKSPACE_NATIVE_PATCHELF_EXECUTABLE@" --set-rpath "$ORIGIN:$ORIGIN/.." "${actual_library}"
+        RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
+    if(NOT patch_result EQUAL 0)
+        message(FATAL_ERROR "Cannot set installed plugin runtime path: ${patch_error}")
     endif()
 endforeach()
 list(LENGTH processed_libraries library_count)

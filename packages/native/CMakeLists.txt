@@ -28,6 +28,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET PkgConfig::LIBHEIF)
         "libheif development package is required on Linux (HEIC previews #638): "
         "install libheif-dev (with libheif-plugin-libde265 for HEVC decoding)")
 endif()
+# Packaging of the HEVC decoder: Ubuntu keeps libheif's codec plugins in a
+# separate directory and dlopens them at runtime, so Qt's ELF deployment never
+# sees them. The package must ship the libde265 plugin plus its runtime library
+# under lib/heif-plugins; heif-preview.cpp loads that tree first and the
+# installed-runtime probe decodes a HEVC fixture to prove it works. Missing
+# plugin fails configure on Linux for the same reason libheif itself does.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_file(WORKSPACE_NATIVE_HEIF_PLUGIN_LIBRARY libheif-libde265.so
+        PATHS "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/libheif/plugins"
+              /usr/lib/x86_64-linux-gnu/libheif/plugins
+              /usr/local/lib/libheif/plugins
+        NO_DEFAULT_PATH)
+    if(NOT WORKSPACE_NATIVE_HEIF_PLUGIN_LIBRARY)
+        message(FATAL_ERROR
+            "libheif's libde265 plugin is required on Linux (HEIC previews #638): "
+            "install libheif-plugin-libde265")
+    endif()
+    get_filename_component(heif_plugin_dir "${WORKSPACE_NATIVE_HEIF_PLUGIN_LIBRARY}" DIRECTORY)
+    get_filename_component(heif_plugin_dir "${heif_plugin_dir}" DIRECTORY)
+    get_filename_component(WORKSPACE_NATIVE_DE265_DIRECTORY "${heif_plugin_dir}" DIRECTORY)
+    file(GLOB WORKSPACE_NATIVE_DE265_LIBRARIES "${WORKSPACE_NATIVE_DE265_DIRECTORY}/libde265.so.0*")
+    if(NOT WORKSPACE_NATIVE_DE265_LIBRARIES)
+        message(FATAL_ERROR
+            "libde265 runtime library is required next to the libheif plugin (HEIC previews #638): "
+            "install libde265-0")
+    endif()
+endif()
 qt_standard_project_setup(REQUIRES 6.8)
 
 if(WIN32 OR APPLE)
@@ -355,6 +382,14 @@ install(FILES ../../LICENSE resources/unicode_emoji.LICENSE resources/emoji_pick
 if(UNIX AND NOT APPLE)
     install(IMPORTED_RUNTIME_ARTIFACTS md4c::md4c md4c::md4c-html
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    # HEVC decoder for HEIC previews (#638): dlopen'd by libheif at runtime,
+    # so it is outside the executable's ELF closure and Qt deployment misses it.
+    if(WORKSPACE_NATIVE_HEIF_PLUGIN_LIBRARY)
+        install(FILES "${WORKSPACE_NATIVE_HEIF_PLUGIN_LIBRARY}"
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/heif-plugins)
+        install(FILES ${WORKSPACE_NATIVE_DE265_LIBRARIES}
+            DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    endif()
     # Keep the HPKE provider and Qt's TLS backend on the same OpenSSL runtime.
     # FindOpenSSL exposes UNKNOWN imported targets, so install the actual files
     # rather than a developer .so symlink or IMPORTED_RUNTIME_ARTIFACTS.
