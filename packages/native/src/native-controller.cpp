@@ -4342,7 +4342,20 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
     const auto revision = m_topicRevision;
     request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
         m_channelTopicRequests.remove(key);
-        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) return;
+        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) {
+            // Issue #645 review (4653853398): a write that rode the retired
+            // credential survives a same-owner renewal (AwaitReply), so this
+            // fenced reply arrives when the server actually settled the write -
+            // committed or rejected. The renewal's reconcile read may have
+            // answered before that commit, so read the rows once more while the
+            // same owner is still in view; a different owner means the drawer
+            // is gone and the reply settles nothing. (Never guard on an empty
+            // owner: a logged-in session can legitimately report an empty
+            // ownerKey - #300.)
+            if (m_channelTopicInterruptedWrites.remove(key) && ownerKey() == owner)
+                loadTopics();
+            return;
+        }
         const auto dto = response.data.toObject();
         const auto updated = parseTopic(dto, m_session->project(), streamId);
         const bool accepted = response.ok() && updated && updated->uuid == id
@@ -4360,7 +4373,7 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
             loadTopics();
         }
         emit channelTopicActionFinished(id, action, accepted);
-    });
+    }, ApiClient::TokenRenewal::AwaitReply);
 }
 
 // Issue #645: a generation bump silences the wrapper callbacks of everything that
@@ -4376,6 +4389,7 @@ bool NativeController::interruptChannelTopicActions()
     for (auto it = m_channelTopicRequests.begin(); it != m_channelTopicRequests.end();) {
         if (it->generation != m_api->generation()) {
             retired.append(*it);
+            m_channelTopicInterruptedWrites.insert(it.key());
             it = m_channelTopicRequests.erase(it);
         } else {
             ++it;

@@ -1897,6 +1897,10 @@ private:
     // needed to settle the UI operation from the renewal itself.
     struct ChannelTopicAction { QString id; QString action; quint64 generation; };
     QHash<QString, ChannelTopicAction> m_channelTopicRequests;
+    // Issue #645 review (4653853398): keys of topic writes retired by a session
+    // renewal. Their replies prove the server settled the write, so the drawer
+    // rows are reconciled once more when such a reply arrives fenced.
+    QSet<QString> m_channelTopicInterruptedWrites;
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
     bool m_channelInfoLoading = false;
