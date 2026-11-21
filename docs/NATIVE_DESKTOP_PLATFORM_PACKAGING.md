@@ -32,7 +32,9 @@ Each platform test minimizes the existing window and launches the unpacked execu
 | Start in a relocated archive, restore the original window, clipboard text in both directions | PASS on Windows Server 2022 | PASS on macOS 15 |
 | Sign in, quit, restore the rotated account in a second process and sign out | PASS, including Windows Credential Manager entry creation and removal | PASS, including macOS Keychain entry creation and removal |
 | Check for updates in App version | The Windows preview reports that updates are unavailable | The macOS preview reports that updates are unavailable |
-| OS delivery of a registered URL, native file chooser and file or image clipboard formats | NOT RUN | NOT RUN |
+| Attach a local file through the native file chooser | PASS, the Windows common dialog returned the selected file | PASS, the AppKit Open panel returned the selected file |
+| OS delivery of a registered URL | NOT RUN | PASS, Launch Services opened the requested message in a running application and after a full quit and account restore |
+| File and image clipboard formats | NOT RUN | NOT RUN |
 | Embedded meeting loads and asks for microphone and camera | Hosted Windows reported zero capture endpoints and the meeting returned `NotFoundError` for both devices | AVFoundation identified two audio endpoints and no video endpoint. The meeting supplied a live audio track and returned `NotFoundError` for video |
 | Native screen reader narration and display scaling | Manual Narrator and display-scale checks pending | Manual VoiceOver and display-scale checks pending |
 | Signed installer or notarized distribution and update/relaunch | Requires the Windows distribution channel and signing identity | Requires the macOS distribution channel and signing/notarization identity |
@@ -41,7 +43,13 @@ The account check uses a disposable loopback HTTPS organization. The normal inst
 
 On each desktop, the App version panel displayed the unavailable update status after Check for updates. The Windows screenshot and macOS WindowServer capture showed the message on screen. The previews have no Windows or macOS update installation path.
 
+On both desktops, the signed-in application opened **Attach files** in a writable topic. The fixture received one authenticated upload with the exact filename and bytes chosen in the native dialog. [Windows file selection](https://github.com/exordos/workspace_native/actions/runs/44837008062/job/136635857672) · [macOS file selection](https://github.com/exordos/workspace_native/actions/runs/44838282721/job/136640055302)
+
+On Apple Silicon, the warm and cold URL checks requested different messages. The cold target was outside the first page of restored history. The native accessibility tree showed the requested text in each case. [Launch Services acceptance](https://github.com/exordos/workspace_native/actions/runs/44837259081)
+
 For the call check, the package joins a meeting served by the same loopback HTTPS fixture. The meeting calls `getUserMedia`, reads each track's state and stops the track without retaining media. Windows Runtime and AVFoundation count the devices visible to that runner independently. The package must return a live track for an available device or report that a device is absent. A fresh permission prompt and a physical camera require a desktop with the corresponding OS privacy state and hardware. The current Qt WebEngine permission interface omits the requesting frame identity, so the call controller declines display capture before the platform picker. [Display-capture policy](NATIVE_DESKTOP_CALL_DISPLAY_CAPTURE.md)
+
+A clean Intel macOS runner also completed the account and update checks. AVFoundation counted one audio input and no camera. The installed meeting returned a live audio track and reported the missing video device before the application signed out. [Intel package acceptance](https://github.com/exordos/workspace_native/actions/runs/44838160279/job/136644241868)
 
 The native accessibility APIs establish that the login field can be focused and read. Spoken narration and other application screens have their own acceptance criteria. Live authentication, Workspace data synchronization, media permissions and cross-client calls are tracked in the [desktop acceptance plan](NATIVE_DESKTOP_PARITY.md#acceptance-plan).
 
