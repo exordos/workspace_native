@@ -40616,21 +40616,26 @@ private slots:
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA1)->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Down);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
-        // The edges are no-ops (:29-32).
+        // Review finding on PR #639 (issue #628 acceptance: arrows cycle): the
+        // index wraps at both ends of the filtered list (the reference
+        // sidebar-workspace-search.lib.ts:29-32 leaves the edge focused; the
+        // PR contract requires wrap-around).
         QTest::keyClick(window, Qt::Key_Down);
-        QTest::qWait(60);
-        QCOMPARE(focusName(), QStringLiteral("topic-") + topicA2);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus(), 2000);
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus(), 2000);
+        // Backwards walk keeps the visual order.
         QTest::keyClick(window, Qt::Key_Up);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA1)->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Up);
         QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus());
+        // ArrowUp on the first row wraps to the last one.
         QTest::keyClick(window, Qt::Key_Up);
-        QTest::qWait(60);
-        QCOMPARE(focusName(), QStringLiteral("stream-") + streamId);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
         // Modifier chords never navigate (:10-18).
         QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
         QTest::qWait(60);
-        QCOMPARE(focusName(), QStringLiteral("stream-") + streamId);
+        QCOMPARE(focusName(), QStringLiteral("topic-") + topicA2);
         // ArrowUp re-enters from the input at the last row (:29, e2e:316-317).
         click(window, search); QTRY_VERIFY(search->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Up);
@@ -40715,6 +40720,60 @@ private slots:
         QTRY_VERIFY(window->property("sidebarQuery").toString().isEmpty());
         QTest::qWait(60);
         QVERIFY(newChat->hasActiveFocus());
+        QVERIFY(!controller.inboxVisible());
+    }
+
+    void sidebarSearchEscapeDiscardsSavedFocusOnAnyCancel()
+    {
+        // Review finding on PR #639: canceling while focus is elsewhere must
+        // discard the saved focus target too (sidebar-search-header.ui.tsx:18-32
+        // resets previousFocusRef after every successful cancel), otherwise a
+        // later manual search + Escape restores the target from the old session.
+        WindowChannelFixture fixture;
+        keyboardSearchFixture(fixture);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-stale-focus.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Search stale focus teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-stale", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && !controller.streams().isEmpty());
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        auto *newChat = visibleItem(window->contentItem(), "createChatButton"); QVERIFY(newChat);
+        // Session 1: the hotkey focuses the search field and saves the previous
+        // focus target (createChatButton).
+        QMetaObject::invokeMethod(newChat, "forceActiveFocus");
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "alpha");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 2000);
+        // Focus moves to another control; Escape cancels with the input
+        // unfocused. The cancel claims the event, clears the query and must
+        // discard the saved target even though it restores nothing.
+        QMetaObject::invokeMethod(newChat, "forceActiveFocus");
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(window->property("sidebarQuery").toString().isEmpty());
+        QVERIFY(newChat->hasActiveFocus());
+        QVERIFY(window->property("sidebarSearchPreviousFocus").isNull());
+        // Session 2: a manual search (no hotkey, so nothing new is captured)
+        // plus Escape must not resurrect the stale focus target.
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "alpha");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 2000);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(window->property("sidebarQuery").toString().isEmpty());
+        QTest::qWait(60);
+        QVERIFY(!newChat->hasActiveFocus());
         QVERIFY(!controller.inboxVisible());
     }
 };
