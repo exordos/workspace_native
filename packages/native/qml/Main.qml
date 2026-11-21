@@ -3202,6 +3202,23 @@ component NativeMentionChip: Item {
         readonly property bool active: status === "starting" || status === "downloading"
         readonly property int percent: Number(downloadState.percent)
         property string confirmationId: ""
+        // Issue #629: the reference renders the card for every attachment
+        // reference; a reference the coordinator has no entry for yet is an
+        // idle card whose activation opens the save dialog (the same route the
+        // inline text link takes, openReference file branch).
+        readonly property bool idle: !downloadState
+            || Object.keys(downloadState).length === 0
+        function activate() {
+            if (downloadCard.idle) {
+                if (!root.controller.authenticated || !downloadCard.fileUuid.length)
+                    return;
+                root.downloadOwner = root.controller.ownerKey;
+                root.downloadId = downloadCard.fileUuid;
+                attachmentSaveDialog.open();
+                return;
+            }
+            root.handleAttachmentDownloadClick(downloadCard.downloadState);
+        }
         // Reference attachmentDownloadLabel (workspace-message-attachment-download.ui.tsx:29-45):
         // the status part of the accessible "<fileName>. <status label>" name.
         readonly property string statusLabel: active
@@ -3227,12 +3244,31 @@ component NativeMentionChip: Item {
         radius: 8
         color: "transparent"
         Accessible.role: Accessible.Button
-        Accessible.name: fileName + ". " + statusLabel
-        Accessible.onPressAction: root.handleAttachmentDownloadClick(downloadState)
+        // Issue #629 reference contract (workspace-message-render.lib.ts:206,
+        // 275): the card's aria-label is exactly "File: <name>" ("Файл: <name>"
+        // in ru), bare "File" when the reference carries no name; the status
+        // wording is carried as the description.
+        Accessible.name: fileName.length ? qsTr("File: %1").arg(fileName) : qsTr("File")
+        Accessible.description: downloadCard.statusLabel
+        Accessible.onPressAction: downloadCard.activate()
+        Keys.onPressed: (event) => {
+            // Issue #629: Enter/Space on a focused card fire the same action as
+            // a click (body-interactions.hook.ts:481-521).
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+                || event.key === Qt.Key_Space) {
+                event.accepted = true;
+                downloadCard.activate();
+            }
+        }
         MouseArea {
+            // Issue #629: raised above the presentation-only children (icon
+            // slot chrome, name/details columns) so the icon interior, the
+            // label and the card background all deliver one activation.
+            z: 1
             anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
             cursorShape: downloadCard.active ? Qt.ArrowCursor : Qt.PointingHandCursor
-            onClicked: root.handleAttachmentDownloadClick(downloadCard.downloadState)
+            onClicked: downloadCard.activate()
         }
         Timer {
             id: attachmentConfirm
@@ -3338,8 +3374,12 @@ component NativeMentionChip: Item {
                 iconColor: root.colors["text-muted"]
                 focusPolicy: Qt.NoFocus; hoverEnabled: false; background: null
                 Accessible.ignored: true
-                visible: downloadCard.status === "downloaded"
-                    && downloadCard.confirmationId !== String(downloadCard.downloadState.id || "")
+                // Issue #629: the idle card shows the file glyph (the reference
+                // card icon); after a completed download the glyph returns once
+                // the 2 s check confirmation expires.
+                visible: downloadCard.idle
+                    || (downloadCard.status === "downloaded"
+                        && downloadCard.confirmationId !== String(downloadCard.downloadState.id || ""))
             }
         }
         Column {
@@ -8927,8 +8967,11 @@ component NativeMentionChip: Item {
                     // NativeController::attachmentDownload (reference
                     // workspace-message-attachment-download.lib.ts:12-24).
                     readonly property var attachmentDownloads: {
-                        const entries = root.controller.downloadEntries
-                        if (!entries.length || messageRow.encryptedLocked || messageRow.keyControl)
+                        // Reading downloadEntries only ties this binding to
+                        // downloadsChanged (issue #629: idle cards must be
+                        // projected even while the coordinator has no entry).
+                        root.controller.downloadEntries
+                        if (messageRow.encryptedLocked || messageRow.keyControl)
                             return []
                         const body = messageRow.bodyMarkdown
                         if (!body.includes("urn:file:"))
@@ -8942,7 +8985,11 @@ component NativeMentionChip: Item {
                             if (seen.indexOf(fileUuid) >= 0) continue
                             seen.push(fileUuid)
                             const state = root.controller.attachmentDownload(fileUuid)
-                            if (!state || Object.keys(state).length === 0) continue
+                            // Issue #629: a reference without a coordinator
+                            // entry still projects a card - the idle card,
+                            // whose activation opens the save dialog (the
+                            // reference renders the card for every attachment
+                            // reference, workspace-message-render.lib.ts:275).
                             const query = String(match[2] || "")
                             const nameMatch = /[?&]name=([^&]*)/.exec(query)
                             const sizeMatch = /[?&]size=([0-9]+)/.exec(query)
@@ -8953,11 +9000,11 @@ component NativeMentionChip: Item {
                             // Review 4650261677: the fallback decode is guarded -
                             // a malformed escape in one reference must never
                             // throw and abort this message's whole projection.
-                            let name = String(state.fileName || "")
+                            let name = String((state || {}).fileName || "")
                             if (!name.length && nameMatch) {
                                 try { name = decodeURIComponent(nameMatch[1]) } catch (error) { name = "" }
                             }
-                            result.push({fileUuid: fileUuid, state: state, fileName: name,
+                            result.push({fileUuid: fileUuid, state: state || {}, fileName: name,
                                 sizeBytes: sizeMatch ? Number(sizeMatch[1]) : -1})
                         }
                         return result
