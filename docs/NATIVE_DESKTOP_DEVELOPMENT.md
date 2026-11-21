@@ -746,10 +746,10 @@ git diff --check
 ### Controller suite selectors
 
 The old `native-native-controller` CTest entry is now 24 functional suites labeled
-`controller`. The default Linux inventory grew from 58 to 81 groups. Run
+`controller`. The default Linux inventory grew from 61 to 84 groups. Run
 `ctest --test-dir packages/native/build -N -L controller` to list them or
 `ctest --test-dir packages/native/build -L controller -j4 --output-on-failure` to
-run them. The full gate still uses unfiltered CTest. A toolkit that previously
+run them. The full gate covers every registered group. A toolkit that previously
 selected `^native-native-controller$` can use `-L controller` for the same scenarios.
 The portable toolkit discovers these names through CTest. Its
 `native-toolkit.py tests --build BUILD_DIR --regex "^native-controller-"`
@@ -762,7 +762,7 @@ QtTest function or `function:row` selector unchanged to its area's executable.
 Find a case from an older feature document with
 `git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
 substituting the function name. At migration the Linux `-datatags` inventories
-contained the same 1,646 function/data-row entries across all 24 executables.
+contained the same 1,691 function/data-row entries across all 24 executables.
 
 | Test areas | Coverage |
 | --- | --- |
