@@ -8409,8 +8409,8 @@ component NativeMentionChip: Item {
                     // The capsule can extend into another delegate. Its local
                     // z cannot cross the Loader/list-row stacking boundary.
                     z: messageBodyLoader.item ? messageBodyLoader.item.quickReactionsLayer : 1
-                    readonly property Item unreadDivider: unreadRule.visible ? unreadRule : null
-                    readonly property real bodyTop: unreadRule.height + (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeaderLoader.height : 0)
+                    readonly property Item unreadDivider: unreadRuleLoader.item
+                    readonly property real bodyTop: unreadRuleLoader.height + (serviceFirst ? serviceTopicDivider.height + 4 + serviceHeaderLoader.height : 0)
                     height: bodyTop + (messageBodyLoader.active && messageBodyLoader.item ? messageBodyLoader.item.height : 0) + (serviceLast ? (index + 1 < messageList.count ? 8 : 4) : 0)
                     readId: String(entry.id)
                     dispatchReadId: serviceReadId
@@ -8418,43 +8418,51 @@ component NativeMentionChip: Item {
                     function settleGeometry() {
                         if (messageBodyLoader.item) messageBodyLoader.item.settleGeometry();
                     }
-                    Item {
-                        id: unreadRule
-                        objectName: "unreadDivider"
-                        visible: viewRow.unreadStart && !messageList.unreadDividerDismissed
-                        width: parent.width; height: visible ? 24 : 0
-                        property string text: messageList.unreadCount > 0
-                            ? qsTr("Unread messages • %1").arg(root.countText(messageList.unreadCount)) : qsTr("Unread messages")
-                        Accessible.name: text; Accessible.role: Accessible.StaticText
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16
-                            spacing: 8
-                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["notice-base"]; opacity: 0.3 }
-                            Text { text: unreadRule.text; textFormat: Text.PlainText; font.pixelSize: 12; lineHeightMode: Text.FixedHeight; lineHeight: 16; color: root.colors["notice-base"] }
-                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["notice-base"]; opacity: 0.3 }
+                    Loader {
+                        id: unreadRuleLoader
+                        width: parent.width
+                        active: viewRow.unreadStart && !messageList.unreadDividerDismissed
+                        visible: active
+                        sourceComponent: Item {
+                            id: unreadRule
+                            objectName: "unreadDivider"
+                            height: 24
+                            property string text: messageList.unreadCount > 0
+                                ? qsTr("Unread messages • %1").arg(root.countText(messageList.unreadCount)) : qsTr("Unread messages")
+                            Accessible.name: text; Accessible.role: Accessible.StaticText
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16
+                                spacing: 8
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["notice-base"]; opacity: 0.3 }
+                                Text { text: unreadRule.text; textFormat: Text.PlainText; font.pixelSize: 12; lineHeightMode: Text.FixedHeight; lineHeight: 16; color: root.colors["notice-base"] }
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["notice-base"]; opacity: 0.3 }
+                            }
                         }
                     }
-                    Item {
+                    Loader {
                         id: serviceTopicDivider
-                        y: unreadRule.height
-                        objectName: "serviceTopicDivider-" + viewRow.entry.id
-                        visible: viewRow.serviceFirst && root.aggregateConversation && viewRow.topicRunStart
                         width: parent.width
-                        height: visible ? (root.topicLabel(viewRow.entry.topicName).length ? 24 : 9) + 8 : 0
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16
-                            spacing: 8
-                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["border-subtle"] }
-                            Button {
-                                text: root.topicLabel(viewRow.entry.topicName)
-                                visible: text.length > 0
-                                padding: 0; horizontalPadding: 0; verticalPadding: 0
-                                implicitHeight: 16; implicitWidth: contentItem.implicitWidth
-                                contentItem: Text { text: parent.text; textFormat: Text.PlainText; font.pixelSize: 12; color: root.colors["text-muted"] }
-                                background: Rectangle { color: "transparent"; radius: 2; border.width: parent.visualFocus ? 2 : 0; border.color: root.colors["accent-soft"] }
-                                onClicked: root.controller.selectTopic(viewRow.entry.topicId)
+                        y: unreadRuleLoader.height
+                        active: viewRow.serviceFirst && root.aggregateConversation && viewRow.topicRunStart
+                        visible: active
+                        sourceComponent: Item {
+                            objectName: "serviceTopicDivider-" + viewRow.entry.id
+                            height: (root.topicLabel(viewRow.entry.topicName).length ? 24 : 9) + 8
+                            RowLayout {
+                                anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16
+                                spacing: 8
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["border-subtle"] }
+                                Button {
+                                    text: root.topicLabel(viewRow.entry.topicName)
+                                    visible: text.length > 0
+                                    padding: 0; horizontalPadding: 0; verticalPadding: 0
+                                    implicitHeight: 16; implicitWidth: contentItem.implicitWidth
+                                    contentItem: Text { text: parent.text; textFormat: Text.PlainText; font.pixelSize: 12; color: root.colors["text-muted"] }
+                                    background: Rectangle { color: "transparent"; radius: 2; border.width: parent.visualFocus ? 2 : 0; border.color: root.colors["accent-soft"] }
+                                    onClicked: root.controller.selectTopic(viewRow.entry.topicId)
+                                }
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["border-subtle"] }
                             }
-                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.colors["border-subtle"] }
                         }
                     }
                     Loader {
@@ -8462,7 +8470,7 @@ component NativeMentionChip: Item {
                         width: parent.width
                         active: viewRow.serviceFirst
                         visible: active
-                        y: unreadRule.height + serviceTopicDivider.height + 4
+                        y: unreadRuleLoader.height + serviceTopicDivider.height + 4
                         sourceComponent: Item {
                             id: serviceHeader
                             readonly property Item collapsedBoundary: collapsedReadBoundary

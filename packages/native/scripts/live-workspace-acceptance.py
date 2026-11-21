@@ -603,9 +603,41 @@ class Desktop:
             "history-unavailable",
         )
 
+    def position_in_history(self):
+        # The left padding belongs to the history. The center can be occupied
+        # by an embedded card with its own input handling.
+        x, y, _, h = self.pane
+        self.position((x, y, 24, h))
+
+    def prepare_loaded_scroll(self):
+        # The fastest history prefetch can reserve four viewports. Leave room
+        # for that reserve plus the eight measured wheel notches above it.
+        self.position_in_history()
+        target = 6 * self.pane[3]
+        for _ in range(4):
+            sample = self.latest("sample")
+            if sample["offset"] >= target:
+                return
+            count = sample["count"]
+
+            def page_arrived():
+                if self.latest("sample")["count"] > count:
+                    return True
+                self.point("wheel -12")
+                return False
+
+            self.until(page_arrived, "loaded-scroll-warmup-page")
+            # A newly prepended page retains the visible anchor. Move back
+            # into the loaded range before measuring the upward burst.
+            for _ in range(32):
+                if self.latest("sample")["offset"] >= target:
+                    return
+                self.point("wheel 12")
+                time.sleep(0.04)
+        raise Blocked("loaded-scroll-warmup-room")
+
     def scroll(self, kind, direction, bursts, on_input=None):
-        x, y, w, h = self.pane
-        self.position((x, y, 24, h) if kind == "paged-scroll" else (x, y, w, h))
+        self.position_in_history()
         with self.action(
             kind, direction=direction, intent=self.latest("sample").get("intent", 0)
         ):
@@ -810,9 +842,10 @@ class Desktop:
             )
             time.sleep(0.12)
         self.topic("a")
+        self.prepare_loaded_scroll()
         self.scroll("loaded-scroll", 1, 8)
         self.scroll("reverse-scroll", -1, 8)
-        self.position(self.pane)
+        self.position_in_history()
         with self.action(
             "touchpad-scroll",
             direction=1,

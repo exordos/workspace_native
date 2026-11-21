@@ -8,7 +8,9 @@ on:
       - .github/workflows/desktop-platform-packages.yml
       - packages/native/CMakeLists.txt
       - packages/native/packaging/windows-*
+      - packages/native/resources/macos-info.plist.in
       - packages/native/src/main.cpp
+      - packages/native/src/native-instance.*
       - packages/native/scripts/build-desktop-package.py
       - packages/native/tests/platform-package/**
       - packages/native/tests/platform-shell/**
@@ -21,6 +23,9 @@ on:
       - packages/native/src/session-vault.*
       - packages/native/qml/Main.qml
       - packages/native/qml/NativeAboutDrawer.qml
+      - packages/native/qml/NativeCallWebEngineView.qml
+      - packages/native/qml/NativeCallWindow.qml
+      - packages/native/qml/ShellIconButton.qml
   push:
     tags: ['[0-9]*']
 
@@ -38,7 +43,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: windows-x64, runner: windows-2022, arch: win64_msvc2022_64 }
+          - { platform: windows-x64, runner: windows-2022, arch: win64_msvc2022_64, cpu: x64 }
+          - { platform: windows-arm64, runner: windows-11-arm, host: windows_arm64, arch: win64_msvc2022_arm64, cpu: arm64 }
           - { platform: macos-arm64, runner: macos-15, arch: clang_64 }
           - { platform: macos-x64, runner: macos-15-intel, arch: clang_64 }
     runs-on: ${{ matrix.runner }}
@@ -63,9 +69,22 @@ jobs:
         uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4
         with:
           version: '6.10.2'
+          host: ${{ matrix.host }}
           arch: ${{ matrix.arch }}
-          modules: qtwebsockets qtmultimedia qtpositioning qtwebchannel qtwebengine
+          modules: qtwebsockets qtmultimedia qtpositioning qtwebchannel ${{ matrix.platform != 'windows-arm64' && 'qtwebengine' || '' }}
           cache: true
+      - name: Install native Windows ARM64 Qt WebEngine
+        if: matrix.platform == 'windows-arm64'
+        shell: pwsh
+        run: |
+          # Qt publishes this extension under msvc2022_arm64. The installer looks under win64_msvc2022_arm64.
+          $url = 'https://download.qt.io/online/qtsdkrepository/windows_arm64/extensions/qtwebengine/6102/msvc2022_arm64/extensions.qtwebengine.6102.win64_msvc2022_arm64/6.10.2-0-202601261211qtwebengine-Windows-Windows_11_24H2-MSVC2022-Windows-Windows_11_24H2-ARM64.7z'
+          $archive = Join-Path $env:RUNNER_TEMP qtwebengine-arm64.7z
+          curl.exe --fail --location --retry 3 --output $archive $url
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '8172bcb72cef631ed1e7b7daaa12d32b28b0c2fd5b87ca62b1e66e42a559b6d1') { throw 'Unexpected Qt WebEngine archive checksum.' }
+          7z x -y "-o$env:QT_ROOT_DIR" $archive | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Identify the Windows package registry
         if: runner.os == 'Windows'
         id: vcpkg
@@ -76,19 +95,26 @@ jobs:
           $cache = Join-Path $env:RUNNER_TEMP workspace-vcpkg-cache
           New-Item -ItemType Directory -Force $cache | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$cache" >> $env:GITHUB_ENV
-      - name: Cache Windows OpenSSL binaries
+      - name: Restore Windows OpenSSL binaries
         if: runner.os == 'Windows'
-        uses: actions/cache@v4
+        id: openssl-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/workspace-vcpkg-cache
-          key: workspace-openssl-x64-static-md-${{ steps.vcpkg.outputs.registry }}
+          key: workspace-openssl-${{ matrix.cpu }}-static-md-${{ steps.vcpkg.outputs.registry }}
       - name: Install OpenSSL for Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          vcpkg install openssl:x64-windows-static-md --classic
+          vcpkg install openssl:${{ matrix.cpu }}-windows-static-md --classic
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "WORKSPACE_OPENSSL_PREFIX=$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md" >> $env:GITHUB_ENV
+          "WORKSPACE_OPENSSL_PREFIX=$env:VCPKG_INSTALLATION_ROOT/installed/${{ matrix.cpu }}-windows-static-md" >> $env:GITHUB_ENV
+      - name: Save compiled Windows OpenSSL binaries
+        if: runner.os == 'Windows' && steps.openssl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/workspace-vcpkg-cache
+          key: ${{ steps.openssl-cache.outputs.cache-primary-key }}
       - name: Select OpenSSL for macOS
         if: runner.os == 'macOS'
         run: |
@@ -118,8 +144,11 @@ jobs:
         shell: pwsh
         run: ./packages/native/tests/platform-package/windows-installer-upgrade.ps1
       - name: Build and archive the desktop application
-        run: python packages/native/scripts/build-desktop-package.py
+        env:
+          WORKSPACE_PACKAGE_PLATFORM: ${{ matrix.platform }}
+        run: python packages/native/scripts/build-desktop-package.py ${{ matrix.platform == 'windows-arm64' && '--archive-only' || '' }}
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && hashFiles('build/desktop-package/archives/SHA256SUMS') != '' }}
         with:
           name: desktop-${{ matrix.platform }}
           path: build/desktop-package/archives/
@@ -135,7 +164,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: windows-x64, runner: windows-2022 }
+          - { platform: windows-x64, runner: windows-2022, cpu: x64 }
+          - { platform: windows-arm64, runner: windows-11-arm, cpu: arm64 }
           - { platform: macos-arm64, runner: macos-15, cpu: arm64 }
           - { platform: macos-x64, runner: macos-15-intel, cpu: x86_64 }
     runs-on: ${{ matrix.runner }}
@@ -160,12 +190,15 @@ jobs:
           Expand-Archive -LiteralPath $archive -DestinationPath $destination
           $drivers = @(Get-ChildItem "$destination/plugins/sqldrivers/*.dll")
           if ($drivers.Count -ne 1 -or $drivers[0].Name -ne 'qsqlite.dll') { throw "Unexpected SQL driver inventory" }
-          ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe"
-          python packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/bin/workspace-native.exe" --check-updater
+          ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe" -Architecture ${{ matrix.cpu }} ${{ matrix.platform == 'windows-arm64' && '-WindowOnly' || '' }}
+      - name: Verify Windows account, updater and capture on the interactive desktop
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: python packages/native/tests/platform-package/desktop-account-acceptance.py "$env:RUNNER_TEMP/Workspace relocated/bin/workspace-native.exe" --check-updater --check-capture
       - name: Install, launch and uninstall the Windows application for the current user
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./packages/native/tests/platform-package/windows-installer.ps1 -Installer "archive/workspace-native-${{ matrix.platform }}-setup.msi"
+        run: ./packages/native/tests/platform-package/windows-installer.ps1 -Architecture ${{ matrix.cpu }} ${{ matrix.platform == 'windows-arm64' && '-WindowOnly' || '' }} -Installer "archive/workspace-native-${{ matrix.platform }}-setup.msi"
       - name: Verify and run the relocated macOS application
         if: runner.os == 'macOS'
         run: |
@@ -186,4 +219,4 @@ jobs:
             exit 1
           fi
           python3 packages/native/tests/platform-package/macos-startup-icons.py "$startup"
-          python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater
+          python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater --check-capture

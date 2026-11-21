@@ -318,13 +318,16 @@ void FileClientTest::imageUploadNameValidation()
 void FileClientTest::imageUploadKeepsValidatedBytes_data()
 {
     QTest::addColumn<int>("size");
-    QTest::newRow("multiple-chunks") << 128 * 1024;
-    QTest::newRow("exact-25-MiB") << 25 * 1024 * 1024;
+    QTest::addColumn<int>("replyDelayMs");
+    QTest::newRow("multiple-chunks") << 128 * 1024 << 0;
+    QTest::newRow("delayed-multipart-reply") << 128 * 1024 << 5500;
+    QTest::newRow("exact-25-MiB") << 25 * 1024 * 1024 << 0;
 }
 
 void FileClientTest::imageUploadKeepsValidatedBytes()
 {
     QFETCH(int, size);
+    QFETCH(int, replyDelayMs);
     QByteArray original(size, 'x');
     original.replace(0, 8, QByteArray::fromHex("89504e470d0a1a0a"));
     const auto changed = QByteArray(original.size(), 'y');
@@ -338,7 +341,8 @@ void FileClientTest::imageUploadKeepsValidatedBytes()
         auto object = QJsonDocument::fromJson(metadata(uploaded)).object();
         object["name"] = "attachment.png";
         object["content_type"] = QMimeDatabase().mimeTypeForData(uploaded).name();
-        Server::reply(socket, QJsonDocument(object).toJson(QJsonDocument::Compact), 201);
+        const auto response = QJsonDocument(object).toJson(QJsonDocument::Compact);
+        QTimer::singleShot(replyDelayMs, socket, [socket, response] { Server::reply(socket, response, 201); });
     };
     ApiClient api(nullptr, true); authorize(api, server); FileClient client(&api);
     QTemporaryDir directory;
@@ -350,7 +354,8 @@ void FileClientTest::imageUploadKeepsValidatedBytes()
     // Change the same file after synchronous validation/hash, before the event loop
     // lets the multipart request read it. No production hook or timing race is needed.
     write(path, changed);
-    QTRY_VERIFY(done);
+    // A full 25 MiB loopback upload can take more than eight seconds on a busy runner.
+    QTRY_VERIFY_WITH_TIMEOUT(done, 15000);
     QCOMPARE(server.requests.size(), 1);
     QCOMPARE(read(path), changed);
     QCOMPARE(uploaded, original);

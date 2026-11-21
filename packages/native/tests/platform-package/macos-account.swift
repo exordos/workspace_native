@@ -92,6 +92,11 @@ case "login":
     try fill("Password", "package-demo")
     try press("Next")
     try press("Login")
+case "join-call":
+    try press("General Chat: Cassi hosted channel")
+    try press("Join call")
+case "close-call":
+    try press("Close call")
 case "update":
     try press("Profile")
     try press("App version")

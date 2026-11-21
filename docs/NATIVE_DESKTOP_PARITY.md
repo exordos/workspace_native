@@ -8,9 +8,8 @@ The native desktop client is **IN PROGRESS**. It targets Windows, macOS, and Lin
 The required result is an almost pixel-perfect reproduction of the current desktop
 design, complete functional parity, and full testing of the new application on
 all three operating systems. These are independent acceptance requirements.
-The current implementation and acceptance order is **Linux first**: finish the
-current Linux client as a complete copy before evaluating other distributions or
-resuming Windows/macOS acceptance. A bounded application cache is mandatory;
+Linux remains the first platform for full parity acceptance. Windows and macOS
+packaging and clean-desktop checks run alongside the Linux work. A bounded application cache is mandatory;
 measure repeat-navigation API requests and storage/CPU/memory/network costs, not
 just the time until a cached list appears.
 The [next ten planned Linux releases](CURRENT_DEVELOPMENT.md#next-ten-linux-releases)
@@ -195,7 +194,7 @@ avatar rails and actual avatar images still require acceptance.
   complete Workspace rendering parity.
 - Native message ownership follows the [desktop bubble](https://github.com/exordos/workspace_ui/blob/95495b10b828f853c9e770b47216073eb973fa95/packages/web/src/widgets/workspace-message-list/workspace-message-bubble-presentation.ui.tsx):
   the author is the current verified viewer **or** the server own flag is true.
-  [Controller regressions](../packages/native/tests/native-controller-test.cpp)
+  [Controller regressions](../packages/native/tests/native-controller-history-test.cpp)
   cover all four author/flag combinations and the corresponding edit/delete
   guards. This view rule does not replace the stricter server facts required to
   confirm a locally sent message. Matched visual fixtures use a distinct peer
@@ -475,8 +474,8 @@ Common acceptance on every operating system must cover:
 
 | Platform | Required platform-specific acceptance | Current result |
 | --- | --- | --- |
-| Windows | Supported x64/arm64 builds; installer and application identity; notifications and activation; taskbar badge/progress; tray and close/reopen; native file dialogs/clipboard; URI registration; start-on-login; microphone/camera/screen capture; update/relaunch; Narrator and display scaling. | Windows x64 portable ZIP, first window, second launch, plain-text clipboard and Credential Manager restore/sign-out passed on a clean hosted desktop. Other rows are tracked in the [platform package matrix](NATIVE_DESKTOP_PLATFORM_PACKAGING.md). |
-| macOS | Supported arm64/x64 builds; bundle identity, signing/notarization and install/launch; menu/Command shortcuts; dock/tray and application activation; notification permission/click; `ew://` open-url; login item; microphone/camera/screen-recording permission; update/relaunch; VoiceOver and display scaling. | macOS arm64 ad hoc signed bundle, first window, second launch, plain-text clipboard and Keychain restore/sign-out passed on a clean hosted desktop. The verified x64 bundle showed a 1440 × 928 window on an Intel runner. Other rows are tracked in the [platform package matrix](NATIVE_DESKTOP_PLATFORM_PACKAGING.md). |
+| Windows | Supported x64/arm64 builds; installer and application identity; notifications and activation; taskbar badge/progress; tray and close/reopen; native file dialogs/clipboard; URI registration; start-on-login; microphone/camera/screen capture; update/relaunch; Narrator and display scaling. | Windows x64 portable ZIP, per-user MSI installation and removal, first window, second launch, plain-text clipboard, file selection and Credential Manager restore/sign-out passed on a clean hosted desktop. Other rows are tracked in the [platform package matrix](NATIVE_DESKTOP_PLATFORM_PACKAGING.md). |
+| macOS | Supported arm64/x64 builds; bundle identity, signing/notarization and install/launch; menu/Command shortcuts; dock/tray and application activation; notification permission/click; `ew://` open-url; login item; microphone/camera/screen-recording permission; update/relaunch; VoiceOver and display scaling. | macOS arm64 ad hoc signed bundle, first window, second launch, plain-text clipboard, file selection, warm and cold URL delivery, and Keychain restore/sign-out passed on a clean hosted desktop. The verified x64 bundle showed a 1440 × 928 window on an Intel runner. Other rows are tracked in the [platform package matrix](NATIVE_DESKTOP_PLATFORM_PACKAGING.md). |
 | Linux | Supported x64/arm64 builds and intended distribution packages; desktop entry/application identity; URI registration; X11 and Wayland sessions where supported; notification activation and tray availability/fallback; clipboard/file dialogs; portal/screen-capture permissions; package/update behavior; keyboard accessibility and display scaling. | NOT RUN |
 
 A platform can be accepted only with its actual build, package, native interaction

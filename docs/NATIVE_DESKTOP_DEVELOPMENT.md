@@ -95,11 +95,15 @@ packages/native/build/workspace-native
 
 On Windows or macOS, select the installed Qt kit with `CMAKE_PREFIX_PATH` when
 CMake cannot locate it. Use a compiler matching that kit. The repository
-packages Windows x64 and macOS arm64 portable previews and launches the
-relocated archives on fresh native runners. The clean-runner checks cover
+packages Windows x64 and macOS arm64/x64 portable previews and launches the
+relocated archives on fresh native runners. The Windows x64 workflow also
+installs and launches the per-user MSI, then verifies its removal. The clean-runner checks cover
 the first visible window, second-launch activation and plain-text clipboard
 input. Both desktop packages also signed in to a loopback fixture, restored the rotated
 account after process restart, and removed it from the OS credential store on sign-out.
+The Windows x64 and macOS arm64 previews also uploaded a file selected in the
+native file chooser. On Apple Silicon, Launch Services opened the requested
+message in both a running application and a new process.
 The Intel macOS package also launched on a clean Intel runner after
 verification of its Mach-O architecture and ad hoc signature. [Windows and macOS packaging](NATIVE_DESKTOP_PLATFORM_PACKAGING.md)
 
@@ -735,6 +739,41 @@ ctest --test-dir packages/native/build --output-on-failure
 /usr/lib/qt6/bin/qmllint packages/native/qml/*.qml
 git diff --check
 ```
+
+### Controller suite selectors
+
+The old `native-native-controller` CTest entry is now 24 functional suites labeled
+`controller`. The default Linux inventory grew from 58 to 81 groups. Run
+`ctest --test-dir packages/native/build -N -L controller` to list them or
+`ctest --test-dir packages/native/build -L controller -j4 --output-on-failure` to
+run them. The full gate still uses unfiltered CTest. A toolkit that previously
+selected `^native-native-controller$` can use `-L controller` for the same scenarios.
+The portable toolkit discovers these names through CTest. Its
+`native-toolkit.py tests --build BUILD_DIR --regex "^native-controller-"`
+selection lists all 24 groups. The additional clipboard preload cases retain their
+existing CTest names.
+
+Each area below is both its source-file and executable suffix. For example,
+`native-controller-inbox-test -functions` lists the inbox cases. Pass an old
+QtTest function or `function:row` selector unchanged to its area's executable.
+Find a case from an older feature document with
+`git grep -l 'void mentionRankOrdersConversationContext(' -- 'packages/native/tests/native-controller-*-test.cpp'`,
+substituting the function name. At migration the Linux `-datatags` inventories
+contained the same 1,646 function/data-row entries across all 24 executables.
+
+| Test areas | Coverage |
+| --- | --- |
+| `navigation`, `history`, `inbox`, `sidebar` | Startup, deep links, realtime history, cache, read markers, folders and archive |
+| `channels`, `encrypted-channels`, `direct-chat`, `topics` | Chat and topic creation, membership and recovery |
+| `profiles`, `sessions`, `keys` | Identity, authentication, switching accounts and key management |
+| `replies`, `mentions`, `outbox`, `reactions`, `polls`, `forward` | Composition, durable sending and message interactions |
+| `transfers`, `media` | Attachments, clipboard, downloads and the media viewer |
+| `activity`, `feed`, `notifications`, `calls`, `diagnostics` | Cross-chat views, desktop notifications, call integration and diagnostics |
+
+The shared HTTP fixture and certificate lifecycle live in
+`packages/native/tests/support/native-test-harness.h`. Feature-specific fixtures
+are beside that file or in their owning suite. CTest serializes suites using the
+desktop clipboard or window focus with its existing `xdisplay` lock.
 
 Tests use synthetic fixtures. Physical HTTP tests permit only loopback addresses
 through an explicit C++ test constructor option; the application uses HTTPS-only

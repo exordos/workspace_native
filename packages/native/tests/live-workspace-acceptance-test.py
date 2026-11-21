@@ -266,6 +266,35 @@ class Controls(unittest.TestCase):
         rows[0]["receipt"] = True
         self.assertNotIn("session-receipt-unobserved", evaluate(rows, None)["blocked"])
 
+    def test_loaded_scroll_starts_with_room_for_wheels_and_prefetch(self):
+        runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "live-workspace-acceptance.py"))
+        desktop = object.__new__(runner["Desktop"])
+        desktop.pane = (100, 100, 1000, 650)
+        desktop.position = Mock()
+        sample = {"view": "a", "height": 650, "count": 50, "offset": 1471}
+        desktop.latest = lambda kind: sample.copy()
+
+        def wheel(command):
+            if command == "wheel -12" and sample["offset"] <= 700:
+                sample["count"] += 50
+                sample["offset"] += 2100
+            else:
+                sample["offset"] += 100 if command == "wheel 12" else -100
+            sample["offset"] = min(sample["offset"], sample["count"] * 42 - sample["height"])
+
+        desktop.point = Mock(side_effect=wheel)
+        desktop.context = Mock()
+        desktop.context.pending.return_value = False
+        desktop.lost_watchdog = False
+        with patch("time.sleep"):
+            desktop.prepare_loaded_scroll()
+            self.assertGreaterEqual(sample["offset"], 6 * sample["height"])
+            self.assertGreater(sample["count"], 50)
+            desktop.position.assert_called_with((100, 100, 24, 650))
+            calls = desktop.point.call_count
+            desktop.prepare_loaded_scroll()
+            self.assertEqual(desktop.point.call_count, calls)
+
     def test_fixture_stream_selection_keeps_the_auto_expanded_topics_open(self):
         runner = runpy.run_path(
             str(

@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreServices
 import Foundation
 
 setbuf(stdout, nil)
@@ -76,6 +77,38 @@ guard waitFor(15, { !secondary.isRunning }), secondary.terminationStatus == 0,
     throw fail("The second launch did not restore the original application.")
 }
 print("A second launch restored the original minimized window.")
+
+let bundleURL = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+let bundle = Bundle(url: bundleURL)
+let types = bundle?.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
+guard bundle?.object(forInfoDictionaryKey: "CFBundleDevelopmentRegion") as? String == "en",
+      bundle?.object(forInfoDictionaryKey: "CFBundleAllowMixedLocalizations") as? Bool == true,
+      bundle?.object(forInfoDictionaryKey: "NSPrincipalClass") as? String == "NSApplication",
+      bundle?.object(forInfoDictionaryKey: "NSSupportsAutomaticGraphicsSwitching") as? Bool == true,
+      bundle?.object(forInfoDictionaryKey: "LSMinimumSystemVersion") is String else {
+    throw fail("The package lost its Qt macOS bundle metadata.")
+}
+let declaresWorkspaceLinks = types.contains { ($0["CFBundleURLSchemes"] as? [String])?.contains("ew") == true }
+guard declaresWorkspaceLinks, LSRegisterURL(bundleURL as CFURL, true) == noErr else {
+    throw fail("The installed bundle did not register as a Workspace URL handler.")
+}
+for key in ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"] {
+    guard let purpose = bundle?.object(forInfoDictionaryKey: key) as? String, !purpose.isEmpty else {
+        throw fail("Missing media permission text for " + key)
+    }
+}
+let workspaceLink = "ew://open/org/example/project/11111111-1111-4111-8111-111111111111/inbox"
+guard AXUIElementSetAttributeValue(primary, kAXMinimizedAttribute as CFString, kCFBooleanTrue) == .success,
+      waitFor(5, { windowBounds(pid) == nil }) else { throw fail("The window did not minimize before opening the URL.") }
+let openURL = Process()
+openURL.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+openURL.arguments = ["-a", bundleURL.path, workspaceLink]
+try openURL.run()
+openURL.waitUntilExit()
+guard openURL.terminationStatus == 0, waitFor(10, { app.isRunning && windowBounds(pid) != nil }) else {
+    throw fail("Opening the Workspace URL did not restore the original packaged window.")
+}
+print("Launch Services delivered the Workspace URL to the original minimized application.")
 
 func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
     var value: CFTypeRef?
