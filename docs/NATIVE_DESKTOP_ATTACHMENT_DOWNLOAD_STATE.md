@@ -71,7 +71,11 @@ The in-process coordinator from #74 is the data source: `NativeController`
 `src/native-controller.cpp:10852`), which stands in for the reference
 `startedAt` ordering. Click routing already exists: `retryDownload` restarts a
 terminal entry, `openDownload` opens the verified local path, `downloadFile`
-guards duplicates.
+guards duplicates. `FileClient` metadata validation requires `size_bytes`
+(`src/file-client.cpp:76-78`), so a native `totalBytes <= 0` is only observed
+while a fresh entry is `starting`; the spinner branch therefore covers the
+pre-metadata phase of a transfer (reference: unknown `Content-Length` keeps
+the spinner).
 
 ### Controller reduction (C++)
 
@@ -107,7 +111,8 @@ file/image/video click opens `attachmentSaveDialog` (`openReference`,
    - `downloading`: 18x18 progress ring (same port as the upload card ring at
      `qml/Main.qml:11478-11486`: `lineWidth 3`, radius 7.5, 24 %-alpha
      `text-muted` track + accent arc) when the percent is known, else the 14px
-     spinner (2px `border-subtle` ring with accent leading edge);
+     spinner (2px `border-subtle` ring with accent leading edge) while the
+     total is not yet known (the `starting` phase, see above);
    - `downloaded` within the 2 s confirmation: `check` icon 18 in accent;
      afterwards the file glyph (files/images/videos icon 18 `text-muted`)
      while the details keep metadata + accent "Open";
@@ -152,9 +157,9 @@ geometry/palette oracle, which is the authority for this parity port.
   entries return empty.
 - `native-native-window` (painted card, locale x mode rows):
   `receivedAttachmentCardShowsDownloadProgressOpenAndRetry` - card appears
-  with ring + "Downloading… 0%" while a transfer is in flight (spinner when
-  `size_bytes` is unknown), transitions to check + "Open", restores the
-  metadata line after the 2 s window, clicking the downloaded card opens the
-  saved file via a registered `file:` URL handler without opening the save
-  dialog, and a failed entry shows "Failed"/"Ошибка" + "Retry" whose click
-  restarts the download.
+  with ring + "Downloading… 0%" while a transfer is in flight, transitions to
+  check + "Open", restores the metadata line after the 2 s window, clicking
+  the downloaded card opens the saved file via a registered `file:` URL
+  handler without opening the save dialog, an active card click is ignored,
+  and a failed entry shows "Failed"/"Ошибка" + "Retry" whose click restarts
+  the download.

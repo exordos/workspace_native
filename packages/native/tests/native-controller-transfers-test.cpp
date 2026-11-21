@@ -1434,6 +1434,68 @@ private slots:
         QVERIFY(fixture.controller.notice().contains("saved.bin"));
     }
 
+    void attachmentDownloadProjectionFollowsTheFileUuidReference()
+    {
+        // Issue #631 port of findAttachmentDownload + describeDownload
+        // (workspace_ui 6b9f27f workspace-message-attachment-download.lib.ts:12-24,
+        // workspace-message-attachment-download.ui.tsx:12-27).
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QVector<std::function<void()>> release;
+        auto cleanup = qScopeGuard([&] { for (auto &send : release) if (send) send(); });
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release.append(std::move(send)); };
+                return response;
+            }
+            // file-client.cpp:76-78 validates size_bytes as required metadata,
+            // so an unknown total only occurs while a fresh entry is starting.
+            return Response{QJsonObject{{"uuid", request.target.path().section('/', -1)},
+                {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        const auto state = [&](const QString &uuid) {
+            QVariantMap result;
+            QMetaObject::invokeMethod(&fixture.controller, "attachmentDownload",
+                Q_RETURN_ARG(QVariantMap, result), Q_ARG(QString, uuid));
+            return result;
+        };
+        QVERIFY(state(returnedId).isEmpty()); // No entry: the card slot stays unmounted.
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QCOMPARE(state(returnedId).value("status").toString(), QString("starting"));
+        QCOMPARE(state(returnedId).value("percent").toInt(), -1); // Percent is unknown until bytes can flow.
+        QTRY_COMPARE(release.size(), 1);
+        QCOMPARE(state(returnedId).value("status").toString(), QString("downloading"));
+        QCOMPARE(state(returnedId).value("percent").toInt(), 0); // Total known, no bytes yet: 0 %.
+        release[0](); release[0] = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(state(returnedId).value("status").toString(), QString("downloaded"));
+        QCOMPARE(state(returnedId).value("percent").toInt(), -1);
+        // An active retry wins over the completed entry for the same fileUuid.
+        const auto firstId = state(returnedId).value("id").toString();
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("again.txt")));
+        QCOMPARE(state(returnedId).value("status").toString(), QString("starting"));
+        QVERIFY(state(returnedId).value("id").toString() != firstId); // The active entry, not the terminal one.
+        QCOMPARE(state(returnedId).value("percent").toInt(), -1); // starting keeps the reference's null percent.
+        QTRY_COMPARE(release.size(), 2);
+        QCOMPARE(state(returnedId).value("status").toString(), QString("downloading"));
+        QCOMPARE(state(returnedId).value("percent").toInt(), 0);
+        release[1](); release[1] = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(state(returnedId).value("status").toString(), QString("downloaded"));
+        // Failed entries stay projected so the card can offer Retry.
+        fixture.files = [](const Request &) { return Response{QJsonObject{}, 503}; };
+        fixture.controller.downloadFile(messageId, QUrl::fromLocalFile(directory.filePath("failed.txt")));
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        QCOMPARE(state(messageId).value("status").toString(), QString("error"));
+        QVERIFY(state(QUuid::createUuid().toString(QUuid::WithoutBraces)).isEmpty());
+        fixture.controller.clearDownloads();
+        QVERIFY(state(returnedId).isEmpty());
+    }
+
     void encryptedConversationNeverUploadsPlaintextAttachment()
     {
         Fixture fixture;
