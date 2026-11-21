@@ -3484,7 +3484,7 @@ struct TopicMenuScene
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke"))
             {
                 ++notifPosts;
-                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
+                if (failNextAction) { failNextAction = false; return deferable({QJsonObject{}, 500}); }
                 lastBody = request.body;
                 auto &dto = topicDto(path);
                 dto["notification_mode"] = request.body.value("notification_mode").toString();
@@ -3493,7 +3493,7 @@ struct TopicMenuScene
             if (request.method == "POST" && path.endsWith("/actions/read/invoke"))
             {
                 ++readPosts;
-                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
+                if (failNextAction) { failNextAction = false; return deferable({QJsonObject{}, 500}); }
                 lastBody = request.body;
                 auto &dto = topicDto(path);
                 dto["unread_count"] = 0;
@@ -3503,7 +3503,7 @@ struct TopicMenuScene
             if (request.method == "POST" && path.endsWith("/actions/toggle_done/invoke"))
             {
                 ++donePosts;
-                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
+                if (failNextAction) { failNextAction = false; return deferable({QJsonObject{}, 500}); }
                 lastBody = request.body;
                 auto &dto = topicDto(path);
                 dto["is_done"] = !dto.value("is_done").toBool();
@@ -41847,6 +41847,58 @@ private slots:
         QVERIFY(scene.row(QStringLiteral("topicDoneAction"))->property("enabled").toBool());
         QTest::keyClick(scene.window.data(), Qt::Key_Escape);
         QTRY_VERIFY(!scene.menuOpen());
+    }
+
+    void topicContextMenuReopenDuringInFlightActionStillSurfacesFailure()
+    {
+        // exordy finding 4652383415 (round 2): reopening the menu before an
+        // in-flight write settles must not swallow that write's failure
+        // notice. The dispatch identity therefore has to be SNAPSHOTTED at
+        // dispatch time - open() re-points the live target (and used to clear
+        // the pending notice tag), so matching a late reply against the live
+        // target loses the failure whenever any menu reopen happens in flight.
+        TopicMenuScene scene;
+        const auto notice = [&] { return scene.popup(QStringLiteral("topicActionErrorToast")); };
+        const auto noticeText = [&] {
+            auto *toast = notice();
+            return toast ? toast->property("noticeText").toString() : QString();
+        };
+        const auto reopen = [&](const QString &rowName) {
+            scene.openMenu(rowName);
+            QTRY_VERIFY(scene.menuOpen());
+            QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+            QTRY_VERIFY(!scene.menuOpen());
+        };
+        // Scenario 1: the SAME row's menu is reopened while the read write is
+        // still in flight; the held 500 must still surface its notice.
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        auto *mark = scene.row(QStringLiteral("topicMarkReadAction"));
+        QVERIFY(mark);
+        scene.deferNextAction = true;
+        scene.failNextAction = true;
+        click(scene.window.data(), mark);
+        QTRY_COMPARE(scene.readPosts, 1);
+        QVERIFY(!scene.menuOpen());
+        reopen(QStringLiteral("topic-") + scene.extraTopic);
+        scene.release();
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not mark the topic as read. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+        // Scenario 2: the menu is reopened on a DIFFERENT row while the read
+        // write is in flight; the live-target move must not steal the pending
+        // identity either.
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        auto *mark2 = scene.row(QStringLiteral("topicMarkReadAction"));
+        QVERIFY(mark2);
+        scene.deferNextAction = true;
+        scene.failNextAction = true;
+        click(scene.window.data(), mark2);
+        QTRY_COMPARE(scene.readPosts, 2);
+        reopen(QStringLiteral("topic-") + topicId);
+        scene.release();
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not mark the topic as read. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
     }
 
     void topicContextMenuStreamMenuSiblingKeepsItsPins()
