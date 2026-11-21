@@ -309,7 +309,8 @@ endif()
 
 foreach(target workspace-native-core workspace-native-ui workspace-native-desktop workspace-native)
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W4 /utf-8)
+        # ARM64 controller and Qt-generated QML sources exceed standard COFF section counts.
+        target_compile_options(${target} PRIVATE /W4 /utf-8 /bigobj)
     else()
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endif()
