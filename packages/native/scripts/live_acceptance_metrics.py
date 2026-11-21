@@ -375,12 +375,18 @@ def evaluate(events, limits):
             for picture in pictures:
                 if picture["occupancy"] < limits["min_occupancy"]:
                     failures.add("transient-blank-frame")
-        if (
-            kind in {"loaded-scroll", "reverse-scroll", "paged-scroll"}
-            and limits
-            and frame_intervals
-        ) and max(frame_intervals) > limits["active_frame_ms"]:
-            failures.add("long-active-frame")
+        if kind in {"loaded-scroll", "reverse-scroll", "paged-scroll"}:
+            active_gap = metrics["max_frame_ms"]
+            dispatch = next((e["ms"] for e in window if e["event"] == "wheel-dispatch"), None)
+            if dispatch is not None:
+                # Start at external dispatch so a delayed pane delivery still counts.
+                swaps = [dispatch, *(ms for ms in rendered if ms >= dispatch)]
+                active_gap = max((b - a for a, b in itertools.pairwise(swaps)), default=0)
+                if len(swaps) == 1:
+                    blocked.add("no-frame-after-wheel-dispatch")
+            metrics["max_active_frame_ms"] = active_gap
+            if limits and active_gap > limits["active_frame_ms"]:
+                failures.add("long-active-frame")
         if kind in {
             "cold-start",
             "warm-start",

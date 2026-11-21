@@ -642,6 +642,7 @@ class Desktop:
             kind, direction=direction, intent=self.latest("sample").get("intent", 0)
         ):
             time.sleep(0.16)
+            self.record("wheel-dispatch")
             for i in range(bursts):
                 if i == 2 and on_input:
                     on_input()

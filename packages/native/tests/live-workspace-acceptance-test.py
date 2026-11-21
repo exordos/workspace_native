@@ -79,6 +79,36 @@ class Controls(unittest.TestCase):
         self.assertNotIn("no-pane-wheel", result["blocked"])
         self.assertEqual(result["phases"][0]["wheel_to_changed_capture_p95_ms"], 10)
 
+    def test_active_frame_budget_starts_at_pointer_dispatch(self):
+        rows = trace()
+        for event in rows:
+            if event["ms"] >= 10:
+                event["ms"] += 152
+        rows.extend([
+            dict(rows[1], ms=80),
+            {"event": "wheel-dispatch", "ms": 160},
+        ])
+        report = evaluate(rows, LIMITS)
+        self.assertEqual(report["failures"], [])
+        phase = report["phases"][0]
+        self.assertEqual(phase["max_frame_ms"], 169)
+        self.assertEqual(phase["max_active_frame_ms"], 11)
+
+        legacy = evaluate([e for e in rows if e["event"] != "wheel-dispatch"], LIMITS)
+        self.assertIn("long-active-frame", legacy["failures"])
+        no_frame = [e for e in rows if e["event"] != "frame" or e["ms"] < 160]
+        self.assertIn("no-frame-after-wheel-dispatch", evaluate(no_frame, LIMITS)["blocked"])
+
+        # Receiving the wheel late must still count the whole dispatch delay.
+        for event in rows:
+            if event["event"] == "wheel":
+                event["ms"] = 285
+            if event["event"] == "frame" and event["ms"] > 160:
+                event["ms"] = 290
+        report = evaluate(rows, LIMITS)
+        self.assertIn("long-active-frame", report["failures"])
+        self.assertEqual(report["phases"][0]["max_active_frame_ms"], 130)
+
     def test_a_single_viewport_change_cannot_credit_two_delivered_wheels(self):
         rows = trace()
         rows.insert(
