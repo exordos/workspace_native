@@ -10785,6 +10785,33 @@ QVariantList NativeController::downloadEntries() const
     return rows;
 }
 
+// Port of findAttachmentDownload plus the describeDownload percent rule
+// (workspace_ui 6b9f27f workspace-message-attachment-download.lib.ts:12-24,
+// workspace-message-attachment-download.ui.tsx:12-27): an active entry wins,
+// otherwise the terminal entry with the newest start - startDownload prepends,
+// so list order is the reference's startedAt ordering. percent mirrors
+// min(100, round(received / total * 100)), defined only while downloading with
+// a known positive total; -1 is the reference's null (the card shows a spinner).
+QVariantMap NativeController::attachmentDownload(const QString &fileUuid) const
+{
+    if (!authenticated()) return {};
+    const auto owner = creationOwnerKey();
+    const auto uuid = fileUuid.toLower();
+    QVariantMap terminal;
+    bool terminalFound = false;
+    for (const auto &entry : m_downloadEntries) {
+        if (entry.owner != owner || entry.fileUuid != uuid) continue;
+        QVariantMap row{{"id", entry.id}, {"fileUuid", entry.fileUuid},
+            {"fileName", entry.fileName}, {"status", entry.status}, {"error", entry.error},
+            {"receivedBytes", entry.received}, {"totalBytes", entry.total}};
+        row.insert("percent", entry.status == QLatin1String("downloading") && entry.total > 0
+            ? static_cast<int>(qMin<qint64>(100, qRound(entry.received * 100.0 / entry.total))) : -1);
+        if (entry.active()) return row;
+        if (!terminalFound) { terminal = std::move(row); terminalFound = true; }
+    }
+    return terminal;
+}
+
 QString NativeController::uniqueDownloadPath(const QString &path) const
 {
     const QFileInfo info(path);
