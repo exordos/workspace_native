@@ -76,6 +76,11 @@
         <!-- Issue #631 downloads.* reference keys (docs/NATIVE_DESKTOP_ATTACHMENT_DOWNLOAD_STATE.md) -->
         <message><source>Downloading…</source><translation>Скачивание…</translation></message>
         <message><source>Downloading… %1%</source><translation>Скачивание… %1%</translation></message>
+        <!-- Issue #629 attachment card accessible name (docs/NATIVE_DESKTOP_ATTACHMENT_CARD_HITAREA.md).
+             The bare "File" source is not added here: the Main context already
+             carries it (the extension fallback), and a duplicate entry trips
+             the catalog validator in native-locale-test. -->
+        <message><source>File: %1</source><translation>Файл: %1</translation></message>
         <message><source>Open</source><translation>Открыть</translation></message>
         <message><source>Failed</source><translation>Ошибка</translation></message>
         <message><source>Download again</source><translation>Скачать снова</translation></message>
