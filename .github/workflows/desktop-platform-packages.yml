@@ -26,8 +26,8 @@ jobs:
           $wi=New-Object -ComObject WindowsInstaller.Installer
           function Get-Property($database,$name) {
             $view=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
-            $view.Execute()
-            return $view.Fetch().StringData(1)
+            [void]$view.Execute()
+            return [string]$view.Fetch().StringData(1)
           }
           $code=@{}
           $install=Join-Path $env:LOCALAPPDATA 'Workspace Native Preview'
