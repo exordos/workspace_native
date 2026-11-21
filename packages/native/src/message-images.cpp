@@ -341,6 +341,22 @@ void MessageImages::downloaded(const QString &scope, quint64 job, const FileResu
         return;
     }
     ticket->phase = JobPhase::Decode; ticket->transfer = 0; entry->phase = Phase::Decode;
+    // Issue #638 sec 3: HEIC previews get the reference's 15 s decode timeout
+    // (heic-preview.lib.ts). The reference kills its WASM worker; the shared
+    // serial decode thread here must survive one stuck codec call, so a
+    // single-shot watchdog settles the job Failed at the timeout and the late
+    // worker result is discarded by decoded()'s ticket check. Non-HEIC decodes
+    // keep their pre-existing unbounded behaviour (reference scope).
+    if (m_decodeTimeoutMs > 0 && heifSniffFtyp(result.bytes.left(kHeifFtypHeaderLimit))) {
+        auto *watchdog = new QTimer(this);
+        watchdog->setSingleShot(true);
+        connect(watchdog, &QTimer::timeout, this, [this, watchdog, scope, job] {
+            watchdog->deleteLater();
+            decodeWatchdogExpired(scope, job);
+        });
+        watchdog->start(m_decodeTimeoutMs);
+        ticket->watchdog = watchdog;
+    }
     emit decodeRequested(scope, job, result.bytes);
     notifyRevision();
 }
@@ -348,6 +364,7 @@ void MessageImages::decoded(const QString &scope, quint64 job, const QImage &ima
 {
     if (m_stopping) return;
     auto ticket = m_jobs.find(job); if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode) return;
+    if (ticket->watchdog) { ticket->watchdog->stop(); ticket->watchdog->deleteLater(); }
     const auto uuid = ticket->uuid; m_jobs.erase(ticket);
     if (!scopeCurrent()) {
         const QPointer<MessageImages> guard(this); refreshScope();
@@ -366,6 +383,22 @@ void MessageImages::decoded(const QString &scope, quint64 job, const QImage &ima
         }
         const QPointer<MessageImages> guard(this); notifyRevision();
         if (!guard) return;
+    }
+    drain();
+}
+void MessageImages::decodeWatchdogExpired(const QString &scope, quint64 job)
+{
+    if (m_stopping) return;
+    auto ticket = m_jobs.find(job);
+    // A retired-scope decode keeps its ticket until the worker completes (the
+    // existing fence); its timer settles nothing and dies with the ticket.
+    if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode || scope != m_scope) return;
+    const auto uuid = ticket->uuid;
+    m_jobs.erase(ticket); // frees the pipeline slot; the late decoded() ignores this ticket
+    auto entry = m_entries.find(uuid);
+    if (entry != m_entries.end() && entry->job == job && entry->consumers) {
+        entry->job = 0; entry->phase = Phase::Failed; // file card, like any failed decode
+        notifyRevision();
     }
     drain();
 }
