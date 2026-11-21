@@ -39054,6 +39054,89 @@ private slots:
         const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
 
+    // Issue #644 (P1): opening the viewer moved focus onto the popup item, which
+    // carries no accessible interface, so AT-SPI reported no focused node at all
+    // while the dialog was open. Accessible focus must land on the named
+    // role=dialog node (day and time readable from it), and Escape must hand
+    // focus back to the timestamp trigger.
+    void messageTimeViewerPutsAccessibleFocusOnDialog()
+    {
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        TimestampWindowFixture fixture;
+        NativePreferences preferences(directory.filePath("timestamp-accessible-focus.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Timestamp focus teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QAccessible::setActive(true);
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *content = window->contentItem();
+        QQuickItem *chip = nullptr;
+        QTRY_VERIFY((chip = item(content, "message-time-" + TimestampWindowFixture::secondsId)));
+        auto *chipAccessible = QAccessible::queryAccessibleInterface(chip); QVERIFY(chipAccessible);
+        QCOMPARE(chipAccessible->role(), QAccessible::Button);
+        auto *panel = window->findChild<QObject *>("messageTimePanel"); QVERIFY(panel);
+        // What the assistive technology stack reports as the focused object.
+        const auto focusedInterface = [window] {
+            auto *root = QAccessible::queryAccessibleInterface(window);
+            return root ? root->focusChild() : nullptr;
+        };
+        // The dialog node of the current open, or null while it is hidden.
+        const auto dialogInterface = [] {
+            auto *dialog = visibleItem("messageTimePanelContent");
+            return dialog ? QAccessible::queryAccessibleInterface(dialog) : nullptr;
+        };
+        const auto stored = QDateTime::fromString("2026-01-02T10:02:03.456Z", Qt::ISODateWithMs).toLocalTime();
+        const auto accessibleName = [](const QString &objectName) {
+            auto *node = visibleItem(objectName);
+            auto *iface = node ? QAccessible::queryAccessibleInterface(node) : nullptr;
+            return iface ? iface->text(QAccessible::Name) : QString();
+        };
+        // Baseline: the focused trigger is itself a focused node for AT-SPI.
+        chip->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(chip->hasActiveFocus());
+        QVERIFY2(chipAccessible->state().focused, "The timestamp trigger must be focused before the viewer opens");
+        // Rep 1: a real click on the message timestamp (reported repro).
+        click(window, chip);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        auto *dialogAccessible = dialogInterface(); QVERIFY(dialogAccessible);
+        QCOMPARE(dialogAccessible->role(), QAccessible::Dialog);
+        QCOMPARE(dialogAccessible->text(QAccessible::Name), QStringLiteral("Date and time"));
+        QVERIFY2(dialogAccessible->state().focusable, "The Date and time dialog must be exposed as focusable");
+        QVERIFY2(dialogAccessible->state().focused,
+            "Opening the timestamp viewer must put accessible focus on the Date and time dialog");
+        QCOMPARE(focusedInterface(), dialogAccessible);
+        // The focused dialog must carry the readable day and exact time.
+        QCOMPARE(accessibleName("messageTimePanelSelectedDay"), QString::number(stored.date().day()));
+        QCOMPARE(accessibleName("messageTimePanelTime"), stored.toString("HH:mm:ss"));
+        // Escape closes and hands accessible focus back to the trigger.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        QTRY_VERIFY2(chip->hasActiveFocus(), "Escape must return focus to the timestamp trigger");
+        QTRY_VERIFY2(chipAccessible->state().focused, "Escape must return accessible focus to the timestamp trigger");
+        // Rep 2: the keyboard activation path on the focused trigger (Enter).
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(panel->property("visible").toBool());
+        auto *keyboardDialog = dialogInterface(); QVERIFY(keyboardDialog);
+        QVERIFY2(keyboardDialog->state().focused,
+            "Opening the viewer with Enter must put accessible focus on the Date and time dialog");
+        QCOMPARE(focusedInterface(), keyboardDialog);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        QTRY_VERIFY(chipAccessible->state().focused);
+        const bool closed = closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
+    }
+
     // Issue #113 (docs/NATIVE_DESKTOP_READ_REQUEST_PULSE.md): an inbound bubble
     // that is not yet marked read carries an accent read-request pulse: the
     // overlay renders, its animation runs while the window is active, stops
