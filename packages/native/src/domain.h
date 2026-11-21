@@ -137,6 +137,10 @@ struct Stream {
     // direct stream's default topic exactly as the reference resolver does.
     QString defaultTopic;
     QString viewer;
+    // Issue #632 review: the DTO's owner is kept independently of the crypto
+    // witness (workspace_ui messenger-adapters.lib.ts:37 ownerUuid = dto.owner)
+    // so key-sharing ownership never hinges on optional crypto metadata.
+    QString owner;
     // Issue #632 (workspace_ui messenger-adapters.lib.ts:52-57): the stream
     // DTO's allow_key_sharing_by_holders is tri-state - absent means the
     // setting is unknown and the owner-only toggle stays unavailable. A
