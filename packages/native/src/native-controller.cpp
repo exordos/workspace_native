@@ -10803,7 +10803,8 @@ QVariantMap NativeController::attachmentDownload(const QString &fileUuid) const
         if (entry.owner != owner || entry.fileUuid != uuid) continue;
         QVariantMap row{{"id", entry.id}, {"fileUuid", entry.fileUuid},
             {"fileName", entry.fileName}, {"status", entry.status}, {"error", entry.error},
-            {"receivedBytes", entry.received}, {"totalBytes", entry.total}};
+            {"receivedBytes", entry.received}, {"totalBytes", entry.total},
+            {"completedAtMs", entry.completedAtMs}};
         row.insert("percent", entry.status == QLatin1String("downloading") && entry.total > 0
             ? static_cast<int>(qMin<qint64>(100, qRound(entry.received * 100.0 / entry.total))) : -1);
         if (entry.active()) return row;
@@ -10897,6 +10898,7 @@ void NativeController::startDownload(DownloadEntry entry)
             self->m_notice.clear();
         } else {
             row->received = row->total = result.metadata.sizeBytes;
+            row->completedAtMs = QDateTime::currentMSecsSinceEpoch();
             self->m_notice = tr("Saved %1.").arg(QFileInfo(result.path).fileName());
         }
         emit self->downloadsChanged();

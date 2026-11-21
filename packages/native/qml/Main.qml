@@ -3246,7 +3246,20 @@ component NativeMentionChip: Item {
                 ? String(downloadCard.downloadState.id || "") : ""
             if (completed !== downloadCard.confirmationId) {
                 downloadCard.confirmationId = completed
-                if (completed.length) attachmentConfirm.restart(); else attachmentConfirm.stop()
+                if (completed.length) {
+                    // Review 4650261678: an unrelated download can update the
+                    // projection and recreate this delegate mid-window, so the
+                    // confirmation continues from the coordinator's
+                    // completedAtMs instead of restarting the full 2 s.
+                    const remaining = 2000 - (Date.now()
+                        - Number(downloadCard.downloadState.completedAtMs || 0))
+                    if (remaining > 0) {
+                        attachmentConfirm.interval = remaining
+                        attachmentConfirm.restart()
+                    } else {
+                        downloadCard.confirmationId = ""
+                    }
+                } else attachmentConfirm.stop()
             }
         }
         Component.onCompleted: trackConfirmation()
@@ -8933,8 +8946,17 @@ component NativeMentionChip: Item {
                             const query = String(match[2] || "")
                             const nameMatch = /[?&]name=([^&]*)/.exec(query)
                             const sizeMatch = /[?&]size=([0-9]+)/.exec(query)
-                            let name = nameMatch ? decodeURIComponent(nameMatch[1]) : ""
-                            if (!name.length) name = String(state.fileName || "")
+                            // Review 4650261681: the card opens the saved file by
+                            // uuid, so it shows the coordinator's verified
+                            // fileName; the sender's query label is only a
+                            // fallback while no verified name exists yet.
+                            // Review 4650261677: the fallback decode is guarded -
+                            // a malformed escape in one reference must never
+                            // throw and abort this message's whole projection.
+                            let name = String(state.fileName || "")
+                            if (!name.length && nameMatch) {
+                                try { name = decodeURIComponent(nameMatch[1]) } catch (error) { name = "" }
+                            }
                             result.push({fileUuid: fileUuid, state: state, fileName: name,
                                 sizeBytes: sizeMatch ? Number(sizeMatch[1]) : -1})
                         }

@@ -2,6 +2,9 @@
 #include "native-markdown.h"
 #include "support/native-test-harness.h"
 
+#include <QDateTime>
+#include <QThread>
+
 class DownloadDesktopProbe final : public QObject {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.freedesktop.FileManager1")
@@ -1494,6 +1497,48 @@ private slots:
         QVERIFY(state(QUuid::createUuid().toString(QUuid::WithoutBraces)).isEmpty());
         fixture.controller.clearDownloads();
         QVERIFY(state(returnedId).isEmpty());
+    }
+
+    void attachmentDownloadReportsStableCompletionTime()
+    {
+        // Review finding 4650261678 (issue #631): the downloaded state carries
+        // completedAtMs - the wall-clock instant the transfer finished - so a
+        // recreated card resumes its confirmation window from the real
+        // completion instead of restarting the full window.
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QTemporaryDir directory;
+        QVector<std::function<void()>> release;
+        auto cleanup = qScopeGuard([&] { for (auto &send : release) if (send) send(); });
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release.append(std::move(send)); };
+                return response;
+            }
+            return Response{QJsonObject{{"uuid", request.target.path().section('/', -1)},
+                {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+        };
+        QVERIFY(fixture.start());
+        const auto state = [&](const QString &uuid) {
+            QVariantMap result;
+            QMetaObject::invokeMethod(&fixture.controller, "attachmentDownload",
+                Q_RETURN_ARG(QVariantMap, result), Q_ARG(QString, uuid));
+            return result;
+        };
+        const auto before = QDateTime::currentMSecsSinceEpoch();
+        fixture.controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_COMPARE(release.size(), 1);
+        QCOMPARE(state(returnedId).value("completedAtMs").toLongLong(), 0LL); // Not finished yet.
+        release[0](); release[0] = {};
+        QTRY_VERIFY(!fixture.controller.fileBusy());
+        const auto finished = state(returnedId);
+        QCOMPARE(finished.value("status").toString(), QString("downloaded"));
+        const auto completedAtMs = finished.value("completedAtMs").toLongLong();
+        QVERIFY(completedAtMs >= before); // Recorded at the completion instant, not at read time.
+        QThread::msleep(30);
+        QCOMPARE(state(returnedId).value("completedAtMs").toLongLong(), completedAtMs); // Stable across reads.
     }
 
     void encryptedConversationNeverUploadsPlaintextAttachment()

@@ -40242,6 +40242,223 @@ private slots:
         QCOMPARE(item(content, "attachmentCardAction-" + second)->property("text").toString(),
             locale == "ru" ? QString::fromUtf8("Открыть") : QString("Open"));
     }
+
+    void attachmentCardMalformedNameEscapeStillProjectsEveryCard()
+    {
+        // Review finding 4650261677 (issue #631): a malformed percent escape in
+        // one reference's name= query must not abort the whole attachment
+        // projection - the other references of the same message keep their cards.
+        QTemporaryDir directory;
+        MockServer server;
+        QVector<std::function<void()>> release;
+        auto cleanup = qScopeGuard([&] { for (auto &send : release) if (send) send(); });
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[broken name](urn:file:" + returnedId
+                    + "?name=%ZZ&size=2) and [good name](urn:file:" + messageId + "?name=good.txt&size=2)")}};
+            if (path.endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release.append(std::move(send)); };
+                return response;
+            }
+            if (path.contains("/files/"))
+                return Response{QJsonObject{{"uuid", path.section('/', -1)},
+                    {"name", "verified-" + path.section('/', -1) + ".txt"},
+                    {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        const auto first = messageId + '-' + returnedId;
+        const auto second = messageId + '-' + messageId;
+        // The malformed escape comes first in the body: a throw while decoding it
+        // would drop the second card too.
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("malformed.txt")));
+        controller.downloadFile(messageId, QUrl::fromLocalFile(directory.filePath("good.txt")));
+        QTRY_VERIFY(bool(release.size() >= 2));
+        auto *firstCard = visibleItem(content, "attachmentCard-" + first);
+        QVERIFY(firstCard); // Finding 4650261677: the escape must not abort the projection.
+        QVERIFY(visibleItem(content, "attachmentCard-" + second));
+        // The card with the undecodable query label falls back to the
+        // coordinator's own file name (the saved entry), not the raw escape.
+        QCOMPARE(item(content, "attachmentCardName-" + first)->property("text").toString(),
+            QString("malformed.txt"));
+        for (auto &send : release) if (send) send();
+    }
+
+    void attachmentCardShowsVerifiedFileNameNotTheMessageLabel()
+    {
+        // Review finding 4650261681 (issue #631): the completed card opens the
+        // saved file by uuid, so it must display the coordinator's verified
+        // fileName instead of a sender-supplied name= query label.
+        QTemporaryDir directory;
+        MockServer server;
+        std::function<void()> binary;
+        auto cleanup = qScopeGuard([&] { if (binary) binary(); });
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[Bank transfer invoice.pdf](urn:file:"
+                    + returnedId + "?name=Bank%20transfer%20invoice.pdf&size=2)")}};
+            if (path.endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { binary = std::move(send); };
+                return response;
+            }
+            if (path.contains("/files/"))
+                return Response{QJsonObject{{"uuid", path.section('/', -1)},
+                    {"name", "quarterly-report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        const auto first = messageId + '-' + returnedId;
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_VERIFY(bool(binary));
+        if (binary) { binary(); binary = {}; }
+        QTRY_VERIFY(!controller.fileBusy());
+        QVERIFY(visibleItem(content, "attachmentCard-" + first));
+        // Finding 4650261681: the sender's misleading label must not appear;
+        // the card shows the coordinator's file name (where the recipient
+        // actually saved the file), not the query label.
+        QCOMPARE(item(content, "attachmentCardName-" + first)->property("text").toString(),
+            QString("report.txt"));
+        auto *card = visibleItem(content, "attachmentCard-" + first);
+        auto *accessible = QAccessible::queryAccessibleInterface(card); QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name),
+            QString("report.txt. ") + QString("Open"));
+    }
+
+    void attachmentCardConfirmationExpiresAcrossUnrelatedDownloadUpdates()
+    {
+        // Review finding 4650261678 (issue #631): a newer download completing
+        // while a completed card shows its 2 s confirmation must not restart
+        // that card's window even if the projection update recreates it.
+        QTemporaryDir directory;
+        MockServer server;
+        QVector<std::function<void()>> release;
+        auto cleanup = qScopeGuard([&] { for (auto &send : release) if (send) send(); });
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[first](urn:file:" + returnedId
+                    + "?name=report.txt&size=2) and [second](urn:file:" + messageId + "?name=again.txt&size=2)")}};
+            if (path.endsWith("/actions/download")) {
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { release.append(std::move(send)); };
+                return response;
+            }
+            if (path.contains("/files/"))
+                return Response{QJsonObject{{"uuid", path.section('/', -1)},
+                    {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        const auto first = messageId + '-' + returnedId;
+        const auto second = messageId + '-' + messageId;
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
+        QTRY_VERIFY(release.size() >= 1);
+        release[0](); release[0] = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        QTRY_VERIFY(visibleItem(content, "attachmentCardCheck-" + first));
+        const auto completedAt = QDateTime::currentMSecsSinceEpoch();
+        auto *checkBefore = item(content, "attachmentCardCheck-" + first);
+        // The second entry appears near the end of the first card's
+        // confirmation window: the projection grows and recreates the first
+        // card's delegate, which must not restart the first card's window.
+        while (QDateTime::currentMSecsSinceEpoch() - completedAt < 2100)
+            QTest::qWait(50);
+        controller.downloadFile(messageId, QUrl::fromLocalFile(directory.filePath("again.txt")));
+        QTRY_VERIFY(bool(visibleItem(content, "attachmentCard-" + second)));
+        auto *checkAfter = item(content, "attachmentCardCheck-" + first);
+        while (QDateTime::currentMSecsSinceEpoch() - completedAt < 2600)
+            QTest::qWait(50);
+        auto *checkFinal = item(content, "attachmentCardCheck-" + first);
+        QVERIFY(checkFinal);
+        QVERIFY2(!checkFinal->isVisible(), qPrintable(QStringLiteral(
+            "check still visible 2.6 s after completion; the newer download recreated the delegate (old survived: %1)")
+            .arg(checkBefore == checkAfter)));
+    }
 };
 
 
