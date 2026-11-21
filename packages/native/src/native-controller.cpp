@@ -4520,8 +4520,19 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
             // answered before that commit, so read the rows once more while the
             // same owner is still in view. (Never guard on an empty owner: a
             // logged-in session can legitimately report an empty ownerKey - #300.)
-            if (m_channelTopicInterruptedWrites.remove(key) && ownerKey() == owner)
-                loadTopics();
+            // Review finding 4654745629: the re-read follows the write's TARGET
+            // stream, not the current route - a sidebar write commits into that
+            // stream's inbox slot, which the renewal refresh may have hydrated
+            // before the commit landed.
+            if (m_channelTopicInterruptedWrites.remove(key) && ownerKey() == owner) {
+                staleCache(NativeCache::Kind::Topics, stream);
+                if (stream == m_stream && !m_stream.isEmpty())
+                    loadTopics();
+                else if (m_inboxTopics.contains(stream)) {
+                    m_inboxStaleTopics.insert(stream);
+                    requestSidebarTopics(stream);
+                }
+            }
             return;
         }
         const auto dto = response.data.toObject();
