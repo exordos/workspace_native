@@ -28,6 +28,8 @@ Port of `packages/web/src/shared/lib/heic-preview-format.lib.ts`:
   bytes; require >= 16 bytes and `ftyp` at offset 4; handle the 64-bit `size == 1`
   header (box size at 8, brands at 16, otherwise brands at 8); reject
   `boxSize < brandOffset + 8`, `boxSize > headerLength`, or `boxSize % 4 != 0`.
+  (`brandOffset + 8` is room for the major brand PLUS the minor-version field:
+  an ftyp box without them is rejected even when the brand itself matches.)
   Major brand in `avif|avis|jpeg` -> not HEIC. Any brand in
   `heic heix heim heis hevc hevx hevm hevs` -> HEIC. Else major brand in
   `mif1 msf1` and no `avif|avis|jpeg` compatible brand -> HEIC. Otherwise not.
