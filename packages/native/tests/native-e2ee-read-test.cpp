@@ -9378,6 +9378,18 @@ private slots:
         auto payload=f.cipher.value("payload").toObject();payload["content"]=QString::fromLatin1(encoded.bytes.toBase64());f.cipher["payload"]=payload;
         auto change=cryptoEvent(f.cipher);auto body=change.value("payload").toObject();body["kind"]="message.updated";change["payload"]=body;
         QVERIFY(f.controller.applyRealtimeEvent(change));QTRY_COMPARE(displayed(f.controller,messageId).value("content").toString(),markdown);
+        // The update above is settled in the model, but the mounted delegate may
+        // still be replaced asynchronously by the scene. The context-menu probe
+        // must not race that rebind: under load the delegate was momentarily
+        // absent, so 'bubble'/'copy' looked NULL although every model-side
+        // assertion had passed (issue #642). Wait for one rendered frame and
+        // then for the bubble and its body to be mounted before dispatching.
+        {
+            const QSignalSpy frame(window,&QQuickWindow::frameSwapped);window->update();
+            QTRY_VERIFY(!frame.isEmpty());
+            QTRY_VERIFY(encryptedUiItem(window,"message-"+messageId));
+            QTRY_VERIFY(encryptedUiItem(window,"message-content-"+messageId));
+        }
         NativeMarkdown renderer;const auto plain=renderer.render(markdown).value("plain").toString();
         QVERIFY(!plain.contains("SYNTHETIC PRIVATE LABEL"));QVERIFY(!plain.contains("urn:secret:"));QVERIFY(!plain.contains("**"));
         encryptedUiMenu(window);auto *copy=encryptedUiItem(window,"copyMessageAction");QVERIFY(copy);
