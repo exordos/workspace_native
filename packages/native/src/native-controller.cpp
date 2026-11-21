@@ -4304,6 +4304,10 @@ void NativeController::loadChannelInfoPage(const QString &marker, quint64 ticket
 
 void NativeController::applyChannelTopicAction(const QString &id, const QString &action, const QString &value)
 {
+    // Issue #636: the channel drawer shares the stream-scoped topic action
+    // engine. Its original preconditions are preserved: the drawer snapshot
+    // stream must be known with a verified catalog and the target must be one
+    // of the current stream's topics (completed rows are hidden there).
     const auto *stream = channelInfoStreamRow();
     const auto current = std::find_if(m_topics.cbegin(), m_topics.cend(),
         [&](const Topic &row) { return row.uuid == id && row.stream == m_stream; });
@@ -4311,54 +4315,250 @@ void NativeController::applyChannelTopicAction(const QString &id, const QString 
         emit channelTopicActionFinished(id, action, false);
         return;
     }
+    applyTopicAction(m_stream, id, action, value);
+}
+
+void NativeController::settleTopicAction(const QString &stream, const QString &topic,
+    const QString &action, bool ok, const QString &errorMessage)
+{
+    const auto stateKey = stream + '|' + topic;
+    auto state = m_topicActionStates.value(stateKey);
+    state.remove(action + "Pending");
+    if (ok) state.remove(action + "Error");
+    else if (!errorMessage.isEmpty()) state[action + "Error"] = errorMessage;
+    else if (action == QLatin1String("rename"))
+        state[QLatin1String("renameError")] = tr("Could not rename the topic. Please try again.");
+    else if (action == QLatin1String("notifications"))
+        state[QLatin1String("notificationsError")] = tr("Could not update the topic notifications. Please try again.");
+    else if (action == QLatin1String("read"))
+        state[QLatin1String("readError")] = tr("Could not mark the topic as read. Please try again.");
+    else
+        state[QLatin1String("toggle_doneError")] = tr("Could not update the topic. Please try again.");
+    m_topicActionStates.insert(stateKey, state);
+    // Pitfall honored: the guard's NOTIFY fires on every state transition.
+    emit topicActionsChanged();
+    emit stateChanged();
+}
+
+bool NativeController::topicActionBusy(const QString &topic) const
+{
+    const auto suffix = QLatin1Char('/') + topic;
+    for (auto it = m_topicActionRequests.cbegin(); it != m_topicActionRequests.cend(); ++it)
+        if (it.key().endsWith(suffix)) return true;
+    return false;
+}
+
+// Issue #645 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): session-renewal
+// fencing of topic actions, mirroring the accepted interruptFolderMutation
+// pattern (issue #423). A generation bump retires the in-flight topic-action
+// transports - the wrapper may still hand the callback a generation-fenced
+// answer (which erases arbitration but can never settle), so the sweep reads
+// the action ledger instead: it clears every pending guard (the menu / rename
+// form become usable again), projects the retryable interrupted outcome
+// (distinct from success, so the view never presents an uncertain write as a
+// definitive result), and re-reads the authoritative topic catalog because
+// the interrupted write may or may not have committed server-side. Late
+// replies stay fenced by their captured generation, so they can neither
+// settle a newer action nor touch the newly current route.
+void NativeController::interruptTopicActions()
+{
+    if (m_topicActionLedger.isEmpty()) return;
+    const auto retiring = m_topicActionLedger;
+    m_topicActionLedger.clear();
+    // Retire the arbitration entries of every generation but the current:
+    // a held mock/server response can sit un-delivered, and the wrapper's
+    // generation fence guarantees its late answer can never settle, so the
+    // sweep is the only owner that can release the single-flight slot.
+    const auto currentGeneration = QString::number(m_api->generation()) + QLatin1Char('/');
+    for (auto it = m_topicActionRequests.begin(); it != m_topicActionRequests.end();) {
+        if (it.key().startsWith(currentGeneration)) ++it;
+        else it = m_topicActionRequests.erase(it);
+    }
+    const auto owner = ownerKey();
+    bool reconciled = false;
+    for (auto it = retiring.cbegin(); it != retiring.cend(); ++it) {
+        // Sign-out / account switch: reset() owns the rest of the state.
+        if (!authenticated() || it.value() != owner) continue;
+        const auto parts = it.key().split(QLatin1Char('|'));
+        if (parts.size() != 3) continue;
+        const auto &stream = parts.at(0);
+        const auto &topic = parts.at(1);
+        const auto &action = parts.at(2);
+        const auto interrupted = action == QLatin1String("rename")
+            ? tr("The topic rename was interrupted by a session refresh. Try again.")
+            : action == QLatin1String("notifications")
+            ? tr("The topic notification change was interrupted by a session refresh. Try again.")
+            : action == QLatin1String("read")
+            ? tr("The topic read update was interrupted by a session refresh. Try again.")
+            : tr("The topic done update was interrupted by a session refresh. Try again.");
+        settleTopicAction(stream, topic, action, false, interrupted);
+        emit channelTopicActionFinished(topic, action, false);
+        emit topicActionFinished(stream, topic, action, false);
+        // Review finding 4652383421: the interrupted write may have committed
+        // on ANY cached stream, so every affected catalog is invalidated and
+        // re-read - the selected route through loadTopics(), an expanded
+        // sidebar stream by staling and re-hydrating its inbox slot. The
+        // retired stream may not be the one the user is looking at; reloading
+        // only m_stream left a committed sidebar write missing.
+        if (authenticated()) {
+            staleCache(NativeCache::Kind::Topics, stream);
+            if (stream == m_stream && !m_stream.isEmpty() && !reconciled) {
+                reconciled = true;
+                loadTopics(); // reconcile-by-read: present the server's truth, not a guess
+            } else if (stream != m_stream && m_inboxTopics.contains(stream)) {
+                m_inboxStaleTopics.insert(stream);
+                requestSidebarTopics(stream);
+            }
+        }
+    }
+}
+
+QVariantMap NativeController::topicActionState(const QString &stream, const QString &topic) const
+{
+    return m_topicActionStates.value(stream + '|' + topic);
+}
+
+void NativeController::applyTopicAction(const QString &stream, const QString &topic,
+    const QString &action, const QString &value)
+{
+    const auto report = [this, &stream, &topic, &action](bool ok) {
+        emit channelTopicActionFinished(topic, action, ok);
+        emit topicActionFinished(stream, topic, action, ok);
+    };
+    const auto trimmed = value.trimmed();
+    if (!authenticated() || !isUuid(stream) || !isUuid(topic)) { report(false); return; }
+    const bool current = stream == m_stream;
     QByteArray method = "POST";
-    QString path = messenger + "/stream_topics/" + id;
+    QString path = messenger + "/stream_topics/" + topic;
     QJsonObject body;
-    if (action == "notifications" && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
+    if (action == QLatin1String("notifications") && QStringList{"mute", "unmute", "default", "follow"}.contains(value)) {
         path += "/actions/notifications/invoke";
         body.insert("notification_mode", value);
-    } else if (action == "summary" && channelInfoStream().value("canEditTopicSummary").toBool()
+    } else if (action == QLatin1String("summary") && current
+               && channelInfoStream().value("canEditTopicSummary").toBool()
                && (value == "true" || value == "false")) {
         path += "/actions/set_summary_prompt/invoke";
         body.insert("summary_enabled", value == "true");
-    } else if (action == "read" || action == "toggle_done") {
+    } else if (action == QLatin1String("read") || action == QLatin1String("toggle_done")) {
         path += "/actions/" + action + "/invoke";
-    } else if (action == "rename" && !value.trimmed().isEmpty()) {
+    } else if (action == QLatin1String("rename") && !trimmed.isEmpty()) {
         method = "PUT";
-        body.insert("name", value.trimmed());
+        body.insert("name", trimmed);
     } else {
-        emit channelTopicActionFinished(id, action, false);
+        report(false);
         return;
     }
+    // The target row must be known: the selected stream's catalog or an
+    // expanded sidebar stream's inbox catalog.
+    bool known = false;
+    if (current) {
+        known = std::any_of(m_topics.cbegin(), m_topics.cend(),
+            [&](const Topic &row) { return row.uuid == topic; });
+    } else if (m_inboxTopics.contains(stream)) {
+        const auto rows = m_inboxTopics.value(stream);
+        known = std::any_of(rows.cbegin(), rows.cend(),
+            [&](const Topic &row) { return row.uuid == topic; });
+    }
+    if (!known) { report(false); return; }
+    // Arbitration: at most one in-flight action per topic. A competing action
+    // for the same topic is rejected as finished-false without a second
+    // request (the pinned drawer retry case depends on this granularity); a
+    // peer topic is never blocked.
     const auto generation = m_api->generation();
-    const auto owner = ownerKey(), streamId = m_stream;
-    const auto key = QString::number(generation) + '/' + id;
-    if (m_channelTopicRequests.contains(key)) {
-        emit channelTopicActionFinished(id, action, false);
-        return;
-    }
-    m_channelTopicRequests.insert(key);
+    const auto key = QString::number(generation) + '/' + topic;
+    if (m_topicActionRequests.contains(key)) { report(false); return; }
+    const auto token = ++m_topicActionToken;
+    const auto owner = ownerKey();
+    m_topicActionRequests.insert(key, token);
+    // Issue #645: the ledger outlives the arbitration entry so the renewal
+    // sweep can settle guards the retired callback can never reach.
+    const auto stateKey = stream + '|' + topic;
+    m_topicActionLedger.insert(stateKey + '|' + action, owner);
+    auto state = m_topicActionStates.value(stateKey);
+    state[action + "Pending"] = true;
+    state.remove(action + "Error");
+    m_topicActionStates.insert(stateKey, state);
+    emit topicActionsChanged();
+    emit stateChanged();
     const auto revision = m_topicRevision;
-    request(method, path, body, {}, [this, generation, owner, streamId, id, action, key, revision](const ApiResult &response) {
-        m_channelTopicRequests.remove(key);
-        if (m_api->generation() != generation || ownerKey() != owner || m_stream != streamId) return;
+    request(method, path, body, {},
+        [this, current, stream, topic, action, key, token, owner, generation, revision](const ApiResult &response) {
+        if (m_topicActionRequests.value(key) == token) m_topicActionRequests.remove(key);
+        if (!authenticated() || ownerKey() != owner) return;
+        const auto finish = [this, &stream, &topic, &action](bool ok) {
+            m_topicActionLedger.remove(stream + '|' + topic + '|' + action);
+            settleTopicAction(stream, topic, action, ok);
+            emit channelTopicActionFinished(topic, action, ok);
+            emit topicActionFinished(stream, topic, action, ok);
+        };
         const auto dto = response.data.toObject();
-        const auto updated = parseTopic(dto, m_session->project(), streamId);
-        const bool accepted = response.ok() && updated && updated->uuid == id
+        const auto updated = response.ok() && response.data.isObject()
+            ? parseTopic(dto, m_session->project(), stream) : std::optional<Topic>{};
+        const bool accepted = response.ok() && updated && updated->uuid == topic
             && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
-        staleCache(NativeCache::Kind::Topics, streamId);
-        auto row = std::find_if(m_topics.begin(), m_topics.end(), [&](const Topic &t) { return t.uuid == id; });
-        if (accepted && row != m_topics.end() && revision == m_topicRevision) {
-            *row = *updated;
-            ++m_topicRevision;
-            if (action == "read") mentionIndexClearTopic(streamId, id);
-            emit topicsChanged();
-            emit stateChanged();
-        } else {
-            // A newer catalog or an uncertain write is reconciled by reading.
-            loadTopics();
+        // Review finding 4652383420: reconciliation follows the route at
+        // REPLY time, not the current flag captured at dispatch - the stream
+        // may have become current (or moved away) while the write flew.
+        if (m_api->generation() != generation) return;
+        if (m_stream == stream) {
+            // Issue #645: a generation bump retires this transport; the
+            // interrupt sweep owns settling it. The route may have arrived
+            // here after dispatch: settle by reconciling THIS stream's
+            // catalog (mirror when the catalog is still the one the request
+            // raced, otherwise reconcile-by-read).
+            staleCache(NativeCache::Kind::Topics, stream);
+            auto row = std::find_if(m_topics.begin(), m_topics.end(),
+                [&](const Topic &t) { return t.uuid == topic; });
+            if (accepted && row != m_topics.end() && revision == m_topicRevision) {
+                *row = *updated;
+                ++m_topicRevision;
+                if (action == QLatin1String("read")) mentionIndexClearTopic(stream, topic);
+                emit topicsChanged();
+                emit stateChanged();
+                // The sidebar rows render from the inbox catalog while the
+                // stream is not current and from m_topics while it is, and the
+                // delegate refreshes on sidebarTopicsChanged in both cases
+                // (the #641 window cases exposed the divergence): mirror the
+                // committed row and fire the seam so both catalogs agree
+                // immediately after a successful write.
+                if (m_inboxTopics.contains(stream)) {
+                    auto inboxRows = m_inboxTopics.value(stream);
+                    auto inboxRow = std::find_if(inboxRows.begin(), inboxRows.end(),
+                        [&](const Topic &t) { return t.uuid == topic; });
+                    if (inboxRow != inboxRows.end()) {
+                        *inboxRow = *updated;
+                        m_inboxTopics.insert(stream, inboxRows);
+                    }
+                }
+                emit sidebarTopicsChanged(stream);
+            } else {
+                // A newer catalog or an uncertain write is reconciled by reading.
+                loadTopics();
+            }
+            finish(accepted);
+            return;
         }
-        emit channelTopicActionFinished(id, action, accepted);
+        if (current) {
+            // Dispatched as current, the route moved away before the reply:
+            // the write settles and the retired route's cache goes stale,
+            // but the newly current route's catalog is never touched.
+            if (accepted) staleCache(NativeCache::Kind::Topics, stream);
+            finish(accepted);
+            return;
+        }
+        // Issue #645: a collapsed sidebar stream still settles its guard -
+        // the row may have vanished but the pending flag must not strand.
+        if (!m_inboxTopics.contains(stream)) { finish(accepted); return; }
+        staleCache(NativeCache::Kind::Topics, stream);
+        auto rows = m_inboxTopics.value(stream);
+        auto row = std::find_if(rows.begin(), rows.end(),
+            [&](const Topic &t) { return t.uuid == topic; });
+        if (accepted && row != rows.end()) {
+            *row = *updated;
+            m_inboxTopics.insert(stream, rows);
+            emit sidebarTopicsChanged(stream);
+        }
+        finish(accepted);
     });
 }
 
@@ -9984,6 +10184,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // delete; the retired callback can never clear the admission flag, so
         // settle the operation here with a retryable interrupted outcome.
         interruptFolderMutation();
+        // Issue #645: the same bump retires in-flight topic actions (rename,
+        // notifications, read, done); settle them as uncertain interrupted
+        // outcomes and reconcile the catalog so the topic menu and rename form
+        // become usable again under the renewed session.
+        interruptTopicActions();
+        if (!lookupGuard) return;
         // Issue #50 review 4611502344: the same bump retires an in-flight
         // Diagnostics transport ping; its wrapper callback can never settle,
         // so report the drop here: it clears the single-probe guard and lets
@@ -11924,6 +12130,9 @@ void NativeController::reset()
     m_channelInfoNotificationInFlight.clear();
     m_pollSendAttempts.clear();
     m_channelTopicRequests.clear();
+    m_topicActionRequests.clear();
+    m_topicActionLedger.clear();
+    m_topicActionStates.clear();
     closeEditSession();
     closeReplySession();
     m_replySessions.clear(); // parked sessions belong to this owner only (issue #201)
@@ -16044,6 +16253,11 @@ void NativeController::loadTopics()
         if (!guard) return true;
         emit messagesChanged();
         if (!guard) return true;
+        // The sidebar topic delegate refreshes on the sidebarTopicsChanged
+        // seam (both catalog roles read it for the current stream), so a
+        // verified reconcile - e.g. the rename-by-read after an uncertain
+        // revision - must re-publish the row titles there too (#641).
+        if (authoritative) emit sidebarTopicsChanged(m_stream);
         if (authoritative) finishSnapshotPart(4);
         // Issue #134: the profile Message action can park a default-topic
         // open while this page is loading; resolve it against the verified

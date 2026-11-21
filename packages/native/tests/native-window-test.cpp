@@ -3404,6 +3404,207 @@ struct WindowChatHeaderCountersScene {
     }
 };
 
+// ---- Issue #636: topic context menu window scene ----
+// Sidebar topic rows over a channel (default topic "General Topic" plus an
+// unread "Backlog") and a direct-private stream whose topic opts into
+// "unmute" (to pin the direct hide rule). All four topic action endpoints are
+// intercepted with optional deferral so the pending guards are observable
+// (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md).
+struct TopicMenuScene
+{
+    WindowChannelFixture fixture;
+    QTemporaryDir directory;
+    NativePreferences preferences;
+    ApiClient api{nullptr, true};
+    Session session{&api};
+    NativeController controller{&api, &session};
+    QQmlApplicationEngine engine;
+    QPointer<QQuickWindow> window;
+    QString directStream = QStringLiteral("96100000-0000-4000-8000-000000000001");
+    QString directTopic = QStringLiteral("96100000-0000-4000-8000-000000000002");
+    QString extraTopic = QStringLiteral("96100000-0000-4000-8000-000000000003");
+    QJsonObject mainTopicDto, extraTopicDto, directTopicDto;
+    bool streamMuted = false, deferNextAction = false, failNextAction = false;
+    std::function<void()> pendingDeliver;
+    int notifPosts = 0, readPosts = 0, renamePuts = 0, donePosts = 0;
+    QJsonObject lastBody;
+    TopicMenuScene()
+        : preferences(directory.filePath("topic-menu.ini"))
+    {
+        QVERIFY(directory.isValid());
+        preferences.setLocale("en");
+        mainTopicDto = windowChannelTopic(topicId, streamId, "General Topic");
+        extraTopicDto = windowChannelTopic(extraTopic, streamId, "Backlog");
+        extraTopicDto["is_default"] = false;
+        extraTopicDto["unread_count"] = 3;
+        extraTopicDto["active_unread_count"] = 3;
+        directTopicDto = windowChannelTopic(directTopic, directStream, "General Topic");
+        directTopicDto["notification_mode"] = "unmute";
+        auto directStreamDto = windowChannel(directStream, "Direct peer");
+        directStreamDto["private"] = true;
+        directStreamDto["direct_user_uuid"] = channelPeer;
+        // The fallback must be held BY VALUE: the constructor frame is gone
+        // long before the server calls this handler (a reference capture made
+        // every fallback hit a dangling std::function and crashed the case).
+        const auto fallback = std::move(fixture.server.handler);
+        // Same lifetime contract for the stream DTO (review finding
+        // 4652383423): directStreamDto is constructor-local, so the handler
+        // must own a copy - a reference capture reads a dead stack frame on
+        // every stream-list request the login flow issues after construction.
+        const auto directStreamCopy = directStreamDto;
+        fixture.server.handler = [&, fallback, directStreamCopy](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/"))
+            {
+                auto channel = windowChannel(streamId, "Product team");
+                channel["default_topic_uuid"] = topicId;
+                if (streamMuted)
+                    channel["notification_mode"] = "muted";
+                return {QJsonArray{channel, directStreamCopy}};
+            }
+            if (path.endsWith("/stream_topics/") && request.method == "GET")
+            {
+                const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (stream == directStream)
+                    return {QJsonArray{directTopicDto}};
+                return {QJsonArray{mainTopicDto, extraTopicDto}};
+            }
+            auto topicDto = [&](const QString &target) -> QJsonObject& {
+                return target.contains(extraTopic) ? extraTopicDto : mainTopicDto;
+            };
+            auto deferable = [&](Response response) {
+                if (!deferNextAction)
+                    return response;
+                deferNextAction = false;
+                response.defer = [this](std::function<void()> deliver) {
+                    pendingDeliver = std::move(deliver);
+                };
+                return response;
+            };
+            if (request.method == "POST" && path.endsWith("/actions/notifications/invoke"))
+            {
+                ++notifPosts;
+                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
+                lastBody = request.body;
+                auto &dto = topicDto(path);
+                dto["notification_mode"] = request.body.value("notification_mode").toString();
+                return deferable({dto, 200});
+            }
+            if (request.method == "POST" && path.endsWith("/actions/read/invoke"))
+            {
+                ++readPosts;
+                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
+                lastBody = request.body;
+                auto &dto = topicDto(path);
+                dto["unread_count"] = 0;
+                dto["active_unread_count"] = 0;
+                return deferable({dto, 200});
+            }
+            if (request.method == "POST" && path.endsWith("/actions/toggle_done/invoke"))
+            {
+                ++donePosts;
+                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
+                lastBody = request.body;
+                auto &dto = topicDto(path);
+                dto["is_done"] = !dto.value("is_done").toBool();
+                return deferable({dto, 200});
+            }
+            if (request.method == "PUT" && path.contains("/stream_topics/"))
+            {
+                ++renamePuts;
+                lastBody = request.body;
+                mainTopicDto["name"] = request.body.value("name").toString();
+                return deferable({mainTopicDto, 200});
+            }
+            return fallback(request);
+        };
+        loadNativeUi(engine, &controller, &preferences);
+        window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 2);
+        controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+        // The sidebar list (and its topic rows) must be realized before the
+        // menu cases act on it; bail loudly with context if it is not.
+        QTRY_VERIFY_WITH_TIMEOUT(row(QStringLiteral("stream-") + streamId) != nullptr,
+            5000);
+    }
+    void release(bool = true)
+    {
+        const auto deliver = std::exchange(pendingDeliver, nullptr);
+        QVERIFY(static_cast<bool>(deliver));
+        deliver();
+    }
+    static void collect(QObject *root, const QString &name, QList<QObject *> &out)
+    {
+        for (auto *child : root->children())
+        {
+            if (child->objectName() == name)
+                out.append(child);
+            collect(child, name, out);
+        }
+    }
+    QObject *menu()
+    {
+        // Two surfaces may host the menu type (sidebar + channel info); the
+        // popup reparents itself to the overlay, so identify the surface tag
+        // carried by the popup instead of the object path. The Qt Quick
+        // Controls Menu is Popup-based, so match on QObject, not QQuickItem.
+        QList<QObject *> found;
+        collect(window.data(), QStringLiteral("topicContextMenu"), found);
+        for (auto *item : found)
+            if (item->property("menuSurface").toString() == QStringLiteral("sidebar"))
+                return item;
+        return nullptr;
+    }
+    QObject *popup(const QString &name)
+    {
+        // Popup-hosted objects (the rename dialog) are QObjects, not items of
+        // the visual tree, so they keep the QObject collect; the surface tag
+        // picks this scene's sidebar instance out of the drawer's twin.
+        QList<QObject *> found;
+        collect(window.data(), name, found);
+        for (auto *item : found)
+            if (item->property("dialogSurface").toString() == QStringLiteral("sidebar"))
+                return item;
+        return nullptr;
+    }
+    bool menuOpen()
+    {
+        auto *menu = this->menu();
+        return menu && menu->property("opened").toBool();
+    }
+    QQuickItem *row(const QString &objectName)
+    {
+        // Painted-item search (the file's visibleItem contract): delegates
+        // incubate hidden on the other surfaces (collapsed drawer pages), and
+        // a menu that closed keeps its content hidden in the overlay - the
+        // cases ask "is this row actually on screen", so skip invisible
+        // subtrees instead of returning the first name match in the QObject
+        // tree.
+        auto *content = window ? window->contentItem() : nullptr;
+        return content ? visibleItem(content, objectName) : nullptr;
+    }
+    void openMenu(const QString &rowName)
+    {
+        auto *target = row(rowName);
+        QVERIFY(target);
+        QTest::mouseClick(window.data(), Qt::RightButton, {},
+            target->mapToScene(QPointF(target->width() / 2, target->height() / 2)).toPoint());
+        QTRY_VERIFY(menuOpen());
+    }
+};
+
+
 class NativeWindowTest final : public QObject {
     Q_OBJECT
 private slots:
@@ -40458,6 +40659,333 @@ private slots:
         QVERIFY2(!checkFinal->isVisible(), qPrintable(QStringLiteral(
             "check still visible 2.6 s after completion; the newer download recreated the delegate (old survived: %1)")
             .arg(checkBefore == checkAfter)));
+    }
+
+
+    // ---------- Issue #636: topic context menu ----------
+    // Reference oracle: workspace_ui 75bd21f37de94728e2ebe100acfea24ac9c1a4e1
+    // packages/web/src/features/workspace-topic-actions/
+    // workspace-topic-context-menu.ui.tsx (item list, mark-as-read gate :242,
+    // Done label :265, narrow variant :301, sideOffset/align :306-307, rename
+    // dialog rules :69/:78/:91/:175) plus workspace-topic-notification-switch
+    // .ui.tsx (radiogroup :53-54) and entities/messenger
+    // /messenger-notification-mode.lib.ts (level/mode maps, direct map).
+    // Geometry mirrors the native stream menu infra (Main.qml streamMenu:
+    // 180 px width, 5/5/1/1 padding, StreamActionRow 34 px height) so both
+    // menus share one identity (Main.qml:12902-12915).
+    void topicContextMenuOpensFromRightClickAndMenuKey()
+    {
+        // Issue #647 witness: a QML function error in the right-click handler
+        // (the mapFromScene throw) must fail this case, not slip past it.
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        TopicMenuScene scene;
+        // Reference: workspace-topic-context-menu.ui.tsx dropdown-context-menu
+        // trigger (right-click + keyboard Menu); native parity through the
+        // delegate Menu key.
+        auto *menu = scene.menu();
+        QVERIFY(menu);
+        QVERIFY(!scene.menuOpen());
+        auto *row = scene.row(QStringLiteral("topic-") + topicId);
+        QVERIFY(row);
+        QTest::mouseClick(scene.window.data(), Qt::RightButton, {},
+            row->mapToScene(QPointF(row->width() / 2, row->height() / 2)).toPoint());
+        QTRY_VERIFY(scene.menuOpen());
+        // Width = the reference narrow menu variant: min-w-context-menu-narrow
+        // 180px (tailwind.config.ts:100, contentVariant="narrow" at :301);
+        // padding mirrors the native stream menu infra (Main.qml:13215-13218).
+        QCOMPARE(menu->property("width").toReal(), 180.0);
+        QCOMPARE(menu->property("topPadding").toReal(), 5.0);
+        QCOMPARE(menu->property("bottomPadding").toReal(), 5.0);
+        QCOMPARE(menu->property("leftPadding").toReal(), 1.0);
+        QCOMPARE(menu->property("rightPadding").toReal(), 1.0);
+        // Item list per the reference contract: heading + 3 levels (unmuted
+        // hidden: stream not muted, topic not explicitly unmuted), mark as
+        // read hidden (no unread, gate :242), rename, Done last (:265).
+        QVERIFY(scene.row(QStringLiteral("topicNotificationsHeading")));
+        QVERIFY(scene.row(QStringLiteral("channelTopicMuteAction")));
+        QVERIFY(scene.row(QStringLiteral("topicNotifSegment-inherit")));
+        QVERIFY(scene.row(QStringLiteral("topicNotifSegment-followed")));
+        QVERIFY(!scene.row(QStringLiteral("topicNotifSegment-unmuted")));
+        QVERIFY(!scene.row(QStringLiteral("topicMarkReadAction")));
+        QVERIFY(scene.row(QStringLiteral("topicRenameAction")));
+        auto *done = scene.row(QStringLiteral("topicDoneAction"));
+        QVERIFY(done);
+        QCOMPARE(done->property("text").toString(), QStringLiteral("Mark topic as done"));
+        // Rows carry the reference item height: py-2 (8 px) + text-sm 20 px
+        // line box = 36 px (WORKSPACE_TOPIC_MENU_ITEM_CLASS, ui.tsx:24).
+        QCOMPARE(done->height(), 36.0);
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
+        // Keyboard Menu opens the same menu on the focused row.
+        row->forceActiveFocus();
+        QVERIFY(row->hasActiveFocus());
+        QTest::keyClick(scene.window.data(), Qt::Key_Menu);
+        QTRY_VERIFY(scene.menuOpen());
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
+    }
+
+    void topicContextMenuMarkReadVisibilityAndAction()
+    {
+        TopicMenuScene scene;
+        // Reference: workspace-topic-context-menu.ui.tsx:242 - only unread
+        // topics get the mark-as-read row.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        QVERIFY(!scene.row(QStringLiteral("topicMarkReadAction")));
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        auto *mark = scene.row(QStringLiteral("topicMarkReadAction"));
+        QVERIFY(mark);
+        click(scene.window.data(), mark);
+        QTRY_VERIFY(!scene.menuOpen());
+        QTRY_COMPARE(scene.readPosts, 1);
+        const auto unreadOf = [](const QVariantList &rows, const QString &id) {
+            for (const auto &value : rows) {
+                const auto row = value.toMap();
+                if (row.value("id").toString() == id)
+                    return row.value("unread").toInt();
+            }
+            return -1;
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(unreadOf(scene.controller.topics(), scene.extraTopic), 0, 3000);
+    }
+
+    void topicContextMenuNotificationSwitchPostsAndGuardsPending()
+    {
+        TopicMenuScene scene;
+        // Reference: workspace-topic-notification-switch.ui.tsx radiogroup;
+        // the native contract keeps every segment inert while one request is
+        // pending. The click closes the menu, so grab the peer segments while
+        // they are still painted - their enabled bindings stay live on the
+        // hidden popup content.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *followed = scene.row(QStringLiteral("topicNotifSegment-followed"));
+        auto *inherit = scene.row(QStringLiteral("topicNotifSegment-inherit"));
+        auto *mute = scene.row(QStringLiteral("channelTopicMuteAction"));
+        QVERIFY(followed && inherit && mute);
+        scene.deferNextAction = true;
+        click(scene.window.data(), followed);
+        // The transport leaves before the pending-guard repaint settles, so
+        // wait for the wire hit instead of asserting a same-tick count.
+        QTRY_COMPARE(scene.notifPosts, 1);
+        QTRY_VERIFY(!followed->property("enabled").toBool());
+        QVERIFY(!inherit->property("enabled").toBool());
+        QVERIFY(!mute->property("enabled").toBool());
+        QCOMPARE(scene.lastBody.value("notification_mode").toString(), QStringLiteral("follow"));
+        scene.release();
+        // The switch re-renders with the committed level as current
+        // (workspace-topic-notification-switch.ui.tsx selected segment).
+        QTRY_VERIFY(followed->property("isCurrent").toBool());
+        QTRY_VERIFY(followed->property("enabled").toBool());
+        // Re-clicking the current level performs no request (reference switch
+        // is idempotent per level).
+        QTRY_VERIFY(!scene.menuOpen());
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        click(scene.window.data(), scene.row(QStringLiteral("topicNotifSegment-followed")));
+        QTest::qWait(250);
+        QCOMPARE(scene.notifPosts, 1);
+    }
+
+    void topicContextMenuUnmutedSegmentsFollowStreamAndDirectRules()
+    {
+        // Reference: messenger-notification-mode.lib.ts level options - the
+        // unmuted entry exists only when the stream is muted or the topic
+        // opts in, and is never offered inside direct private chats (the
+        // direct map collapses unmute into followed).
+        TopicMenuScene scene;
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        QVERIFY(scene.row(QStringLiteral("topicNotifSegment-followed")));
+        QVERIFY(!scene.row(QStringLiteral("topicNotifSegment-unmuted")));
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
+        scene.controller.toggleSidebarStream(scene.directStream);
+        QTRY_VERIFY(scene.row(QStringLiteral("topic-") + scene.directTopic));
+        scene.openMenu(QStringLiteral("topic-") + scene.directTopic);
+        QVERIFY(scene.row(QStringLiteral("topicNotifSegment-inherit")));
+        QVERIFY(scene.row(QStringLiteral("topicNotifSegment-followed")));
+        QVERIFY(!scene.row(QStringLiteral("topicNotifSegment-unmuted")));
+    }
+
+    void topicContextMenuRenameDialogRules()
+    {
+        TopicMenuScene scene;
+        // Reference: workspace-topic-context-menu.ui.tsx rename dialog -
+        // prefilled, submit disabled while empty (:78), Enter submits (:91),
+        // unchanged name closes without a request (:175).
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        click(scene.window.data(), scene.row(QStringLiteral("topicRenameAction")));
+        auto *dialog = scene.popup(QStringLiteral("topicRenameDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        auto *input = scene.row(QStringLiteral("topicRenameInput"));
+        QVERIFY(input);
+        QCOMPARE(input->property("text").toString(), QStringLiteral("General Topic"));
+        auto *save = scene.row(QStringLiteral("topicRenameSave"));
+        QVERIFY(save);
+        QVERIFY(save->property("enabled").toBool());
+        input->setProperty("text", QString());
+        QVERIFY(!save->property("enabled").toBool());
+        // An unchanged name keeps Save enabled (disabled rule is empty/pending
+        // only, ui.tsx:75-78); submitting it closes without a request (:175).
+        input->setProperty("text", QStringLiteral("General Topic"));
+        QVERIFY(save->property("enabled").toBool());
+        // Submit while unchanged closes without any request.
+        QTest::keyClick(scene.window.data(), Qt::Key_Return);
+        QTRY_VERIFY(!(dialog->property("opened").toBool()));
+        QCOMPARE(scene.renamePuts, 0);
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        click(scene.window.data(), scene.row(QStringLiteral("topicRenameAction")));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        input = scene.row(QStringLiteral("topicRenameInput"));
+        input->setProperty("text", QStringLiteral("Renamed via menu"));
+        QTest::keyClick(scene.window.data(), Qt::Key_Return);
+        QTRY_VERIFY(!(dialog->property("opened").toBool()));
+        QCOMPARE(scene.renamePuts, 1);
+        QCOMPARE(scene.lastBody.value("name").toString(), QStringLiteral("Renamed via menu"));
+        // The committed name reaches the live UI: the window header follows
+        // the selected topic's committed name (server echo through the
+        // verified catalog), which is the stable live witness for this route
+        // - the sidebar row surface is re-incubated asynchronously after the
+        // catalog reconcile (#216 pitfall) and the pinned channel-info cases
+        // already pin the row-level title echo.
+        auto *win = qobject_cast<QQuickWindow *>(scene.window.data());
+        QVERIFY(win);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            win->title().contains(QStringLiteral("Renamed via menu")), 5000);
+    }
+
+    void topicContextMenuRenameInterruptedByRenewalLeavesTheFormUsable()
+    {
+        // Issue #645: a held rename interrupted by a same-account token
+        // renewal must make the form usable again with an explicit
+        // interrupted result (never a definitive success), and the topic must
+        // stay actionable. Controller-side settling is pinned in
+        // native-controller-topics-test; this case pins the shared menu.
+        TopicMenuScene scene;
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        click(scene.window.data(), scene.row(QStringLiteral("topicRenameAction")));
+        auto *dialog = scene.popup(QStringLiteral("topicRenameDialog"));
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        auto *input = scene.row(QStringLiteral("topicRenameInput"));
+        QVERIFY(input);
+        input->setProperty("text", QStringLiteral("Interrupted rename"));
+        scene.deferNextAction = true;
+        QTest::keyClick(scene.window.data(), Qt::Key_Return);
+        QTRY_COMPARE(scene.renamePuts, 1);
+        // While pending the modal refuses escape/cancel (existing contract).
+        auto *cancel = scene.row(QStringLiteral("topicRenameCancel"));
+        QVERIFY(cancel);
+        QVERIFY(!cancel->property("enabled").toBool());
+        // Same-owner renewal retires the held transport; the sweep settles
+        // the action as interrupted.
+        scene.api.setAccessToken("topic-645-renewed-access-token");
+        QTRY_VERIFY(cancel->property("enabled").toBool());
+        auto *save = scene.row(QStringLiteral("topicRenameSave"));
+        QVERIFY(save->property("enabled").toBool());
+        auto *error = scene.row(QStringLiteral("topicRenameError"));
+        QVERIFY(error);
+        QCOMPARE(error->property("text").toString(),
+            QStringLiteral("The topic rename was interrupted by a session refresh. Try again."));
+        // Uncertain, not definitive: the dialog stays open on the interrupted
+        // result; cancel is usable and the topic stays actionable afterwards.
+        QVERIFY(dialog->property("opened").toBool());
+        click(scene.window.data(), cancel);
+        QTRY_VERIFY(!dialog->property("opened").toBool());
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        QVERIFY(scene.row(QStringLiteral("topicRenameAction"))->property("enabled").toBool());
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
+    }
+
+    void topicContextMenuDoneToggleFlipsLabelAndStrikesRow()
+    {
+        TopicMenuScene scene;
+        // Reference: workspace-topic-context-menu.ui.tsx:265 - the Done row
+        // flips its label from the live topic state, and resolved topics
+        // strike their row title (docs pin resolved == struck). The model
+        // write re-incubates the delegate, so re-resolve the title each time.
+        const auto title = [&] { return scene.row(QStringLiteral("topicTitle-") + topicId); };
+        QVERIFY(title() && !title()->property("font").value<QFont>().strikeOut());
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *done = scene.row(QStringLiteral("topicDoneAction"));
+        click(scene.window.data(), done);
+        QTRY_COMPARE(scene.donePosts, 1);
+        QTRY_VERIFY(!scene.menuOpen());
+        QTRY_VERIFY(title() && title()->property("font").value<QFont>().strikeOut());
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        QCOMPARE(scene.row(QStringLiteral("topicDoneAction"))->property("text").toString(),
+            QStringLiteral("Mark topic as not done"));
+        click(scene.window.data(), scene.row(QStringLiteral("topicDoneAction")));
+        QTRY_COMPARE(scene.donePosts, 2);
+        QTRY_VERIFY(!title()->property("font").value<QFont>().strikeOut());
+    }
+
+    void topicContextMenuActionFailureSurfacesErrorNotice()
+    {
+        // Review finding 4652383415: the read/done/notification rows close
+        // the menu before dispatch, so a failed write needs its own notice -
+        // only the rename dialog had an error surface before this case.
+        TopicMenuScene scene;
+        const auto notice = [&] { return scene.popup(QStringLiteral("topicActionErrorToast")); };
+        const auto noticeText = [&] {
+            auto *toast = notice();
+            return toast ? toast->property("noticeText").toString() : QString();
+        };
+        // Mark as read fails (unread Backlog row).
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        auto *mark = scene.row(QStringLiteral("topicMarkReadAction"));
+        QVERIFY(mark);
+        scene.failNextAction = true;
+        click(scene.window.data(), mark);
+        QTRY_COMPARE(scene.readPosts, 1);
+        QVERIFY(!scene.menuOpen());
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not mark the topic as read. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+        // Notification level switch fails.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *followed = scene.row(QStringLiteral("topicNotifSegment-followed"));
+        QVERIFY(followed);
+        scene.failNextAction = true;
+        click(scene.window.data(), followed);
+        QTRY_COMPARE(scene.notifPosts, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not update the topic notifications. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+        // Done toggle fails.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *done = scene.row(QStringLiteral("topicDoneAction"));
+        QVERIFY(done);
+        scene.failNextAction = true;
+        click(scene.window.data(), done);
+        QTRY_COMPARE(scene.donePosts, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not update the topic. Please try again."));
+        // The guard released: the same action is immediately actionable again.
+        QMetaObject::invokeMethod(notice(), "close");
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        QVERIFY(scene.row(QStringLiteral("topicDoneAction"))->property("enabled").toBool());
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
+    }
+
+    void topicContextMenuStreamMenuSiblingKeepsItsPins()
+    {
+        // Regression guard for the window-layer contract: instantiating the
+        // topic menu as a root sibling must not disturb the stream context
+        // menu (Main.qml streamContextMenu, width 280, opened by right-click
+        // exactly like the accepted stream-menu cases).
+        TopicMenuScene scene;
+        auto *streamRow = scene.row(QStringLiteral("stream-") + streamId);
+        QVERIFY(streamRow);
+        QTest::mouseClick(scene.window.data(), Qt::RightButton, {},
+            streamRow->mapToScene(QPointF(20, streamRow->height() / 2)).toPoint());
+        auto *streamMenu = scene.window->findChild<QObject *>(QStringLiteral("streamContextMenu"));
+        QVERIFY(streamMenu);
+        QTRY_VERIFY(streamMenu->property("opened").toBool());
+        QCOMPARE(streamMenu->property("width").toReal(), 280.0);
     }
 };
 

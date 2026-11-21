@@ -418,6 +418,16 @@ Item {
                 width: flow.width
                 active: page.visible
                 sourceComponent: Component { NativeChannelTopics { controller: page.controller; colors: page.colors } }
+                // Ids do not cross an inline Component boundary, so the menu
+                // wiring happens on the loaded row block from the page scope.
+                onLoaded: item.requestTopicMenu.connect((topic, anchor, x, y) => drawerTopicMenu
+                    .open(page.controller.selectedStream, topic.id, anchor, Qt.point(x, y)))
+            }
+            NativeTopicContextMenu {
+                id: drawerTopicMenu
+                surface: "channelInfo"
+                controller: page.controller
+                colors: page.colors
             }
 
             // ---- Members block (reference 748-812) ----
