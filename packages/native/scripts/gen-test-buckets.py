@@ -11,6 +11,9 @@ Inputs:
   --binary   the built QtTest executable (its -functions output is the truth)
   --timings  a QtTest XML result file from one full solo run:
                  <binary> -o run.xml,xml
+                 (Qt's own schema: one <TestFunction name=...> per function
+                 with a single <Duration msecs=...> child covering all rows;
+                 NOT JUnit <testcase time=...>)
   --out      output .cmake file path
 Balance is measured, not guessed: every function time is the sum of its
 data-row times from --timings; functions missing from the timings count as
@@ -41,9 +44,12 @@ def functions(binary):
 def timings(path):
     per = {}
     root = ET.parse(path).getroot()
-    for case in root.iter("testcase"):
-        base = re.sub(r"\(.*\)$", "", case.get("name") or "")
-        per[base] = per.get(base, 0.0) + float(case.get("time") or 0.0)
+    for tf in root.iter("TestFunction"):
+        base = re.sub(r"\(.*\)$", "", tf.get("name") or "")
+        # QtTest records one <Duration msecs> per test function covering all
+        # of its data rows.
+        seconds = sum(float(d.get("msecs") or 0.0) for d in tf.findall("Duration")) / 1000.0
+        per[base] = per.get(base, 0.0) + seconds
     return per
 
 
