@@ -111,12 +111,21 @@ Popup {
     }
 
     objectName: "messageTimePanel"
+    // Bug #644: the popup item itself carries no accessible interface, so focus
+    // parked on it left Linux assistive technology without a focused node while
+    // the viewer was open. Accessible focus goes to the role=dialog node below
+    // (declared by the content), and onClosed hands it back to the trigger.
+    property Item accessibleDialog: null
     width: 371
     padding: 0
     modal: false
     dim: false
     focus: true
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    onOpened: {
+        if (accessibleDialog)
+            accessibleDialog.forceActiveFocus(Qt.PopupFocusReason)
+    }
     // Reference panel style: maxHeight calc(100dvh - 16px) (:67).
     height: Math.max(0, Math.min(implicitHeight, panel.windowContent.height - 16))
     x: panel.panelPosition.x
@@ -152,6 +161,13 @@ Popup {
             // role=dialog named by dateTimePicker.label (reference dialog contract).
             Accessible.role: Accessible.Dialog
             Accessible.name: qsTranslate("Main", "Date and time")
+            // Bug #644: this node is the accessible focus target while the
+            // viewer is open, so AT-SPI reports the named dialog as focused
+            // instead of nothing. Bound to the open state so the hidden panel
+            // never competes for focus with the composer.
+            focus: panel.visible
+            Accessible.focusable: true
+            Component.onCompleted: panel.accessibleDialog = messageTimePanelContent
             Text {
                 objectName: "messageTimePanelDate"
                 topPadding: 14
