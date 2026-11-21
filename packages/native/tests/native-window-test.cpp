@@ -40637,6 +40637,263 @@ private slots:
         QVERIFY2(!item(content, "attachmentCard-" + codeMsgId + '-' + returnedId),
             "fenced example urn mounted a second card next to the real attachment");
     }
+
+    // Issue #628 (docs/NATIVE_DESKTOP_SIDEBAR_SEARCH_KEYBOARD.md): sidebar
+    // chat search keyboard access. Reference workspace_ui
+    // 75bd21f37de94728e2ebe100acfea24ac9c1a4e1: layout-shortcuts.hook.ts:37-50
+    // (navigation.chatSearch Mod+K), sidebar-search-header.ui.tsx:17-46
+    // (toggle/cancel with previousFocus restore), layout-escape-navigation.
+    // hook.ts:29 (Escape cancels the search first), sidebar-workspace-search.
+    // lib.ts:7-33 (arrow focus over filtered results) and e2e/sidebar.spec.
+    // ts:161-325 (behaviour contract).
+    static void typeIntoWindow(QQuickWindow *window, const QByteArray &text)
+    {
+        for (const auto key : text)
+            QTest::keyClick(window, key);
+    }
+
+    static void keyboardSearchFixture(WindowChannelFixture &fixture)
+    {
+        auto alpha = windowChannel(streamId, "Alpha Control");
+        auto beta = windowChannel(QStringLiteral("92000000-0000-4000-8000-00000000000b"), "Beta Ops");
+        auto gamma = windowChannel(QStringLiteral("92000000-0000-4000-8000-00000000000c"), "Gamma Lab");
+        auto one = windowChannelTopic(QStringLiteral("93000000-0000-4000-8000-000000000001"), streamId, "Alpha One");
+        auto two = windowChannelTopic(QStringLiteral("93000000-0000-4000-8000-000000000002"), streamId, "Alpha Two");
+        two["is_default"] = false;
+        auto off = windowChannelTopic(QStringLiteral("93000000-0000-4000-8000-000000000003"), streamId, "Beta Note");
+        off["is_default"] = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/")) return {QJsonArray{alpha, beta, gamma}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (stream == streamId) return {QJsonArray{one, two, off}};
+                return {QJsonArray{}};
+            }
+            return fallback(request);
+        };
+    }
+
+    void sidebarSearchHotkeyFocusesSearchAndExpandsCollapsedSidebar_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("english-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("russian-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void sidebarSearchHotkeyFocusesSearchAndExpandsCollapsedSidebar()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-hotkey.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Search hotkey teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-hotkey", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && !controller.streams().isEmpty());
+        // The reference default binding hotkeys.lib.ts:15 is registered.
+        QCOMPARE(preferences.hotkeys()->binding("navigation.chatSearch"), QStringLiteral("Mod+K"));
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy());
+        // The composer renders once a topic is open (composerAvailable).
+        if (controller.selectedTopic().isEmpty())
+            controller.selectTopic(topicId);
+        QTRY_VERIFY(!controller.busy());
+        QTRY_VERIFY(visibleItem(window->contentItem(), "messageComposer"));
+        auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        // layout-shortcuts.hook.ts:46-48 keeps the hotkey alive on the composer:
+        // Mod+K focuses the sidebar search instead of typing into the editor.
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(search->hasActiveFocus());
+        // The second press cancels the open search and restores the previous
+        // focus (sidebar-search-header.ui.tsx:37-38).
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        // A focusable control keeps the same previous-focus target.
+        auto *newChat = visibleItem(window->contentItem(), "createChatButton"); QVERIFY(newChat);
+        QMetaObject::invokeMethod(newChat, "forceActiveFocus");
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(search->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        // Collapsed sidebar (interface.sidebar hotkey, e2e/sidebar.spec.ts:171-177):
+        // the search hotkey expands the sidebar first, then focuses (hook :41-42).
+        QTest::keyClick(window, Qt::Key_Backslash, Qt::ControlModifier);
+        QTRY_VERIFY(!window->property("shortcutSidebarVisible").toBool());
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "sidebarSearch"));
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(window->property("shortcutSidebarVisible").toBool());
+        auto *expanded = visibleItem(window->contentItem(), "sidebarSearch"); QVERIFY(expanded);
+        QTRY_VERIFY(expanded->hasActiveFocus());
+    }
+
+    void sidebarSearchArrowsCycleFilteredResults_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        QTest::newRow("english-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("russian-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void sidebarSearchArrowsCycleFilteredResults()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const QString topicA1 = QStringLiteral("93000000-0000-4000-8000-000000000001");
+        const QString topicA2 = QStringLiteral("93000000-0000-4000-8000-000000000002");
+        const QString topicOff = QStringLiteral("93000000-0000-4000-8000-000000000003");
+        keyboardSearchFixture(fixture);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-arrows.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Search arrows teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-arrows", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 3);
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "alpha");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicA1), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicA2), 2000);
+        // The unfiltered rows are gone, so focus can never land on them.
+        QVERIFY(!visibleItem(window->contentItem(), "stream-92000000-0000-4000-8000-00000000000b"));
+        QVERIFY(!visibleItem(window->contentItem(), "stream-92000000-0000-4000-8000-00000000000c"));
+        QVERIFY(!visibleItem(window->contentItem(), "topic-" + topicOff));
+        const auto focusName = [window] {
+            auto *focused = window->activeFocusItem();
+            return focused ? focused->objectName() : QString();
+        };
+        // ArrowDown enters from the input at the first filtered row, then walks
+        // stream and topic rows in visual order (sidebar-workspace-search.
+        // lib.ts:29, e2e/sidebar.spec.ts:263-270).
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus(), 2000);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA1)->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
+        // The edges are no-ops (:29-32).
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::qWait(60);
+        QCOMPARE(focusName(), QStringLiteral("topic-") + topicA2);
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA1)->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Up);
+        QTest::qWait(60);
+        QCOMPARE(focusName(), QStringLiteral("stream-") + streamId);
+        // Modifier chords never navigate (:10-18).
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        QTest::qWait(60);
+        QCOMPARE(focusName(), QStringLiteral("stream-") + streamId);
+        // ArrowUp re-enters from the input at the last row (:29, e2e:316-317).
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
+        // Navigation keeps the query (e2e:293).
+        QCOMPARE(window->property("sidebarQuery").toString(), QStringLiteral("alpha"));
+    }
+
+    void sidebarSearchEscapeClearsQueryAndRestoresFocus()
+    {
+        WindowChannelFixture fixture;
+        keyboardSearchFixture(fixture);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-escape.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Search escape teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-escape", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy());
+        auto *newChat = visibleItem(window->contentItem(), "createChatButton"); QVERIFY(newChat);
+        QMetaObject::invokeMethod(newChat, "forceActiveFocus");
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        QTest::keyClick(window, Qt::Key_K, Qt::ControlModifier);
+        QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "alpha");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-"
+            + QStringLiteral("93000000-0000-4000-8000-000000000001")), 2000);
+        // The first Escape clears the query and restores the previous focus
+        // before any other escape handler (layout-escape-navigation.hook.ts:29,
+        // sidebar-search-header.ui.tsx:25-29).
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(window->property("sidebarQuery").toString().isEmpty());
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        QVERIFY(!controller.inboxVisible());
+        // A second Escape falls through to the existing inbox fallback
+        // (layout-escape-navigation.hook.ts:33-48).
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(controller.inboxVisible());
+    }
+
+    void sidebarSearchEscapeWithQueryElsewhereClearsOnly()
+    {
+        WindowChannelFixture fixture;
+        keyboardSearchFixture(fixture);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-escape-row.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("dark"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Search escape row teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-row", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 3);
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "alpha");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 2000);
+        // Focus a sidebar control while the query is active; Escape then only
+        // clears the query and leaves that control focused and the route
+        // untouched (e2e/sidebar.spec.ts:196-202).
+        auto *newChat = visibleItem(window->contentItem(), "createChatButton"); QVERIFY(newChat);
+        QMetaObject::invokeMethod(newChat, "forceActiveFocus");
+        QTRY_VERIFY(newChat->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(window->property("sidebarQuery").toString().isEmpty());
+        QTest::qWait(60);
+        QVERIFY(newChat->hasActiveFocus());
+        QVERIFY(!controller.inboxVisible());
+    }
 };
 
 
