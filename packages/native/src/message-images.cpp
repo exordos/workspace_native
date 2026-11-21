@@ -49,6 +49,7 @@ private:
 };
 
 struct DecodedPreview { QImage image; QSize naturalSize; };
+std::function<void(const QByteArray &)> g_decodeGateForTests;
 DecodedPreview preview(const QByteArray &bytes)
 {
     QImage source;
@@ -100,6 +101,7 @@ class MessageDecoder final : public QObject {
 public slots:
     void decode(const QString &scope, quint64 job, const QByteArray &bytes)
     {
+        if (g_decodeGateForTests) g_decodeGateForTests(bytes);
         auto result = QThread::currentThread()->isInterruptionRequested() ? DecodedPreview{} : preview(bytes);
         // Notify on a later worker turn: the queued decode argument and original
         // encoded bytes/full decode are gone before GUI releases this job slot.
@@ -113,7 +115,7 @@ signals:
 
 MessageImages::MessageImages(ApiClient *api, Session *session, FileClient *files, QObject *parent)
     : QObject(parent), m_api(api), m_session(session), m_files(files),
-      m_images(std::make_shared<MessageImageState>()), m_decodeThread(this)
+      m_decodeTimeoutMs(kHeifDecodeTimeoutMs), m_images(std::make_shared<MessageImageState>()), m_decodeThread(this)
 {
     Q_ASSERT(QCoreApplication::instance() && thread() == QCoreApplication::instance()->thread());
     auto *decoder = new MessageDecoder;
@@ -149,6 +151,11 @@ QString MessageImages::uuidFor(const QString &urn) const
     const auto reference = parseWorkspaceReference(urn);
     return reference && reference->kind == WorkspaceReferenceKind::Image ? reference->id : QString{};
 }
+void MessageImages::setDecodeGateForTests(std::function<void(const QByteArray &)> gate)
+{
+    g_decodeGateForTests = std::move(gate);
+}
+void MessageImages::setDecodeTimeoutMsForTests(int ms) { m_decodeTimeoutMs = ms; }
 QString MessageImages::cacheKey(const QString &uuid) const { return m_scope + '/' + uuid; }
 void MessageImages::eraseImage(const QString &uuid)
 {
