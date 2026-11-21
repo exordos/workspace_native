@@ -19,6 +19,15 @@ inline QJsonObject keySharingStream(bool owner = true, const QJsonValue &allow =
     return row;
 }
 
+inline QString streamRowName(const NativeController &controller)
+{
+    for (const auto &value : controller.streams()) {
+        const auto row = value.toMap();
+        if (row.value("id").toString() == streamId) return row.value("name").toString();
+    }
+    return {};
+}
+
 class KeySharingToggleFixture {
 public:
     Fixture fixture;
@@ -1717,6 +1726,33 @@ private slots:
         QTRY_VERIFY(!test.projection().value("disabled").toBool());
         QCOMPARE(test.projection().value("checked").toBool(), true);
         QVERIFY(controller.chatKeySharingError().isEmpty());
+    }
+
+    void keySharingEchoAppliesOnlyKeySharingFieldsToTheRow()
+    {
+        KeySharingToggleFixture test;
+        // The echo confirms at a stamp NEWER than the row, so the stale-echo
+        // guard passes - but its unrelated fields are the request-time
+        // snapshot (messenger-sidebar-actions.lib.ts:626-630).
+        test.putDelay = 150;
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        // A rename lands while the PUT is in flight: with no updated_at the
+        // key-sharing stamp carries over, so only the name is newer than the
+        // echo will ever be.
+        auto renamed = keySharingStream(true, true);
+        renamed.remove("updated_at");
+        renamed["name"] = QStringLiteral("Renamed by realtime");
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(renamed)));
+        QCOMPARE(streamRowName(controller), QStringLiteral("Renamed by realtime"));
+        // The verified echo merges only the key-sharing changes into the
+        // latest row; the newer unrelated field survives the confirmation.
+        QTRY_VERIFY(!test.projection().value("disabled").toBool());
+        QCOMPARE(test.projection().value("checked").toBool(), false);
+        QVERIFY(controller.chatKeySharingError().isEmpty());
+        QCOMPARE(streamRowName(controller), QStringLiteral("Renamed by realtime"));
     }
 
     void keySharingRowIgnoresIncompleteCryptoMetadata()
