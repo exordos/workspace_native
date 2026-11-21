@@ -27,10 +27,14 @@ Item {
     property int stateTick: 0
     // Review finding 4652383415: the read/done/notification rows close the
     // menu before dispatch, so their failures need this surface's notice (the
-    // rename dialog keeps its inline error). The tag names which action the
-    // last dispatch from THIS instance was waiting for, attributing the
-    // finished signal to the surface that actually sent the write.
-    property string dispatchedNotice: ""
+    // rename dialog keeps its inline error). Round 2: replies must be matched
+    // against the DISPATCH-TIME identity, never the live target - any menu
+    // reopen re-points targetStream/targetTopic, and a late failure matched
+    // against the live target gets silently suppressed. One snapshot per
+    // action (action -> [stream, topic]) so concurrent actions on one surface
+    // each keep their own feedback. Consumed by the reply handler below and
+    // reset on session drift; nothing binds to it, so no NOTIFY contract.
+    property var dispatchedNotices: ({})
     readonly property var topicRow: stateTick >= 0 ? resolveRow() : null
     readonly property var actionState: stateTick >= 0 && targetTopic.length
         ? controller.topicActionState(targetStream, targetTopic) : ({})
@@ -116,7 +120,9 @@ Item {
         targetStream = rowStream
         targetTopic = topic
         targetOwner = controller.ownerKey
-        block.dispatchedNotice = ""
+        // NOTE: do NOT reset dispatchedNotices here - an in-flight write from
+        // this surface must still find its notice after a reopen (finding
+        // 4652383415 round 2); the reply handler consumes each snapshot.
         // The menu parent is the window overlay; position it at the requested
         // anchor point (reference context anchor: sideOffset 4, align start -
         // the caller maps its own press/row point).
@@ -137,6 +143,9 @@ Item {
         function onStateChanged() {
             block.stateTick++
             if (!block.controller.authenticated || block.targetOwner !== block.controller.ownerKey) {
+                // A dead/rotated session never sees these replies land; drop
+                // the pending snapshots so they cannot mis-fire later.
+                block.dispatchedNotices = {}
                 topicMenu.close()
                 topicRenameDialog.close()
             }
@@ -150,17 +159,20 @@ Item {
             // Review finding 4652383415: a failed read/notification/done
             // write closes the menu before the answer lands, so surface the
             // settled error as this surface's notice. Rename failures stay
-            // inside the dialog (pinned by the renewal case).
-            if (action === block.dispatchedNotice && stream === block.targetStream
-                && topic === block.targetTopic) {
-                block.dispatchedNotice = ""
-                if (ok) return
-                const noticeState = block.controller.topicActionState(stream, topic)
-                const message = String(noticeState[action + "Error"] || "")
-                if (!message.length) return
-                topicActionErrorText.text = message
-                topicActionErrorToast.open()
-            }
+            // inside the dialog (pinned by the renewal case). Match against
+            // the dispatch-time snapshot, so the notice survives any reopen
+            // (round 2 of the same finding).
+            const snapshot = block.dispatchedNotices[action]
+            if (!snapshot || String(snapshot[0]) !== String(stream)
+                || String(snapshot[1]) !== String(topic))
+                return
+            delete block.dispatchedNotices[action]
+            if (ok) return
+            const noticeState = block.controller.topicActionState(stream, topic)
+            const message = String(noticeState[action + "Error"] || "")
+            if (!message.length) return
+            topicActionErrorText.text = message
+            topicActionErrorToast.open()
         }
     }
     onTopicRowChanged: if (topicMenu.opened && !block.topicRow) topicMenu.close()
@@ -255,7 +267,8 @@ Item {
                                     const selected = levelSegment.isCurrent
                                     topicMenu.close()
                                     if (!selected) {
-                                        block.dispatchedNotice = "notifications"
+                                        block.dispatchedNotices["notifications"] =
+                                            [block.targetStream, block.targetTopic]
                                         block.controller.applyTopicAction(block.targetStream, block.targetTopic,
                                             "notifications", block.modeForLevel(String(modelData)))
                                     }
@@ -279,7 +292,7 @@ Item {
             enabled: visible && !block.actionState.readPending
             onTriggered: {
                 topicMenu.close()
-                block.dispatchedNotice = "read"
+                block.dispatchedNotices["read"] = [block.targetStream, block.targetTopic]
                 block.controller.applyTopicAction(block.targetStream, block.targetTopic, "read", "")
             }
         }
@@ -308,7 +321,7 @@ Item {
             enabled: !block.actionState.toggle_donePending
             onTriggered: {
                 topicMenu.close()
-                block.dispatchedNotice = "toggle_done"
+                block.dispatchedNotices["toggle_done"] = [block.targetStream, block.targetTopic]
                 block.controller.applyTopicAction(block.targetStream, block.targetTopic, "toggle_done", "")
             }
         }
