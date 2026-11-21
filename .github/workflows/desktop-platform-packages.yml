@@ -4,24 +4,68 @@ permissions:
   contents: read
   actions: read
 jobs:
-  archive:
+  upgrade:
     runs-on: windows-11-arm
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
         with:
-          sparse-checkout: packages/native/tests/platform-package
-          persist-credentials: false
+          name: desktop-windows-x64
+          run-id: 44839010293
+          github-token: ${{ github.token }}
+          path: x64
       - uses: actions/download-artifact@v4
         with:
           name: desktop-windows-arm64
-          run-id: 44833977258
+          run-id: 44839010293
           github-token: ${{ github.token }}
-          path: archive
+          path: arm64
       - shell: pwsh
         run: |
-          $archive = Get-Item archive/workspace-native-windows-arm64.zip
-          if ((Get-FileHash $archive).Hash -ne ((Get-Content archive/SHA256SUMS) -split "\s+")[0]) { throw "Archive digest mismatch" }
-          $destination = Join-Path $env:RUNNER_TEMP 'Workspace relocated'
-          Expand-Archive $archive -DestinationPath $destination
-          ./packages/native/tests/platform-package/windows-window.ps1 -Executable "$destination/bin/workspace-native.exe" -Architecture arm64
+          $ErrorActionPreference='Stop'
+          $wi=New-Object -ComObject WindowsInstaller.Installer
+          function Get-Property($database,$name) {
+            $view=$database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
+            $view.Execute()
+            return $view.Fetch().StringData(1)
+          }
+          $code=@{}
+          $install=Join-Path $env:LOCALAPPDATA 'Workspace Native Preview'
+          $exe=Join-Path $install 'bin/workspace-native.exe'
+          $shortcut=Join-Path ([Environment]::GetFolderPath('Programs')) 'Workspace Native Preview.lnk'
+          if ((Test-Path $install) -or (Test-Path $shortcut)) {throw 'Not a clean runner'}
+          try {
+            foreach ($arch in @('x64','arm64')) {
+              $msi=Get-Item "$arch/*setup.msi"
+              $line=@(Get-Content "$arch/SHA256SUMS" | Where-Object { $_.EndsWith($msi.Name) })
+              if ($line.Count -ne 1 -or (Get-FileHash $msi).Hash -ne $line[0].Substring(0,64)) {throw "Invalid $arch digest"}
+              $db=$wi.OpenDatabase($msi.FullName,0)
+              $code[$arch]=Get-Property $db 'ProductCode'
+              Write-Host "$arch product $($code[$arch]), upgrade $(Get-Property $db 'UpgradeCode'), version $(Get-Property $db 'ProductVersion')"
+              $process=Start-Process msiexec.exe -ArgumentList @('/i',('"' + $msi.FullName + '"'),'/qn','/norestart') -Wait -PassThru
+              Write-Host "$arch install code $($process.ExitCode)"
+              if ($process.ExitCode) {throw "$arch install failed"}
+              $reader=[IO.BinaryReader]::new([IO.File]::OpenRead($exe))
+              try {
+                $reader.BaseStream.Position=0x3c
+                $header=$reader.ReadUInt32()
+                $reader.BaseStream.Position=$header+4
+                $machine=$reader.ReadUInt16()
+              } finally {$reader.Dispose()}
+              Write-Host "$arch installed PE $($machine.ToString('x4'))"
+              $expected=if ($arch -eq 'arm64') {0xaa64} else {0x8664}
+              if ($machine -ne $expected) {throw 'The previous architecture is still installed'}
+              if ($arch -eq 'x64') {Set-Content -LiteralPath "$install/user-sentinel.txt" 'keep'}
+            }
+            Write-Host "Products after architecture switch: old=$($wi.ProductState($code['x64'])) new=$($wi.ProductState($code['arm64']))"
+            if ($wi.ProductState($code['x64']) -ne -1 -or $wi.ProductState($code['arm64']) -ne 5) {throw 'Ambiguous installer ownership'}
+          } finally {
+            foreach ($arch in @('arm64','x64')) {
+              if ($code.ContainsKey($arch) -and $wi.ProductState($code[$arch]) -eq 5) {
+                $p=Start-Process msiexec.exe -ArgumentList @('/x',$code[$arch],'/qn','/norestart') -Wait -PassThru
+                if ($p.ExitCode) {throw 'Failed uninstall'}
+              }
+            }
+          }
+          if ((Test-Path $exe) -or (Test-Path $shortcut) -or (Get-Content "$install/user-sentinel.txt") -ne 'keep') {throw 'Incorrect uninstall ownership'}
+          Write-Host 'Observed x64 -> ARM64 per-user replacement, a single product registration and clean uninstall.'
