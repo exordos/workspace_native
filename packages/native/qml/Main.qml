@@ -3244,6 +3244,10 @@ component NativeMentionChip: Item {
         radius: 8
         color: "transparent"
         Accessible.role: Accessible.Button
+        // Review 4652765385: the card joins the window's tab chain so keyboard
+        // users reach it by normal traversal (same explicit pattern as the
+        // NativeMentionChip above, issue #109 review F3).
+        activeFocusOnTab: true
         // Issue #629 reference contract (workspace-message-render.lib.ts:206,
         // 275): the card's aria-label is exactly "File: <name>" ("Файл: <name>"
         // in ru), bare "File" when the reference carries no name; the status
@@ -3268,7 +3272,20 @@ component NativeMentionChip: Item {
             anchors.fill: parent
             acceptedButtons: Qt.LeftButton
             cursorShape: downloadCard.active ? Qt.ArrowCursor : Qt.PointingHandCursor
+            onPressed: downloadCard.forceActiveFocus()
             onClicked: downloadCard.activate()
+        }
+        // Keyboard focus indicator (same treatment as NativeMentionChip):
+        // visible only while the card holds keyboard focus.
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            visible: downloadCard.activeFocus
+            color: "transparent"
+            radius: 10
+            border.width: 2
+            border.color: root.colors["accent-soft"]
+            Accessible.ignored: true
         }
         Timer {
             id: attachmentConfirm
