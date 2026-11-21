@@ -11285,7 +11285,7 @@ private slots:
         };
         // A failing write keeps the previous value and shows the reference
         // toast text in the drawer locale (channel.keySharingUpdateFailed).
-        encryptedUiClick(scene.require("protectedChatKeySharingRow"));
+        encryptedUiClick(row);
         QTRY_COMPARE(puts, 1);
         QCOMPARE(putBody, (QJsonObject{{"allow_key_sharing_by_holders", false}}));
         QTRY_VERIFY(scene.text("protectedChatKeySharingError")
