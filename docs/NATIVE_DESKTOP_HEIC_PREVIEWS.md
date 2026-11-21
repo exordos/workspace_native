@@ -166,6 +166,30 @@ unmodified, echo guard passes, finished urn is `image` without dimensions).
   decode thread must survive one stuck codec call; if libheif ever blocks longer
   than the timeout the user sees the file-card fallback while the thread finishes
   (documented risk, libheif decode is pure computation with no network wait).
+* `NativeMessageImage` re-enters its lease `refresh()` via `Qt.callLater` when
+  `loadActive` changes. HEIC urns carry no `w`/`h` hints (composer urn
+  semantics), so the decoded size publishes through the unknown-size fallback
+  (240x180 -> 48x32); a synchronous refresh during the `loadActive` notify moves
+  `height`/`viewportY` - `loadActive`'s own dependencies - and Qt flags a binding
+  loop, freezing the projection at a stale value. The next-event-loop re-entry
+  keeps the lease contract identical (acquire is already asynchronous).
+  Window case `heicImagePaintsBubbleViewerRenderAndDownloadSavesOriginal`
+  reproduces the loop as a QtTest warning if the handler is made synchronous.
+
+## Window-layer cases (shipped with this issue)
+
+* `heicImagePaintsBubbleViewerRenderAndDownloadSavesOriginal`: bubble paints the
+  fixture's solid #4682b4 inside the inline-image bounds (grabWindow pixel
+  probes); the viewer slot lands ready on `slot-0-heif.png` (48x32, decoded
+  colour checked from the render file on disk); the download action saves the
+  byte-identical ORIGINAL container (urn WITHOUT w/h is the input contract).
+* `corruptHeicFallsBackToFileCardAndDisplayErrorSlotWithDownload`: a container
+  that sniffs HEIC but fails the decode (`heicTruncatedFixture` - the
+  `heicCorruptFixture` ancillary-box witness DECODES and exists to pin the
+  sniff-vs-decode split) settles the bubble Failed (file-card surface), marks
+  the viewer slot `display-error` with `kind == image`, keeps the download
+  button enabled (reference downloadEnabled), and saves the original corrupt
+  bytes verbatim.
 
 ## Open items for the implementation PR
 

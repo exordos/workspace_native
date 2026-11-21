@@ -97,7 +97,16 @@ Item {
     onImagesChanged: refresh()
     onReferenceChanged: refresh()
     onVisibleChanged: refresh()
-    onLoadActiveChanged: refresh()
+    // loadActive changes mid-propagation of its own binding (it reads
+    // viewportY/height). A synchronous refresh then publishes viewState
+    // geometry - the unknown-size fallback (240x180) collapsing to the
+    // decoded size, as every hint-less HEIC urn does - through
+    // height/viewportY back into loadActive's own dependency set, which Qt
+    // flags as a binding loop and freezes the projection at a stale value.
+    // Re-entering on the next event-loop turn keeps the lease contract
+    // identical (acquire is already asynchronous) while the write-back no
+    // longer lands inside the notify.
+    onLoadActiveChanged: Qt.callLater(refresh)
     Component.onCompleted: { initialized = true; refresh() }
     Component.onDestruction: {
         initialized = false

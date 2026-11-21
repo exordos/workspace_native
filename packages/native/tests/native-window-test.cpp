@@ -11,6 +11,7 @@
 #include "file-client.h"
 #include "avatar-images.h"
 #include "message-images.h"
+#include "support/heif-test-fixtures.h"
 #include "workspace-reference.h"
 
 #include <functional>
@@ -1491,6 +1492,23 @@ static QJsonObject mediaViewerVideoRow(const QString &uuid, const QString &fileU
     const auto urn = QStringLiteral("urn:video:%1?name=clip.mp4&content_type=video%2Fmp4&size=%2")
         .arg(fileUuid, QString::number(byteSize));
     auto row = message(QStringLiteral("Look\n\n![clip.mp4](%1)").arg(urn), uuid);
+    row["user_uuid"] = userId;
+    row["author_uuid"] = channelPeer; row["is_own"] = false;
+    row["pinned"] = false; row["reactions"] = QJsonObject{};
+    row["reaction_users"] = QJsonObject{}; row["updated_at"] = row.value("created_at");
+    return row;
+}
+
+// A markdown row carrying one HEIC image reference (issue #638). The urn
+// mirrors what the composer now produces for HEIC: urnType image WITHOUT
+// w/h (FileMetadata::urnKind forces image and skips the dimension probe),
+// so the surfaces must resolve the preview from the container, not metadata.
+static QJsonObject mediaViewerHeicRow(const QString &uuid, const QString &fileUuid,
+                                      qint64 byteSize, const QString &name = QStringLiteral("trip.heic"))
+{
+    const auto urn = QStringLiteral("urn:image:%1?name=%2&content_type=image%2Fheic&size=%3")
+        .arg(fileUuid, name, QString::number(byteSize));
+    auto row = message(QStringLiteral("Look\n\n![%1](%2)").arg(name, urn), uuid);
     row["user_uuid"] = userId;
     row["author_uuid"] = channelPeer; row["is_own"] = false;
     row["pinned"] = false; row["reactions"] = QJsonObject{};
@@ -21635,6 +21653,242 @@ mv -Tf "$root/.current-new" "$root/current"
             return t && t->property("text").toString() == QString("This video cannot be played"); })(), 6000);
         QVERIFY(!visibleItem(content, "mediaViewer-download")->property("enabled").toBool());
         click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #638 sec 4 (docs/NATIVE_DESKTOP_HEIC_PREVIEWS.md): a HEIC attachment
+    // paints an inline decoded preview in the bubble, the viewer shows a decoded
+    // PNG render (slot-<N>-heif.png) while the download keeps saving the
+    // untouched ORIGINAL container bytes (reference: the authorized original is
+    // the download artifact, the display blob is a display-only substitution).
+    void heicImagePaintsBubbleViewerRenderAndDownloadSavesOriginal()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QByteArray heic = heicFixture();
+        const QColor heicColor(0x46, 0x82, 0xb4); // fixture solid fill
+        const auto closeColor = [&](const QColor &a) {
+            return qAbs(a.red() - heicColor.red()) <= 12 && qAbs(a.green() - heicColor.green()) <= 12
+                && qAbs(a.blue() - heicColor.blue()) <= 12;
+        };
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = heic; result.rawContentType = "image/heic";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, heic);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "trip.heic";
+                metadata["content_type"] = "image/heic";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerHeicRow(first, fileA, heic.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("heic-preview.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("HEIC preview window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        // 1. Bubble thumbnail: the ISO-BMFF bytes decode through libheif and
+        // paint the fixture's solid fill inside the inline image bounds.
+        auto *bubble = visibleItem(content, "inline-image-" + first); QVERIFY(bubble);
+        QVERIFY(!bubble->property("failed").toBool());
+        const QRectF imageRect(bubble->mapToScene(QPointF{}), bubble->size());
+        QVERIFY2(imageRect.width() >= 40 && imageRect.height() >= 24,
+            qPrintable(QStringLiteral("bubble image painted at %1x%2")
+                .arg(imageRect.width()).arg(imageRect.height())));
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto pixels = window->grabWindow();
+            if (pixels.isNull() || !pixels.rect().contains(imageRect.toAlignedRect())) return false;
+            for (const auto &point : {QPointF(.25, .25), QPointF(.5, .5), QPointF(.75, .5), QPointF(.5, .75)}) {
+                const auto at = imageRect.topLeft() + QPointF(imageRect.width() * point.x(),
+                                                              imageRect.height() * point.y());
+                if (!closeColor(pixels.pixelColor(at.toPoint()))) return false;
+            }
+            return true;
+        })(), 8000);
+        // 2. Viewer: the slot stays loading through the decode and lands ready
+        // on the decoded PNG render, not on the ISO-BMFF original.
+        auto *viewer = controller.mediaViewer();
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return viewer->items().at(0).toMap().value("state").toString()
+            == QStringLiteral("ready"); })(), 10000);
+        const auto renderUrl = QUrl(viewer->items().at(0).toMap().value("url").toString());
+        QVERIFY2(renderUrl.toString().endsWith(QStringLiteral("/slot-0-heif.png")),
+            qPrintable(renderUrl.toString()));
+        QVERIFY(!renderUrl.toLocalFile().endsWith(QStringLiteral(".heic")));
+        const auto renderPath = renderUrl.toLocalFile();
+        QVERIFY2(QFile::exists(renderPath), qPrintable(renderPath));
+        const QImage render(renderPath);
+        QVERIFY(!render.isNull());
+        QCOMPARE(render.size(), QSize(48, 32));
+        QVERIFY2(closeColor(render.pixelColor(24, 16)),
+            qPrintable(render.pixelColor(24, 16).name()));
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-image")->isVisible());
+        // 3. Download saves the ORIGINAL container, never the render.
+        auto *downloadButton = visibleItem(content, "mediaViewer-download"); QVERIFY(downloadButton);
+        QVERIFY(downloadButton->property("enabled").toBool());
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        click(window, downloadButton);
+        QTRY_VERIFY_WITH_TIMEOUT(saveDialog->property("visible").toBool(), 4000);
+        QVERIFY(saveDialog->setProperty("currentFolder", QUrl::fromLocalFile(directory.path())));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("fileNameTextField"), 4000);
+        auto *filename = visibleItem("fileNameTextField");
+        click(filename->window(), filename);
+        QTest::keySequence(filename->window(), QKeySequence::SelectAll);
+        for (const auto character : QByteArray("original.heic"))
+            QTest::keyClick(filename->window(), character);
+        QCOMPARE(filename->property("text").toString(), QString("original.heic"));
+        QTRY_VERIFY_WITH_TIMEOUT(dialogButton("Save"), 4000);
+        auto *saveButton = dialogButton("Save");
+        QSignalSpy saveAccepted(saveDialog, SIGNAL(accepted())); QVERIFY(saveAccepted.isValid());
+        click(saveButton->window(), saveButton);
+        QTRY_COMPARE_WITH_TIMEOUT(saveAccepted.size(), 1, 4000);
+        const auto saved = QDir(directory.path()).filePath("original.heic");
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(saved), 4000);
+        QFile savedFile(saved); QVERIFY(savedFile.open(QIODevice::ReadOnly));
+        QCOMPARE(savedFile.readAll(), heic); // byte-identical original, not the PNG render
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #638 sec 4/5: a corrupt HEIC (sniffs as HEIC, fails to decode)
+    // falls back to the file-card surface in the bubble (failed preview with
+    // its save action) and to the viewer display-error slot, where download
+    // stays enabled and still saves the original bytes verbatim.
+    void corruptHeicFallsBackToFileCardAndDisplayErrorSlotWithDownload()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray broken = heicTruncatedFixture(); // sniffs HEIC, fails the decode
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = broken; result.rawContentType = "image/heic";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, broken);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "trip.heic";
+                metadata["content_type"] = "image/heic";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerHeicRow(second, fileB, broken.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("heic-broken.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Corrupt HEIC window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
+        // The bubble settles the HEIC entry Failed: the file-card surface with
+        // its save/retry action replaces the preview (reference display-error
+        // fallback; the save-action contract is pinned by
+        // receivedBrokenImageKeepsItsAttachmentSaveAction).
+        auto *brokenBubble = visibleItem(content, "inline-image-" + second); QVERIFY(brokenBubble);
+        QTRY_VERIFY_WITH_TIMEOUT(brokenBubble->property("failed").toBool(), 10000);
+        QVERIFY(images.failed(QStringLiteral("urn:image:%1?name=trip.heic&content_type=image%2Fheic&size=%2")
+            .arg(fileB, QString::number(broken.size()))));
+        // The viewer gallery keeps the broken attachment and marks the slot
+        // display-error (reference replaceItem), never dropping it from the strip.
+        auto *viewer = controller.mediaViewer();
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QCOMPARE(int(viewer->items().size()), 2);
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return viewer->items().at(1).toMap().value("state").toString()
+            == QStringLiteral("display-error"); })(), 10000);
+        QCOMPARE(viewer->items().at(1).toMap().value("kind").toString(), QString("image"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-status");
+            return t && t->property("text").toString()
+                == QString("This media cannot be displayed. You can download the file instead."); })(), 6000);
+        // Unlike a video display-error, an image slot stays downloadable
+        // (media-viewer-overlay.ui.tsx:64-68 downloadEnabled).
+        QVERIFY(visibleItem(content, "mediaViewer-download")->property("enabled").toBool());
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        click(window, visibleItem(content, "mediaViewer-download"));
+        QTRY_VERIFY_WITH_TIMEOUT(saveDialog->property("visible").toBool(), 4000);
+        QVERIFY(saveDialog->setProperty("currentFolder", QUrl::fromLocalFile(directory.path())));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("fileNameTextField"), 4000);
+        auto *filename = visibleItem("fileNameTextField");
+        click(filename->window(), filename);
+        QTest::keySequence(filename->window(), QKeySequence::SelectAll);
+        for (const auto character : QByteArray("broken.heic"))
+            QTest::keyClick(filename->window(), character);
+        QCOMPARE(filename->property("text").toString(), QString("broken.heic"));
+        QTRY_VERIFY_WITH_TIMEOUT(dialogButton("Save"), 4000);
+        auto *saveButton = dialogButton("Save");
+        QSignalSpy saveAccepted(saveDialog, SIGNAL(accepted())); QVERIFY(saveAccepted.isValid());
+        click(saveButton->window(), saveButton);
+        QTRY_COMPARE_WITH_TIMEOUT(saveAccepted.size(), 1, 4000);
+        const auto saved = QDir(directory.path()).filePath("broken.heic");
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(saved), 4000);
+        QFile savedFile(saved); QVERIFY(savedFile.open(QIODevice::ReadOnly));
+        QCOMPARE(savedFile.readAll(), broken); // the original bytes, corrupt or not
+        QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
     }
 
