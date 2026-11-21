@@ -40260,7 +40260,10 @@ private slots:
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
         const auto card = [&](const QString &id) { return visibleItem(content, "attachmentCard-" + id); };
-        QVERIFY(!card(first)); // No entry: the bubble keeps its plain link presentation.
+        // Issue #629: a reference with no coordinator entry keeps the card
+        // chrome in its idle form (glyph + label), it is no longer link-only.
+        QTRY_VERIFY(card(first));
+        QVERIFY(visibleItem(content, "attachmentCardGlyph-" + first));
         controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
         QTRY_VERIFY(card(first));
         QTRY_VERIFY(bool(binary)); // The transfer is genuinely in flight.
@@ -40272,7 +40275,12 @@ private slots:
             || !item(content, "attachmentCardSpinner-" + first)->isVisible());
         auto *firstCard = card(first);
         auto *firstAccessible = QAccessible::queryAccessibleInterface(firstCard); QVERIFY(firstAccessible);
-        QCOMPARE(firstAccessible->text(QAccessible::Name), "report.txt. " + downloading);
+        // Issue #629 reference contract: the accessible name is exactly
+        // "File: <name>"; the status wording is the description.
+        QCOMPARE(firstAccessible->text(QAccessible::Name),
+            locale == "ru" ? QString::fromUtf8("Файл: report.txt")
+                           : QString("File: report.txt"));
+        QCOMPARE(firstAccessible->text(QAccessible::Description), downloading);
         // A click while the download is active is ignored (lib.ts:26-34).
         const auto actionsWhileActive = downloadActions;
         click(window, firstCard);
@@ -40467,8 +40475,10 @@ private slots:
             QString("report.txt"));
         auto *card = visibleItem(content, "attachmentCard-" + first);
         auto *accessible = QAccessible::queryAccessibleInterface(card); QVERIFY(accessible);
-        QCOMPARE(accessible->text(QAccessible::Name),
-            QString("report.txt. ") + QString("Open"));
+        // Issue #629 accessible-name contract: name is exactly "File: <name>",
+        // the status wording ("Open") is the description.
+        QCOMPARE(accessible->text(QAccessible::Name), QString("File: report.txt"));
+        QCOMPARE(accessible->text(QAccessible::Description), QString("Open"));
     }
 
     void attachmentCardConfirmationExpiresAcrossUnrelatedDownloadUpdates()
@@ -41132,6 +41142,200 @@ private slots:
         QTest::qWait(60);
         QVERIFY(!newChat->hasActiveFocus());
         QVERIFY(!controller.inboxVisible());
+    }
+
+    void attachmentCardHitAreaAndKeyboardActivateDownload_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::newRow("en") << QStringLiteral("en");
+        QTest::newRow("ru") << QStringLiteral("ru");
+    }
+
+    void attachmentCardHitAreaAndKeyboardActivateDownload()
+    {
+        // Issue #629 (docs/NATIVE_DESKTOP_ATTACHMENT_CARD_HITAREA.md): clicking
+        // the icon center, the label or the card edge all open the save dialog
+        // for the same file uuid, and Enter/Space on a focused card fires the
+        // same action. Reference workspace_ui 56f0b89 hook.ts:282-305,481-521
+        // and workspace-message-list.ui.test.tsx 'downloads Workspace
+        // attachments when clicking the file icon %s' / 'activates Workspace
+        // attachment placeholders with Enter and Space'.
+        QFETCH(QString, locale);
+        QTemporaryDir directory;
+        MockServer server;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[report.docx](urn:file:" + returnedId
+                    + "?name=report.docx&content_type=application%2Fpdf&size=1258291)")}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        preferences.setLocale(locale);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        const auto tag = messageId + '-' + returnedId;
+        auto *card = visibleItem(content, "attachmentCard-" + tag); QVERIFY(card);
+        auto *cardItem = qobject_cast<QQuickItem *>(card); QVERIFY(cardItem);
+        // The reference aria-label is exactly "File: <name>" (ru "Файл: ...").
+        auto *accessible = QAccessible::queryAccessibleInterface(card); QVERIFY(accessible);
+        QCOMPARE(accessible->text(QAccessible::Name), locale == "ru"
+            ? QString::fromUtf8("Файл: report.docx") : QString("File: report.docx"));
+        QVERIFY(visibleItem(content, "attachmentCardGlyph-" + tag));
+        QVERIFY(!saveDialog->property("visible").toBool());
+        // Every hit target fires the same download route for the same uuid.
+        const auto expectSaveDialog = [&] {
+            QTRY_VERIFY_WITH_TIMEOUT(saveDialog->property("visible").toBool(), 4000);
+            QCOMPARE(window->property("downloadId").toString(), returnedId);
+            saveDialog->setProperty("visible", false);
+            QTest::qWait(100);
+        };
+        // Icon center: the click must pass through the glyph chrome onto the
+        // card hit area (the reference svg/path click).
+        auto *glyph = qobject_cast<QQuickItem *>(
+            visibleItem(content, "attachmentCardGlyph-" + tag)); QVERIFY(glyph);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            glyph->mapToScene(QPointF(glyph->width() / 2, glyph->height() / 2)).toPoint());
+        expectSaveDialog();
+        // Label.
+        auto *label = qobject_cast<QQuickItem *>(
+            visibleItem(content, "attachmentCardName-" + tag)); QVERIFY(label);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            label->mapToScene(QPointF(label->width() / 2, label->height() / 2)).toPoint());
+        expectSaveDialog();
+        // Card edge (background, bottom-right of the card, away from the text
+        // column): the fill hit area must cover it (reference card background).
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            cardItem->mapToScene(QPointF(cardItem->width() - 3, cardItem->height() - 3)).toPoint());
+        expectSaveDialog();
+        // Keyboard: Enter and Space on a focused card fire the same action
+        // (body-interactions.hook.ts:481-521). Focus needs an active window
+        // (same pattern as the other keyboard rows in this file).
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (auto *holder = window->activeFocusItem())
+            holder->setFocus(false);
+        cardItem->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(cardItem->hasActiveFocus(), 4000);
+        QTest::keyClick(window, Qt::Key_Space);
+        expectSaveDialog();
+        cardItem->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(cardItem->hasActiveFocus(), 4000);
+        QTest::keyClick(window, Qt::Key_Return);
+        expectSaveDialog();
+    }
+
+    void attachmentCardTabTraversalReachesCardAndActivatesByKey()
+    {
+        // Review 4652765385 (issue #629): the card must participate in the
+        // window's normal keyboard focus traversal - a Tab walker (explicitly
+        // no forceActiveFocus shortcut) has to reach the card and activate it
+        // with Enter and Space, the same way a browser user reaches the
+        // reference's real <button>. Reference workspace_ui 56f0b89
+        // workspace-message-body-interactions.hook.ts:481-521.
+        QTemporaryDir directory;
+        MockServer server;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[report.docx](urn:file:" + returnedId
+                    + "?name=report.docx&content_type=application%2Fpdf&size=1258291)")}};
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        const auto tag = messageId + '-' + returnedId;
+        auto *card = visibleItem(content, "attachmentCard-" + tag); QVERIFY(card);
+        auto *cardItem = qobject_cast<QQuickItem *>(card); QVERIFY(cardItem);
+        const auto expectSaveDialog = [&] {
+            QTRY_VERIFY_WITH_TIMEOUT(saveDialog->property("visible").toBool(), 4000);
+            QCOMPARE(window->property("downloadId").toString(), returnedId);
+            saveDialog->setProperty("visible", false);
+            QTest::qWait(100);
+        };
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        if (auto *holder = window->activeFocusItem())
+            holder->setFocus(false);
+        // Real traversal only: press Tab until the chain lands on the card.
+        const auto tabUntilCard = [&](const char *stage) {
+            for (int tab = 0; tab < 160 && !cardItem->hasActiveFocus(); ++tab)
+                QTest::keyClick(window, Qt::Key_Tab);
+            QVERIFY2(cardItem->hasActiveFocus(),
+                QString("Tab traversal must reach the attachment card (stage %1)")
+                    .arg(stage).toUtf8().constData());
+        };
+        tabUntilCard("initial");
+        QTest::keyClick(window, Qt::Key_Return);
+        expectSaveDialog();
+        // Closing the save dialog parks focus inside the composer sub-chain,
+        // so anchor the next walk on the content root and let Tab do all the
+        // traversal; Space must fire the same route.
+        window->contentItem()->forceActiveFocus();
+        tabUntilCard("after-dialog");
+        QTest::keyClick(window, Qt::Key_Space);
+        expectSaveDialog();
+        // Backward traversal passes through the card too: Shift+Tab leaves it
+        // to the message bubble that precedes it in the chain, and the walk
+        // reaches the card again from the content root (tabUntilCard above).
+        window->contentItem()->forceActiveFocus();
+        tabUntilCard("directions");
+        QTest::keyClick(window, Qt::Key_Tab, Qt::ShiftModifier);
+        QVERIFY(!cardItem->hasActiveFocus());
+        QCOMPARE(window->activeFocusItem()->objectName(), "message-" + messageId);
     }
 };
 
