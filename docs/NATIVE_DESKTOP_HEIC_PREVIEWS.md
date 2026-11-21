@@ -53,9 +53,15 @@ libraries instead (same precedent as `libmd4c`):
   missing libheif fails configure exactly like missing md4c, so release binaries
   never silently lose previews.
 * Add both packages to the apt sets in `.github/workflows/linux-release.yml` and
-  to the packaged runtime (patchelf-bundled libs plus the libheif plugin
-  directory; verify plugin dlopen from the installed runtime in
-  `verify-installed-runtime.py`).
+  to the packaged runtime: CMake installs the `libheif-libde265.so` plugin into
+  `lib/heif-plugins` and the `libde265.so.0*` runtime libraries into `lib/`
+  (they are dlopen'd, so Qt's ELF deployment never sees them);
+  `FinalizeLinuxRuntime` gives `libheif`/`libde265` the package `$ORIGIN` and
+  the plugin tree `$ORIGIN:$ORIGIN/..` so their transitive dependencies resolve
+  inside the package; the installed runtime probe (`native-runtime-probe`, run
+  by `verify-installed-runtime.py`) decodes the HEVC fixture and checks the
+  mapped plugin paths, so a package that cannot dlopen its bundled libde265
+  fails the release gate.
 * Licensing: LGPL shared linking; record libheif/libde265 in the about/license
   dataset (the `native-about-policy` / `licenses-dataset-test` catalog must name
   both, mirroring the reference `LICENSES.md` + bundled `heic-license.txt`).
@@ -68,10 +74,12 @@ libraries instead (same precedent as `libmd4c`):
   library does NOT auto-register its codec plugins from
   `LIBHEIF_PLUGIN_DIRECTORY`; without an explicit `heif_load_plugins` pass the
   HEVC decoder is invisible and every decode fails. `heifDecodeRgba` runs it
-  once per process over `heif_get_plugin_directories()` (built-in path +
-  `LIBHEIF_PLUGIN_PATHS`). The packaged runtime must therefore ship the
-  libheif plugin tree and point `LIBHEIF_PLUGIN_PATHS` (or the deploy-bundled
-  equivalent) at it - the open installed-runtime check below covers exactly this.
+  once per process: the deploy-bundled tree next to the executable
+  (`lib/heif-plugins`) is tried first and is authoritative when it registers a
+  plugin; otherwise every directory `heif_get_plugin_directories()` reports
+  (built-in path + `LIBHEIF_PLUGIN_PATHS`) is scanned, which is what an
+  unpackaged development build uses. The installed-runtime check in the probe
+  (see decode backend above) covers the bundled-tree path.
 * Scope refinement: `REQUIRED` at configure time applies to Linux (the shipping
   release platform). The macOS/Windows `desktop-platform-packages` jobs do not
   provision libheif yet, so non-Linux builds compile a decode fallback that
@@ -194,6 +202,13 @@ unmodified, echo guard passes, finished urn is `image` without dimensions).
 ## Open items for the implementation PR
 
 * Verify installed runtime resolves the libde265 plugin from the bundled tree.
+  Resolved: `verify-installed-runtime.py` asserts `libheif`, `libde265` and the
+  `lib/heif-plugins` plugin tree ship inside the package, and
+  `native-runtime-probe` decodes the HEVC fixture while its mapped-library
+  prefix check keeps `libheif.so`/`libde265.so` and their transitive
+  dependencies (libsharpyuv) inside the package, so a package that cannot
+  dlopen its bundled decoder leaks to system libraries and fails the
+  package-linux gate that caught this round.
 * Confirm viewer download path is untouched by display-blob substitution.
 * ~~Grep for tests asserting image MIME whitelist before enabling composer
   HEIC input.~~ Resolved: the composer attach dialog carries no MIME/name

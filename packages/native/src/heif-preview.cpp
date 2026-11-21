@@ -1,5 +1,8 @@
 #include "heif-preview.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QRegularExpression>
 
 #ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
@@ -118,19 +121,31 @@ namespace {
 // Ubuntu builds libheif with the codec plugins in a separate directory that
 // the library does NOT auto-register: without heif_load_plugins the HEVC
 // decoder stays invisible and every preview decode fails. Run once per
-// process over every directory libheif itself reports (built-in path plus
-// LIBHEIF_PLUGIN_PATHS, which the installed runtime uses for the bundled
-// plugin tree).
+// process. The deploy-bundled plugin tree next to the executable
+// (lib/heif-plugins) is authoritative: when the package ships it, the system
+// directories are never consulted, so an installed package always decodes with
+// its own bundled decoder (the installed-runtime probe maps plugin paths and
+// fails if any codec library resolves outside the package). Unpackaged builds
+// have no such tree and fall back to every directory libheif itself reports
+// (built-in path plus LIBHEIF_PLUGIN_PATHS).
 void ensureHeifPluginsLoaded()
 {
     static std::once_flag loadedOnce;
     std::call_once(loadedOnce, [] {
+        const auto loadDirectory = [](const QByteArray &directory) {
+            const heif_plugin_info *infos[16] = {};
+            int count = 0;
+            heif_load_plugins(directory.constData(), infos, &count, 16);
+        };
+        const QString bundled = QCoreApplication::applicationDirPath()
+            + QStringLiteral("/../lib/heif-plugins");
+        if (QFileInfo::exists(bundled)) {
+            loadDirectory(QDir::cleanPath(bundled).toLocal8Bit());
+            return;
+        }
         if (const char *const *dirs = heif_get_plugin_directories()) {
-            for (int i = 0; dirs[i] != nullptr; ++i) {
-                const heif_plugin_info *infos[16] = {};
-                int count = 0;
-                heif_load_plugins(dirs[i], infos, &count, 16);
-            }
+            for (int i = 0; dirs[i] != nullptr; ++i)
+                loadDirectory(QByteArray(dirs[i]));
         }
     });
 }

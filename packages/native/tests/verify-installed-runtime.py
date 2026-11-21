@@ -70,6 +70,14 @@ def verify(prefix, pid=None):
     sqlite_plugins += list((plugins/"sqldrivers").glob("*qsqlite*.dylib"))
     assert sqlite_plugins, "Missing deployed SQLite cache driver"
     assert all(file.resolve().is_relative_to(prefix) for file in sqlite_plugins), "SQLite driver escapes package"
+    if not bundles:
+        # HEIC previews (#638): libheif, the libde265 runtime library and the
+        # dlopen'd plugin tree must ship inside the package - the installed
+        # runtime probe additionally decodes a HEVC fixture through them.
+        for pattern, what in (("libheif.so.*", "libheif"),
+                              ("libde265.so.0*", "libde265"),
+                              ("libheif-libde265.so", "libheif libde265 plugin")):
+            assert list(prefix.rglob(pattern)), f"Missing bundled {what} (HEIC previews #638)"
     executable_magic = b""
     if not bundles:
         with binary.open("rb") as executable:

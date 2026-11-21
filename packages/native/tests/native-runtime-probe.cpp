@@ -1,8 +1,10 @@
 // Installed Linux runtime regression: synthetic transient keys, no account I/O or network.
 #include "native-chat-crypto.h"
 #include "native-controller.h"
+#include "heif-preview.h"
 #include "image-decode-fixtures.h"
 #include "native-image-input.h"
+#include "support/heif-test-fixtures.h"
 
 #include <QBuffer>
 #include <QImageReader>
@@ -76,6 +78,18 @@ int main(int argc, char **argv)
     }
     imageRoundTrips.insert(QStringLiteral("svg"), svgDecoded);
     imagesDecoded = imagesDecoded && svgDecoded;
+    // HEIC preview decode: the fixture is HEVC-encoded, so this only passes
+    // when the libde265 plugin loaded from a working plugin tree - in the
+    // installed runtime that is the deploy-bundled lib/heif-plugins.
+    QImage heifImage;
+    QString heifError;
+    const bool heifDecoded = workspace::heifDecodeRgba(heicFixture(), heifImage, heifError);
+    bool heifOkay = heifDecoded && heifImage.size() == QSize(48, 32);
+    if (heifOkay) {
+        const auto solid = heifImage.pixelColor(24, 16);
+        heifOkay = solid.red() == 0x46 && solid.green() == 0x82
+            && solid.blue() == 0xb4 && solid.alpha() == 255;
+    }
     const bool tls = QSslSocket::supportsSsl();
     QFile maps("/proc/self/maps");
     if (!maps.open(QIODevice::ReadOnly)) return 7;
@@ -86,7 +100,8 @@ int main(int argc, char **argv)
         if (!path.contains("/libQt6") && !path.contains("/qt6/plugins/")
             && !path.contains("/libcrypto.so") && !path.contains("/libssl.so")
             && !path.contains("/libwebp") && !path.contains("/libpng")
-            && !path.contains("/libjpeg") && !path.contains("/libsharpyuv") && !path.contains("/libmng") && !path.contains("/libtiff") && !path.contains("/liblcms2")) continue;
+            && !path.contains("/libjpeg") && !path.contains("/libsharpyuv") && !path.contains("/libmng") && !path.contains("/libtiff") && !path.contains("/liblcms2")
+            && !path.contains("/libheif.so") && !path.contains("/libde265.so")) continue;
         allInside = allInside && QFileInfo(path).canonicalFilePath().startsWith(prefix);
         cryptoMapped = cryptoMapped || path.contains("/libcrypto.so");
         sslMapped = sslMapped || path.contains("/libssl.so");
@@ -99,11 +114,12 @@ int main(int argc, char **argv)
     const QJsonObject output{{"displayedLicenses", QJsonDocument::fromJson(workspace::NativeController::licensesDatasetJson().toUtf8()).array()},
         {"imageRoundTrips", imageRoundTrips}, {"imagesDecoded", imagesDecoded},
         {"svgDecodeError", svgDecoded ? QString{} : svgReader.errorString()},
+        {"heifDecode", heifOkay}, {"heifDecodeError", heifOkay ? QString{} : heifError},
         {"runtimePaths", runtimePaths}, {"messageRoundTrip", true}, {"grantRoundTrip", true},
         {"tlsSupported", tls}, {"tlsBackend", QSslSocket::activeBackend()}, {"tlsVersion", QSslSocket::sslLibraryVersionString()},
         {"runtimePathsInsidePrefix", allInside}, {"cryptoMapped", cryptoMapped}, {"sslMapped", sslMapped},
         {"relevantLibraries", paths.size()}};
     const auto json = QJsonDocument(output).toJson(QJsonDocument::Compact);
     if (std::fwrite(json.constData(), 1, size_t(json.size()), stdout) != size_t(json.size())) return 9;
-    return tls && allInside && cryptoMapped && sslMapped && imagesDecoded ? 0 : 8;
+    return tls && allInside && cryptoMapped && sslMapped && imagesDecoded && heifOkay ? 0 : 8;
 }
