@@ -25,6 +25,12 @@ Item {
     // Pulse bumped on every catalog/guard transition; the row and guard
     // bindings below depend on it and re-resolve live while the menu is open.
     property int stateTick: 0
+    // Review finding 4652383415: the read/done/notification rows close the
+    // menu before dispatch, so their failures need this surface's notice (the
+    // rename dialog keeps its inline error). The tag names which action the
+    // last dispatch from THIS instance was waiting for, attributing the
+    // finished signal to the surface that actually sent the write.
+    property string dispatchedNotice: ""
     readonly property var topicRow: stateTick >= 0 ? resolveRow() : null
     readonly property var actionState: stateTick >= 0 && targetTopic.length
         ? controller.topicActionState(targetStream, targetTopic) : ({})
@@ -110,6 +116,7 @@ Item {
         targetStream = rowStream
         targetTopic = topic
         targetOwner = controller.ownerKey
+        block.dispatchedNotice = ""
         // The menu parent is the window overlay; position it at the requested
         // anchor point (reference context anchor: sideOffset 4, align start -
         // the caller maps its own press/row point).
@@ -139,6 +146,20 @@ Item {
                 && stream === topicRenameDialog.renameStream && topic === topicRenameDialog.renameTopic) {
                 topicRenameDialog.submitted = true
                 if (ok) topicRenameDialog.close()
+            }
+            // Review finding 4652383415: a failed read/notification/done
+            // write closes the menu before the answer lands, so surface the
+            // settled error as this surface's notice. Rename failures stay
+            // inside the dialog (pinned by the renewal case).
+            if (action === block.dispatchedNotice && stream === block.targetStream
+                && topic === block.targetTopic) {
+                block.dispatchedNotice = ""
+                if (ok) return
+                const noticeState = block.controller.topicActionState(stream, topic)
+                const message = String(noticeState[action + "Error"] || "")
+                if (!message.length) return
+                topicActionErrorText.text = message
+                topicActionErrorToast.open()
             }
         }
     }
@@ -233,9 +254,11 @@ Item {
                                 onClicked: {
                                     const selected = levelSegment.isCurrent
                                     topicMenu.close()
-                                    if (!selected)
+                                    if (!selected) {
+                                        block.dispatchedNotice = "notifications"
                                         block.controller.applyTopicAction(block.targetStream, block.targetTopic,
                                             "notifications", block.modeForLevel(String(modelData)))
+                                    }
                                 }
                             }
                         }
@@ -256,6 +279,7 @@ Item {
             enabled: visible && !block.actionState.readPending
             onTriggered: {
                 topicMenu.close()
+                block.dispatchedNotice = "read"
                 block.controller.applyTopicAction(block.targetStream, block.targetTopic, "read", "")
             }
         }
@@ -284,6 +308,7 @@ Item {
             enabled: !block.actionState.toggle_donePending
             onTriggered: {
                 topicMenu.close()
+                block.dispatchedNotice = "toggle_done"
                 block.controller.applyTopicAction(block.targetStream, block.targetTopic, "toggle_done", "")
             }
         }
@@ -447,5 +472,43 @@ Item {
                 }
             }
         }
+    }
+
+    // Action-failure notice (review finding 4652383415). Contract mirrors the
+    // accepted ownStatusErrorToast (Main.qml): top-right, auto-dismiss after
+    // 5 s, AlertMessage for screen readers. One notice per menu surface, so
+    // the sidebar and the channel drawer never duplicate or steal each other's
+    // feedback (dialogSurface routes the test hook, as for the rename popup).
+    Popup {
+        id: topicActionErrorToast
+        objectName: "topicActionErrorToast"
+        property string dialogSurface: block.surface
+        readonly property string noticeText: topicActionErrorText.text
+        parent: Overlay.overlay
+        x: Math.max(16, Overlay.overlay.width - width - 16)
+        y: 16
+        z: 10000
+        width: Math.min(384, Overlay.overlay.width - 32)
+        leftPadding: 16; rightPadding: 16; topPadding: 12; bottomPadding: 12
+        closePolicy: Popup.NoAutoClose
+        modal: false
+        focus: false
+        background: Rectangle {
+            radius: 8
+            color: Qt.rgba(block.colors.danger.r, block.colors.danger.g, block.colors.danger.b, 0.1)
+            border.color: Qt.rgba(block.colors.danger.r, block.colors.danger.g, block.colors.danger.b, 0.4)
+        }
+        contentItem: Text {
+            id: topicActionErrorText
+            objectName: "topicActionErrorText"
+            text: ""
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: block.colors.danger
+            font.pixelSize: 14
+            Accessible.role: Accessible.AlertMessage
+            Accessible.name: text
+        }
+        Timer { interval: 5000; running: topicActionErrorToast.visible; onTriggered: topicActionErrorToast.close() }
     }
 }

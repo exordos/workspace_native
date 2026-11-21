@@ -1028,6 +1028,184 @@ private slots:
         // the peer stream's topics still come from its own catalog response.
         QCOMPARE(fixture.controller.selectedStream(), peerStream);
     }
+
+    void topicActionSettlingIntoTheNewlySelectedStreamReconcilesSelectedCatalog()
+    {
+        // Review finding 4652383420: the reply must reconcile the catalog the
+        // route renders at REPLY time. A sidebar (non-current) write whose
+        // stream becomes current before the held reply lands used to update
+        // only the inbox slot, leaving the selected catalog stale.
+        Fixture fixture;
+        const auto peerStream = QStringLiteral("96300000-0000-4000-8000-000000000001");
+        const auto peerTopic = QStringLiteral("96300000-0000-4000-8000-000000000002");
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", peerStream}, {"project_id", projectId},
+                    {"name", "Peer channel"}, {"encryption", false}}}};
+        };
+        QJsonObject peerDto{{"uuid", peerTopic}, {"project_id", projectId},
+            {"stream_uuid", peerStream}, {"name", "Peer topic"},
+            {"notification_mode", "default"}, {"is_done", false}};
+        fixture.topics = [&](const Request &request) {
+            QJsonArray rows;
+            rows.append(QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}});
+            return Response{rows};
+        };
+        int posts = 0;
+        bool committed = false;
+        std::function<void()> release;
+        const auto base = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/"
+                    + peerTopic + "/actions/notifications/invoke") {
+                ++posts;
+                // The reply carries the committed DTO, but the commit only
+                // lands with the delivery: the held window is exactly the
+                // race the reviewer described - the route moves before the
+                // server truth has reached any client catalog.
+                QJsonObject written = peerDto;
+                written["notification_mode"] = request.body.value("notification_mode").toString();
+                Response response{written};
+                response.defer = [&](auto finish) {
+                    release = [&committed, finish] {
+                        committed = true;
+                        finish();
+                    };
+                };
+                return response;
+            }
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == peerStream) {
+                QJsonObject snapshot = peerDto;
+                if (!committed) snapshot["notification_mode"] = "default";
+                QJsonArray rows;
+                rows.append(snapshot);
+                return Response{rows};
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start({}, 2));
+        fixture.controller.toggleSidebarStream(peerStream);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto rows = fixture.controller.sidebarTopicState(peerStream, true).value("rows").toList();
+            return std::any_of(rows.cbegin(), rows.cend(), [&](const QVariant &row) {
+                return row.toMap().value("id").toString() == peerTopic; });
+        })(), 4000);
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(peerStream, peerTopic, "notifications", "follow");
+        QTRY_COMPARE(posts, 1);
+        QVERIFY(bool(release));
+        QVERIFY(fixture.controller.topicActionState(peerStream, peerTopic)
+            .value("notificationsPending").toBool());
+        // The route moves to the peer while the reply is in flight: the
+        // rendered catalog is now m_topics, still holding the pre-write rows.
+        fixture.controller.selectStream(peerStream);
+        QTRY_VERIFY(!fixture.controller.busy());
+        release();
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &args : finished)
+                if (args.at(0).toString() == peerStream && args.at(1).toString() == peerTopic
+                    && args.at(2).toString() == "notifications" && args.at(3).toBool())
+                    return true;
+            return false;
+        })(), 4000);
+        QVERIFY(!fixture.controller.topicActionState(peerStream, peerTopic)
+            .value("notificationsPending").toBool());
+        // The newly selected catalog shows the committed write (direct mirror
+        // or reconcile-by-read - the reviewer's contract is the truth, not a
+        // particular path).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &value : fixture.controller.topics())
+                if (value.toMap().value("id").toString() == peerTopic)
+                    return value.toMap().value("notificationMode").toString() == "follow";
+            return false;
+        })(), 4000);
+    }
+
+    void topicActionInterruptedOnSidebarStreamReconcilesThatStream()
+    {
+        // Review finding 4652383421: the renewal sweep re-reads the topic
+        // catalog of every affected stream, not only the selected one - a
+        // committed-but-unanswered sidebar write must not stay missing from
+        // that stream's sidebar rows.
+        Fixture fixture;
+        const auto peerStream = QStringLiteral("96310000-0000-4000-8000-000000000001");
+        const auto peerTopic = QStringLiteral("96310000-0000-4000-8000-000000000002");
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", peerStream}, {"project_id", projectId},
+                    {"name", "Peer channel"}, {"encryption", false}}}};
+        };
+        QJsonObject peerDto{{"uuid", peerTopic}, {"project_id", projectId},
+            {"stream_uuid", peerStream}, {"name", "Peer topic"},
+            {"notification_mode", "default"}, {"is_done", false}};
+        fixture.topics = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == peerStream) {
+                QJsonArray rows;
+                rows.append(peerDto);
+                return Response{rows};
+            }
+            QJsonArray rows;
+            rows.append(QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}});
+            return Response{rows};
+        };
+        int posts = 0;
+        std::function<void()> release;
+        const auto base = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/"
+                    + peerTopic + "/actions/toggle_done/invoke") {
+                ++posts;
+                // The server commits on arrival and the reply is held - the
+                // renewal retires the transport, so only the sweep can bring
+                // the sidebar slot to the server's truth.
+                peerDto["is_done"] = true;
+                Response response{peerDto};
+                response.defer = [&](auto finish) { release = std::move(finish); };
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start({}, 2));
+        fixture.controller.toggleSidebarStream(peerStream);
+        const auto slotDone = [&] {
+            const auto rows = fixture.controller.sidebarTopicState(peerStream, true).value("rows").toList();
+            for (const auto &value : rows) {
+                const auto row = value.toMap();
+                if (row.value("id").toString() == peerTopic)
+                    return row.value("done").toBool();
+            }
+            return false;
+        };
+        QTRY_VERIFY(fixture.controller.sidebarTopicState(peerStream, true).value("rows").toList().size() == 1);
+        QVERIFY(!slotDone());
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(peerStream, peerTopic, "toggle_done", "");
+        QTRY_COMPARE(posts, 1);
+        QVERIFY(bool(release));
+        fixture.api.setAccessToken("sidebar-636-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            for (const auto &args : finished)
+                if (args.at(0).toString() == peerStream && args.at(1).toString() == peerTopic
+                    && args.at(2).toString() == "toggle_done" && !args.at(3).toBool())
+                    return true;
+            return false;
+        })(), 4000);
+        QVERIFY(fixture.controller.topicActionState(peerStream, peerTopic).value("toggle_doneError")
+            .toString() == "The topic done update was interrupted by a session refresh. Try again.");
+        // The sidebar slot is invalidated and re-read: the committed write is
+        // present after the sweep (it was absent before the fix).
+        QTRY_VERIFY_WITH_TIMEOUT(slotDone(), 4000);
+        release();
+    }
 };
 
 QTEST_MAIN(ControllerTopicsTest)

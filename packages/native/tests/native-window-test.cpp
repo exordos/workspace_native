@@ -3424,7 +3424,7 @@ struct TopicMenuScene
     QString directTopic = QStringLiteral("96100000-0000-4000-8000-000000000002");
     QString extraTopic = QStringLiteral("96100000-0000-4000-8000-000000000003");
     QJsonObject mainTopicDto, extraTopicDto, directTopicDto;
-    bool streamMuted = false, deferNextAction = false;
+    bool streamMuted = false, deferNextAction = false, failNextAction = false;
     std::function<void()> pendingDeliver;
     int notifPosts = 0, readPosts = 0, renamePuts = 0, donePosts = 0;
     QJsonObject lastBody;
@@ -3447,7 +3447,12 @@ struct TopicMenuScene
         // long before the server calls this handler (a reference capture made
         // every fallback hit a dangling std::function and crashed the case).
         const auto fallback = std::move(fixture.server.handler);
-        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+        // Same lifetime contract for the stream DTO (review finding
+        // 4652383423): directStreamDto is constructor-local, so the handler
+        // must own a copy - a reference capture reads a dead stack frame on
+        // every stream-list request the login flow issues after construction.
+        const auto directStreamCopy = directStreamDto;
+        fixture.server.handler = [&, fallback, directStreamCopy](const Request &request) -> Response {
             const auto path = request.target.path();
             if (request.method == "GET" && path.endsWith("/streams/"))
             {
@@ -3455,7 +3460,7 @@ struct TopicMenuScene
                 channel["default_topic_uuid"] = topicId;
                 if (streamMuted)
                     channel["notification_mode"] = "muted";
-                return {QJsonArray{channel, directStreamDto}};
+                return {QJsonArray{channel, directStreamCopy}};
             }
             if (path.endsWith("/stream_topics/") && request.method == "GET")
             {
@@ -3479,6 +3484,7 @@ struct TopicMenuScene
             if (request.method == "POST" && path.endsWith("/actions/notifications/invoke"))
             {
                 ++notifPosts;
+                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
                 lastBody = request.body;
                 auto &dto = topicDto(path);
                 dto["notification_mode"] = request.body.value("notification_mode").toString();
@@ -3487,6 +3493,7 @@ struct TopicMenuScene
             if (request.method == "POST" && path.endsWith("/actions/read/invoke"))
             {
                 ++readPosts;
+                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
                 lastBody = request.body;
                 auto &dto = topicDto(path);
                 dto["unread_count"] = 0;
@@ -3496,6 +3503,7 @@ struct TopicMenuScene
             if (request.method == "POST" && path.endsWith("/actions/toggle_done/invoke"))
             {
                 ++donePosts;
+                if (failNextAction) { failNextAction = false; return {QJsonObject{}, 500}; }
                 lastBody = request.body;
                 auto &dto = topicDto(path);
                 dto["is_done"] = !dto.value("is_done").toBool();
@@ -40912,6 +40920,55 @@ private slots:
         click(scene.window.data(), scene.row(QStringLiteral("topicDoneAction")));
         QTRY_COMPARE(scene.donePosts, 2);
         QTRY_VERIFY(!title()->property("font").value<QFont>().strikeOut());
+    }
+
+    void topicContextMenuActionFailureSurfacesErrorNotice()
+    {
+        // Review finding 4652383415: the read/done/notification rows close
+        // the menu before dispatch, so a failed write needs its own notice -
+        // only the rename dialog had an error surface before this case.
+        TopicMenuScene scene;
+        const auto notice = [&] { return scene.popup(QStringLiteral("topicActionErrorToast")); };
+        const auto noticeText = [&] {
+            auto *toast = notice();
+            return toast ? toast->property("noticeText").toString() : QString();
+        };
+        // Mark as read fails (unread Backlog row).
+        scene.openMenu(QStringLiteral("topic-") + scene.extraTopic);
+        auto *mark = scene.row(QStringLiteral("topicMarkReadAction"));
+        QVERIFY(mark);
+        scene.failNextAction = true;
+        click(scene.window.data(), mark);
+        QTRY_COMPARE(scene.readPosts, 1);
+        QVERIFY(!scene.menuOpen());
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not mark the topic as read. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+        // Notification level switch fails.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *followed = scene.row(QStringLiteral("topicNotifSegment-followed"));
+        QVERIFY(followed);
+        scene.failNextAction = true;
+        click(scene.window.data(), followed);
+        QTRY_COMPARE(scene.notifPosts, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not update the topic notifications. Please try again."));
+        QMetaObject::invokeMethod(notice(), "close");
+        // Done toggle fails.
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *done = scene.row(QStringLiteral("topicDoneAction"));
+        QVERIFY(done);
+        scene.failNextAction = true;
+        click(scene.window.data(), done);
+        QTRY_COMPARE(scene.donePosts, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(notice() && notice()->property("opened").toBool(), 4000);
+        QCOMPARE(noticeText(), QStringLiteral("Could not update the topic. Please try again."));
+        // The guard released: the same action is immediately actionable again.
+        QMetaObject::invokeMethod(notice(), "close");
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        QVERIFY(scene.row(QStringLiteral("topicDoneAction"))->property("enabled").toBool());
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.menuOpen());
     }
 
     void topicContextMenuStreamMenuSiblingKeepsItsPins()

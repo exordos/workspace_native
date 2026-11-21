@@ -4394,9 +4394,21 @@ void NativeController::interruptTopicActions()
         settleTopicAction(stream, topic, action, false, interrupted);
         emit channelTopicActionFinished(topic, action, false);
         emit topicActionFinished(stream, topic, action, false);
-        if (!reconciled && authenticated() && !m_stream.isEmpty()) {
-            reconciled = true;
-            loadTopics(); // reconcile-by-read: present the server's truth, not a guess
+        // Review finding 4652383421: the interrupted write may have committed
+        // on ANY cached stream, so every affected catalog is invalidated and
+        // re-read - the selected route through loadTopics(), an expanded
+        // sidebar stream by staling and re-hydrating its inbox slot. The
+        // retired stream may not be the one the user is looking at; reloading
+        // only m_stream left a committed sidebar write missing.
+        if (authenticated()) {
+            staleCache(NativeCache::Kind::Topics, stream);
+            if (stream == m_stream && !m_stream.isEmpty() && !reconciled) {
+                reconciled = true;
+                loadTopics(); // reconcile-by-read: present the server's truth, not a guess
+            } else if (stream != m_stream && m_inboxTopics.contains(stream)) {
+                m_inboxStaleTopics.insert(stream);
+                requestSidebarTopics(stream);
+            }
         }
     }
 }
@@ -4484,17 +4496,16 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
             ? parseTopic(dto, m_session->project(), stream) : std::optional<Topic>{};
         const bool accepted = response.ok() && updated && updated->uuid == topic
             && (!dto.contains("user_uuid") || dto.value("user_uuid").toString() == m_session->user());
-        if (current) {
+        // Review finding 4652383420: reconciliation follows the route at
+        // REPLY time, not the current flag captured at dispatch - the stream
+        // may have become current (or moved away) while the write flew.
+        if (m_api->generation() != generation) return;
+        if (m_stream == stream) {
             // Issue #645: a generation bump retires this transport; the
-            // interrupt sweep owns settling it. A route move does NOT strand
-            // the guard: the state key is stream|topic, so settle it without
-            // touching the newly current route's catalog.
-            if (m_api->generation() != generation) return;
-            if (m_stream != stream) {
-                if (accepted) staleCache(NativeCache::Kind::Topics, stream);
-                finish(accepted);
-                return;
-            }
+            // interrupt sweep owns settling it. The route may have arrived
+            // here after dispatch: settle by reconciling THIS stream's
+            // catalog (mirror when the catalog is still the one the request
+            // raced, otherwise reconcile-by-read).
             staleCache(NativeCache::Kind::Topics, stream);
             auto row = std::find_if(m_topics.begin(), m_topics.end(),
                 [&](const Topic &t) { return t.uuid == topic; });
@@ -4527,7 +4538,14 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
             finish(accepted);
             return;
         }
-        if (m_api->generation() != generation) return;
+        if (current) {
+            // Dispatched as current, the route moved away before the reply:
+            // the write settles and the retired route's cache goes stale,
+            // but the newly current route's catalog is never touched.
+            if (accepted) staleCache(NativeCache::Kind::Topics, stream);
+            finish(accepted);
+            return;
+        }
         // Issue #645: a collapsed sidebar stream still settles its guard -
         // the row may have vanished but the pending flag must not strand.
         if (!m_inboxTopics.contains(stream)) { finish(accepted); return; }
