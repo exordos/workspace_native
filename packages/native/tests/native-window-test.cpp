@@ -40095,6 +40095,153 @@ private slots:
         if (!closeIncubatedTestWindow(engine, window))
             QFAIL("wrapped mention chip teardown");
     }
+
+    void receivedAttachmentCardShowsDownloadProgressOpenAndRetry_data()
+    {
+        QTest::addColumn<QString>("locale"); QTest::addColumn<QString>("mode");
+        for (const auto &locale : {QStringLiteral("en"), QStringLiteral("ru")})
+            for (const auto &mode : {QStringLiteral("light"), QStringLiteral("dark")})
+                QTest::newRow(qPrintable(locale + '-' + mode)) << locale << mode;
+    }
+
+    void receivedAttachmentCardShowsDownloadProgressOpenAndRetry()
+    {
+        // docs/NATIVE_DESKTOP_ATTACHMENT_DOWNLOAD_STATE.md (issue #631; reference
+        // workspace_ui 6b9f27f workspace-message-attachment-download.ui.tsx and
+        // attachment-card.ui.tsx:120-183).
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        QTemporaryDir directory;
+        const auto destination = directory.filePath("report.txt");
+        const auto failedDestination = directory.filePath("broken.txt");
+        MockServer server;
+        bool failFile = false;
+        int downloadActions = 0;
+        std::function<void()> binary;
+        auto release = qScopeGuard([&] { if (binary) binary(); });
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/messages/"))
+                return Response{QJsonArray{message("[Quarterly report](urn:file:" + returnedId
+                    + "?name=report.txt&content_type=text%2Fplain&size=2) and [broken file](urn:file:"
+                    + messageId + "?name=broken.txt)")}};
+            if (path.endsWith("/actions/download")) {
+                ++downloadActions;
+                if (failFile) return Response{QJsonObject{}, 503};
+                Response response{QJsonObject{}};
+                response.defer = [&](auto send) { binary = std::move(send); };
+                return response;
+            }
+            if (path.contains("/files/")) {
+                if (failFile) return Response{QJsonObject{}, 503};
+                return Response{QJsonObject{{"uuid", path.section('/', -1)},
+                    {"name", "report.txt"}, {"content_type", "text/plain"}, {"size_bytes", 2}}};
+            }
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Synthetic channel"}, {"encryption", false}}}};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Attachments"}}}};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        FileClient files(&api);
+        NativeController controller(&api, &session);
+        controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&] { window->close(); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        click(window, item(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
+        const auto first = messageId + '-' + returnedId;
+        const auto second = messageId + '-' + messageId;
+        const auto card = [&](const QString &id) { return visibleItem(content, "attachmentCard-" + id); };
+        QVERIFY(!card(first)); // No entry: the bubble keeps its plain link presentation.
+        controller.downloadFile(returnedId, QUrl::fromLocalFile(destination));
+        QTRY_VERIFY(card(first));
+        QTRY_VERIFY(bool(binary)); // The transfer is genuinely in flight.
+        const QString downloading = locale == "ru"
+            ? QString::fromUtf8("Скачивание… 0%") : QString("Downloading… 0%");
+        QCOMPARE(item(content, "attachmentCardDetails-" + first)->property("text").toString(), downloading);
+        QVERIFY(visibleItem(content, "attachmentCardRing-" + first));
+        QVERIFY(!item(content, "attachmentCardSpinner-" + first)
+            || !item(content, "attachmentCardSpinner-" + first)->isVisible());
+        auto *firstCard = card(first);
+        auto *firstAccessible = QAccessible::queryAccessibleInterface(firstCard); QVERIFY(firstAccessible);
+        QCOMPARE(firstAccessible->text(QAccessible::Name), "report.txt. " + downloading);
+        // A click while the download is active is ignored (lib.ts:26-34).
+        const auto actionsWhileActive = downloadActions;
+        click(window, firstCard);
+        QVERIFY(!saveDialog->property("visible").toBool());
+        QCOMPARE(downloadActions, actionsWhileActive);
+        binary(); binary = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        QVERIFY(QFileInfo::exists(destination));
+        // Completion confirmation: check + Open for 2 s (DOWNLOAD_CONFIRMATION_MS).
+        QTRY_VERIFY(visibleItem(content, "attachmentCardCheck-" + first));
+        QCOMPARE(item(content, "attachmentCardAction-" + first)->property("text").toString(),
+            locale == "ru" ? QString::fromUtf8("Открыть") : QString("Open"));
+        QTRY_VERIFY_WITH_TIMEOUT(!item(content, "attachmentCardCheck-" + first)->isVisible(), 4000);
+        QVERIFY(!item(content, "attachmentCardRing-" + first)->isVisible());
+        QCOMPARE(item(content, "attachmentCardDetails-" + first)->property("text").toString(),
+            QString("TXT · 2 B"));
+        // A downloaded card re-opens the saved file without a new save dialog.
+        LicensesExternalProbe probe;
+        QDesktopServices::setUrlHandler(QStringLiteral("file"), &probe, "open");
+        auto clearHandler = qScopeGuard([] { QDesktopServices::unsetUrlHandler(QStringLiteral("file")); });
+        click(window, card(first));
+        QTRY_COMPARE_WITH_TIMEOUT(probe.urls.size(), 1, 5000);
+        QCOMPARE(probe.urls.first(), QUrl::fromLocalFile(destination));
+        QVERIFY(!saveDialog->property("visible").toBool());
+        const auto actionsAfterOpen = downloadActions;
+        // The inline link keeps the same routing: no second save dialog, no refetch.
+        auto *body = visibleItem(content, "message-content-" + messageId);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+            body->mapToScene(QPointF(16, body->property("contentHeight").toDouble() / 2)).toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(probe.urls.size(), 2, 5000);
+        QVERIFY(!saveDialog->property("visible").toBool());
+        QCOMPARE(downloadActions, actionsAfterOpen);
+        // A failed entry shows Failed + Retry while the completed card is untouched.
+        failFile = true;
+        controller.downloadFile(messageId, QUrl::fromLocalFile(failedDestination));
+        QTRY_VERIFY(!controller.fileBusy());
+        QTRY_VERIFY(visibleItem(content, "attachmentCardError-" + second));
+        QCOMPARE(item(content, "attachmentCardDetails-" + second)->property("text").toString(),
+            locale == "ru" ? QString::fromUtf8("Ошибка") : QString("Failed"));
+        QCOMPARE(item(content, "attachmentCardAction-" + second)->property("text").toString(),
+            locale == "ru" ? QString::fromUtf8("Повторить") : QString("Retry"));
+        QCOMPARE(item(content, "attachmentCardDetails-" + first)->property("text").toString(),
+            QString("TXT · 2 B"));
+        // Clicking Retry restarts the download and the card returns to the ring state.
+        failFile = false;
+        const auto actionsBeforeRetry = downloadActions;
+        click(window, card(second));
+        QTRY_VERIFY(bool(binary));
+        QVERIFY(downloadActions > actionsBeforeRetry);
+        QTRY_VERIFY(visibleItem(content, "attachmentCardRing-" + second));
+        QTRY_COMPARE(item(content, "attachmentCardDetails-" + second)->property("text").toString(),
+            downloading);
+        binary(); binary = {};
+        QTRY_VERIFY(!controller.fileBusy());
+        QTRY_VERIFY(visibleItem(content, "attachmentCardCheck-" + second));
+        QCOMPARE(item(content, "attachmentCardAction-" + second)->property("text").toString(),
+            locale == "ru" ? QString::fromUtf8("Открыть") : QString("Open"));
+    }
 };
 
 
