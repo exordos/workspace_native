@@ -1,7 +1,10 @@
 #include "chat-background.h"
 
+#include <QBuffer>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QPainter>
 #include <QRegularExpression>
 
 namespace workspace {
@@ -220,6 +223,79 @@ bool ChatBackground::store()
         m_error.clear();
     emit changed();
     return true;
+}
+
+namespace {
+// Reference IMAGE_MAGIC_BYTES (shared/lib/validation.ts:52-68): table order
+// png -> jpeg -> gif -> webp, webp additionally requires byte 8 == 'W'.
+// Returns nullptr when nothing matches; gif is detectable but never in the
+// accepted set, so a gif payload always lands on "type".
+const char *sniffImageMagic(const QByteArray &bytes)
+{
+    if (bytes.size() < 12)
+        return nullptr;
+    const auto *u = reinterpret_cast<const uchar *>(bytes.constData());
+    if (u[0] == 0x89 && u[1] == 0x50 && u[2] == 0x4e && u[3] == 0x47)
+        return "image/png";
+    if (u[0] == 0xff && u[1] == 0xd8 && u[2] == 0xff)
+        return "image/jpeg";
+    if (u[0] == 0x47 && u[1] == 0x49 && u[2] == 0x46 && u[3] == 0x38)
+        return "image/gif";
+    if (u[0] == 0x52 && u[1] == 0x49 && u[2] == 0x46 && u[3] == 0x46 && u[8] == 0x57)
+        return "image/webp";
+    return nullptr;
+}
+} // namespace
+
+ChatBackground::Prepared ChatBackground::prepareImage(const QByteArray &bytes, const QString &declaredMime)
+{
+    Prepared out;
+    const auto fail = [&out](const char *code) {
+        out.error = QString::fromLatin1(code);
+        return out;
+    };
+    const QStringList allowed{QStringLiteral("image/jpeg"), QStringLiteral("image/png"),
+        QStringLiteral("image/webp")};
+    if (!allowed.contains(declaredMime))
+        return fail("type");
+    if (bytes.isEmpty() || bytes.size() > 8 * 1024 * 1024)
+        return fail("size");
+    const auto sniffed = sniffImageMagic(bytes);
+    if (!sniffed || QString::fromLatin1(sniffed) != declaredMime)
+        return fail("type");
+    QImage image;
+    if (!image.loadFromData(bytes) || image.isNull())
+        return fail("decode");
+    const int width = image.width();
+    const int height = image.height();
+    if (!width || !height || qint64(width) * qint64(height) > 24'000'000)
+        return fail("size");
+    // Reference canvas: scale = min(1, 1600/w, 1600/h), white fill under the
+    // draw (flattens alpha onto #ffffff), JPEG quality 80.
+    const double scale = qMin(1.0, qMin(1600.0 / width, 1600.0 / height));
+    const int targetWidth = qMax(1, qRound(width * scale));
+    const int targetHeight = qMax(1, qRound(height * scale));
+    QImage canvas(targetWidth, targetHeight, QImage::Format_RGB32);
+    canvas.fill(Qt::white);
+    QPainter painter(&canvas);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.drawImage(QRect(0, 0, targetWidth, targetHeight), image, image.rect());
+    painter.end();
+    QByteArray encoded;
+    QBuffer buffer(&encoded);
+    buffer.open(QIODevice::WriteOnly);
+    const bool saved = canvas.save(&buffer, "JPEG", 80);
+    buffer.close();
+    if (!saved)
+        return fail("decode");
+    const QString dataUrl = QStringLiteral("data:image/jpeg;base64,")
+        + QString::fromLatin1(encoded.toBase64());
+    if (!dataUrl.startsWith(QStringLiteral("data:image/jpeg;base64,"))
+        || dataUrl.size() > kMaxStoredLength - 100)
+        return fail("size");
+    out.ok = true;
+    out.dataUrl = dataUrl;
+    return out;
 }
 
 } // namespace workspace

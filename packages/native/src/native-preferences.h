@@ -106,6 +106,9 @@ public:
     void setChatClickAction(const QString &action);
     QString notificationSound() const { return m_notificationSound; }
     void setNotificationSound(const QString &preset);
+    // Issue #637: expose the shared INI store (ChatBackground uses the same
+    // QSettings instance, exactly like NativeHotkeys above).
+    QSettings &settings() { return m_settings; }
     Q_INVOKABLE void previewNotificationSound();
     QString sidebarSortMode() const { return m_sidebarSortMode; }
     void setSidebarSortMode(const QString &mode);
