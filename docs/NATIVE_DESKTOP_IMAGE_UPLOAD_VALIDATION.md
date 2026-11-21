@@ -27,3 +27,8 @@ The existing localized attachment error surface reports the validation failure;
 no retry operation or new upload queue is introduced. Regression checks must
 prove that a mislabeled image produces no POST, that a matching image is still
 uploaded, and that the English/Russian visible error survives both palettes.
+
+The transfer fixture checks both a full 25 MiB image and a delayed server reply.
+In both cases it replaces the source file after capture and compares the bytes
+in the multipart request with the original image. The fixture allows 15 seconds
+for a successful response under parallel load.
