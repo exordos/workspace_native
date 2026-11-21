@@ -40685,7 +40685,14 @@ private slots:
             if (guard && !closeIncubatedTestWindow(engine, guard.data()))
                 QTest::qFail("Scrolling search arrows teardown", __FILE__, __LINE__);
         });
-        // Short window so the ListView shows only a few of the eight rows.
+        // The fixture forces the short viewport itself: the window's QML
+        // minimumHeight (Main.qml:600) clamps a plain resize(1440, 300) back
+        // to 600 px, which differs per window manager and made the eight rows
+        // fit inside the viewport on the CI container (issue #648 CI shard 2:
+        // the contentHeight precondition never held). Drop the minimum first
+        // so the 300 px request is honored identically on a 1440x900 desktop
+        // and in CI instead of relying on the ambient layout.
+        window->setProperty("minimumHeight", 0);
         window->resize(1440, 300); QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         session.login(fixture.server.origin(), "synthetic-kb-scroll", "synthetic-password");
@@ -40696,7 +40703,22 @@ private slots:
         click(window, search); QTRY_VERIFY(search->hasActiveFocus());
         typeIntoWindow(window, "scroll");
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + scrollIds.first()), 2000);
-        QTRY_VERIFY(list->property("contentHeight").toDouble() > list->height() * 1.5);
+        // Eight rows must overflow the forced-short viewport by >=1.5x; the
+        // geometry is now pinned by the test itself, so report the measured
+        // numbers when a future environment still breaks the precondition.
+        {
+            bool overflow = false;
+            for (int poll = 0; poll < 50 && !overflow; ++poll) {
+                QTest::qWait(100);
+                overflow = list->property("contentHeight").toDouble() > list->height() * 1.5;
+            }
+            if (!overflow)
+                qInfo() << "sidebar scroll fixture geometry: window"
+                        << window->width() << 'x' << window->height()
+                        << "list height" << list->height() << "contentHeight"
+                        << list->property("contentHeight").toDouble();
+            QVERIFY(overflow);
+        }
         // More matches than viewport: at scroll 0 some rows are below the fold
         // (realized with their mid-point under the viewport edge, or not
         // realized at all), which the viewport-scoped ring could never reach.
@@ -40740,6 +40762,66 @@ private slots:
                 && item(window->contentItem(), "stream-" + scrollIds.last())->hasActiveFocus()),
             3000);
         QTRY_VERIFY_WITH_TIMEOUT(listScroll() > scrollAtStart, 3000);
+    }
+
+    void sidebarSearchPendingFocusRetryInvalidatedByQueryChange()
+    {
+        // PR #639 review finding 4652076279: focusSidebarSearchTarget keeps a
+        // Qt.callLater retry while a row incubates; the delayed chain must
+        // not claim focus after the search changed underneath it.
+        WindowChannelFixture fixture;
+        keyboardSearchFixture(fixture);
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("kb-retry.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Search retry teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-kb-retry", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 3);
+        auto *search = item(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        typeIntoWindow(window, "alpha");
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(),
+            "topic-" + QStringLiteral("93000000-0000-4000-8000-000000000001")), 2000);
+        // "Beta Note" is filtered out by the "alpha" query, so row 0 (Alpha)
+        // cannot resolve this name: the direct call takes the not-yet-found
+        // branch and queues its Qt.callLater retry - no event loop has run
+        // yet, so the chain is guaranteed pending when the query changes.
+        const QString staleName =
+            QStringLiteral("topic-93000000-0000-4000-8000-000000000003");
+        QVariantMap stale;
+        stale.insert(QStringLiteral("row"), 0);
+        stale.insert(QStringLiteral("objectName"), staleName);
+        const auto sessionProperty = window->property("sidebarSearchFocusSession");
+        if (sessionProperty.isValid())
+            stale.insert(QStringLiteral("session"), sessionProperty);
+        QVariant retryResult;
+        QMetaObject::invokeMethod(window, "focusSidebarSearchTarget",
+            Q_RETURN_ARG(QVariant, retryResult),
+            Q_ARG(QVariant, stale), Q_ARG(QVariant, 1), Q_ARG(QVariant, 0));
+        // The query changes synchronously, before any retry can run. Under
+        // the reviewed bug the chain later finds "Beta Note" (row 0 of the
+        // re-filtered model) and steals focus from the still-focused input.
+        window->setProperty("sidebarQuery", QStringLiteral("beta note"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            visibleItem(window->contentItem(), staleName), 2000);
+        const auto focusName = [window] {
+            auto *focused = window->activeFocusItem();
+            return focused ? focused->objectName() : QString();
+        };
+        QCOMPARE(focusName(), QStringLiteral("sidebarSearch"));
+        QTest::qWait(500); // more event-loop passes than the retry chain needs
+        QVERIFY2(focusName() != staleName,
+            qPrintable(QStringLiteral("stale focus retry stole focus to ") + focusName()));
+        QCOMPARE(focusName(), QStringLiteral("sidebarSearch"));
     }
 
     void sidebarSearchEscapeClearsQueryAndRestoresFocus()
