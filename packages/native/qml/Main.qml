@@ -4955,7 +4955,12 @@ component NativeMentionChip: Item {
             return true;
         }
         if (chatNavigationHasInputFocus() && !(action === "interface.quoteMessage"
-                && (composerText.activeFocus || shortcutQuoteTarget().text || messageSelectionCount))) return false;
+                && (composerText.activeFocus || shortcutQuoteTarget().text || messageSelectionCount))
+                // Reference layout-shortcuts.hook.ts:46-48 keeps the chat search
+                // hotkey alive while the composer or the search field itself
+                // holds the focus.
+                && !(action === "navigation.chatSearch"
+                    && (composerText.activeFocus || sidebarSearch.activeFocus))) return false;
         if (action === "interface.quoteMessage") {
             if (messageSelectionCount) {
                 if (activate) root.controller.replyToSelection(messageSelectionIds);
@@ -4974,6 +4979,14 @@ component NativeMentionChip: Item {
         } else if (activate) {
             if (action === "navigation.messenger") root.controller.showSection("chat");
             else if (action === "navigation.activity") root.controller.showInbox();
+            else if (action === "navigation.chatSearch") {
+                // Reference layout-shortcuts.hook.ts:37-50: mount the sidebar
+                // before using its search control; opening from the collapsed
+                // state is open-only (never a toggle-off).
+                const openOnly = !shortcutSidebarVisible;
+                if (openOnly) shortcutSidebarVisible = true;
+                root.toggleSidebarSearch(openOnly);
+            }
             else if (action.startsWith("navigation.")) root.controller.showSection(action.slice(11));
             else if (action === "interface.theme") root.preferences.mode = root.preferences.dark ? "light" : "dark";
             else if (action === "interface.sidebar") shortcutSidebarVisible = !shortcutSidebarVisible;
@@ -5042,7 +5055,100 @@ component NativeMentionChip: Item {
         return false;
     }
 
+    // Issue #628 (docs/NATIVE_DESKTOP_SIDEBAR_SEARCH_KEYBOARD.md): sidebar chat
+    // search keyboard access. Reference sidebar-search-header.ui.tsx:15
+    // previousFocusRef - remembered when the hotkey focuses the field.
+    property var sidebarSearchPreviousFocus: null
+
+    function cancelSidebarSearch() {
+        // Reference sidebar-search-header.ui.tsx:18-32: an unfocused field
+        // with an empty query falls through; otherwise the query clears and a
+        // focused field restores the previous focus.
+        const inputFocused = sidebarSearch.activeFocus
+        if (!inputFocused && !root.sidebarQuery.length)
+            return false
+        root.sidebarQuery = ""
+        if (inputFocused) {
+            const previous = root.sidebarSearchPreviousFocus
+            root.sidebarSearchPreviousFocus = null
+            if (previous) {
+                try { previous.forceActiveFocus(Qt.OtherFocusReason) }
+                catch (error) { root.contentItem.forceActiveFocus() }
+            } else
+                root.contentItem.forceActiveFocus()
+        }
+        return true
+    }
+
+    function toggleSidebarSearch(openOnly) {
+        // Reference sidebar-search-header.ui.tsx:37-45.
+        if (!openOnly && root.cancelSidebarSearch())
+            return
+        root.sidebarSearchPreviousFocus = root.activeFocusItem
+        sidebarSearch.forceActiveFocus()
+    }
+
+    // Reference sidebar-workspace-search.lib.ts:7-33. The non-empty normalized
+    // query is the native gate equivalent of the [data-sidebar-search-results]
+    // container; chords with ctrl/meta/alt/shift are ignored (:10-18).
+    function sidebarSearchArrowAllowed(modifiers) {
+        return !(modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier))
+    }
+
+    function sidebarSearchResultItems() {
+        const origin = streamList.mapToItem(root.contentItem, 0, 0)
+        const viewportTop = origin.y
+        const viewportBottom = origin.y + streamList.height
+        const rows = []
+        const walk = node => {
+            const children = node.children
+            for (let index = 0; index < children.length; ++index) {
+                const child = children[index]
+                if (!(child instanceof Item))
+                    continue
+                const name = String(child.objectName || "")
+                if (child.visible && (name.startsWith("stream-") || name.startsWith("topic-"))) {
+                    const center = child.mapToItem(root.contentItem, child.width / 2, child.height / 2)
+                    if (center.y >= viewportTop && center.y <= viewportBottom)
+                        rows.push({item: child, y: center.y})
+                } else
+                    walk(child)
+            }
+        }
+        walk(streamList)
+        rows.sort((left, right) => left.y - right.y)
+        return rows.map(row => row.item)
+    }
+
+    function moveSidebarSearchFocus(from, step) {
+        if (!root.normalizedSidebarQuery.length)
+            return false
+        const items = root.sidebarSearchResultItems()
+        if (!items.length)
+            return false
+        let index = -1
+        for (let position = 0; position < items.length; ++position)
+            if (items[position] === from) {
+                index = position
+                break
+            }
+        // The focused field is not a result item (index -1): ArrowDown enters
+        // at the first row, ArrowUp at the last one; item edges are no-ops.
+        const next = index === -1 && step === -1 ? items[items.length - 1] : items[index + step]
+        if (next)
+            next.forceActiveFocus(Qt.TabFocusReason)
+        return true
+    }
+
     function handleChatEscape(event) {
+        // Issue #628: reference layout-escape-navigation.hook.ts:29 - Escape
+        // cancels the sidebar search (clear the query, restore the previous
+        // focus) before every other escape handler; an inactive search falls
+        // through to the inbox fallback below.
+        if (root.cancelSidebarSearch()) {
+            event.accepted = true
+            return
+        }
         event.accepted = conversation.visible && root.controller.hasConversation
             && !root.controller.favoritesVisible && !aboutDrawer.visible
             && !root.controller.mediaViewer.open && !root.chatNavigationHasInputFocus();
@@ -5147,6 +5253,17 @@ component NativeMentionChip: Item {
                 Accessible.name: qsTr("Search")
                 text: root.sidebarQuery
                 onTextEdited: root.sidebarQuery = text
+                // Issue #628: arrows enter the filtered results from the field
+                // (reference sidebar-search-header.ui.tsx:55 wiring
+                // moveWorkspaceSidebarSearchFocus, lib :27-29).
+                Keys.onDownPressed: event => {
+                    if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(null, 1))
+                        event.accepted = true
+                }
+                Keys.onUpPressed: event => {
+                    if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(null, -1))
+                        event.accepted = true
+                }
                 background: Rectangle {
                     radius: 6
                     color: root.colors["text-field-bg"]
@@ -6072,6 +6189,16 @@ component NativeMentionChip: Item {
                                 event.accepted = true;
                             }
                         }
+                        // Issue #628: ArrowUp/ArrowDown over the filtered
+                        // results (reference sidebar-workspace-search.lib.ts:7-33).
+                        Keys.onDownPressed: event => {
+                            if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(streamButton, 1))
+                                event.accepted = true
+                        }
+                        Keys.onUpPressed: event => {
+                            if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(streamButton, -1))
+                                event.accepted = true
+                        }
                         MouseArea {
                             anchors.fill: parent
                             acceptedButtons: Qt.RightButton
@@ -6463,6 +6590,16 @@ component NativeMentionChip: Item {
                                     root.controller.selectTopic(modelData.id);
                                 else
                                     root.controller.openTopic(modelData.id, streamDelegate.modelData.id);
+                            }
+                            // Issue #628: ArrowUp/ArrowDown over the filtered
+                            // results (reference sidebar-workspace-search.lib.ts:7-33).
+                            Keys.onDownPressed: event => {
+                                if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(topicButton, 1))
+                                    event.accepted = true
+                            }
+                            Keys.onUpPressed: event => {
+                                if (root.sidebarSearchArrowAllowed(event.modifiers) && root.moveSidebarSearchFocus(topicButton, -1))
+                                    event.accepted = true
                             }
                             background: Rectangle {
                                 radius: 6
