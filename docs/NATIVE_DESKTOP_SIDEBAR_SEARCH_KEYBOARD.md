@@ -115,10 +115,16 @@ light+dark and ru+en unchanged; no new user-visible strings.
   RowLayout) calls `cancelSidebarSearch()` first, matching
   `layout-escape-navigation.hook.ts:29`; a second Escape falls through to the
   unchanged inbox fallback.
-- Arrows: `sidebarSearchResultItems()` collects the visible
-  `stream-<uuid>` and `topic-<uuid>` row buttons under `streamList` in scene
-  order (only rows rendered by the filtered model exist, so the ring walks the
-  filtered results only). `moveSidebarSearchFocus(from, step)` ports
+- Arrows: `sidebarSearchTargets()` (issue #648 fix round) builds the ring from
+  the filtered model itself - `controller.sidebarStreams` rows and each row's
+  `searchTopics` in delegate order - so every filtered chat/topic participates
+  even when its delegate is below the fold or not incubated (the reference
+  `querySelectorAll` likewise sees every `[data-sidebar-search-item]` node
+  regardless of the viewport). `focusSidebarSearchTarget` scrolls the target's
+  stream delegate with `streamList.positionViewAtIndex(row, ListView.Contain)`
+  plus an item-level `contentY` nudge for topic rows spilling out of a tall
+  delegate, then focuses it (retrying while the delegate incubates).
+  `moveSidebarSearchFocus(from, step)` ports
   `sidebar-workspace-search.lib.ts:27-32` including the index -1 entry points
   (input: Down -> first row, Up -> last row); at the item edges native wraps
   the index at both ends instead of the reference no-op, per the issue
