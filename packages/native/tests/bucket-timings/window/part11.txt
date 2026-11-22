@@ -1,3 +1,4 @@
+accountScreensOpenFromNonChatSectionsWithoutStaleState=5.01144
 activityCompactRailShowsUnreadMentionsBadgeOnceIndexed=1.23736
 anchorJumpSkeletonPreview=2.30205
 archiveIndicatorsMatchPinnedSmallRingAndStopWhenHidden=2.85209

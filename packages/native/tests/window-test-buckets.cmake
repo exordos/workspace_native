@@ -242,6 +242,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_10
     windowSidebarMuteIndicatorsAndRowDimming
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
+    accountScreensOpenFromNonChatSectionsWithoutStaleState
     activityCompactRailShowsUnreadMentionsBadgeOnceIndexed
     anchorJumpSkeletonPreview
     archiveIndicatorsMatchPinnedSmallRingAndStopWhenHidden

@@ -124,13 +124,16 @@ ApplicationWindow {
     // chat-info root screen content.
     NativeRightDrawer {
         id: rightDrawer
-        // #666 route gate: the drawer is chat-route chrome, so it unmounts
-        // while a non-chat section is active (its open state and layers are
-        // kept for the way back, like the reference route model). The
-        // objectName stays the established nativeRightDrawer seam - 48 test
+        // #666 route gate: the drawer's CHAT layers are chat-route chrome and
+        // unmount while a non-chat section is active (open state and layers
+        // are kept for the way back, like the reference route model). #679:
+        // global account screens (Settings / Appearance / Personal info) stay
+        // reachable from every section, so the gate is scoped to the top
+        // layer - an account top layer keeps the drawer mounted off-route.
+        // The objectName stays the established nativeRightDrawer seam - 48 test
         // handles (window + e2ee-read suites) collect it by that name.
         objectName: "nativeRightDrawer"
-        visible: root.controller.section === "chat" && drawerOpen
+        visible: drawerOpen && (root.controller.section === "chat" || topLayerKind === "account")
         anchors.right: parent.right
         anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
         anchors.topMargin: root.controller.authenticated ? 4 : 8
