@@ -131,6 +131,7 @@ jobs:
           python3 packages/native/tests/platform-package/test-workflow-paths.py -v
           python3 packages/native/tests/linux-package-test.py -v
           python3 packages/native/tests/release-notes-test.py -v
+          python3 packages/native/tests/gen-test-buckets-test.py -v
           python3 packages/native/tests/matched-screenshot-acceptance-test.py -v
           python3 packages/native/tests/warm-navigation-benchmark-test.py -v
           python3 packages/native/tests/live-workspace-acceptance-test.py -v

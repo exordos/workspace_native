@@ -120,6 +120,15 @@ def bucket_index(name, count):
     return zlib.crc32(name.encode()) % count
 
 
+def fmt_secs(value):
+    """Fixed-point fragment format: FRAGMENT_RE accepts only [0-9.].
+
+    %g would emit scientific notation for sub-millisecond timings (finding 4),
+    which the fragment reader rejects on the next --check."""
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text if text else "0"
+
+
 def split_heavy(per, ceiling):
     """Functions measured over the ceiling alone get their own ctest entries.
 
@@ -160,7 +169,12 @@ def render(prefix, buckets, heavy, fragments_id):
 
 
 def code_lines(text):
-    return [line for line in text.splitlines() if line.startswith("set(")]
+    """Generated content to compare: every line except the header comments.
+
+    The bucket members live on indented lines inside multi-line set() blocks,
+    so dropping anything but the set( lines would let member edits slip
+    through the guard (issue #675 review findings 1/5)."""
+    return [line for line in text.splitlines() if not line.startswith("#")]
 
 
 def layout_count(path):
@@ -184,22 +198,27 @@ def write_fragments(directory, per, bucketable, heavy, count):
     for i, bucket in enumerate(buckets, 1):
         with open(os.path.join(directory, f"part{i:0{pad}d}.txt"), "w") as out:
             for name in bucket:
-                out.write(f"{name}={bucketable[name]:g}\n")
+                out.write(f"{name}={fmt_secs(bucketable[name])}\n")
     if heavy:
         with open(os.path.join(directory, OVER_FILE), "w") as out:
             for name in heavy:
-                out.write(f"{name}={per[name]:g}\n")
+                out.write(f"{name}={fmt_secs(per[name])}\n")
 
 
 def pick_count(per, ceiling, start):
-    count = max(1, start)
+    """A bucket count with no empty buckets and sums under the ceiling.
+
+    The search is bounded by the function count: above it at least one bucket
+    is empty for every larger count, so an unbounded grow-only loop hangs
+    forever (finding 2). Returns None when no valid count exists."""
+    limit = max(1, len(per))
+    count = max(1, min(start, limit))
     while True:
-        sums = bucket_secs(assign(per, count), per)
-        empty = any(not b for b in assign(per, count))
-        if sums and not empty and (max(sums) <= ceiling or count >= len(per)):
+        buckets = assign(per, count)
+        if not any(not b for b in buckets) and max(bucket_secs(buckets, per)) <= ceiling:
             return count
-        if count >= len(per):
-            return count
+        if count >= limit:
+            return None
         count += 1
 
 
@@ -259,11 +278,13 @@ def main():
             over = [(i, secs) for i, secs in enumerate(sums, 1)
                     if secs > args.ceiling]
             if over:
+                target = pick_count(bucketable, args.ceiling, count + 1)
+                target_note = (f"count target: {target}" if target else
+                               "count target: none - reseed fragments")
                 errors.append("buckets over the "
                               f"{args.ceiling:g}s ceiling: "
                               + ", ".join(f"bucket {i} at {s:g}s" for i, s in over)
-                              + f" - run with --rebalance (count target: "
-                              f"{pick_count(bucketable, args.ceiling, count)})")
+                              + f" - run with --rebalance ({target_note})")
         if not errors:
             with open(args.out) as handle:
                 committed = handle.read()
@@ -276,9 +297,15 @@ def main():
             print("bucket layout is out of sync (issue #675):")
             for err in errors:
                 print("  " + err)
-            sys.exit("regenerate with: python3 scripts/gen-test-buckets.py "
-                     f"--binary <binary> --out {args.out} --fragments {args.fragments} "
-                     f"--prefix {args.prefix} --timings <run.xml> [--rebalance]")
+            hint = ("regenerate with: python3 scripts/gen-test-buckets.py "
+                    f"--binary <binary> --out {args.out} --fragments {args.fragments} "
+                    f"--prefix {args.prefix}")
+            if args.only_file:
+                hint += f" --only-file {args.only_file}"
+            for name in args.exclude:
+                hint += f" --exclude {name}"
+            hint += " --timings <run.xml> [--rebalance]"
+            sys.exit(hint)
         return
 
     record = timings_from_xml(args.timings)
@@ -305,10 +332,24 @@ def main():
         count = len([e for e in os.listdir(args.fragments) if PART_RE.match(e)])
     if not count:
         count = layout_count(args.out)
+
+    def no_valid():
+        sys.exit("no bucket count up to the function count keeps every bucket "
+                 "non-empty under the ceiling; reseed the fragments")
+
     if args.rebalance or count == 0:
         count = pick_count(bucketable, args.ceiling, max(count, 1))
-    while any(not b for b in assign(bucketable, count)):
-        count += 1
+        if count is None:
+            no_valid()
+    else:
+        # Keep the current count when possible; bound the grow search at the
+        # function count - above it an empty bucket is permanent (finding 2).
+        while any(not b for b in assign(bucketable, count)) and count < len(bucketable):
+            count += 1
+        if any(not b for b in assign(bucketable, count)):
+            count = pick_count(bucketable, args.ceiling, 1)
+            if count is None:
+                no_valid()
     buckets = assign(bucketable, count)
     write_fragments(args.fragments, per, bucketable, heavy, count)
     with open(args.out, "w") as out:
