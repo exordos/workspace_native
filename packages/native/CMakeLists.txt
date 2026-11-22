@@ -191,6 +191,7 @@ set(native_qml_files
 qml/NativeExternalAccountBlock.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml qml/NativeAccountPreferences.qml
+qml/NativeChatBackgroundPanel.qml
 qml/NativeSupportReport.qml
 qml/NativeKeyRequests.qml
 qml/NativeDownloadCenter.qml
@@ -253,6 +254,13 @@ qt_add_resources(workspace-native-ui native_icons PREFIX /workspace/icons
     BASE ../web/src/shared/assets/icons FILES ${native_icon_files})
 qt_add_resources(workspace-native-ui native_brand PREFIX /workspace/brand
     BASE ../web/public FILES ../web/public/organization-fallback.svg ../web/public/favicon.svg)
+# Chat background presets (issue #637): the reference feature's own SVG assets
+# (features/chat-background/assets, aspect 8/5) bundled verbatim.
+qt_add_resources(workspace-native-ui native_chat_background PREFIX /workspace/chat-background
+    BASE ../web/src/features/chat-background/assets FILES
+    ../web/src/features/chat-background/assets/mountains.svg
+    ../web/src/features/chat-background/assets/sea.svg
+    ../web/src/features/chat-background/assets/forest.svg)
 qt_add_resources(workspace-native-ui native_app_icon PREFIX /workspace/brand
     BASE ../electron/resources FILES ../electron/resources/icon.png)
 

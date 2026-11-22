@@ -10,6 +10,13 @@ ScrollView {
     required property var colors
     signal shortcutsRequested()
     required property bool appearance
+    // Issue #637: the background section talks to the ChatBackground store and
+    // the conversation the user has open (chatKey = stream:<uuid>|topic:<uuid>,
+    // empty with no conversation - then "Only this chat" stays disabled).
+    // Name note: NOT "background" - Controls declare background as FINAL on
+    // ScrollView, so overriding it kills the whole QML type.
+    property var chatBackground: null
+    property string chatKey: ""
     clip: true
     contentWidth: availableWidth
     readonly property var sections: appearance ? [
@@ -19,7 +26,8 @@ ScrollView {
         {key:"folderRailLayout", title:qsTr("Folder layout"), choices:[
             ["vertical",qsTr("Vertical rail")], ["horizontal",qsTr("Horizontal tabs")]]},
         {key:"chatListDensity", title:qsTr("Chat list density"), choices:[
-            ["general",qsTr("Standard")], ["compact",qsTr("Compact")]]}
+            ["general",qsTr("Standard")], ["compact",qsTr("Compact")]]},
+        {key:"background", title:qsTr("Chat background"), choices:[]}
     ] : [
         {key:"chatClickAction",title:qsTr("Chat click"),hint:qsTr("What to open when clicking a chat"),choices:[
             ["stream",qsTr("General chat and topics")],["latestTopic",qsTr("Latest topic"),qsTr("Click the avatar to open the general chat")]]},
@@ -126,6 +134,25 @@ ScrollView {
                     GridLayout {
                         columns: 2; Layout.fillWidth: true
                         Repeater { model: panel.palettes; Option { required property var modelData; key: "paletteId"; choice: modelData; Layout.fillWidth: true } }
+                    }
+                }
+                // Issue #637: the background section's own options surface
+                // (reference ChatBackgroundSettings inside the appearance
+                // accordion). Loaded only while expanded to keep the pinned
+                // binding budgets untouched.
+                Loader {
+                    id: backgroundLoader
+                    active: section.expanded && section.modelData.key === "background"
+                    width: parent.width - 16
+                    x: 8
+                    sourceComponent: backgroundPanelComponent
+                }
+                Component {
+                    id: backgroundPanelComponent
+                    NativeChatBackgroundPanel {
+                        colors: panel.colors
+                        chatBackground: panel.chatBackground
+                        chatKey: panel.chatKey
                     }
                 }
             }

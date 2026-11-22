@@ -36,6 +36,20 @@ ApplicationWindow {
     readonly property var preferences: nativePreferences
     readonly property var updater: nativeUpdater
     readonly property var messageImages: nativeMessageImages
+    // Issue #637: the resolved chat background for the message surface
+    // (reference BackgroundSurface wrapper, chat-background.ui.tsx at
+    // ca73acf). The revision bump re-reads the store mirror after every
+    // apply/reset; the store emits changed() on every mutation only.
+    property int backgroundRevision: 0
+    readonly property string conversationChatKey: root.controller.selectedTopic.length > 0
+        ? "topic:" + root.controller.selectedTopic
+        : (root.controller.selectedStream.length > 0 ? "stream:" + root.controller.selectedStream : "")
+    readonly property string chatBackgroundUrl: root.backgroundRevision >= 0
+        ? nativeChatBackground.backgroundUrl(root.conversationChatKey) : ""
+    Connections {
+        target: nativeChatBackground
+        function onChanged() { root.backgroundRevision++ }
+    }
     // Per-window reveal level; stream expansion itself is persisted by owner.
     property var sidebarTopicRevealLevels: ({})
     // Issue #107: the platform reduced-motion preference (XDG Settings portal
@@ -141,6 +155,8 @@ ApplicationWindow {
                     preferences: root.preferences
                     colors: root.colors
                     appearance: rightDrawer.currentAccountScreen === "appearance"
+                    chatBackground: nativeChatBackground
+                    chatKey: root.conversationChatKey
                     onShortcutsRequested: shortcutPopup.sourceComponent = shortcutSettingsComponent
                 }
             }
@@ -7536,6 +7552,11 @@ component NativeMentionChip: Item {
             ListView {
                 id: messageList
                 objectName: "messageList"
+                // Issue #637: the resolved chat background lives in the
+                // chatBackgroundOverlay below (z:-1 inside conversationPanel),
+                // because this Flickable's contentItem is read-only and the
+                // reference paints the image on the scroll VIEWPORT (CSS
+                // background on the wrapper), not on the content row.
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 leftMargin: 12
@@ -13683,6 +13704,26 @@ component NativeMentionChip: Item {
                     clipboardFilesDialog.close();
             }
         }
+    }
+
+    // Issue #637: the resolved chat background (reference data-testid
+    // "chat-background"). It is a plain contentItem child positioned over the
+    // conversation panel (re-parenting into the ColumnLayout would make the
+    // layout manage it and anchor on it is undefined behavior): the image
+    // paints on the message VIEWPORT, like the reference CSS background on
+    // the scroll wrapper, and does not scroll with the rows. The default
+    // value paints nothing - the theme surface stays untouched.
+    Image {
+        objectName: "chatBackground"
+        z: -1
+        readonly property point panelOrigin: conversation.mapToItem(root.contentItem, 0, 0)
+        x: panelOrigin.x
+        y: panelOrigin.y
+        width: conversation.width
+        height: conversation.height
+        visible: source.toString().length > 0
+        source: root.chatBackgroundUrl
+        fillMode: Image.PreserveAspectCrop
     }
 
     NativeDialogs.FileDialog {

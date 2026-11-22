@@ -23308,6 +23308,49 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    // Issue #637 (docs/NATIVE_DESKTOP_CHAT_BACKGROUNDS.md section 5): the
+    // appearance "background" section end-to-end - preset card opens the apply
+    // dialog, applying paints the resolved image on the conversation surface
+    // and marks the card, and the reset restores the plain theme surface.
+    // Reference: features/chat-background/chat-background.ui.tsx at ca73acf.
+    void chatBackgroundSectionAppliesPresetAndRepaintsConversation()
+    {
+        ChannelInfoWindowScene scene;
+        // Tall viewport so the whole appearance accordion (the background
+        // section sits last) stays inside the ScrollView fold for clicks.
+        scene.window->resize(900, 1400);
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountSetting-background"));
+        QVERIFY(visibleItem("chatBackgroundOptions"));
+        QVERIFY(visibleItem("chatBackgroundFileHint"));
+        // No value applied yet: no badge, no image on the conversation
+        // (visibleItem skips hidden items, which is exactly the assertion).
+        QVERIFY(!visibleItem("chatBackgroundPresetBadge-sea"));
+        QVERIFY(!visibleItem("chatBackground"));
+        // Choose the "sea" preset: the scope dialog opens on top.
+        auto *seaCard = visibleItem("chatBackgroundPreset-sea");
+        QVERIFY(seaCard);
+        QVERIFY2(seaCard->property("enabled").toBool(), "preset card disabled - store unavailable?");
+        click(scene.window, seaCard);
+        QVERIFY(visibleItem("chatBackgroundApplyDialog"));
+        // "Only this chat" is enabled because a conversation is open.
+        QVERIFY(visibleItem("chatBackgroundApplyChat")->property("enabled").toBool());
+        click(scene.window, visibleItem("chatBackgroundApplyAll"));
+        QTRY_VERIFY(!visibleItem("chatBackgroundApplyDialog"));
+        QVERIFY(visibleItem("chatBackgroundPresetBadge-sea"));
+        QTRY_VERIFY(visibleItem("chatBackground"));
+        QVERIFY(visibleItem("chatBackground")->property("source").toString()
+            .contains(QStringLiteral("sea.svg")));
+        // Reference reset button: "Default background" restores the plain theme.
+        click(scene.window, visibleItem("chatBackgroundReset"));
+        QVERIFY(visibleItem("chatBackgroundApplyDialog"));
+        click(scene.window, visibleItem("chatBackgroundApplyAll"));
+        QTRY_VERIFY(!visibleItem("chatBackground"));
+        QVERIFY(!visibleItem("chatBackgroundPresetBadge-sea"));
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;
