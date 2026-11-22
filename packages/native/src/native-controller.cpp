@@ -21481,6 +21481,10 @@ void NativeController::loadTopicSummaryGates()
         }
         m_topicSummaryGates = {{"projectId", json.value("project_id").toString()},
             {"globalEnabled", global.toBool()}, {"projectEnabled", local.toBool()}};
+        // The NOTIFY belongs to the gates property itself: a reply that arrives
+        // with an unchanged status ("") must still re-notify, or QML drafts seeded
+        // at dialog-open time never see the loaded values.
+        emit topicSummaryStateChanged();
         setTopicSummaryStatus("");
     });
 }
@@ -21511,6 +21515,7 @@ void NativeController::saveTopicSummaryGates(bool globalEnabled, bool projectEna
         if (json.value("project_id").isString())
             gates["projectId"] = json.value("project_id").toString();
         m_topicSummaryGates = gates;
+        emit topicSummaryStateChanged();
         setTopicSummaryStatus("saved");
     });
 }
@@ -21539,6 +21544,7 @@ void NativeController::loadTopicSummaryEndpoints()
             rows.append(row);
         }
         m_topicSummaryEndpoints = rows;
+        emit topicSummaryStateChanged();
         setTopicSummaryStatus("");
     });
 }

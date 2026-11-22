@@ -551,4 +551,14 @@ Dialog {
         if (kind === "server") return qsTr("The server failed. Please try again.")
         return qsTr("Something went wrong. Please try again.")
     }
+
+    // The gates GET is dispatched on the tab switch, i.e. after onOpened seeded the
+    // drafts. Re-seed when its reply lands - but only while the gates tab is on screen
+    // and the user has not touched the switches (a late GET must never clobber edits).
+    Connections {
+        target: dlg.controller
+        function onTopicSummaryStateChanged() {
+            if (dlg.activeTab === "gates" && !gatesTab.userEdited) gatesTab.reset()
+        }
+    }
 }
