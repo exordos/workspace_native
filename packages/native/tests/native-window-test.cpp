@@ -28658,6 +28658,56 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         QVERIFY(!create->property("enabled").toBool());
     }
 
+    void pollCreateDialogOpensCenteredInWindow()
+    {
+        // Bug #667: the create-poll dialog opened at the top edge. It must use
+        // the same positioning as the other dialogs (anchors.centerIn: parent,
+        // cf. NativePollManagementDialog) in both normal and resized windows.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("poll-center.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Poll create centering window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setOwner(controller.ownerKey());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == topicId);
+        QTRY_VERIFY(!controller.busy());
+        click(window, expandedComposerPollTrigger(window));
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        auto *dialogItem = qobject_cast<QQuickItem *>(dialog); QVERIFY(dialogItem);
+        auto *dialogParent = dialogItem->parentItem(); QVERIFY(dialogParent);
+        QTRY_VERIFY(dialogItem->height() > 0);
+        // Centered within a 2 px band after the geometry pass settles.
+        QTRY_VERIFY_WITH_TIMEOUT(qAbs(dialogItem->x() + dialogItem->width() / 2.0
+                - dialogParent->width() / 2.0) <= 2.0
+            && qAbs(dialogItem->y() + dialogItem->height() / 2.0
+                - dialogParent->height() / 2.0) <= 2.0, 5000);
+        // A window resize keeps the dialog centered (maximize analogue: the
+        // popup re-centers against the overlay, which tracks the window).
+        window->resize(1024, 700);
+        QTRY_VERIFY_WITH_TIMEOUT(qAbs(dialogItem->x() + dialogItem->width() / 2.0
+                - dialogParent->width() / 2.0) <= 2.0
+            && qAbs(dialogItem->y() + dialogItem->height() / 2.0
+                - dialogParent->height() / 2.0) <= 2.0, 5000);
+        click(window, window->findChild<QQuickItem *>("pollCancelButton"));
+        QTRY_VERIFY(!dialog->property("visible").toBool());
+    }
+
     void pollCreateDialogDeadlineMustBeFuture()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
