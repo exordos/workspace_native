@@ -12776,6 +12776,41 @@ component NativeMentionChip: Item {
                         flickableDirection: Flickable.HorizontalFlick
                         boundsBehavior: Flickable.StopAtBounds
                         onVisibleChanged: if (!visible) contentX = 0
+                        // The reference toolbar scrolls on wheel inside its
+                        // overflow container; a bare Flickable ignores wheel,
+                        // so past-viewport actions were unreachable by mouse
+                        // (#672). Same wheel-observer pattern the message list
+                        // uses (a WheelHandler under the content plane does not
+                        // receive the wheel; the MouseArea observer does).
+                        MouseArea {
+                            parent: composerToolbarRow.contentItem
+                            x: composerToolbarRow.contentX
+                            y: 0
+                            // #122 contract: while the actions fit the viewport the
+                            // row has no scrollable extent, so the observer stays
+                            // invisible to the wheel and the event propagates.
+                            enabled: composerToolbarRow.contentWidth > composerToolbarRow.width
+                            width: composerToolbarRow.width
+                            height: composerToolbarRow.height
+                            acceptedButtons: Qt.NoButton
+                            propagateComposedEvents: true
+                            onWheel: function (wheel) {
+                                if (composerToolbarRow.contentWidth <= composerToolbarRow.width) {
+                                    wheel.accepted = false
+                                    return
+                                }
+                                const pixel = wheel.pixelDelta.x || wheel.pixelDelta.y
+                                const raw = wheel.pixelDelta.x || wheel.angleDelta.x
+                                    || wheel.pixelDelta.y || wheel.angleDelta.y
+                                // Qt's wheel convention: pixelDelta is already pixels,
+                                // angleDelta (120 per notch) scales /8 - an unscaled
+                                // 720 delta jumped past the viewport in one event.
+                                const delta = pixel ? raw : raw / 8
+                                const previous = composerToolbarRow.contentX
+                                composerToolbarRow.contentX = Math.max(0, Math.min(composerToolbarRow.contentWidth - composerToolbarRow.width, composerToolbarRow.contentX - delta))
+                                wheel.accepted = previous !== composerToolbarRow.contentX
+                            }
+                        }
                         Connections {
                             target: root
                             function onActiveFocusItemChanged() {
@@ -12801,7 +12836,12 @@ component NativeMentionChip: Item {
                         GridLayout {
                             id: composerToolbarActions
                             x: 8
-                            width: composerToolbarRow.contentWidth - x
+                            // The row's contentWidth derives from this grid's implicitWidth;
+                            // binding width back to contentWidth made the grid wider than its
+                            // own content, and hit-testing (childAt) fell through to the window
+                            // past the row viewport (scene x >= 640): spoiler/AI clicks died
+                            // while mapToScreen still reported them inside (#672 repro).
+                            width: implicitWidth
                             height: composerToolbarRow.height
                             columns: 19
                             flow: Qt.LeftToRight
