@@ -21464,19 +21464,30 @@ void NativeController::loadTopicSummaryEndpoints()
 QStringList NativeController::topicSummaryEndpointValidationErrors(const QVariantMap &form, bool isCreate) const
 {
     QStringList errors;
-    const auto name = form.value("name").toString().trimmed();
-    if (name.isEmpty() || name.size() > 255) errors << QStringLiteral("name");
-    const auto model = form.value("model").toString().trimmed();
-    if (model.isEmpty() || model.size() > 255) errors << QStringLiteral("model");
-    const auto url = topicSummaryTrimmedUrl(form.value("base_url"));
-    const auto parsed = QUrl(url);
-    const auto scheme = parsed.scheme().toLower();
-    // Reference rules: http(s) only, no userinfo, no query, no fragment, <=2048.
-    const bool shaped = (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
-        && !parsed.host().isEmpty() && parsed.userName().isEmpty() && parsed.password().isEmpty()
-        && parsed.query(QUrl::FullyEncoded).isEmpty() && parsed.fragment().isEmpty()
-        && url.size() <= 2048;
-    if (!shaped) errors << QStringLiteral("base_url");
+    // Partial updates only validate the fields the caller actually carries
+    // (reference semantics: absent means unchanged, not empty).
+    const bool carryName = isCreate || form.contains("name");
+    const bool carryModel = isCreate || form.contains("model");
+    const bool carryUrl = isCreate || form.contains("base_url");
+    if (carryName) {
+        const auto name = form.value("name").toString().trimmed();
+        if (name.isEmpty() || name.size() > 255) errors << QStringLiteral("name");
+    }
+    if (carryModel) {
+        const auto model = form.value("model").toString().trimmed();
+        if (model.isEmpty() || model.size() > 255) errors << QStringLiteral("model");
+    }
+    if (carryUrl) {
+        const auto url = topicSummaryTrimmedUrl(form.value("base_url"));
+        const auto parsed = QUrl(url);
+        const auto scheme = parsed.scheme().toLower();
+        // Reference rules: http(s) only, no userinfo, no query, no fragment, <=2048.
+        const bool shaped = (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
+            && !parsed.host().isEmpty() && parsed.userName().isEmpty() && parsed.password().isEmpty()
+            && parsed.query(QUrl::FullyEncoded).isEmpty() && parsed.fragment().isEmpty()
+            && url.size() <= 2048;
+        if (!shaped) errors << QStringLiteral("base_url");
+    }
     if (isCreate) {
         const auto key = form.value("api_key").toString();
         if (key.isEmpty() || key.size() > 8192) errors << QStringLiteral("api_key");
