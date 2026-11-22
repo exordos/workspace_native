@@ -60,9 +60,32 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--target-seconds", type=float, default=20.0)
     ap.add_argument("--prefix", default="WORKSPACE_NATIVE_WINDOW")
+    ap.add_argument("--only-file", default=None,
+                    help="newline-separated function names: bucket only these "
+                         "(kept in the binary's own -functions order)")
+    ap.add_argument("--exclude-file", default=None,
+                    help="newline-separated function names to leave out of the "
+                         "buckets (each runs in its own registered ctest entry)")
     args = ap.parse_args()
 
     funcs = functions(args.binary)
+    if args.only_file:
+        with open(args.only_file) as handle:
+            wanted = [line.strip() for line in handle if line.strip()]
+        absent = [name for name in wanted if name not in funcs]
+        if absent:
+            sys.exit(f"--only-file names absent from {args.binary} -functions: "
+                     + ", ".join(absent))
+        want_set = set(wanted)
+        funcs = [f for f in funcs if f in want_set]
+    if args.exclude_file:
+        with open(args.exclude_file) as handle:
+            excluded = {line.strip() for line in handle if line.strip()}
+        absent = [name for name in sorted(excluded) if name not in funcs]
+        if absent:
+            sys.exit(f"--exclude-file names absent from {args.binary} -functions: "
+                     + ", ".join(absent))
+        funcs = [f for f in funcs if f not in excluded]
     per = timings(args.timings)
     unknown = [f for f in funcs if f not in per]
     if unknown:
