@@ -21290,7 +21290,9 @@ bool topicSummaryEndpointRow(const QJsonObject &raw, QVariantMap &row)
     for (const auto &field : QStringList{"claim_expires_at", "last_success_at", "last_failure_at",
         "last_error_code", "created_at", "updated_at"}) {
         const auto value = raw.value(field);
-        if (!value.isNull() && !value.isString()) return false;
+        // An absent key is QJsonValue::Undefined, which is NOT isNull(): a DTO
+        // that omits the optional audit fields must still parse (they stay null).
+        if (!value.isUndefined() && !value.isNull() && !value.isString()) return false;
     }
     auto text = [&raw](const char *field) -> QVariant {
         const auto value = raw.value(QLatin1String(field));
