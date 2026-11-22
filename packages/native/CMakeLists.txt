@@ -90,6 +90,7 @@ add_library(workspace-native-core STATIC
     src/native-chat-crypto.cpp src/native-chat-crypto.h
     src/native-chat-key-vault.cpp src/native-chat-key-vault.h
     src/native-external-accounts.cpp src/native-external-accounts.h
+    src/native-external-provider-admin.cpp src/native-external-provider-admin.h
     src/native-preferences.cpp src/native-preferences.h
     src/native-auth-guard.cpp src/native-auth-guard.h
     src/native-instance.cpp src/native-instance.h
@@ -617,7 +618,7 @@ if(BUILD_TESTING)
     target_compile_definitions(native-controller-test-support PUBLIC
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}")
     set(native_controller_suites
-        activity calls channels diagnostics direct-chat encrypted-channels feed forward history inbox keys media mentions
+        activity calls channels diagnostics direct-chat encrypted-channels ext-provider feed forward history inbox keys media mentions
         navigation notifications outbox polls profiles reactions replies sessions sidebar topics transfers)
     foreach(area IN LISTS native_controller_suites)
         set(target "native-controller-${area}-test")

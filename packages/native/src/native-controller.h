@@ -1,5 +1,6 @@
 #pragma once
 #include "native-external-accounts.h"
+#include "native-external-provider-admin.h"
 
 #include "media-viewer.h"
 #include "clipboard-file-identity.h"
@@ -50,6 +51,7 @@ class NativeController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool authenticated READ authenticated NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
+    Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
     Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
@@ -630,6 +632,7 @@ public:
     Q_INVOKABLE void setWindowVisible(bool visible);
     Q_INVOKABLE void setWindowMinimized(bool minimized);
     NativeExternalAccounts *externalAccounts() const { return m_externalAccounts; }
+    NativeExternalProviderAdmin *externalProviderAdmin() const { return m_externalProviderAdmin; }
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
     // Reference bootstrap error banner Retry (bootstrapRetryNonce analogue):
@@ -1807,6 +1810,7 @@ private:
     QString conversationKey() const { return m_stream + "/" + m_topic; }
 
     NativeExternalAccounts *m_externalAccounts;
+    NativeExternalProviderAdmin *m_externalProviderAdmin;
     ApiClient *m_api;
     // Per-saved-account background projection facts keyed by saved account id
     // (issue #144); unread badges for remembered sessions derive from these.
