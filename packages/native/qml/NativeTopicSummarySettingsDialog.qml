@@ -284,7 +284,14 @@ Dialog {
                 // the QML scope chain.
                 property var liveGuard: ({ alive: true })
                 Component.onDestruction: liveGuard.alive = false
-                function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false }
+                // The revision captured at dispatch time: a "saved" reply may only
+                // reset THIS draft, never a newer one typed while the request flew.
+                // formRevision ticks on every draft mutation (QML var identity across
+                // property reads is not stable, so a counter is the safe comparison).
+                property int formRevision: 0
+                property int dispatchRevision: -1
+                property string dispatchUuid: ""
+                function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false; formRevision += 1 }
                 readonly property bool endpointsAllowed: dlg.perm("endpoints") === "allowed"
                 readonly property bool editing: editingUuid.length > 0
                 readonly property bool dirty: editing
@@ -397,6 +404,8 @@ Dialog {
                     if (!canDispatch) return
                     const isCreate = editingUuid === "new"
                     const payload = buildDispatchPayload(isCreate)
+                    dispatchRevision = formRevision
+                    dispatchUuid = editingUuid
                     dlg.pendingOp = "endpoint"
                     if (isCreate) controller.createTopicSummaryEndpoint(payload)
                     else controller.updateTopicSummaryEndpoint(editingUuid, payload)
@@ -414,6 +423,7 @@ Dialog {
                     const next = Object.assign({}, form)
                     next[name] = value
                     form = next
+                    formRevision += 1
                 }
                 function deferSetField(name, value) {
                     // Capture everything the deferred write needs as plain JS values so
@@ -428,6 +438,7 @@ Dialog {
                     form = {name: "", base_url: "", model: "", api_key: "", priority: 100, temperature: 0.2,
                             max_output_tokens: 512, top_p: 1, presence_penalty: 0, frequency_penalty: 0,
                             enabled: true, supports_vision: false, supports_reasoning: false}
+                    formRevision += 1
                 }
                 function startEdit(row) {
                     editingUuid = String(row.uuid)
@@ -440,6 +451,7 @@ Dialog {
                             supports_reasoning: Boolean(row.supports_reasoning)}
                     form = seeded
                     editBaseline = JSON.parse(JSON.stringify(seeded))
+                    formRevision += 1
                 }
                 contentHeight: endpointsCol.implicitHeight
                 ScrollBar.vertical: ScrollBar {}
@@ -493,7 +505,9 @@ Dialog {
                                 onClicked: {
                                     const uuid = endpointsTab.editingUuid.startsWith("confirm:") ? endpointsTab.editingUuid.slice(8) : ""
                                     endpointsTab.confirmDelete = false; endpointsTab.editingUuid = ""
-                                    if (uuid) { dlg.pendingOp = "endpoint"; dlg.controller.deleteTopicSummaryEndpoint(uuid) }
+                                    if (uuid) { endpointsTab.dispatchRevision = endpointsTab.formRevision
+                                        endpointsTab.dispatchUuid = endpointsTab.editingUuid
+                                        dlg.pendingOp = "endpoint"; dlg.controller.deleteTopicSummaryEndpoint(uuid) }
                                 } }
                         }
                     }
@@ -731,8 +745,13 @@ Dialog {
                 // Only the section whose OWN request completed may reset: a shared
                 // reset discarded unsaved edits in the other section (review finding 5),
                 // and the endpoint draft no longer resets at dispatch time (finding 4).
+                // The endpoint reset is further scoped to the revision that was
+                // actually submitted: an edit made while the request was in flight
+                // must survive the late success (review finding: in-flight edits).
                 if (dlg.pendingOp === "gates") gatesTab.reset()
-                else if (dlg.pendingOp === "endpoint") endpointsTab.reset()
+                else if (dlg.pendingOp === "endpoint"
+                         && endpointsTab.formRevision === endpointsTab.dispatchRevision
+                         && endpointsTab.editingUuid === endpointsTab.dispatchUuid) endpointsTab.reset()
                 dlg.pendingOp = ""
             }
             else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }

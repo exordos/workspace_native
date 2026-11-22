@@ -24600,6 +24600,70 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool()); // kept
     }
 
+    // exordy finding [medium]: a successful endpoint request must not discard edits
+    // made while that request was in flight - the "saved" reset may only drop the
+    // draft revision that was actually submitted, never a newer one.
+    void channelTopicSummaryDialogEndpointEditDuringPendingSurvivesSaved()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int puts = 0;
+        std::function<void()> releasePut;
+        auto updated = endpointDto;
+        updated["priority"] = 150;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                Response response{updated};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        // The user keeps editing the draft while the PUT is still in flight.
+        priority->setProperty("text", QStringLiteral("200"));
+        QTest::qWait(50);
+        // The stale request now succeeds with the value dispatched before the edit.
+        auto send = std::move(releasePut);
+        QVERIFY(send);
+        send();
+        // Deterministically wait until the "saved" echo has been applied before
+        // asserting (QTRY's first immediate poll would race the response).
+        auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        // The success may reset only the submitted revision; the newer edit survives.
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        QCOMPARE(visibleItem("channelTopicSummaryField-priority")->property("text").toString(),
+            QStringLiteral("200"));
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
