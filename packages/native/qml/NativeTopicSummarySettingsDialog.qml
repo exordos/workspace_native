@@ -218,13 +218,17 @@ Dialog {
                 clip: true; contentWidth: width; boundsBehavior: Flickable.StopAtBounds
                 property bool globalDraft: false
                 property bool projectDraft: false
+                // Set by user flips; clears on every seed so a late GET only
+                // overwrites drafts nobody touched yet.
+                property bool userEdited: false
                 function reset() {
                     const g = controller.topicSummaryGates
-                    globalDraft = Boolean(g.global_enabled); projectDraft = Boolean(g.project_enabled)
+                    globalDraft = Boolean(g.globalEnabled); projectDraft = Boolean(g.projectEnabled)
+                    userEdited = false
                 }
                 readonly property bool gatesAllowed: dlg.perm("gates") === "allowed"
-                readonly property bool dirty: globalDraft !== Boolean(controller.topicSummaryGates.global_enabled)
-                    || projectDraft !== Boolean(controller.topicSummaryGates.project_enabled)
+                readonly property bool dirty: globalDraft !== Boolean(controller.topicSummaryGates.globalEnabled)
+                    || projectDraft !== Boolean(controller.topicSummaryGates.projectEnabled)
                 contentHeight: gatesCol.implicitHeight
                 ScrollBar.vertical: ScrollBar {}
                 ColumnLayout {
@@ -243,12 +247,12 @@ Dialog {
                     SwitchRow {
                         objectNameRow: "channelTopicSummaryGatesGlobal"; label: qsTr("Global summary generation")
                         checkedFlag: gatesTab.globalDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy
-                        onFlipped: checked => gatesTab.globalDraft = checked
+                        onFlipped: checked => { gatesTab.userEdited = true; gatesTab.globalDraft = checked }
                     }
                     SwitchRow {
                         objectNameRow: "channelTopicSummaryGatesProject"; label: qsTr("Enable summaries in this workspace")
                         checkedFlag: gatesTab.projectDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy
-                        onFlipped: checked => gatesTab.projectDraft = checked
+                        onFlipped: checked => { gatesTab.userEdited = true; gatesTab.projectDraft = checked }
                     }
                     ErrorNotice { name: "channelTopicSummaryGatesError" }
                     Item { Layout.preferredHeight: 16 }
@@ -508,6 +512,13 @@ Dialog {
             const s = controller.topicSummarySettingsStatus
             if (s === "saved") { gatesTab.reset(); endpointsTab.reset() }
             else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }
+            // A seeded draft predates the on-demand GET: when the gates DTO lands
+            // (map populated, no op in flight, no error) and nobody flipped a
+            // switch yet, adopt the server values instead of showing the stale
+            // pre-load seed forever.
+            else if (!controller.topicSummarySettingsBusy && s === ""
+                     && !gatesTab.userEdited && Object.keys(controller.topicSummaryGates).length)
+                gatesTab.reset()
         }
         function onChannelTopicActionFinished(id, action, ok) {
             if (!dlg.visible || !topicTab.saving || id !== dlg.topicId || action !== "summary") return
