@@ -6346,7 +6346,17 @@ component NativeMentionChip: Item {
                     acceptedButtons: Qt.NoButton
                     propagateComposedEvents: true
                     onWheel: function (wheel) {
-                        wheel.accepted = root.scrollFlickableWithWheel(streamList, wheel)
+                        const moved = root.scrollFlickableWithWheel(streamList, wheel)
+                        wheel.accepted = moved
+                        // The #660 settle window must never fight real input:
+                        // a discrete wheel notch does NOT emit movementStarted,
+                        // so cancel the anchor here (the wheel observer is the
+                        // Qt user-scroll oracle) or the restore snaps the list
+                        // back between two measured notches.
+                        if (moved && root.sidebarScrollAnchor) {
+                            sidebarAnchorSettle.stop()
+                            root.sidebarScrollAnchor = null
+                        }
                     }
                 }
                 ScrollBar.vertical: ScrollBar {
