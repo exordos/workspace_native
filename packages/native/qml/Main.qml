@@ -13954,11 +13954,19 @@ component NativeMentionChip: Item {
                                 icon.source: "qrc:/workspace/icons/" + modelData.asset
                                 icon.width: 22
                                 icon.height: 22
-                                icon.color: isCurrent ? root.colors["icon-active"] : root.colors["text-muted"]
+                                icon.color: glyphColor
                                 Accessible.name: modelData.label
+                                // Issue #665 (reference workspace_ui e0194ff,
+                                // notification-level-switch.lib.ts:63-66): idle segments
+                                // tint with bg-sidebar-hover + text-text-primary while
+                                // hovered; the current segment keeps card-bg/icon-active
+                                // so the selection stays distinct from the hover state.
+                                readonly property color glyphColor: isCurrent ? root.colors["icon-active"]
+                                    : (hovered && enabled ? root.colors["text-primary"] : root.colors["text-muted"])
                                 background: Rectangle {
                                     radius: 6
-                                    color: parent.isCurrent ? root.colors["card-bg"] : "transparent"
+                                    color: parent.isCurrent ? root.colors["card-bg"]
+                                         : (parent.hovered && parent.enabled ? root.colors["sidebar-item-hover"] : "transparent")
                                     opacity: parent.enabled ? 1.0 : 0.5
                                 }
                                 onClicked: {

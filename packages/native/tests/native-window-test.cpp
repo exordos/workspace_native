@@ -38545,6 +38545,62 @@ private slots:
         menu->setProperty("visible", false);
     }
 
+    // Issue #665 (reference workspace_ui e0194ff, shared/ui/notification-level-switch/
+    // notification-level-switch.lib.ts:63-66): hovering an idle (not-current) level
+    // segment paints the hover state bg-sidebar-hover + text-text-primary; the
+    // current segment keeps card-bg + icon-active so the selection always stays
+    // visually distinct from the hovered option.
+    void windowStreamContextMenuNotificationHover()
+    {
+        WindowChannelFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("notif-hover.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Stream menu notification hover teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 1, 4000);
+        auto *row = visibleItem("stream-" + streamId); QVERIFY(row);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+        QTRY_VERIFY(menu->property("opened").toBool());
+        const auto colors = window->property("colors").toMap();
+        const auto hoverTint = colors.value("sidebar-item-hover").value<QColor>();
+        const auto primaryGlyph = colors.value("text-primary").value<QColor>();
+        const auto currentColor = colors.value("card-bg").value<QColor>();
+        const auto activeGlyph = colors.value("icon-active").value<QColor>();
+        auto *idle = visibleItem("streamMenuNotifMuted"); QVERIFY(idle);
+        auto *current = visibleItem("streamMenuNotifSubscribed"); QVERIFY(current);
+        QVERIFY(!idle->property("isCurrent").toBool());
+        QVERIFY(current->property("isCurrent").toBool());
+        auto *idleBg = idle->property("background").value<QQuickItem *>(); QVERIFY(idleBg);
+        auto *currentBg = current->property("background").value<QQuickItem *>(); QVERIFY(currentBg);
+        const auto idleCenter = idle->mapToScene(QPointF(idle->width() / 2, idle->height() / 2)).toPoint();
+        const auto currentCenter = current->mapToScene(QPointF(current->width() / 2, current->height() / 2)).toPoint();
+        // Idle without hover: transparent background, text-muted glyph.
+        QTest::mouseMove(window, QPoint(5, 5));
+        QTRY_COMPARE(idleBg->property("color").value<QColor>(), QColor(Qt::transparent));
+        // Reference hover:bg-sidebar-hover + hover:text-text-primary.
+        QTest::mouseMove(window, idleCenter);
+        QTRY_COMPARE(idleBg->property("color").value<QColor>(), hoverTint);
+        QTRY_COMPARE(idle->property("glyphColor").value<QColor>(), primaryGlyph);
+        // Hovering the current segment keeps its own card-bg/icon-active tone and
+        // the previously hovered idle segment clears back to transparent.
+        QTest::mouseMove(window, currentCenter);
+        QTRY_COMPARE(idleBg->property("color").value<QColor>(), QColor(Qt::transparent));
+        QTRY_COMPARE(currentBg->property("color").value<QColor>(), currentColor);
+        QTRY_COMPARE(current->property("glyphColor").value<QColor>(), activeGlyph);
+        menu->setProperty("visible", false);
+    }
+
     // Issue #97 review (cid 4629685053): while a notification write for a stream
     // is in flight the menu's level switch must be disabled for that stream.
     // The first write is held by the mock server's response gate (never sleeps),
