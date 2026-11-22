@@ -25291,6 +25291,84 @@ private:
         QCOMPARE(scene.controller.messages().size(), 1);
     }
 
+    // exo-review #673 finding 4656328687: the reference peer avatar is a real
+    // <button>, so keyboard Enter/Space and the accessibility press action must
+    // open the profile through the same code path as the pointer click
+    // (mirrors codeCopyButtonIsKeyboardOperableAndAccessible).
+    void messageAvatarIsKeyboardOperableAndAccessible()
+    {
+        ProfileWindowScene scene;
+        scene.preferences.setLocale("en");
+        const QString dmRowUuid = QStringLiteral("82000000-0000-4000-8000-000000000002");
+        const QString dmStream = scene.fixture.created.value("uuid").toString();
+        auto peerRow = message(
+            QStringLiteral("Peer-authored row: the avatar must be a button for all input paths."),
+            dmRowUuid, channelDefault);
+        peerRow["stream_uuid"] = dmStream;
+        peerRow["author_uuid"] = channelPeer;
+        peerRow["is_own"] = false;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [base, peerRow, dmStream](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == dmStream) {
+                auto response = base(request);
+                response.data = QJsonArray{peerRow};
+                return response;
+            }
+            return base(request);
+        };
+        QTRY_VERIFY(visibleItem("stream-" + dmStream));
+        click(scene.window, visibleItem("stream-" + dmStream));
+        QTRY_VERIFY(!scene.controller.busy());
+        QTRY_COMPARE(scene.controller.messages().size(), 1);
+        QTRY_VERIFY(visibleItem("message-avatar-" + dmRowUuid));
+        auto *avatar = visibleItem("message-avatar-" + dmRowUuid);
+
+        QStringList deviations;
+        if (!avatar->property("activeFocusOnTab").toBool())
+            deviations << QStringLiteral("the peer avatar does not accept tab focus");
+        auto *iface = QAccessible::queryAccessibleInterface(avatar);
+        if (!iface)
+            deviations << QStringLiteral("the peer avatar exposes no accessible interface");
+        else {
+            if (iface->role() != QAccessible::Button)
+                deviations << QStringLiteral("accessible role %1 is not Button")
+                    .arg(int(iface->role()));
+            if (iface->text(QAccessible::Name) != QStringLiteral("Open profile: Alice"))
+                deviations << QStringLiteral("accessible name \"%1\" is not \"Open profile: Alice\"")
+                    .arg(iface->text(QAccessible::Name));
+            auto *actions = iface->actionInterface();
+            if (!actions || !actions->actionNames()
+                    .contains(QAccessibleActionInterface::pressAction()))
+                deviations << QStringLiteral("the peer avatar exposes no press action");
+            avatar->forceActiveFocus();
+            if (!avatar->hasActiveFocus())
+                deviations << QStringLiteral("the peer avatar cannot take active focus");
+        }
+        for (const auto &deviation : deviations)
+            qWarning().noquote() << "messageAvatarIsKeyboardOperableAndAccessible:" << deviation;
+        QCOMPARE(deviations, QStringList{});
+
+        // Accessibility press, Enter and Space all open the same profile layer
+        // the pointer click drives; no second code path is allowed.
+        QVERIFY(!visibleItem("profileLayer"));
+        iface->actionInterface()->doAction(QAccessibleActionInterface::pressAction());
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
+        QCOMPARE(scene.layer()->property("userUuid").toString(), channelPeer);
+        scene.evaluate("rightDrawer.clearAll()");
+        QTRY_VERIFY(!visibleItem("profileLayer"));
+        for (const auto activationKey : {Qt::Key_Return, Qt::Key_Space})
+        {
+            avatar->forceActiveFocus();
+            QVERIFY(avatar->hasActiveFocus());
+            QTest::keyClick(scene.window, activationKey);
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
+            QCOMPARE(scene.layer()->property("userUuid").toString(), channelPeer);
+            scene.evaluate("rightDrawer.clearAll()");
+            QTRY_VERIFY(!visibleItem("profileLayer"));
+        }
+    }
+
     void windowProfileShareFailurePresentation_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<bool>("dark");

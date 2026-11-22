@@ -9569,6 +9569,7 @@ component NativeMentionChip: Item {
                     }
                     Rectangle {
                         objectName: "message-avatar-" + messageRow.modelData.id
+                        id: messageAvatar
                         visible: !messageRow.keyControl && messageRow.avatar.shown
                             && root.messageSelectionCount === 0
                         x: 0
@@ -9577,16 +9578,34 @@ component NativeMentionChip: Item {
                         height: 48
                         radius: 24
                         color: root.colors["bg-elevated"]
-                        border.color: root.colors["border-subtle"]
+                        border.width: messageAvatar.activeFocus ? 2 : 1
+                        border.color: messageAvatar.activeFocus
+                            ? root.colors["accent"] : root.colors["border-subtle"]
                         // #664: the peer avatar is the reference peer-avatar button
                         // (workspace-message-bubble-presentation.ui.tsx:805): it opens the
                         // profile in the right drawer so the conversation stays visible.
+                        // exo-review finding 4656328687: the reference mounts a real
+                        // <button>, so pointer, Enter/Space keyboard and the accessible
+                        // press action all activate through this one path.
+                        function openProfile() {
+                            if (!messageRow.own)
+                                rightDrawer.openWorkspaceUserProfile(String(messageRow.modelData.authorId))
+                        }
+                        activeFocusOnTab: !messageRow.own
+                        Accessible.role: messageRow.own ? Accessible.NoRole : Accessible.Button
+                        Accessible.onPressAction: messageAvatar.openProfile()
+                        Keys.onPressed: (event) => {
+                            if (!messageRow.own && (event.key === Qt.Key_Return
+                                    || event.key === Qt.Key_Enter || event.key === Qt.Key_Space)) {
+                                event.accepted = true;
+                                messageAvatar.openProfile();
+                            }
+                        }
                         MouseArea {
                             anchors.fill: parent
                             enabled: !messageRow.own
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                            onClicked: if (!messageRow.own)
-                                rightDrawer.openWorkspaceUserProfile(String(messageRow.modelData.authorId))
+                            onClicked: messageAvatar.openProfile()
                         }
                         Accessible.name: messageRow.own ? QString()
                             : qsTr("Open profile: %1").arg(String(messageRow.modelData.author))
