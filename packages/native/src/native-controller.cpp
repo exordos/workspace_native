@@ -21267,4 +21267,387 @@ bool NativeController::callTargetCryptoUnavailable(const QString &userUuid) cons
     }
     return false;}
 
+// ---- Issue #635: AI topic-summary settings (docs/topic-summary-settings.md) ----
+// Reference: workspace_ui shared/api/messenger-topic-summary-management.api.ts,
+// topic-summary-settings.lib.ts and topic-summary-endpoints.lib.ts (e0194ff).
+
+namespace {
+
+// Error mapping of the reference operation wrapper: transport failure keeps
+// the draft for retry (status.network), contract covers schema mismatches that
+// arrive with an otherwise successful status.
+QString topicSummaryErrorKind(const ApiResult &result, bool contract = false)
+{
+    if (contract) return QStringLiteral("contract");
+    if (result.transportFailed) return QStringLiteral("network");
+    if (result.status == 400) return QStringLiteral("invalid");
+    if (result.status == 401 || result.status == 403) return QStringLiteral("forbidden");
+    if (result.status >= 500) return QStringLiteral("server");
+    return QStringLiteral("unknown");
+}
+
+QString topicSummaryTrimmedUrl(const QVariant &value)
+{
+    auto url = value.toString().trimmed();
+    while (url.endsWith(QLatin1Char('/'))) url.chop(1);
+    return url;
+}
+
+// One DTO row -> the QVariantMap the dialog renders. Returns false on any
+// schema mismatch so the caller can surface the `contract` error (the reference
+// normalizes the four nullable audit fields before parsing; we keep them null).
+bool topicSummaryEndpointRow(const QJsonObject &raw, QVariantMap &row)
+{
+    for (const auto &field : QStringList{"uuid", "name", "base_url", "model"})
+        if (!raw.value(field).isString()) return false;
+    for (const auto &field : QStringList{"enabled", "supports_vision", "supports_reasoning", "credential_present"})
+        if (!raw.value(field).isBool()) return false;
+    for (const auto &field : QStringList{"priority", "temperature", "max_output_tokens",
+        "top_p", "presence_penalty", "frequency_penalty", "failure_count"})
+        if (!raw.value(field).isDouble()) return false;
+    for (const auto &field : QStringList{"claim_expires_at", "last_success_at", "last_failure_at",
+        "last_error_code", "created_at", "updated_at"}) {
+        const auto value = raw.value(field);
+        if (!value.isNull() && !value.isString()) return false;
+    }
+    auto text = [&raw](const char *field) -> QVariant {
+        const auto value = raw.value(QLatin1String(field));
+        return value.isString() ? QVariant(value.toString()) : QVariant();
+    };
+    row = {
+        {"uuid", raw.value("uuid").toString()}, {"name", raw.value("name").toString()},
+        {"base_url", raw.value("base_url").toString()}, {"model", raw.value("model").toString()},
+        {"enabled", raw.value("enabled").toBool()}, {"priority", raw.value("priority").toInt()},
+        {"supports_vision", raw.value("supports_vision").toBool()},
+        {"supports_reasoning", raw.value("supports_reasoning").toBool()},
+        {"temperature", raw.value("temperature").toDouble()},
+        {"max_output_tokens", raw.value("max_output_tokens").toInt()},
+        {"top_p", raw.value("top_p").toDouble()}, {"presence_penalty", raw.value("presence_penalty").toDouble()},
+        {"frequency_penalty", raw.value("frequency_penalty").toDouble()},
+        {"credential_present", raw.value("credential_present").toBool()},
+        {"failure_count", raw.value("failure_count").toInt()},
+        {"claim_expires_at", text("claim_expires_at")}, {"last_success_at", text("last_success_at")},
+        {"last_failure_at", text("last_failure_at")}, {"last_error_code", text("last_error_code")},
+        {"created_at", text("created_at")}, {"updated_at", text("updated_at")},
+    };
+    return true;
+}
+
+// Mutable fields of an endpoint row (everything but uuid/audit fields);
+// api_key is write-only and travels only when the user actually typed one.
+const QStringList &topicSummaryEndpointMutableFields()
+{
+    static const QStringList fields{"name", "base_url", "model", "enabled", "priority",
+        "supports_vision", "supports_reasoning", "temperature", "max_output_tokens", "top_p",
+        "presence_penalty", "frequency_penalty", "api_key"};
+    return fields;
+}
+
+} // namespace
+
+quint64 NativeController::beginTopicSummaryOp(const QString &key)
+{
+    if (m_topicSummaryOps.contains(key)) return 0;
+    const auto token = ++m_topicSummaryToken;
+    m_topicSummaryOps.insert(key, token);
+    m_topicSummarySettingsBusy = true;
+    m_topicSummarySettingsStatus.clear();
+    m_topicSummarySettingsError.clear();
+    emit topicSummaryStateChanged();
+    return token;
+}
+
+bool NativeController::finishTopicSummaryOp(const QString &key, quint64 token)
+{
+    const bool current = m_topicSummaryOps.value(key) == token;
+    if (current) m_topicSummaryOps.remove(key);
+    m_topicSummarySettingsBusy = !m_topicSummaryOps.isEmpty();
+    emit topicSummaryStateChanged();
+    return current;
+}
+
+void NativeController::setTopicSummaryStatus(const QString &status, const QString &error)
+{
+    if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) return;
+    m_topicSummarySettingsStatus = status;
+    m_topicSummarySettingsError = error;
+    emit topicSummaryStateChanged();
+}
+
+QString NativeController::topicSummaryTabPermission(const QString &tab) const
+{
+    if (tab == QLatin1String("topic")) {
+        // Reference: allowed iff the snapshot is the current user's stream and
+        // their role manages the topic summary; foreign/missing stays unknown.
+        const auto *stream = channelInfoStreamRow();
+        if (!stream || stream->viewer != m_session->user()) return QStringLiteral("unknown");
+        return stream->role == QLatin1String("owner") || stream->role == QLatin1String("administrator")
+            ? QStringLiteral("allowed") : QStringLiteral("denied");
+    }
+    if (!authenticated()) return QStringLiteral("denied");
+    if (tab == QLatin1String("gates"))
+        return m_session->canManageSummaryGates() ? QStringLiteral("allowed") : QStringLiteral("denied");
+    if (tab == QLatin1String("endpoints"))
+        return m_session->canManageSummaryEndpoints() ? QStringLiteral("allowed") : QStringLiteral("denied");
+    return QStringLiteral("denied");
+}
+
+void NativeController::loadTopicSummaryGates()
+{
+    if (!authenticated() || !m_session->canManageSummaryGates()) {
+        setTopicSummaryStatus("error", "forbidden");
+        return;
+    }
+    const auto token = beginTopicSummaryOp("gates");
+    if (!token) return;
+    const auto owner = ownerKey();
+    const auto path = messenger + "/topic_summary_settings/" + m_session->project();
+    request("GET", path, {}, {}, [this, token, owner](const ApiResult &response) {
+        const bool current = finishTopicSummaryOp("gates", token);
+        if (!current || !authenticated() || ownerKey() != owner) return;
+        const auto json = response.data.toObject();
+        const auto global = json.value("global_enabled");
+        const auto local = json.value("project_enabled");
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!json.value("project_id").isString() || !global.isBool() || !local.isBool()) {
+            setTopicSummaryStatus("error", topicSummaryErrorKind(response, true));
+            return;
+        }
+        m_topicSummaryGates = {{"projectId", json.value("project_id").toString()},
+            {"globalEnabled", global.toBool()}, {"projectEnabled", local.toBool()}};
+        setTopicSummaryStatus("");
+    });
+}
+
+void NativeController::saveTopicSummaryGates(bool globalEnabled, bool projectEnabled)
+{
+    if (!authenticated() || !m_session->canManageSummaryGates()) {
+        setTopicSummaryStatus("error", "forbidden");
+        return;
+    }
+    const auto token = beginTopicSummaryOp("gates");
+    if (!token) return;
+    const auto owner = ownerKey();
+    const auto path = messenger + "/topic_summary_settings/" + m_session->project();
+    const QJsonObject body{{"global_enabled", globalEnabled}, {"project_enabled", projectEnabled}};
+    request("PUT", path, body, {}, [this, token, owner, globalEnabled, projectEnabled](const ApiResult &response) {
+        const bool current = finishTopicSummaryOp("gates", token);
+        if (!current || !authenticated() || ownerKey() != owner) return;
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        // Merge only the two gate booleans of the echo (plus its project id when
+        // well-shaped); a whole-row replacement could regress newer fields.
+        const auto json = response.data.toObject();
+        const auto global = json.value("global_enabled");
+        const auto local = json.value("project_enabled");
+        QVariantMap gates = m_topicSummaryGates;
+        gates["globalEnabled"] = global.isBool() ? global.toBool() : globalEnabled;
+        gates["projectEnabled"] = local.isBool() ? local.toBool() : projectEnabled;
+        if (json.value("project_id").isString())
+            gates["projectId"] = json.value("project_id").toString();
+        m_topicSummaryGates = gates;
+        setTopicSummaryStatus("saved");
+    });
+}
+
+void NativeController::loadTopicSummaryEndpoints()
+{
+    if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
+        setTopicSummaryStatus("error", "forbidden");
+        return;
+    }
+    const auto token = beginTopicSummaryOp("endpoints");
+    if (!token) return;
+    const auto owner = ownerKey();
+    request("GET", messenger + "/topic_summary_endpoints/", {}, {}, [this, token, owner](const ApiResult &response) {
+        const bool current = finishTopicSummaryOp("endpoints", token);
+        if (!current || !authenticated() || ownerKey() != owner) return;
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!response.data.isArray()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response, true)); return; }
+        QVariantList rows;
+        for (const auto &raw : response.data.toArray()) {
+            QVariantMap row;
+            if (!topicSummaryEndpointRow(raw.toObject(), row)) {
+                setTopicSummaryStatus("error", topicSummaryErrorKind(response, true));
+                return;
+            }
+            rows.append(row);
+        }
+        m_topicSummaryEndpoints = rows;
+        setTopicSummaryStatus("");
+    });
+}
+
+QStringList NativeController::topicSummaryEndpointValidationErrors(const QVariantMap &form, bool isCreate) const
+{
+    QStringList errors;
+    const auto name = form.value("name").toString().trimmed();
+    if (name.isEmpty() || name.size() > 255) errors << QStringLiteral("name");
+    const auto model = form.value("model").toString().trimmed();
+    if (model.isEmpty() || model.size() > 255) errors << QStringLiteral("model");
+    const auto url = topicSummaryTrimmedUrl(form.value("base_url"));
+    const auto parsed = QUrl(url);
+    const auto scheme = parsed.scheme().toLower();
+    // Reference rules: http(s) only, no userinfo, no query, no fragment, <=2048.
+    const bool shaped = (scheme == QLatin1String("http") || scheme == QLatin1String("https"))
+        && !parsed.host().isEmpty() && parsed.userName().isEmpty() && parsed.password().isEmpty()
+        && parsed.query(QUrl::FullyEncoded).isEmpty() && parsed.fragment().isEmpty()
+        && url.size() <= 2048;
+    if (!shaped) errors << QStringLiteral("base_url");
+    if (isCreate) {
+        const auto key = form.value("api_key").toString();
+        if (key.isEmpty() || key.size() > 8192) errors << QStringLiteral("api_key");
+    } else if (form.contains("api_key") && !form.value("api_key").toString().isEmpty()
+        && form.value("api_key").toString().size() > 8192) {
+        errors << QStringLiteral("api_key");
+    }
+    const auto number = [&form, &errors](const char *field, double low, double high, bool integral) {
+        if (!form.contains(field)) return;
+        const auto value = form.value(QString::fromLatin1(field));
+        switch (value.type()) {
+        case QVariant::Int: case QVariant::UInt: case QVariant::LongLong:
+        case QVariant::ULongLong: case QVariant::Double: break;
+        default: errors << QString::fromLatin1(field); return;
+        }
+        bool okay = false;
+        const auto parsed = value.toDouble(&okay);
+        if (!okay || parsed < low || parsed > high) { errors << QString::fromLatin1(field); return; }
+        if (integral && parsed != static_cast<double>(static_cast<qint64>(parsed)))
+            errors << QString::fromLatin1(field);
+    };
+    number("priority", 0, 1000000, true);
+    number("max_output_tokens", 1, 32768, true);
+    number("temperature", 0, 2, false);
+    number("top_p", 0, 1, false);
+    number("presence_penalty", -2, 2, false);
+    number("frequency_penalty", -2, 2, false);
+    return errors;
+}
+
+bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
+{
+    if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
+        setTopicSummaryStatus("error", "forbidden");
+        return false;
+    }
+    if (!topicSummaryEndpointValidationErrors(form, true).isEmpty()) {
+        setTopicSummaryStatus("error", "invalid");
+        return false;
+    }
+    const auto token = beginTopicSummaryOp("endpoint-new");
+    if (!token) return false;
+    const auto uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    // Reference create defaults: enabled priority 100, temperature 0.2,
+    // 512 output tokens, top_p 1, penalties 0, capability flags off.
+    QJsonObject body{{"uuid", uuid}, {"name", form.value("name").toString().trimmed()},
+        {"base_url", topicSummaryTrimmedUrl(form.value("base_url"))},
+        {"model", form.value("model").toString().trimmed()}, {"api_key", form.value("api_key").toString()},
+        {"enabled", form.value("enabled", true).toBool()},
+        {"priority", form.contains("priority") ? form.value("priority").toInt() : 100},
+        {"supports_vision", form.value("supports_vision", false).toBool()},
+        {"supports_reasoning", form.value("supports_reasoning", false).toBool()},
+        {"temperature", form.contains("temperature") ? form.value("temperature").toDouble() : 0.2},
+        {"max_output_tokens", form.contains("max_output_tokens") ? form.value("max_output_tokens").toInt() : 512},
+        {"top_p", form.contains("top_p") ? form.value("top_p").toDouble() : 1.0},
+        {"presence_penalty", form.contains("presence_penalty") ? form.value("presence_penalty").toDouble() : 0.0},
+        {"frequency_penalty", form.contains("frequency_penalty") ? form.value("frequency_penalty").toDouble() : 0.0}};
+    const auto owner = ownerKey();
+    request("POST", messenger + "/topic_summary_endpoints/", body, {},
+        [this, token, owner, body](const ApiResult &response) {
+        const bool current = finishTopicSummaryOp("endpoint-new", token);
+        if (!current || !authenticated() || ownerKey() != owner) return;
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        QVariantMap row;
+        if (!response.data.isNull() && topicSummaryEndpointRow(response.data.toObject(), row)) {
+            m_topicSummaryEndpoints.append(row);
+        } else {
+            QVariantMap local{{"uuid", body.value("uuid").toString()}, {"name", body.value("name")},
+                {"base_url", body.value("base_url")}, {"model", body.value("model")},
+                {"enabled", body.value("enabled")}, {"priority", body.value("priority")},
+                {"supports_vision", body.value("supports_vision")},
+                {"supports_reasoning", body.value("supports_reasoning")},
+                {"temperature", body.value("temperature")}, {"max_output_tokens", body.value("max_output_tokens")},
+                {"top_p", body.value("top_p")}, {"presence_penalty", body.value("presence_penalty")},
+                {"frequency_penalty", body.value("frequency_penalty")},
+                {"credential_present", true}, {"failure_count", 0}};
+            for (const auto &field : QStringList{"claim_expires_at", "last_success_at", "last_failure_at",
+                "last_error_code", "created_at", "updated_at"})
+                local.insert(field, QVariant());
+            m_topicSummaryEndpoints.append(local);
+        }
+        setTopicSummaryStatus("saved");
+    });
+    return true;
+}
+
+bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVariantMap &form)
+{
+    if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
+        setTopicSummaryStatus("error", "forbidden");
+        return false;
+    }
+    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid"); return false; }
+    if (!topicSummaryEndpointValidationErrors(form, false).isEmpty()) {
+        setTopicSummaryStatus("error", "invalid");
+        return false;
+    }
+    // Partial update: only the fields the caller actually carries, and never an
+    // empty api_key (write-only credential: absent means unchanged).
+    QJsonObject body;
+    for (const auto &field : topicSummaryEndpointMutableFields()) {
+        if (!form.contains(field)) continue;
+        const auto value = form.value(field);
+        if (field == QLatin1String("name") || field == QLatin1String("model"))
+            body.insert(field, value.toString().trimmed());
+        else if (field == QLatin1String("base_url"))
+            body.insert(field, topicSummaryTrimmedUrl(value));
+        else if (field == QLatin1String("api_key")) {
+            if (!value.toString().isEmpty()) body.insert(field, value.toString());
+        } else body.insert(field, QJsonValue::fromVariant(value));
+    }
+    if (body.isEmpty()) { setTopicSummaryStatus("error", "invalid"); return false; }
+    const auto token = beginTopicSummaryOp("endpoint-" + uuid);
+    if (!token) return false;
+    const auto owner = ownerKey();
+    request("PUT", messenger + "/topic_summary_endpoints/" + uuid, body, {},
+        [this, token, owner, uuid, body](const ApiResult &response) {
+        const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
+        if (!current || !authenticated() || ownerKey() != owner) return;
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        for (auto &entry : m_topicSummaryEndpoints) {
+            auto row = entry.toMap();
+            if (row.value("uuid").toString() != uuid) continue;
+            for (auto it = body.constBegin(); it != body.constEnd(); ++it) {
+                if (it.key() == QLatin1String("api_key")) { row["credential_present"] = true; continue; }
+                row.insert(it.key(), it.value().toVariant());
+            }
+            entry = row;
+            break;
+        }
+        setTopicSummaryStatus("saved");
+    });
+    return true;
+}
+
+void NativeController::deleteTopicSummaryEndpoint(const QString &uuid)
+{
+    if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
+        setTopicSummaryStatus("error", "forbidden");
+        return;
+    }
+    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid"); return; }
+    const auto token = beginTopicSummaryOp("endpoint-" + uuid);
+    if (!token) return;
+    const auto owner = ownerKey();
+    request("DELETE", messenger + "/topic_summary_endpoints/" + uuid, {}, {},
+        [this, token, owner, uuid](const ApiResult &response) {
+        const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
+        if (!current || !authenticated() || ownerKey() != owner) return;
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        std::erase_if(m_topicSummaryEndpoints, [&uuid](const QVariant &entry) {
+            return entry.toMap().value("uuid").toString() == uuid;
+        });
+        setTopicSummaryStatus("saved");
+    });
+}
+
 }

@@ -2644,6 +2644,53 @@ private:
     QString m_profileCallPeer;
     // Profile-direct navigation resolution shared by the Message and Call chips.
     ProfileDirectNavigation resolveProfileDirect(const QString &peer) const;
+
+public:
+    // ---- Issue #635: AI topic-summary settings (docs/topic-summary-settings.md) ----
+    // Controller surface of the reference dialog (workspace_ui
+    // shared/api/messenger-topic-summary-management.api.ts at e0194ff); the QML
+    // dialog consumes only this surface plus topicSummaryTabPermission.
+    Q_PROPERTY(QVariantMap topicSummaryGates READ topicSummaryGates NOTIFY topicSummaryStateChanged)
+    Q_PROPERTY(QVariantList topicSummaryEndpoints READ topicSummaryEndpoints NOTIFY topicSummaryStateChanged)
+    Q_PROPERTY(bool topicSummarySettingsBusy READ topicSummarySettingsBusy NOTIFY topicSummaryStateChanged)
+    Q_PROPERTY(QString topicSummarySettingsStatus READ topicSummarySettingsStatus NOTIFY topicSummaryStateChanged)
+    Q_PROPERTY(QString topicSummarySettingsError READ topicSummarySettingsError NOTIFY topicSummaryStateChanged)
+
+    QVariantMap topicSummaryGates() const { return m_topicSummaryGates; }
+    QVariantList topicSummaryEndpoints() const { return m_topicSummaryEndpoints; }
+    bool topicSummarySettingsBusy() const { return m_topicSummarySettingsBusy; }
+    QString topicSummarySettingsStatus() const { return m_topicSummarySettingsStatus; }
+    QString topicSummarySettingsError() const { return m_topicSummarySettingsError; }
+
+    // "allowed" | "denied" | "unknown" for tab "topic" | "gates" | "endpoints",
+    // mirroring messenger-topic-summary-permissions.lib.ts.
+    Q_INVOKABLE QString topicSummaryTabPermission(const QString &tab) const;
+    Q_INVOKABLE void loadTopicSummaryGates();
+    Q_INVOKABLE void saveTopicSummaryGates(bool globalEnabled, bool projectEnabled);
+    Q_INVOKABLE void loadTopicSummaryEndpoints();
+    Q_INVOKABLE bool createTopicSummaryEndpoint(const QVariantMap &form);
+    Q_INVOKABLE bool updateTopicSummaryEndpoint(const QString &uuid, const QVariantMap &form);
+    Q_INVOKABLE void deleteTopicSummaryEndpoint(const QString &uuid);
+    // Client-side rules of the reference endpoint form; returns offending field
+    // names (empty when the form is valid), so Save can gate before dispatch.
+    Q_INVOKABLE QStringList topicSummaryEndpointValidationErrors(const QVariantMap &form, bool isCreate) const;
+
+signals:
+    void topicSummaryStateChanged();
+
+private:
+    // At most one in-flight request per operation key ("gates", "endpoints",
+    // "endpoint:<uuid>"); token 0 means the key was already busy.
+    quint64 beginTopicSummaryOp(const QString &key);
+    bool finishTopicSummaryOp(const QString &key, quint64 token);
+    void setTopicSummaryStatus(const QString &status, const QString &error = {});
+    QHash<QString, quint64> m_topicSummaryOps;
+    quint64 m_topicSummaryToken = 0;
+    QVariantMap m_topicSummaryGates;
+    QVariantList m_topicSummaryEndpoints;
+    bool m_topicSummarySettingsBusy = false;
+    QString m_topicSummarySettingsStatus;
+    QString m_topicSummarySettingsError;
 };
 
 }
