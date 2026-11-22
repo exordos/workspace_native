@@ -11,25 +11,11 @@
 #include <QPair>
 #include <QSet>
 #include <QTemporaryDir>
-#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QVector>
-#include <cstdio>
 
 namespace workspace {
-
-namespace {
-// #684 CI diagnostic breadcrumbs - see heif-preview.cpp for rationale
-// (stderr bypasses the Qt message handler, so test warning seams stay clean).
-void heifCrumb(const char *stage, quint64 a = 0, quint64 b = 0)
-{
-    std::fprintf(stderr, "[heif-crumb] t=%p %s %llu %llu\n",
-        QThread::currentThreadId(), stage, static_cast<unsigned long long>(a),
-        static_cast<unsigned long long>(b));
-    std::fflush(stderr);
-}
-} // namespace
 
 namespace {
 bool stagedFileLooksHeif(const QString &path)
@@ -56,7 +42,6 @@ class MediaViewerHeifRenderer final : public QObject {
 public slots:
     void render(int slot, quint64 generation, const QString &path, const QString &outPath)
     {
-        heifCrumb("mv-render-in", static_cast<quint64>(slot), generation);
         // #670 re-review: the bounded wait measures from the moment this
         // serial worker takes the render, not from the download; queued
         // renders must not burn their timeout behind an earlier job.
@@ -77,9 +62,7 @@ public slots:
                 }
             }
         }
-        heifCrumb("mv-render-decoded", static_cast<quint64>(slot), ok ? 1 : 0);
         QMetaObject::invokeMethod(this, [this, slot, generation, outPath, ok] {
-            heifCrumb("mv-rendered-emit", static_cast<quint64>(slot), generation);
             emit rendered(slot, generation, ok ? outPath : QString{});
         }, Qt::QueuedConnection);
     }
@@ -118,12 +101,10 @@ MediaViewerModel::MediaViewerModel(NativeController *controller, QObject *parent
 
 MediaViewerModel::~MediaViewerModel()
 {
-    heifCrumb("mv-dtor-begin", reinterpret_cast<quint64>(this));
     m_stopping = true;
     if (m_decoder) disconnect(m_decoder, nullptr, this, nullptr);
     closeSession();
     m_decodeThread.requestInterruption(); m_decodeThread.quit(); m_decodeThread.wait();
-    heifCrumb("mv-dtor-joined", reinterpret_cast<quint64>(this));
 }
 
 void MediaViewerModel::setFileClient(FileClient *files)
@@ -152,7 +133,6 @@ void MediaViewerModel::setHeifQueueTimeoutMsForTests(int ms)
 
 void MediaViewerModel::renderStarted(int slot, quint64 generation)
 {
-    heifCrumb("mv-render-started", static_cast<quint64>(slot), generation);
     if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
         return; // retired or replaced session: the existing fences discard the render
     // #670 round 3: any worker start is queue-liveness evidence - even the late
@@ -262,7 +242,6 @@ void MediaViewerModel::cancelRenderWatchdog(Slot &slot)
 
 void MediaViewerModel::heifRenderTimeoutExpired(QTimer *timer, int slot, quint64 generation)
 {
-    heifCrumb("mv-render-watchdog-fired", static_cast<quint64>(slot), generation);
     timer->deleteLater();
     // A retired or replaced session (close, generation bump, newer slot) keeps
     // the existing fences: the late render is discarded there, nothing to do.
@@ -437,7 +416,6 @@ void MediaViewerModel::closeSession()
     if (!m_open && m_slots.isEmpty())
         return;
     ++m_generation;
-    heifCrumb("mv-close", m_generation, reinterpret_cast<quint64>(this));
     QList<quint64> operations;
     for (auto &slot : m_slots) {
         cancelRenderWatchdog(slot);
@@ -536,7 +514,6 @@ void MediaViewerModel::slotDownloaded(int slot, quint64 generation, const FileRe
 
 void MediaViewerModel::heifRendered(int slot, quint64 generation, const QString &displayPath)
 {
-    heifCrumb("mv-heif-rendered-in", static_cast<quint64>(slot), generation);
     if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
         return;
     auto &target = m_slots[slot];

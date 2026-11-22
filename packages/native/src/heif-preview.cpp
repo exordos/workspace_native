@@ -8,8 +8,6 @@
 
 #ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
 #include <libheif/heif.h>
-#include <QThread>
-#include <cstdio>
 #include <memory>
 #include <mutex>
 #endif
@@ -121,19 +119,6 @@ bool heifSniffFtyp(const QByteArray &headerBytes)
 #ifdef WORKSPACE_NATIVE_WITH_LIBHEIF
 namespace {
 
-// #684 CI diagnostic: the window-part9 SIGSEGV@0x8 reproduces only in CI, so
-// the HEIC decode path prints last-mile breadcrumbs to stderr around every
-// libheif call and around viewer/preview lifetime events. stderr is deliberate:
-// it bypasses the Qt message handler so the warning-counting test seams stay
-// untouched. Removed once the crashing shard run yields the trace.
-void heifCrumb(const char *stage, quint64 a = 0, quint64 b = 0)
-{
-    std::fprintf(stderr, "[heif-crumb] t=%p %s %llu %llu\n",
-        QThread::currentThreadId(), stage, static_cast<unsigned long long>(a),
-        static_cast<unsigned long long>(b));
-    std::fflush(stderr);
-}
-
 // Default for builds that did not configure a packaged layout (the CMake
 // target defines the real value from CMAKE_INSTALL_LIBDIR, #670 finding 2).
 #ifndef WORKSPACE_NATIVE_HEIF_PLUGINS_SUBDIR
@@ -195,7 +180,6 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64
         return false;
     }
     ensureHeifPluginsLoaded();
-    heifCrumb("heif-decode-in", static_cast<quint64>(bytes.size()));
     heif_context *context = heif_context_alloc();
     if (!context) {
         error = QStringLiteral("heic preview: libheif context allocation failed");
@@ -225,13 +209,9 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64
     if (heifPixelBudgetRejects(width, height, maxSourcePixels, error)) {
         return false;
     }
-    heifCrumb("heif-primary-found", static_cast<quint64>(width), static_cast<quint64>(height));
     heif_image *image = nullptr;
-    const heif_error decoded = heif_decode_image(handle, &image, heif_colorspace_RGB,
-        heif_chroma_interleaved_RGBA, nullptr);
-    heifCrumb("heif-decode-image-call-back", static_cast<quint64>(width),
-        static_cast<quint64>(decoded.code));
-    if (decoded.code != heif_error_Ok) {
+    if (heif_error decoded = heif_decode_image(handle, &image, heif_colorspace_RGB,
+            heif_chroma_interleaved_RGBA, nullptr); decoded.code != heif_error_Ok) {
         error = QStringLiteral("heic preview: %1").arg(QString::fromLatin1(decoded.message));
         return false;
     }
@@ -245,13 +225,11 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64
     }
     out = QImage(pixels, heif_image_handle_get_width(handle),
         heif_image_handle_get_height(handle), stride, QImage::Format_RGBA8888).copy();
-    heifCrumb("heif-plane-copied", static_cast<quint64>(out.sizeInBytes()));
     if (out.isNull()) {
         error = QStringLiteral("heic preview: image copy failed");
         return false;
     }
     error = QString();
-    heifCrumb("heif-decode-ok", static_cast<quint64>(out.sizeInBytes()));
     return true;
 }
 #else
