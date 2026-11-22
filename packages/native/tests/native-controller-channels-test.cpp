@@ -1013,7 +1013,7 @@ private slots:
         controller.saveTopicSummaryGates(true, true);
         QTRY_VERIFY(!controller.topicSummarySettingsBusy());
         QCOMPARE(scene.gatesPuts, 1);
-        QCOMPARE(scene.lastGatesPut, QJsonObject{{"global_enabled", true}, {"project_enabled", true}});
+        QCOMPARE(scene.lastGatesPut, QJsonObject({{"global_enabled", true}, {"project_enabled", true}}));
         QCOMPARE(controller.topicSummarySettingsStatus(), QString("saved"));
         QCOMPARE(controller.topicSummaryGates().value("projectEnabled"), QVariant(true));
     }
@@ -1081,7 +1081,7 @@ private slots:
             {{"model", "gpt-y"}, {"api_key", QString()}}));
         QTRY_VERIFY(!controller.topicSummarySettingsBusy());
         QCOMPARE(scene.endpointPuts.size(), 1);
-        QCOMPARE(scene.endpointPuts.first(), QJsonObject{{"model", "gpt-y"}});
+        QCOMPARE(scene.endpointPuts.first(), QJsonObject({{"model", "gpt-y"}}));
         QCOMPARE(controller.topicSummaryEndpoints().first().toMap().value("model").toString(), QString("gpt-y"));
         // An empty patch (only a blank api_key) is rejected before dispatch.
         const auto puts = scene.endpointPuts.size();
