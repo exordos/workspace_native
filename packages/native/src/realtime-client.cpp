@@ -108,6 +108,10 @@ void RealtimeClient::setState(const QString &state)
     if (m_state == state)
         return;
     m_state = state;
+    // Issue #668: every transition lands in the diagnostics ledger before the
+    // signal fans out, so a snapshot taken from a connectionChanged handler
+    // already sees the transition it reacted to.
+    m_activity.recordStateChange(state, QDateTime::currentMSecsSinceEpoch());
     emit connectionChanged(state);
 }
 
@@ -440,6 +444,22 @@ void RealtimeClient::dispatch()
         // A synchronous consumer may acknowledge and clear m_pending before the next
         // subscriber sees this signal. Keep this delivery stable for all subscribers.
         const auto envelope = m_pending;
+        // Issue #668: traffic accounting keys on the envelope type when the
+        // frame carries one (error frames such as EventsCursorExpiredError),
+        // else on object_type.action for regular events.
+        QString eventType = envelope.value(QLatin1String("type")).toString();
+        if (eventType.isEmpty()) {
+            eventType = envelope.value(QLatin1String("object_type")).toString();
+            const auto action = envelope.value(QLatin1String("action")).toString();
+            if (!action.isEmpty()) {
+                if (!eventType.isEmpty())
+                    eventType += QLatin1Char('.');
+                eventType += action;
+            }
+        }
+        if (eventType.isEmpty())
+            eventType = QStringLiteral("unknown");
+        m_activity.recordReceived(eventType, QDateTime::currentMSecsSinceEpoch());
         emit eventReceived(envelope);
         return;
     }
@@ -596,6 +616,11 @@ void RealtimeClient::connectSocket()
     connect(socket, &QWebSocket::disconnected, this, [this, socket, run, generation] {
         if (!current(run, generation) || m_socket != socket)
             return;
+        // Issue #668: record the drop with its real close code before the
+        // semantic branch; 4401/4410 are failures the user must be able to
+        // see in diagnostics just as much as plain transport drops.
+        m_activity.recordFailure(QDateTime::currentMSecsSinceEpoch(),
+            QStringLiteral("socket_closed"), int(socket->closeCode()));
         if (int(socket->closeCode()) == 4401) {
             authenticationFailure();
         } else if (int(socket->closeCode()) == 4410) {
@@ -604,9 +629,14 @@ void RealtimeClient::connectSocket()
             retry("retrying");
         }
     });
-    connect(socket, &QWebSocket::errorOccurred, this, [this, run, generation] {
-        if (current(run, generation))
+    connect(socket, &QWebSocket::errorOccurred, this, [this, run, generation](QAbstractSocket::SocketError error) {
+        if (current(run, generation)) {
+            // Only the enum value is recorded: errorString() can echo the
+            // request URL and must never reach a diagnostics surface.
+            m_activity.recordFailure(QDateTime::currentMSecsSinceEpoch(),
+                QStringLiteral("socket_error"), int(error));
             retry("retrying");
+        }
     });
     QUrlQuery cursor;
     cursor.addQueryItem("last_epoch_version", QString::number(m_epoch));
@@ -692,6 +722,22 @@ void RealtimeClient::authenticationFailure()
     suspend();
     setState("authentication_required");
     m_session->requestRefresh();
+}
+
+QVariantMap RealtimeClient::websocketSummary() const
+{
+    auto summary = m_activity.summary(QDateTime::currentMSecsSinceEpoch());
+    summary.insert(QStringLiteral("state"),
+        m_state.isEmpty() ? QVariant(QStringLiteral("stopped")) : QVariant(m_state));
+    // The endpoint is printed without query parameters; the bearer token
+    // travels in the subprotocol (api-client.cpp openRealtimeSocket), never
+    // in the URL, so the printed endpoint is credential-free by construction.
+    auto endpoint = m_api->server();
+    endpoint.setScheme(endpoint.scheme() == QLatin1String("https")
+        ? QStringLiteral("wss") : QStringLiteral("ws"));
+    endpoint.setPath(QStringLiteral("/api/workspace/v1/events/ws"));
+    summary.insert(QStringLiteral("endpoint"), endpoint.toString(QUrl::RemoveQuery));
+    return summary;
 }
 
 } // namespace workspace

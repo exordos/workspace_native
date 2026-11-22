@@ -7507,6 +7507,17 @@ QVariantMap NativeController::diagnosticsSnapshot() const
     snapshot.insert(QStringLiteral("rateLimitBlockedUntil"),
         m_rateLimitedUntilMs > now ? QVariant(m_rateLimitedUntilMs) : QVariant());
     snapshot.insert(QStringLiteral("realtime"), realtime);
+    // Issue #668 (docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md): the websocket
+    // dataset always has a bindable shape; without a realtime client the
+    // page renders the disabled state.
+    QVariantMap websocket;
+    if (m_realtime) {
+        websocket = m_realtime->websocketSummary();
+    } else {
+        websocket.insert(QStringLiteral("state"), QStringLiteral("disabled"));
+        websocket.insert(QStringLiteral("receiveOnly"), true);
+    }
+    snapshot.insert(QStringLiteral("websocket"), websocket);
     snapshot.insert(QStringLiteral("runtime"), runtime);
     snapshot.insert(QStringLiteral("environment"), environment);
     snapshot.insert(QStringLiteral("session"), session);
