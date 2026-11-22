@@ -12531,17 +12531,22 @@ mv -Tf "$root/.current-new" "$root/current"
     void switchingStreamKeepsSidebarScrollAndOrder()
     {
         WindowChannelFixture fixture;
-        const QString otherStream = "93000000-0000-4000-8000-000000000001";
-        const auto secondTopic = windowChannelTopic(secondTopicId, otherStream, "Support topic");
-        QJsonArray streams;
-        streams.append(windowChannel(streamId, "Engineering"));
-        streams.append(windowChannel(otherStream, "Support"));
         QStringList fillerIds;
         QHash<QString, QJsonArray> topicsByStream;
+        QJsonArray streams{windowChannel(streamId, "Engineering")};
         for (int i = 0; i < 6; ++i) {
             const auto id = QString("93000000-0000-4000-8000-%1").arg(10 + i, 12, 10, QLatin1Char('0'));
             fillerIds.append(id);
             streams.append(windowChannel(id, QString("Filler %1").arg(i)));
+            QJsonArray rows;
+            for (int t = 0; t < 7; ++t) {
+                const auto topicUuid = QString("95000000-0000-4000-8000-%1").arg(i * 7 + t, 12, 10, QLatin1Char('0'));
+                auto topic = windowChannelTopic(topicUuid, id, QString("Filler topic %1").arg(t));
+                topic["is_default"] = t == 0;
+                topic["is_done"] = t >= 5;
+                rows.append(topic);
+            }
+            topicsByStream.insert(id, rows);
         }
         QJsonArray planning;
         for (int i = 0; i < 7; ++i) {
@@ -12552,11 +12557,6 @@ mv -Tf "$root/.current-new" "$root/current"
             planning.append(topic);
         }
         topicsByStream.insert(streamId, planning);
-        topicsByStream.insert(otherStream, QJsonArray{secondTopic});
-        for (const auto &id : fillerIds) {
-            const auto topicId = QString("95000000-0000-4000-8000-%1").arg(fillerIds.indexOf(id), 12, 10, QLatin1Char('0'));
-            topicsByStream.insert(id, QJsonArray{windowChannelTopic(topicId, id, "Filler topic")});
-        }
         const auto fallback = fixture.server.handler;
         fixture.server.handler = [=](const Request &request) -> Response {
             if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {streams};
@@ -12573,72 +12573,63 @@ mv -Tf "$root/.current-new" "$root/current"
             if (guard && !closeIncubatedTestWindow(engine, guard.data()))
                 QTest::qFail("Sidebar switch-scroll teardown", __FILE__, __LINE__);
         });
-        window->resize(1440, 600);
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
         session.login(fixture.server.origin(), "synthetic-switch", "synthetic-password");
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
-        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 8);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 7);
         auto *list = item(window->contentItem(), "streamList"); QVERIFY(list);
+        // Hover-expansion is independent of navigation (#142), so three
+        // streams can be opened without moving the selection.
         const auto expandStream = [&](const QString &streamUuid) {
-            auto *row = visibleItem(window->contentItem(), "stream-" + streamUuid);
-            if (!row) { // the row may sit below the fold; walk it into view
-                list->setProperty("contentY", list->property("contentY").toReal() + 200.0);
-                QTest::qWait(50);
-                row = visibleItem(window->contentItem(), "stream-" + streamUuid);
-            }
-            QVERIFY(row);
+            auto *delegate = item(window->contentItem(), "stream-" + streamUuid); QVERIFY(delegate);
+            list->setProperty("contentY", qMax(0.0, delegate->y()));
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamUuid), 2000);
+            auto *row = visibleItem(window->contentItem(), "stream-" + streamUuid); QVERIFY(row);
             QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
             QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "expandTopics-" + streamUuid), 3000);
             click(window, visibleItem(window->contentItem(), "expandTopics-" + streamUuid));
         };
-        // Three independently hover-expanded streams (no navigation, #142)
-        // plus the selected stream's own topics make the list scrollable.
-        controller.selectStream(otherStream);
-        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 1);
+        // Stream rows sorted by their scene position, whatever the scroll.
+        const auto streamOrder = [&] {
+            QList<QPair<qreal, QString>> rows;
+            std::function<void(QQuickItem *)> walk = [&](QQuickItem *node) {
+                for (auto *child : node->childItems()) {
+                    if (child->objectName().startsWith("stream-"))
+                        rows.append({child->mapToScene(QPointF(0, 0)).y(), child->objectName()});
+                    walk(child);
+                }
+            };
+            walk(list);
+            std::sort(rows.begin(), rows.end());
+            QStringList names;
+            for (const auto &row : rows) names.append(row.second);
+            return names;
+        };
+        controller.selectStream(fillerIds.at(1));
+        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 7);
         expandStream(streamId);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(),
             "topic-" + planning.at(0).toObject().value("uuid").toString()), 5000);
         expandStream(fillerIds.at(3));
         expandStream(fillerIds.at(5));
-        QTRY_VERIFY(list->property("contentHeight").toReal()
-                    > list->height() + 120.0);
-        const auto travel = list->property("contentHeight").toReal() - list->height();
-        QVERIFY2(travel > 120.0, qPrintable(QString("scroll travel %1 px").arg(travel)));
-        list->setProperty("contentY", 150.0);
-        QTRY_COMPARE_WITH_TIMEOUT(list->property("contentY").toReal(), 150.0, 2000);
-        QStringList orderBefore;
-        {
-            QList<QQuickItem *> rows;
-            const auto children = list->childItems();
-            for (auto *child : children)
-                if (child->objectName().startsWith("stream-")) rows.append(child);
-            std::sort(rows.begin(), rows.end(), [](const QQuickItem *a, const QQuickItem *b) {
-                return a->y() < b->y(); });
-            for (auto *row : rows) orderBefore.append(row->objectName());
-        }
-        QVERIFY(orderBefore.size() >= 3);
-        // Switch chats by clicking the Engineering stream row: the accordion
-        // collapses the other expanded streams (#95), all above this viewport.
-        list->setProperty("contentY", 150.0);
-        QTest::qWait(100); // let the collapse settle only if it re-clamps contentY
+        // Pin the scroll at the filler-3 row: everything that the upcoming
+        // accordion collapse removes sits above this viewport line.
+        auto *anchor = item(window->contentItem(), "stream-" + fillerIds.at(3)); QVERIFY(anchor);
+        list->setProperty("contentY", anchor->y());
+        QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 0.0, 2000);
         const auto pinnedY = list->property("contentY").toReal();
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
-        QTRY_COMPARE(controller.selectedStream(), streamId);
+        const auto orderBefore = streamOrder();
+        QVERIFY2(orderBefore.size() >= 5, qPrintable(orderBefore.join(",")));
+        QVERIFY(visibleItem(window->contentItem(), "stream-" + fillerIds.at(5)));
+        // Switch chats by clicking the filler-5 row below the fold: the
+        // selection collapses Engineering, filler 1 and filler 3 (#95).
+        click(window, visibleItem(window->contentItem(), "stream-" + fillerIds.at(5)));
+        QTRY_COMPARE(controller.selectedStream(), fillerIds.at(5));
         QTest::qWait(200); // several layout passes for a model republish/clamp
         QCOMPARE(list->property("contentY").toReal(), pinnedY);
-        QStringList orderAfter;
-        {
-            QList<QQuickItem *> rows;
-            const auto children = list->childItems();
-            for (auto *child : children)
-                if (child->objectName().startsWith("stream-")) rows.append(child);
-            std::sort(rows.begin(), rows.end(), [](const QQuickItem *a, const QQuickItem *b) {
-                return a->y() < b->y(); });
-            for (auto *row : rows) orderAfter.append(row->objectName());
-        }
-        QCOMPARE(orderAfter, orderBefore);
+        QCOMPARE(streamOrder(), orderBefore);
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss(); QVERIFY(closed);
     }
