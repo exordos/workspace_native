@@ -5196,7 +5196,7 @@ component NativeMentionChip: Item {
                 const id = String(streamList.model[row] && streamList.model[row].id || "")
                 if (!id.length)
                     return
-                root.sidebarScrollAnchor = {id: id, offset: item.y - cy}
+                root.sidebarScrollAnchor = {id: id, offset: item.y - cy, contentHeight: streamList.contentHeight}
                 sidebarAnchorSettle.passes = 0
                 sidebarAnchorSettle.restart()
                 return
@@ -5207,6 +5207,13 @@ component NativeMentionChip: Item {
     function restoreSidebarScrollAnchor(clear) {
         const anchor = root.sidebarScrollAnchor
         if (!anchor)
+            return
+        // Nothing above the fold collapsed (yet) => there is nothing to
+        // counter, and writing contentY would fight keyboard scrolls or
+        // programmatic reveals happening in the settle window. Only a real
+        // shrink of the list (the #95 accordion collapse) is a restore
+        // trigger; the settle passes just wait for it to land.
+        if (streamList.contentHeight >= anchor.contentHeight - 0.5)
             return
         let row = -1
         for (let i = 0; i < streamList.count; ++i) {

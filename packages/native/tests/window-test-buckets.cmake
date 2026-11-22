@@ -262,6 +262,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     pollVoterQueuesStopWhenResultsBecomeAnonymous
     realMenuInputWaitsForSourceLayout
     servicesChatButtonShowsFocusIndicatorOnKeyboardFocus
+    switchingStreamKeepsSidebarScrollAndOrder
     topicContextMenuMarkReadVisibilityAndAction
     uploadedAvatarsUseRealMainPixels
     windowProfileAvatarDialogGeometryAndDisabledRemove
