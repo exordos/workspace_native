@@ -608,13 +608,16 @@ if(BUILD_TESTING)
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}"
         WORKSPACE_NATIVE_E2EE_PEER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/tests/e2ee-peer/peer.mjs")
     set_target_properties(native-e2ee-read-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+    # The 100ms responsiveness assertions measure scheduling delay; run them
+    # with the original oracle and without competing CTest processes. The pulse
+    # entry is registered in BOTH gate modes (issue #657): the bucketed full-gate
+    # registration below deliberately excludes these two cases so they never
+    # share a process with parallel bucket siblings.
+    set(e2ee_pulse_cases fiveHundredAnnouncementsStayBoundedAndYield
+        preparedFiveHundredRowsYieldAndOversizedWindowDropsAll)
+    add_test(NAME native-native-e2ee-pulse COMMAND native-e2ee-read-test ${e2ee_pulse_cases})
+    set_tests_properties(native-native-e2ee-pulse PROPERTIES RUN_SERIAL TRUE TIMEOUT 45)
     if(WORKSPACE_NATIVE_QUICK_GATE)
-        # The 100ms responsiveness assertions measure scheduling delay; run them
-        # with the original oracle and without competing CTest processes.
-        set(e2ee_pulse_cases fiveHundredAnnouncementsStayBoundedAndYield
-            preparedFiveHundredRowsYieldAndOversizedWindowDropsAll)
-        add_test(NAME native-native-e2ee-pulse COMMAND native-e2ee-read-test ${e2ee_pulse_cases})
-        set_tests_properties(native-native-e2ee-pulse PROPERTIES RUN_SERIAL TRUE TIMEOUT 45)
         add_test(NAME native-native-e2ee-read COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/parallel-qt-test.py" "$<TARGET_FILE:native-e2ee-read-test>"
             --jobs 10 --separate ${e2ee_pulse_cases})
@@ -622,18 +625,40 @@ if(BUILD_TESTING)
         # headless suite early so its TLS peer waits overlap other tests.
         # Charge each worker to the limit shared with the other CTest suites.
         set_tests_properties(native-native-e2ee-read PROPERTIES COST 1000 PROCESSORS 10)
+        set_tests_properties(native-native-e2ee-read PROPERTIES RESOURCE_LOCK "xdisplay")
+        # Original189 cases plus42 additive observer/resolver/lifecycle/disclosure data.
+        # Measured old suite359.164s + new42 focus130.768s + RT control17.018s;
+        # 25% headroom rounded up to30s:660s. Individual waits stay unchanged.
+        # Ceiling re-measured after the 0.42.0 upstream growth: the group runs
+        # 657.58 s standalone on an idle host (issue #650), so the old 660 s
+        # ceiling left ~2 s of margin and timed out the full pre-tag gate under
+        # any concurrent load. Same headroom recipe as before: 657.6 s * 1.25
+        # = 822 s, rounded up to 900 s. Individual waits stay unchanged.
+        set_tests_properties(native-native-e2ee-read PROPERTIES TIMEOUT 900)
     else()
-        add_test(NAME native-native-e2ee-read COMMAND native-e2ee-read-test)
+        # Issue #657: native-native-e2ee-read ran 650 s in CI as a single ctest
+        # entry, the next critical path after the window monolith. Register it
+        # as source-order-contiguous buckets generated from measured per-case
+        # QtTest timings (scripts/gen-test-buckets.py), targeting ~100 s each,
+        # and let the headless sync guard fail whenever a case is added without
+        # regenerating the checked-in bucket list.
+        include(${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-read-test-buckets.cmake)
+        foreach(e2ee_read_bucket RANGE 1 ${WORKSPACE_NATIVE_E2EE_READ_BUCKETS_COUNT})
+            add_test(NAME native-native-e2ee-read-part${e2ee_read_bucket}
+                COMMAND native-e2ee-read-test ${WORKSPACE_NATIVE_E2EE_READ_BUCKET_${e2ee_read_bucket}})
+            set_tests_properties(native-native-e2ee-read-part${e2ee_read_bucket} PROPERTIES
+                TIMEOUT 600 RESOURCE_LOCK "xdisplay")
+        endforeach()
+        add_test(NAME native-e2ee-read-buckets-sync
+            COMMAND ${WORKSPACE_NATIVE_PYTHON3_EXECUTABLE}
+                ${CMAKE_CURRENT_LIST_DIR}/tests/qt-test-buckets-sync.py
+                $<TARGET_FILE:native-e2ee-read-test>
+                ${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-read-test-buckets.cmake
+                --prefix WORKSPACE_NATIVE_E2EE_READ
+                --exclude ${e2ee_pulse_cases})
+        set_tests_properties(native-e2ee-read-buckets-sync PROPERTIES TIMEOUT 30
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     endif()
-    # Original189 cases plus42 additive observer/resolver/lifecycle/disclosure data.
-    # Measured old suite359.164s + new42 focus130.768s + RT control17.018s;
-    # 25% headroom rounded up to30s:660s. Individual waits stay unchanged.
-    # Ceiling re-measured after the 0.42.0 upstream growth: the group runs
-    # 657.58 s standalone on an idle host (issue #650), so the old 660 s
-    # ceiling left ~2 s of margin and timed out the full pre-tag gate under
-    # any concurrent load. Same headroom recipe as before: 657.6 s * 1.25
-    # = 822 s, rounded up to 900 s. Individual waits stay unchanged.
-    set_tests_properties(native-native-e2ee-read PROPERTIES TIMEOUT 900)
     # Reuse the real TLS/source-JS fixture for the visible encrypted UI slice.
     # The explicit functions keep the existing core and pulse suite separate.
     add_executable(native-e2ee-ui-test tests/native-e2ee-read-test.cpp)
@@ -646,95 +671,34 @@ if(BUILD_TESTING)
     qt_add_resources(native-e2ee-ui-test native_qml
         PREFIX /workspace/qml BASE qml FILES ${native_qml_files})
     set_target_properties(native-e2ee-ui-test PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
-    add_test(NAME native-native-e2ee-ui COMMAND native-e2ee-ui-test
-        uiEncryptedReadUsesActualSourceGrantAndSafeCopy
-        uiEncryptedInlineImageRequiresReadableBodyAndResetsItsDemand
-        uiEncryptedMissingErrorArchiveAndNullCurrentRemainDistinct
-        encryptedConversationPresentsItsFirstPreparedWindow
-        encryptedSidebarPreviewsFollowTheLocalPresentation
-        uiEncryptedMessageDecryptRetryRowCyclesAndRepairs
-        uiSecretFragmentTracksRequestAndVaultRemoval
-        uiSecretRequestVerifiesTheReferencedStream
-        uiSecretArchivedFragmentUsesItsAccessibleKey
-        uiE2eeQuoteFrameLockedBarsResolveToDecryptedText
-        uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
-        uiEncryptedOsRetryDoesNotSendAKeyRequest
-        uiEncryptedCheckIsGetOnlyAndRetryKeepsTheSameIntent
-        uiEncryptedSourceHeaderGeometry
-        uiEncryptedSourceLockedGeometry
-        uiEncryptedSourceLockedPaint
-        uiEncryptedReadableFooterHasOneAvailabilityNotice
-        uiEncryptedSourceHeaderAvatarUsesDefaultThemeCircle
-        uiEncryptedSourceHeaderAvatarUsesStreamColor
-        uiEncryptedSourceProtectedChatTooltip
-        uiEncryptedSourceSidebarAvatarUsesLockFallback
-        uiEncryptedComposerSendsActualSourceCipher
-        uiNewChatEncryptedCanonicalDirectUsesActualSourceGrantReadAndSend
-        uiEncryptedComposerEmojiUsesActualSourcePeer
-        uiEncryptedComposerFormattingUsesActualSourcePeer
-        uiEncryptedComposerLockedKeyNeverFallsBackToPlaintext
-        uiOrdinaryComposerPreservesMarkdownAndAggregatePrompt
-        uiEncryptedComposerCheckAndRetryKeepFrozenCipher
-        uiEncryptedComposerCurrentKeyWithoutHistoryHasNoOutdatedNotice
-        uiEncryptedComposerClosedTopicKeepsDisabledSourceComposer
-        uiEncryptedClosedHistoricalComposerKeepsKeyUpdateRequest
-        uiEncryptedSourceKeyNoticePaint
-        uiEncryptedSourceKeyNoticeGeometry
-        uiIncomingKeyRequestCentersWrappedLinesAtMinimumWidth
-        uiIncomingKeyRequestUsesActualNativeResponseButtons
-        uiIncomingKeyRequestKeepsDisabledActionLabelsWhilePending
-        uiOwnCurrentDeviceRequestHasNoInlineIssuerActions
-        uiReceivedKeyServiceResponseUsesSourceTextAndRequest
-        uiKeyServiceResponseHasNoActionWithoutCurrentRecipient
-        uiKeyServiceResponseUsesCanonicalSelfAndOutgoingGrammar
-        uiRejectedKeyResponseRefreshesAfterFreshIssuerAuthority
-        uiServiceInitialHistoryDisclosureUsesRealKeyboardAndUnmountsBodies
-        uiServiceHistoryCommitAndRealtimeHaveDifferentExpansion
-        uiServiceAcceptedHistoryIsSemanticallyReadyBeforeQueuedViewport
-        uiServiceExpansionPredicateRejectsAnActuallyAbsentDelegate
-        uiServiceLargeCollapsedHistoryHasOneDelegateAndNoMissingRFetch
-        uiServiceProductionReducerPreservesManualMergeFocusAndContext
-        uiServiceManualChoiceFollowsActualSplitMergeAndHeadDeletion
-        uiEncryptedWindowTeardownWaitsForVisibleIncubationBeforeHide
-        uiServiceAutomaticOffscreenCollapsePreservesAnchorAndManualChoice
-        uiCollapsedServiceReadBoundaryUsesLatestActualSameTopicUuid
-        uiServiceAccountFilterPrecedesAuthorAndTopicGrouping
-        uiServiceRunBoundariesUseActualAuthorTopicAndLocalDay
-        uiServiceAnnouncementRequestsOnlyItsExactMissingGeneration
-        uiCollapsedServiceRunPreservesSourceOuterGroupGap
-        uiMissingRequestKeyboardDisclosureHydratesTheActualSourceResponse
-        uiMissingRequestSharedRSurvivesFirstConsumerDeletionAndCollapse
-        uiMissingRequestWorkerFallbackRemainsVisibleAfterFailedRefresh
-        uiMissingRequestGenuineRuntimeResetReassertsAnUnchangedMountedBody
-        uiMissingRequestOwnerReplacementCannotPopulateTheNewOwnersBody
-        uiMissingRequestOnlyANewSemanticDisclosureCanRetryFailure
-        uiMissingRequestSelectionReducerRemountGetsANewDisclosure
-        uiOrdinaryAccountRecipientIsPublishedBeforeAnyServiceBodyMount
-        uiOrdinaryManagerGrantsFromTheActualMainAction
-        uiOrdinaryManagerRejectsFromTheActualMainAction
-        uiOrdinaryKeyResponseRepeatsTheSameMainActionWithoutReplacingItsFrozenWire
-        uiOrdinaryRetainedResponseCannotEnableAnotherRequestOrItsOppositeAction
-        uiKeyRequestHistoryShowsEmptyAndIncomingRows
-        uiEncryptedChatInfoDrawerShowsProtectedIdentity
-        uiEncryptedChatInfoSettingsScreenNavigation
-        uiEncryptedChatInfoMemberListScrollsToEnd
-        uiEncryptedChatInfoGateKeepsOrdinaryInfo
-        uiEncryptedChatKeyScreenInventoryAndDetails
-        uiEncryptedChatKeyScreenDeleteConfirmation
-        uiEncryptedChatDeleteConfirmationLeavesNoDebugProbes
-        uiEncryptedChatKeyScreenRotationStageDiscard
-        uiEncryptedChatKeyScreenSourceGeometry
-        uiEncryptedChatKeyScreenDormantBadgeRefreshesAfterUnresolvedCheck)
-    # The explicit UI list measured 310s green and 548s when failing QTRY waits
-    # added time on the GPU-less reference stand (llvmpipe, bare Xvnc 1440x900
-    # plus openbox), so the old 360s ceiling timeout-killed healthy runs there.
-    # A timeout kill prints no further result and was misread as an
-    # order-dependent stall (issues #17 and #18). Worst observed 548s plus 25%
-    # headroom rounded up to 30s: 720s. Running this binary unfiltered also
-    # executes the 274 core rows in the same process (measured 893s total), so
-    # keep the explicit function list here and budget about 900s for direct
-    # full-binary runs. Individual assertion waits stay unchanged.
-    set_tests_properties(native-native-e2ee-ui PROPERTIES TIMEOUT 720)
+    # Issue #657: native-native-e2ee-ui ran 448-458 s in CI as a single ctest
+    # entry, after the window monolith the next gate critical path. The
+    # explicit UI function list moved to tests/e2ee-ui-cases.txt (running the
+    # binary unfiltered would also execute the 274 core rows in the same
+    # process, measured 893 s; the two suites must stay separately
+    # registered). The UI list is now sliced into source-order contiguous
+    # buckets generated from measured per-case QtTest timings, each
+    # targeting ~100 s of CI time with its own ctest ceiling; the headless
+    # sync guard fails whenever the list and the buckets drift apart.
+    # Historical budget data: the explicit UI list measured 310s green and
+    # 548s when failing QTRY waits added time on the GPU-less reference stand
+    # (llvmpipe, bare Xvnc 1440x900 plus openbox) - issues #17/#18.
+    include(${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-ui-test-buckets.cmake)
+    foreach(e2ee_ui_bucket RANGE 1 ${WORKSPACE_NATIVE_E2EE_UI_BUCKETS_COUNT})
+        add_test(NAME native-native-e2ee-ui-part${e2ee_ui_bucket}
+            COMMAND native-e2ee-ui-test ${WORKSPACE_NATIVE_E2EE_UI_BUCKET_${e2ee_ui_bucket}})
+        set_tests_properties(native-native-e2ee-ui-part${e2ee_ui_bucket} PROPERTIES
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+    endforeach()
+    add_test(NAME native-e2ee-ui-buckets-sync
+        COMMAND ${WORKSPACE_NATIVE_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_LIST_DIR}/tests/qt-test-buckets-sync.py
+            $<TARGET_FILE:native-e2ee-ui-test>
+            ${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-ui-test-buckets.cmake
+            --prefix WORKSPACE_NATIVE_E2EE_UI
+            --only-file ${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-ui-cases.txt)
+    set_tests_properties(native-e2ee-ui-buckets-sync PROPERTIES TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(UNIX AND NOT APPLE)
         # Run only against staging through verify-installed-runtime.py --probe.
         # This helper is not installed into the delivered application.
@@ -764,10 +728,9 @@ if(BUILD_TESTING)
     # shared display (focus and keyboard-grab races), so a parallel pre-release
     # run (DISPLAY=:30 ctest -j 6) serializes only these tests and runs the
     # remaining suites concurrently.
-    set_tests_properties(native-hotkeys-ui native-native-draft-workload native-native-e2ee-ui native-native-preferences
+    set_tests_properties(native-hotkeys-ui native-native-draft-workload native-native-preferences
         PROPERTIES LABELS "gui" RESOURCE_LOCK "xdisplay")
-    set_tests_properties(native-native-desktop native-native-e2ee-read
-        PROPERTIES RESOURCE_LOCK "xdisplay")
+    set_tests_properties(native-native-desktop PROPERTIES RESOURCE_LOCK "xdisplay")
 
     if(WORKSPACE_NATIVE_QUICK_GATE AND TEST native-updater-http2-deadline)
         set_tests_properties(native-updater-http2-deadline PROPERTIES COST 30)
