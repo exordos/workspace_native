@@ -362,27 +362,27 @@ Dialog {
                         objectName: "channelTopicSummaryEndpointForm"
                         columns: 2; columnSpacing: 12; rowSpacing: 8; Layout.fillWidth: true
                         TextField { objectName: "channelTopicSummaryField-name"; placeholderText: qsTr("Name *")
-                            text: String(endpointsTab.field("name", "")); onTextChanged: endpointsTab.setField("name", text) }
+                            text: String(endpointsTab.field("name", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("name", text)) }
                         TextField { objectName: "channelTopicSummaryField-model"; placeholderText: qsTr("Model *")
-                            text: String(endpointsTab.field("model", "")); onTextChanged: endpointsTab.setField("model", text) }
+                            text: String(endpointsTab.field("model", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("model", text)) }
                         TextField { objectName: "channelTopicSummaryField-base_url"; placeholderText: qsTr("Base URL (https://...) *")
                             Layout.columnSpan: 2; Layout.fillWidth: true
-                            text: String(endpointsTab.field("base_url", "")); onTextChanged: endpointsTab.setField("base_url", text.trim()) }
+                            text: String(endpointsTab.field("base_url", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("base_url", text.trim())) }
                         TextField { objectName: "channelTopicSummaryField-api_key"; placeholderText: qsTr("API key *")
                             echoMode: TextInput.Password; visible: endpointsTab.editingUuid === "new"
-                            text: String(endpointsTab.field("api_key", "")); onTextChanged: endpointsTab.setField("api_key", text) }
+                            text: String(endpointsTab.field("api_key", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("api_key", text)) }
                         TextField { objectName: "channelTopicSummaryField-priority"; placeholderText: qsTr("Priority (0-1000000)")
-                            text: String(endpointsTab.field("priority", 100)); onTextChanged: endpointsTab.setField("priority", text) }
+                            text: String(endpointsTab.field("priority", 100)); onTextChanged: Qt.callLater(() => endpointsTab.setField("priority", text)) }
                         TextField { objectName: "channelTopicSummaryField-temperature"; placeholderText: qsTr("Temperature (0-2)")
-                            text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: endpointsTab.setField("temperature", text) }
+                            text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: Qt.callLater(() => endpointsTab.setField("temperature", text)) }
                         TextField { objectName: "channelTopicSummaryField-max_output_tokens"; placeholderText: qsTr("Max output tokens (1-32768)")
-                            text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: endpointsTab.setField("max_output_tokens", text) }
+                            text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: Qt.callLater(() => endpointsTab.setField("max_output_tokens", text)) }
                         TextField { objectName: "channelTopicSummaryField-top_p"; placeholderText: qsTr("Top-p (0-1)")
-                            text: String(endpointsTab.field("top_p", 1)); onTextChanged: endpointsTab.setField("top_p", text) }
+                            text: String(endpointsTab.field("top_p", 1)); onTextChanged: Qt.callLater(() => endpointsTab.setField("top_p", text)) }
                         TextField { objectName: "channelTopicSummaryField-presence_penalty"; placeholderText: qsTr("Presence penalty (-2..2)")
-                            text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: endpointsTab.setField("presence_penalty", text) }
+                            text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("presence_penalty", text)) }
                         TextField { objectName: "channelTopicSummaryField-frequency_penalty"; placeholderText: qsTr("Frequency penalty (-2..2)")
-                            text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: endpointsTab.setField("frequency_penalty", text) }
+                            text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("frequency_penalty", text)) }
                         SwitchRow { objectNameRow: "channelTopicSummaryField-enabled"; label: qsTr("Enabled")
                             Layout.columnSpan: 2
                             checkedFlag: Boolean(endpointsTab.field("enabled", true)); enabledFlag: true
