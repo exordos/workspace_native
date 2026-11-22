@@ -83,6 +83,14 @@ public:
         ++cancels; calls.append(QStringLiteral("cancel"));
         publish(QStringLiteral("idle"));
     }
+    // #634 post-install pairing: the toast probe consumes the marker once.
+    QString consumeValue;
+    int consumes = 0;
+    Q_INVOKABLE QString consumeInstalledUpdate()
+    {
+        ++consumes;
+        return consumeValue;
+    }
 signals:
     void changed();
 private:
@@ -338,6 +346,67 @@ Item {
         QCOMPARE(first->calls, QStringList{});
         QCOMPARE(first->checks, 0);
         QCOMPARE(first->installs, 0);
+    }
+
+    // #634: the production toast component probes the pending marker exactly
+    // once at mount; a match opens the toast with the version and arms the
+    // 4 s auto-close, matching the reference useInstalledAppUpdateToast.
+    bool createToastHarness(AboutPolicyUpdater *updater)
+    {
+        component = std::make_unique<QQmlComponent>(engine.get());
+        component->setData(R"QML(
+import QtQuick
+import QtQuick.Controls
+Window {
+    id: host
+    required property var injectedUpdater
+    width: 400
+    height: 300
+    NativeTheme { id: theme }
+    NativeUpdateInstalledToast {
+        updater: host.injectedUpdater
+        colors: theme.colors
+        parent: Overlay.overlay
+    }
+}
+)QML", QUrl(QStringLiteral("qrc:/workspace/qml/UpdateInstalledToastHarness.qml")));
+        if (!component->isReady()) { qWarning("%s", qPrintable(component->errorString())); return false; }
+        root.reset(component->createWithInitialProperties({
+            {QStringLiteral("injectedUpdater"), QVariant::fromValue(static_cast<QObject *>(updater))}}));
+        if (!root) return false;
+        root->setProperty("visible", true);
+        return true;
+    }
+    void updateInstalledToastConsumesOnceAndShowsVersion()
+    {
+        first->consumeValue = QStringLiteral("0.44.0");
+        QVERIFY(createToastHarness(first.get()));
+        QTRY_VERIFY2(component->isReady(), qPrintable(component->errorString()));
+        QVERIFY(root);
+        QTRY_COMPARE(first->consumes, 1);
+        auto *const toast = root->findChild<QObject *>(QStringLiteral("updateInstalledToast"));
+        QVERIFY(toast);
+        QTRY_VERIFY(toast->property("visible").toBool());
+        auto *const text = root->findChild<QObject *>(QStringLiteral("updateInstalledText"));
+        QVERIFY(text);
+        QVERIFY(text->property("text").toString().contains(QStringLiteral("0.44.0")));
+        auto *const closer = root->findChild<QObject *>(QStringLiteral("updateInstalledCloser"));
+        QVERIFY(closer);
+        QCOMPARE(closer->property("interval").toInt(), 4000);
+        // One-shot: the probe never repeats while the window lives.
+        QTest::qWait(50);
+        QCOMPARE(first->consumes, 1);
+    }
+    void updateInstalledToastStaysSilentWithoutMarker()
+    {
+        QVERIFY(createToastHarness(first.get()));
+        QTRY_VERIFY2(component->isReady(), qPrintable(component->errorString()));
+        QVERIFY(root);
+        QTRY_COMPARE(first->consumes, 1);
+        auto *const toast = root->findChild<QObject *>(QStringLiteral("updateInstalledToast"));
+        QVERIFY(toast);
+        QTest::qWait(50);
+        QVERIFY(!toast->property("visible").toBool());
     }
 };
 
