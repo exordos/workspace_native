@@ -58,6 +58,10 @@ public:
     // kHeifDecodeTimeoutMs. Neither changes behaviour with defaults installed.
     static void setDecodeGateForTests(std::function<void(const QByteArray &)> gate);
     void setDecodeTimeoutMsForTests(int ms);
+    // Test seam (#684): how many surviving Decode tickets still retain a
+    // watchdog pointer. A fired single-shot deleteLater()s itself, so it must
+    // never stay referenced - a later decoded() would stop() a freed QTimer.
+    int decodeTicketsRetainingWatchdogForTests() const;
     // Caller transfers this provider to QQmlEngine. It never calls this manager.
     QQuickImageProvider *createImageProvider() const;
 signals:
