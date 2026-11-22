@@ -102,7 +102,10 @@ static void clickReadyItem(QQuickWindow *window, QQuickItem *target, QPointF *di
 {
     QVERIFY(target);
     QVERIFY(target->isVisible());
-    QVERIFY(target->width() > 0 && target->height() > 0);
+    QVERIFY2(target->width() > 0 && target->height() > 0,
+             qPrintable(QStringLiteral("ZERO-SIZE %1 %2x%3 visible=%4 enabled=%5")
+                        .arg(target->objectName()).arg(target->width()).arg(target->height())
+                        .arg(target->isVisible()).arg(target->isEnabled())));
     const auto point = target->mapToScene(QPointF(target->width() / 2, target->height() / 2));
     if (dispatchedAt) *dispatchedAt = point;
     QTest::mouseClick(window, Qt::LeftButton, {}, point.toPoint());
@@ -24318,6 +24321,291 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(endpointGets, 1);
         QTest::keyClick(scene.window, Qt::Key_Escape);
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // ===== Issue #635 review fix round (exo-review, PR #708 head a08c1b7) =====
+
+    // Finding 1 [high]: the StackLayout pages fixed children by the FILTERED tab
+    // index, so a gates-only admin saw the disabled topic section. The gates
+    // section itself must render when it is the only permitted tab.
+    void channelTopicSummaryDialogGatesOnlyUserSeesGatesSection()
+    {
+        ChannelInfoWindowScene scene(false,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", true}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog && dialog->property("visible").toBool());
+        const QStringList gatesOnly{QStringLiteral("gates")};
+        QCOMPARE(dialog->property("tabs").toStringList(), gatesOnly);
+        QCOMPARE(dialog->property("activeTab").toString(), QString("gates"));
+        QVERIFY(visibleItem("channelTopicSummaryGatesBanner"));
+        QVERIFY(!visibleItem("channelTopicSummaryEnabled"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
+    }
+
+    // Finding 2 [medium]: the topic dirty check inverted the saved enabled value -
+    // an unchanged switch marked the form dirty (and a flipped switch read clean).
+    void channelTopicSummaryDialogSaveRequiresRealTopicChanges()
+    {
+        ChannelInfoWindowScene scene;
+        auto item = windowChannelTopic(topicId, streamId, "General Topic");
+        item["kind"] = "topic.updated";
+        item["summary_enabled"] = true;
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{{"uuid", returnedId}, {"project_id", projectId},
+            {"user_uuid", userId}, {"payload", item}}));
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEnabled"));
+        QVERIFY(!visibleItem("channelTopicSummarySave")->isEnabled());   // nothing changed yet
+        click(scene.window, visibleItem("channelTopicSummaryEnabled")); // a real flip
+        QTRY_VERIFY(visibleItem("channelTopicSummarySave")->isEnabled());
+    }
+
+    // Findings 3 + 9 [medium]: an edited numeric field must be COERCED to a number
+    // (the controller accepts numeric QVariants only) and the PUT must carry the
+    // changed-field diff only - reference topicSummaryEndpointUpdateBody():
+    // "absent means unchanged", so an untouched base_url can never be re-sent.
+    void channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        QJsonObject putBody;
+        int puts = 0;
+        auto updated = endpointDto;
+        updated["priority"] = 150;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                putBody = request.body;
+                return Response{updated};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        // Finding 6 [medium]: the edit form must offer a replacement API key
+        // (reference apiKeyEditHint sits under the input; blank keeps the credential).
+        QVERIFY(visibleItem("channelTopicSummaryField-api_key"));
+        QVERIFY(visibleItem("channelTopicSummaryApiKeyHint")->property("text").toString()
+            .contains(QStringLiteral("Leave blank to keep the current write-only credential")));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        const QJsonObject expected{{"priority", 150}};
+        QCOMPARE(putBody, expected);
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryEndpointForm")); // reset after ITS OWN success
+    }
+
+    // Finding 7 [medium]: validation failures must produce per-field feedback
+    // beside the affected field (reference endpointValidationErrorText() +
+    // live draft validation) and must keep Save gated.
+    void channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int puts = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                return Response{endpointDto};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("abc"));
+        QTRY_COMPARE(scene.text("channelTopicSummaryFieldError-priority"),
+            QString("Enter a whole number."));
+        QVERIFY(!visibleItem("channelTopicSummarySave")->isEnabled());
+        priority->setProperty("text", QStringLiteral("5000000"));        // shape ok, out of range
+        QTRY_COMPARE(scene.text("channelTopicSummaryFieldError-priority"),
+            QString("The value is outside the allowed range."));
+        QVERIFY(!visibleItem("channelTopicSummarySave")->isEnabled());
+        priority->setProperty("text", QStringLiteral("150"));            // fixed: error clears
+        QTRY_COMPARE(scene.text("channelTopicSummaryFieldError-priority"), QString());
+        QTRY_VERIFY(visibleItem("channelTopicSummarySave")->isEnabled());
+        QTest::qWait(100);
+        QCOMPARE(puts, 0);   // nothing dispatched while invalid
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));          // form stays open
+        QCOMPARE(visibleItem("channelTopicSummaryField-priority")->property("text").toString(),
+            QString("150"));
+    }
+
+    // Finding 8 [medium]: a failed gates GET must keep the switches (and Save)
+    // locked - unverified gate values must never be dispatched.
+    void channelTopicSummaryDialogFailedGatesLoadKeepsSwitchesLocked()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().contains("/topic_summary_settings/"))
+                return Response{QJsonObject{}, 500};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesError"));
+        QVERIFY(!visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
+        QVERIFY(!visibleItem("channelTopicSummaryGatesProject")->isEnabled());
+        QVERIFY(!visibleItem("channelTopicSummarySave")->isEnabled());
+    }
+
+    // Finding 4 [medium]: the endpoint form must survive a FAILED save (retry
+    // still has its values); reset belongs to the operation's own success.
+    void channelTopicSummaryDialogFailedEndpointSaveKeepsForm()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int puts = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                return Response{QJsonObject{}, 500};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointsError")); // "server" notice
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));       // values kept for retry
+        QCOMPARE(visibleItem("channelTopicSummaryField-priority")->property("text").toString(),
+            QString("150"));
+    }
+
+    // Finding 5 [medium]: a successful endpoint save must not discard unsaved
+    // gates edits made before switching tabs (and vice versa).
+    void channelTopicSummaryDialogEndpointSaveKeepsOtherTabDraft()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", true}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int puts = 0;
+        int settingsGets = 0;
+        auto updated = endpointDto;
+        updated["priority"] = 150;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/")) {
+                ++settingsGets;
+                return Response{gatesDto};
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                return Response{updated};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
+        click(scene.window, visibleItem("channelTopicSummaryGatesGlobal"));   // user flips global off
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesBanner"));
+        // The re-entry re-fetch must settle while the handler's captures are alive.
+        QTRY_VERIFY(settingsGets >= 2);
+        QVERIFY(!visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool()); // kept
     }
 
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()

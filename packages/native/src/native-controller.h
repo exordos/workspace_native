@@ -2661,12 +2661,18 @@ public:
     // shared/api/messenger-topic-summary-management.api.ts at e0194ff); the QML
     // dialog consumes only this surface plus topicSummaryTabPermission.
     Q_PROPERTY(QVariantMap topicSummaryGates READ topicSummaryGates NOTIFY topicSummaryStateChanged)
+    // True only while the gates DTO currently on screen was fetched successfully
+    // for the open project (review #708 finding 8): a failed GET must leave the
+    // dialog unable to edit or save unverified gate values. No extra emissions -
+    // it rides the existing topicSummaryStateChanged NOTIFY.
     Q_PROPERTY(QVariantList topicSummaryEndpoints READ topicSummaryEndpoints NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(bool topicSummarySettingsBusy READ topicSummarySettingsBusy NOTIFY topicSummaryStateChanged)
+    Q_PROPERTY(bool topicSummaryGatesLoaded READ topicSummaryGatesLoaded NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(QString topicSummarySettingsStatus READ topicSummarySettingsStatus NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(QString topicSummarySettingsError READ topicSummarySettingsError NOTIFY topicSummaryStateChanged)
 
     QVariantMap topicSummaryGates() const { return m_topicSummaryGates; }
+    bool topicSummaryGatesLoaded() const { return m_topicSummaryGatesLoaded; }
     QVariantList topicSummaryEndpoints() const { return m_topicSummaryEndpoints; }
     bool topicSummarySettingsBusy() const { return m_topicSummarySettingsBusy; }
     QString topicSummarySettingsStatus() const { return m_topicSummarySettingsStatus; }
@@ -2697,6 +2703,7 @@ private:
     QHash<QString, quint64> m_topicSummaryOps;
     quint64 m_topicSummaryToken = 0;
     QVariantMap m_topicSummaryGates;
+    bool m_topicSummaryGatesLoaded = false;
     QVariantList m_topicSummaryEndpoints;
     bool m_topicSummarySettingsBusy = false;
     QString m_topicSummarySettingsStatus;

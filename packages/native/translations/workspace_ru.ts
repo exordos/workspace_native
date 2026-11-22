@@ -5726,5 +5726,14 @@
         <source>Something went wrong. Please try again.</source>
         <translation>Не удалось выполнить операцию.</translation>
     </message>
+    <message><source>This field is required.</source><translation>Обязательное поле.</translation></message>
+    <message><source>The value is too long.</source><translation>Значение слишком длинное.</translation></message>
+    <message><source>Check the entered values.</source><translation>Проверьте введенные значения.</translation></message>
+    <message><source>Enter a whole number.</source><translation>Введите целое число.</translation></message>
+    <message><source>Enter a valid value.</source><translation>Введите корректное значение.</translation></message>
+    <message><source>The value is outside the allowed range.</source><translation>Значение выходит за допустимый диапазон.</translation></message>
+    <message><source>New API key</source><translation>Новый API-ключ</translation></message>
+    <message><source>Leave blank to keep the current write-only credential.</source><translation>Оставьте поле пустым, чтобы сохранить текущий секретный ключ.</translation></message>
+    <message><source>Required. The key is encrypted and never shown again.</source><translation>Обязательное поле. Ключ будет зашифрован и больше не отобразится.</translation></message>
 </context>
 </TS>
