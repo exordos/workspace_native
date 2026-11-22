@@ -135,10 +135,14 @@ void MediaViewerModel::renderStarted(int slot, quint64 generation)
 {
     if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
         return; // retired or replaced session: the existing fences discard the render
+    // #670 round 3: any worker start is queue-liveness evidence - even the late
+    // start of a slot an earlier sweep already settled - so re-arm before the
+    // state fences below.
+    rearmQueueStallClock();
     auto &target = m_slots[slot];
     if (target.state != QLatin1String("loading"))
         return; // already settled (queue bound fired): the late start is fenced
-    cancelRenderQueueWatchdog(target); // the worker took the render: queue bound is obsolete
+    cancelRenderQueueWatchdog(target); // the worker took this render: queue bound is obsolete
     armHeifRenderWatchdog(slot); // the bounded wait measures the render, not the queue
 }
 
@@ -147,49 +151,65 @@ void MediaViewerModel::armHeifQueueWatchdog(int slot)
     if (m_queueTimeoutMs <= 0 || slot < 0 || slot >= m_slots.size())
         return;
     auto &target = m_slots[slot];
-    cancelRenderQueueWatchdog(target);
     target.queuePending = true;
-    const auto generation = m_generation;
-    auto *timer = new QTimer(this);
-    timer->setSingleShot(true);
-    target.queueTimer = timer;
-    connect(timer, &QTimer::timeout, this, [this, timer, slot, generation] {
-        heifQueueTimeoutExpired(timer, slot, generation);
-    });
-    timer->start(m_queueTimeoutMs);
+    if (!m_queueStallTimer) {
+        m_queueStallTimer = new QTimer(this);
+        m_queueStallTimer->setSingleShot(true);
+        connect(m_queueStallTimer, &QTimer::timeout, this,
+            &MediaViewerModel::heifQueueStallExpired);
+    }
+    // Arm only while idle: liveness comes from worker starts, not from new
+    // requests, so piling slots onto a stalled worker keeps the bound honest.
+    if (!m_queueStallTimer->isActive())
+        m_queueStallTimer->start(m_queueTimeoutMs);
+}
+
+void MediaViewerModel::rearmQueueStallClock()
+{
+    if (!m_queueStallTimer)
+        return;
+    bool anyPending = false;
+    for (const auto &slot : m_slots) {
+        if (slot.queuePending) {
+            anyPending = true;
+            break;
+        }
+    }
+    if (anyPending)
+        m_queueStallTimer->start(m_queueTimeoutMs); // healthy start: reset the stall clock
+    else
+        m_queueStallTimer->stop();
 }
 
 void MediaViewerModel::cancelRenderQueueWatchdog(Slot &slot)
 {
     slot.queuePending = false;
-    if (!slot.queueTimer)
-        return;
-    slot.queueTimer->stop();
-    slot.queueTimer->disconnect();
-    slot.queueTimer->deleteLater();
-    slot.queueTimer = nullptr;
+    rearmQueueStallClock(); // the last queued slot may have just been taken
 }
 
-void MediaViewerModel::heifQueueTimeoutExpired(QTimer *timer, int slot, quint64 generation)
+void MediaViewerModel::heifQueueStallExpired()
 {
-    timer->deleteLater();
-    if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
+    if (m_stopping)
         return;
-    auto &target = m_slots[slot];
-    if (!target.queuePending) // the worker took this render: the render watchdog owns it
-        return;
-    target.queuePending = false;
-    target.queueTimer = nullptr;
     // #670 re-review round: the serial worker cannot be terminated, so a
     // render stuck mid-decode would otherwise strand every queued slot in
-    // loading forever. A queued render that never gets worker start settles
-    // display-error just like a failed render (uuid stays downloadable);
-    // its late start/render is fenced by renderStarted/heifRendered.
-    if (target.state == QLatin1String("loading")) {
-        target.state = QStringLiteral("display-error");
-        target.url.clear();
-        emit mediaViewerChanged();
+    // loading forever. The stall clock only fires when no render STARTED for
+    // the whole bound, so every slot still queued is behind the stuck worker:
+    // each settles display-error just like a failed render (uuid stays
+    // downloadable); late starts/renders are fenced by renderStarted/heifRendered.
+    bool settledAny = false;
+    for (auto &target : m_slots) {
+        if (!target.queuePending)
+            continue;
+        target.queuePending = false;
+        if (target.state == QLatin1String("loading")) {
+            target.state = QStringLiteral("display-error");
+            target.url.clear();
+            settledAny = true;
+        }
     }
+    if (settledAny)
+        emit mediaViewerChanged();
 }
 
 void MediaViewerModel::armHeifRenderWatchdog(int slot)
@@ -401,6 +421,8 @@ void MediaViewerModel::closeSession()
         cancelRenderWatchdog(slot);
         cancelRenderQueueWatchdog(slot);
     }
+    if (m_queueStallTimer)
+        m_queueStallTimer->stop(); // no sweeps for a retired session
     for (const auto &slot : m_slots) {
         if (slot.operation != 0)
             operations.append(slot.operation);

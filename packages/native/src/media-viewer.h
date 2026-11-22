@@ -96,7 +96,9 @@ private:
         // #670 re-review round: the wait for the serial worker to even TAKE
         // this render is bounded on its own (the render watchdog only starts
         // at worker start and the worker can be stuck inside an earlier job).
-        QTimer *queueTimer = nullptr;
+        // Round 3 (finding 4656047886): the bound is a model-level worker-stall
+        // clock re-armed by every worker start, so a merely QUEUED (healthy)
+        // render never expires before its turn; queuePending marks membership.
         bool queuePending = false;
     };
 
@@ -111,7 +113,8 @@ private:
     void heifRenderTimeoutExpired(QTimer *timer, int slot, quint64 generation);
     void armHeifQueueWatchdog(int slot);
     void cancelRenderQueueWatchdog(Slot &slot);
-    void heifQueueTimeoutExpired(QTimer *timer, int slot, quint64 generation);
+    void rearmQueueStallClock();
+    void heifQueueStallExpired();
     QPointer<NativeController> m_controller;
     QPointer<FileClient> m_files;
     std::unique_ptr<NativeMarkdown> m_markdown;
@@ -128,10 +131,13 @@ private:
     QThread m_decodeThread;
     QPointer<QObject> m_decoder;
     int m_renderTimeoutMs = kHeifDecodeTimeoutMs; // #670 finding 2
-    // Queue bound: how long a HEIC render may wait for the serial worker to
-    // take it. Deliberately larger than the per-render bound - queueing is
-    // legal work (N gallery slots), only an UNBOUNDED queue is the bug.
+    // Queue bound (#670 re-review round 3): the maximum time the serial worker
+    // may go without STARTING any render while slots wait in the queue. Every
+    // worker start re-arms it, so a healthy gallery whose full drain exceeds
+    // the bound keeps every slot; only a stalled worker expires the queued
+    // ones (deliberately larger than the per-render bound).
     int m_queueTimeoutMs = kHeifDecodeTimeoutMs * 4; // #670 re-review round
+    QTimer *m_queueStallTimer = nullptr; // model-level, armed while queuePending slots exist
     bool m_stopping = false;
     Q_SIGNAL void heifRenderRequested(int slot, quint64 generation, const QString &path,
         const QString &outPath);
