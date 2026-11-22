@@ -123,6 +123,61 @@ private slots:
             QStringLiteral("mountains"));
     }
 
+    // Bug #677: preferences whose serialized form exceeds the 4,000,000-char
+    // cap are a storage error that must keep the PREVIOUS configuration -
+    // both the stored file and the live in-memory values. The oversized
+    // payload here is assembled from individually valid images.
+    void overCapApplyKeepsPreviousLiveAndStoredConfig()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings ini(dir.filePath("backgrounds.ini"), QSettings::IniFormat);
+        ini.setFallbacksEnabled(false);
+        ChatBackground backgrounds(&ini);
+        backgrounds.setOwner(QStringLiteral("owner-cap"));
+        const ChatBackground::Value mountains{
+            ChatBackground::Kind::Preset, QStringLiteral("mountains")};
+        const ChatBackground::Value sea{
+            ChatBackground::Kind::Preset, QStringLiteral("sea")};
+        QVERIFY(backgrounds.applyAll(mountains));
+        // Exactly at the per-image stored cap: valid on its own.
+        const QString bigUrl = QStringLiteral("data:image/jpeg;base64,")
+            + QString(1'998'990 - 25, QLatin1Char('A'));
+        const ChatBackground::Value big{ChatBackground::Kind::Image, bigUrl};
+        QVERIFY(backgrounds.applyChat(QStringLiteral("stream:aaaa"), big));
+        QVERIFY(backgrounds.applyChat(QStringLiteral("stream:bbbb"), big));
+        // The third image pushes the combined payload over the cap: rejected.
+        QVERIFY(!backgrounds.applyChat(QStringLiteral("stream:cccc"), big));
+        QCOMPARE(backgrounds.error(), QStringLiteral("storage"));
+        // The rejected photo must not go live in the chat it was aimed at...
+        QVERIFY(backgrounds.resolve(QStringLiteral("stream:cccc")).kind
+            == ChatBackground::Kind::Preset);
+        QCOMPARE(backgrounds.resolve(QStringLiteral("stream:cccc")).text,
+            QStringLiteral("mountains"));
+        // A subsequent valid edit still fits alongside the stored configuration.
+        QVERIFY(backgrounds.applyChat(QStringLiteral("stream:dddd"), sea));
+        // A fresh instance restores exactly the accepted writes.
+        ChatBackground reopened(&ini);
+        reopened.setOwner(QStringLiteral("owner-cap"));
+        QVERIFY(reopened.resolve(QStringLiteral("stream:aaaa")).kind
+            == ChatBackground::Kind::Image);
+        QVERIFY(reopened.resolve(QStringLiteral("stream:bbbb")).kind
+            == ChatBackground::Kind::Image);
+        QCOMPARE(reopened.resolve(QStringLiteral("stream:cccc")).text,
+            QStringLiteral("mountains"));
+        QCOMPARE(reopened.resolve(QStringLiteral("stream:dddd")).text,
+            QStringLiteral("sea"));
+        // Scope "all" with an in-cap value is a legal commit that clears
+        // every override (reference apply scope semantics) - live and stored.
+        QVERIFY(backgrounds.applyAll(mountains));
+        QCOMPARE(backgrounds.resolve(QStringLiteral("stream:aaaa")).text,
+            QStringLiteral("mountains"));
+        ChatBackground relaunched(&ini);
+        relaunched.setOwner(QStringLiteral("owner-cap"));
+        QCOMPARE(relaunched.resolve(QStringLiteral("stream:dddd")).text,
+            QStringLiteral("mountains"));
+    }
+
     void prepareImageRejectsTypeMismatchAndBounds()
     {
         struct Row { QByteArray payload; QString declared; QString error; };
