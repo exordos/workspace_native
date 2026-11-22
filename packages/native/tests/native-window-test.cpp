@@ -12528,8 +12528,18 @@ mv -Tf "$root/.current-new" "$root/current"
     // previously expanded streams (#95 spec) must not clamp contentY: the
     // content removed sits above the viewport, so a stable scroll position
     // is observable without any anchoring assumption about row heights.
+    void switchingStreamKeepsSidebarScrollAndOrder_data()
+    {
+        QTest::addColumn<bool>("direct");
+        // LIVE verify #660 found the gap in the direct-chat/mixed section:
+        // the clicked row was a direct conversation, so pin both shapes here.
+        QTest::newRow("stream") << false;
+        QTest::newRow("direct") << true;
+    }
+
     void switchingStreamKeepsSidebarScrollAndOrder()
     {
+        QFETCH(bool, direct);
         WindowChannelFixture fixture;
         QStringList fillerIds;
         QHash<QString, QJsonArray> topicsByStream;
@@ -12539,7 +12549,14 @@ mv -Tf "$root/.current-new" "$root/current"
         for (int i = 0; i < 24; ++i) {
             const auto id = QString("93000000-0000-4000-8000-%1").arg(10 + i, 12, 10, QLatin1Char('0'));
             fillerIds.append(id);
-            streams.append(windowChannel(id, QString("Filler %1").arg(i)));
+            auto fillerRow = windowChannel(id, QString("Filler %1").arg(i));
+            // The "direct" data row makes the clicked bottom row a direct
+            // conversation (private + peer uuid), the shape LIVE #660 failed on.
+            if (direct && i == 5) {
+                fillerRow["private"] = true;
+                fillerRow["direct_user_uuid"] = channelPeer;
+            }
+            streams.append(fillerRow);
             QJsonArray rows;
             for (int t = 0; t < 7; ++t) {
                 const auto topicUuid = QString("95000000-0000-4000-8000-%1").arg(i * 7 + t, 12, 10, QLatin1Char('0'));

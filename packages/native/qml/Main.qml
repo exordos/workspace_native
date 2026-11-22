@@ -5172,16 +5172,25 @@ component NativeMentionChip: Item {
     // streams (#95). That removes height above the fold, and an unanchored
     // ListView clamps contentY so the rows under the user jump. Capture the
     // first visible stream row (and its viewport offset) while the selection
-    // signal still precedes the queued collapse, then restore the anchor
-    // after the layout settles. The browser reference keeps the visual
-    // position this way because its scroll container never shrinks.
+    // signal still precedes the queued collapse, then keep restoring the
+    // anchor while the layout settles. The LIVE repro on #693 showed the
+    // shrink can land in later passes (real-time reissue after the selection
+    // fetch settles), so a single deferred restore is not enough: the anchor
+    // survives a short settle window instead. The anchor is keyed by stream
+    // id, not row index, because a real-time re-sort may move the row.
+    // Any user scroll cancels the anchor so the restore never fights input.
     property var sidebarScrollAnchor: null
     function captureSidebarScrollAnchor() {
         const cy = streamList.contentY
         for (let row = 0; row < streamList.count; ++row) {
             const item = streamList.itemAtIndex(row)
             if (item && item.y + item.height > cy + 1.0) {
-                root.sidebarScrollAnchor = {row: row, offset: item.y - cy}
+                const id = String(streamList.model[row] && streamList.model[row].id || "")
+                if (!id.length)
+                    return
+                root.sidebarScrollAnchor = {id: id, offset: item.y - cy}
+                sidebarAnchorSettle.passes = 0
+                sidebarAnchorSettle.restart()
                 return
             }
         }
@@ -5191,13 +5200,38 @@ component NativeMentionChip: Item {
         const anchor = root.sidebarScrollAnchor
         if (!anchor)
             return
-        const item = streamList.itemAtIndex(anchor.row)
+        let row = -1
+        for (let i = 0; i < streamList.count; ++i) {
+            if (String(streamList.model[i] && streamList.model[i].id || "") === anchor.id) {
+                row = i
+                break
+            }
+        }
+        const item = row >= 0 ? streamList.itemAtIndex(row) : null
         if (item) {
             const max = Math.max(0, streamList.contentHeight - streamList.height)
             streamList.contentY = Math.min(max, Math.max(0, item.y - anchor.offset))
         }
         if (clear)
             root.sidebarScrollAnchor = null
+    }
+    Timer {
+        id: sidebarAnchorSettle
+        property int passes: 0
+        interval: 60
+        repeat: true
+        onTriggered: {
+            root.restoreSidebarScrollAnchor(false)
+            ++passes
+            if (passes >= 5) {
+                stop()
+                root.restoreSidebarScrollAnchor(true)
+            }
+        }
+    }
+    Connections {
+        target: streamList
+        function onMovementStarted() { root.sidebarScrollAnchor = null }
     }
     Connections {
         target: root.controller
@@ -5206,12 +5240,10 @@ component NativeMentionChip: Item {
         function onSelectedStreamChanged() {
             root.captureSidebarScrollAnchor()
             Qt.callLater(root.restoreSidebarScrollAnchor)
-            Qt.callLater(() => root.restoreSidebarScrollAnchor(true))
         }
         function onSelectedTopicChanged() {
             root.captureSidebarScrollAnchor()
             Qt.callLater(root.restoreSidebarScrollAnchor)
-            Qt.callLater(() => root.restoreSidebarScrollAnchor(true))
         }
     }
 
