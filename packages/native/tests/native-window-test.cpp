@@ -28654,8 +28654,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
             controller.selectTopic(topicId);
             QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            auto *pollButton = expandedComposerPollTrigger(window);
-            clickReadyItem(window, pollButton);
+            // #691: click() (not clickReadyItem) - the expand click inside the
+            // helper reparents the trigger into the toolbar row and the composer
+            // grows, so a scene mapping taken in the same turn can capture the
+            // pre-layout position; the click then lands beside the button and the
+            // dialog never opens (reproduced deterministically on the CI Release
+            // full gate, window-part12). Every sibling poll case already clicks
+            // through the 50 ms settling + re-mapping click().
+            click(window, expandedComposerPollTrigger(window));
         };
         loginAndOpen();
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
