@@ -998,6 +998,191 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!QGuiApplication::clipboard()->image().isNull(), 4000);
         QCOMPARE(QGuiApplication::clipboard()->image().size(), QSize(8, 4));
     }
+
+    // Issue #680: a ready HEIC composer attachment must expose a decoded
+    // preview produced by the bounded libheif decoder (reference parity:
+    // docs/NATIVE_DESKTOP_HEIC_PREVIEWS.md sec 4.3). The tile can only render
+    // what Qt's image reader understands, so the controller stages a decoded
+    // PNG; the row keeps the ORIGINAL local path for sending either way.
+    void composerReadyHeifAttachmentExposesDecodedPreview()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.method == "POST") {
+                // Echo the multipart part type back (mirrors the backend), like the
+                // FileClient-level HEIC test: the client compares the echo against its
+                // own sniffed content type before accepting ready.
+                QByteArray contentType("application/octet-stream");
+                const auto lowered = request.rawBody.toLower();
+                const auto namePos = lowered.indexOf("filename=\"photo.heic\"");
+                if (namePos >= 0) {
+                    const auto start = lowered.indexOf("content-type: ", namePos);
+                    if (start >= 0) contentType = request.rawBody.mid(start + 14, request.rawBody.indexOf('\n', start) - start - 14);
+                }
+                return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                    {"content_type", QString::fromLatin1(contentType).trimmed()}, {"size_bytes", bytes.size()}, {"hash", sha}}, 201};
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto source = directory.filePath("photo.heic");
+        QFile input(source);
+        QVERIFY(input.open(QIODevice::WriteOnly));
+        input.write(bytes);
+        input.close();
+        fixture.controller.attachFiles({QUrl::fromLocalFile(source)});
+        QVariantMap ready;
+        const auto readyRow = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() == "ready") { ready = row; return true; }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(readyRow(), 5000);
+        QCOMPARE(ready.value("image").toBool(), true);
+        // Sending keeps reading the original bytes through the row's path.
+        QCOMPARE(QUrl(ready.value("path").toString()).toLocalFile(), source);
+        QString preview;
+        const auto previewReady = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() != "ready") continue;
+                preview = row.value("preview").toString();
+                return !preview.isEmpty();
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(previewReady(), 8000);
+        const QUrl previewUrl(preview);
+        QVERIFY2(previewUrl.isLocalFile(), qPrintable(preview));
+        const QImage image(previewUrl.toLocalFile());
+        QVERIFY2(!image.isNull(), qPrintable(previewUrl.toLocalFile()));
+        QCOMPARE(image.size(), QSize(48, 32));
+        QCOMPARE(image.pixelColor(24, 16), QColor(0x46, 0x82, 0xb4));
+    }
+
+    // A corrupt container still uploads (the reference skips local probing for
+    // HEIC and never caches a transport failure as content): the row stays
+    // ready with an empty preview so the tile falls back to the file icon.
+    void composerCorruptHeifAttachmentKeepsFileCardFallback()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicTruncatedFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.method == "POST") {
+                // Echo the multipart part type back (mirrors the backend), like the
+                // FileClient-level HEIC test: the client compares the echo against its
+                // own sniffed content type before accepting ready.
+                QByteArray contentType("application/octet-stream");
+                const auto lowered = request.rawBody.toLower();
+                const auto namePos = lowered.indexOf("filename=\"broken.heic\"");
+                if (namePos >= 0) {
+                    const auto start = lowered.indexOf("content-type: ", namePos);
+                    if (start >= 0) contentType = request.rawBody.mid(start + 14, request.rawBody.indexOf('\n', start) - start - 14);
+                }
+                return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "broken.heic"},
+                    {"content_type", QString::fromLatin1(contentType).trimmed()}, {"size_bytes", bytes.size()}, {"hash", sha}}, 201};
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "broken.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto source = directory.filePath("broken.heic");
+        QFile input(source);
+        QVERIFY(input.open(QIODevice::WriteOnly));
+        input.write(bytes);
+        input.close();
+        fixture.controller.attachFiles({QUrl::fromLocalFile(source)});
+        QVariantMap ready;
+        const auto readyRow = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() == "ready") { ready = row; return true; }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(readyRow(), 5000);
+        // Generous window for the decode attempt to have run and failed.
+        QTest::qWait(1500);
+        QCOMPARE(ready.value("name").toString(), QStringLiteral("broken.heic"));
+        QCOMPARE(ready.value("preview").toString(), QString());
+    }
+
+    // Removing the attachment drops its decoded preview: the staged file is
+    // deleted with the row, and a late decode completion cannot resurrect it.
+    void composerHeifPreviewDroppedWithTheAttachment()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.method == "POST") {
+                // Echo the multipart part type back (mirrors the backend), like the
+                // FileClient-level HEIC test: the client compares the echo against its
+                // own sniffed content type before accepting ready.
+                QByteArray contentType("application/octet-stream");
+                const auto lowered = request.rawBody.toLower();
+                const auto namePos = lowered.indexOf("filename=\"photo.heic\"");
+                if (namePos >= 0) {
+                    const auto start = lowered.indexOf("content-type: ", namePos);
+                    if (start >= 0) contentType = request.rawBody.mid(start + 14, request.rawBody.indexOf('\n', start) - start - 14);
+                }
+                return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                    {"content_type", QString::fromLatin1(contentType).trimmed()}, {"size_bytes", bytes.size()}, {"hash", sha}}, 201};
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto source = directory.filePath("photo.heic");
+        QFile input(source);
+        QVERIFY(input.open(QIODevice::WriteOnly));
+        input.write(bytes);
+        input.close();
+        fixture.controller.attachFiles({QUrl::fromLocalFile(source)});
+        QVariantMap ready;
+        const auto readyRow = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() == "ready") { ready = row; return true; }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(readyRow(), 5000);
+        QString preview;
+        const auto previewReady = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() != "ready") continue;
+                preview = row.value("preview").toString();
+                return !preview.isEmpty();
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(previewReady(), 8000);
+        const auto staged = QUrl(preview).toLocalFile();
+        QVERIFY(QFile::exists(staged));
+        fixture.controller.removeUpload(ready.value("id").toString());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.uploadEntries().isEmpty(), 2000);
+        QVERIFY(!QFile::exists(staged));
+    }
 };
 
 QTEST_MAIN(ControllerMediaTest)

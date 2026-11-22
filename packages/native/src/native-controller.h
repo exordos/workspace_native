@@ -32,6 +32,9 @@
 #include <memory>
 #include <atomic>
 
+class QImage;
+template <class T> class QFutureWatcher;
+
 namespace workspace {
 
 class MediaViewerModel;
@@ -1622,6 +1625,12 @@ private:
     QString completedDownloadPath(const QString &id);
     void cancelFileTransfers(const QString &reason = {});
     void enqueueUpload(const QString &path, const QString &name = {}, std::shared_ptr<QTemporaryFile> temporary = {});
+    // #680: staged decoded preview for a ready HEIC composer attachment.
+    // The decode runs off the GUI thread through the bounded libheif decoder;
+    // completion is fenced on the upload generation/epoch and on the row still
+    // existing, so remove/sign-out/conversation churn drops it silently.
+    void scheduleUploadPreview(quint64 intent, const QString &path, quint64 generation, quint64 epoch);
+    void dropUploadPreview(quint64 intent);
     QString clipboardUploadName(const QString &extension, bool image) const;
     void validateQueuedUpload(quint64 intent, quint64 epoch);
     QStringList readyUploadLinks(quint64 session) const;
@@ -2373,6 +2382,11 @@ private:
         std::shared_ptr<QTemporaryFile> file;
     };
     QList<UploadEntry> m_uploadEntries;
+    // #680: intent -> staged decoded PNG (composer HEIC previews) and the
+    // in-flight decode watchers owned by this controller.
+    QHash<quint64, QString> m_uploadPreviews;
+    QHash<quint64, QFutureWatcher<QImage>*> m_uploadPreviewJobs;
+    std::unique_ptr<class QTemporaryDir> m_uploadPreviewDir;
     QList<ClipboardSnapshot> m_clipboardSnapshots;
     QVariantList m_clipboardFilesPreview;
     std::shared_ptr<std::atomic_bool> m_clipboardSnapshotCancel;

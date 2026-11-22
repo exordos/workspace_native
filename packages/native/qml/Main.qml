@@ -12078,7 +12078,13 @@ component NativeMentionChip: Item {
                             color: root.colors.bg; clip: true
                             Image {
                                 anchors.fill: parent
-                                source: uploadCard.modelData.status === "ready" && uploadCard.modelData.image ? uploadCard.modelData.path : ""
+                                // #680: `preview` is the tile's renderable source:
+                                // the controller staged a decoded PNG for HEIC rows and
+                                // the original path for ordinary images; an image row
+                                // with an empty preview (failed HEIC decode) keeps the
+                                // file icon below instead of a blank tile.
+                                source: uploadCard.modelData.status === "ready" && uploadCard.modelData.image
+                                    ? String(uploadCard.modelData.preview || "") : ""
                                 sourceSize.width: 80; sourceSize.height: 80
                                 fillMode: Image.PreserveAspectCrop; asynchronous: true
                             }
@@ -12119,7 +12125,8 @@ component NativeMentionChip: Item {
                             }
                             NativeIconButton {
                                 anchors.centerIn: parent
-                                visible: !uploadCard.uploading && !(uploadCard.modelData.status === "ready" && uploadCard.modelData.image)
+                                visible: !uploadCard.uploading && !(uploadCard.modelData.status === "ready" && uploadCard.modelData.image
+                    && String(uploadCard.modelData.preview || "") !== "")
                                 width: 18; height: 18; glyphSize: 18
                                 colors: root.colors; iconColor: root.colors["text-muted"]
                                 asset: uploadCard.failed ? "attachment-upload-error.svg" : "files.svg"
