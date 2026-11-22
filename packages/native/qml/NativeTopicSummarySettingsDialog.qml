@@ -275,6 +275,15 @@ Dialog {
                 property var form: ({})
                 property var editBaseline: ({})      // DTO snapshot taken at startEdit
                 property bool confirmDelete: false
+                // The text fields flush their value through a Qt.callLater defer. If the
+                // dialog is torn down while a defer is still queued (window fixtures die
+                // mid-event-loop), a scope-dependent closure resolves `text`/`setField`
+                // against the dead Flickable and QML logs a warning, which fails tests.
+                // The guard below is a plain JS object captured by value: after
+                // destruction only that survives, so the deferred closure never touches
+                // the QML scope chain.
+                property var liveGuard: ({ alive: true })
+                Component.onDestruction: liveGuard.alive = false
                 function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false }
                 readonly property bool endpointsAllowed: dlg.perm("endpoints") === "allowed"
                 readonly property bool editing: editingUuid.length > 0
@@ -406,6 +415,13 @@ Dialog {
                     next[name] = value
                     form = next
                 }
+                function deferSetField(name, value) {
+                    // Capture everything the deferred write needs as plain JS values so
+                    // the closure survives the form being destroyed before it fires.
+                    const guard = liveGuard
+                    const tab = endpointsTab
+                    Qt.callLater(function () { if (guard.alive) tab.setField(name, value) })
+                }
                 function startCreate() {
                     editingUuid = "new"
                     editBaseline = ({})
@@ -491,21 +507,21 @@ Dialog {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-name"; placeholderText: qsTr("Name *")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("name", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("name", text)) }
+                                text: String(endpointsTab.field("name", "")); onTextChanged: endpointsTab.deferSetField("name", text) }
                             FieldError { errorField: "name" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-model"; placeholderText: qsTr("Model *")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("model", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("model", text)) }
+                                text: String(endpointsTab.field("model", "")); onTextChanged: endpointsTab.deferSetField("model", text) }
                             FieldError { errorField: "model" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; Layout.columnSpan: 2; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-base_url"; placeholderText: qsTr("Base URL (https://...) *")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("base_url", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("base_url", text.trim())) }
+                                text: String(endpointsTab.field("base_url", "")); onTextChanged: endpointsTab.deferSetField("base_url", text.trim()) }
                             FieldError { errorField: "base_url" }
                         }
                         ColumnLayout {
@@ -517,7 +533,7 @@ Dialog {
                                 placeholderText: endpointsTab.editingUuid === "new"
                                     ? qsTr("API key *") : qsTr("New API key")
                                 echoMode: TextInput.Password; Layout.fillWidth: true
-                                text: String(endpointsTab.field("api_key", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("api_key", text)) }
+                                text: String(endpointsTab.field("api_key", "")); onTextChanged: endpointsTab.deferSetField("api_key", text) }
                             FieldError { errorField: "api_key" }
                             Text { objectName: "channelTopicSummaryApiKeyHint"
                                 text: endpointsTab.editingUuid === "new"
@@ -529,42 +545,42 @@ Dialog {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-priority"; placeholderText: qsTr("Priority (0-1000000)")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("priority", 100)); onTextChanged: Qt.callLater(() => endpointsTab.setField("priority", text)) }
+                                text: String(endpointsTab.field("priority", 100)); onTextChanged: endpointsTab.deferSetField("priority", text) }
                             FieldError { errorField: "priority" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-temperature"; placeholderText: qsTr("Temperature (0-2)")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: Qt.callLater(() => endpointsTab.setField("temperature", text)) }
+                                text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: endpointsTab.deferSetField("temperature", text) }
                             FieldError { errorField: "temperature" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-max_output_tokens"; placeholderText: qsTr("Max output tokens (1-32768)")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: Qt.callLater(() => endpointsTab.setField("max_output_tokens", text)) }
+                                text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: endpointsTab.deferSetField("max_output_tokens", text) }
                             FieldError { errorField: "max_output_tokens" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-top_p"; placeholderText: qsTr("Top-p (0-1)")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("top_p", 1)); onTextChanged: Qt.callLater(() => endpointsTab.setField("top_p", text)) }
+                                text: String(endpointsTab.field("top_p", 1)); onTextChanged: endpointsTab.deferSetField("top_p", text) }
                             FieldError { errorField: "top_p" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-presence_penalty"; placeholderText: qsTr("Presence penalty (-2..2)")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("presence_penalty", text)) }
+                                text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: endpointsTab.deferSetField("presence_penalty", text) }
                             FieldError { errorField: "presence_penalty" }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
                             TextField { objectName: "channelTopicSummaryField-frequency_penalty"; placeholderText: qsTr("Frequency penalty (-2..2)")
                                 Layout.fillWidth: true
-                                text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("frequency_penalty", text)) }
+                                text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: endpointsTab.deferSetField("frequency_penalty", text) }
                             FieldError { errorField: "frequency_penalty" }
                         }
                         SwitchRow { objectNameRow: "channelTopicSummaryField-enabled"; label: qsTr("Enabled")
