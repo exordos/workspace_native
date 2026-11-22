@@ -12534,7 +12534,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QStringList fillerIds;
         QHash<QString, QJsonArray> topicsByStream;
         QJsonArray streams{windowChannel(streamId, "Engineering")};
-        for (int i = 0; i < 6; ++i) {
+        // Deep enough that the post-switch collapse still leaves the list
+        // scrollable on both sides of the pinned anchor (viewport is 727 px).
+        for (int i = 0; i < 24; ++i) {
             const auto id = QString("93000000-0000-4000-8000-%1").arg(10 + i, 12, 10, QLatin1Char('0'));
             fillerIds.append(id);
             streams.append(windowChannel(id, QString("Filler %1").arg(i)));
@@ -12578,34 +12580,29 @@ mv -Tf "$root/.current-new" "$root/current"
         session.login(fixture.server.origin(), "synthetic-switch", "synthetic-password");
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
-        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 7);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 25);
         auto *list = item(window->contentItem(), "streamList"); QVERIFY(list);
         // Hover-expansion is independent of navigation (#142), so three
         // streams can be opened without moving the selection.
         const auto expandStream = [&](const QString &streamUuid) {
             auto *delegate = item(window->contentItem(), "stream-" + streamUuid); QVERIFY(delegate);
-            list->setProperty("contentY", qMax(0.0, delegate->y()));
+            // The stream- handle is the delegate's header row; scroll it to the
+            // viewport top with a scene delta (delegate y is layout-derived).
+            list->setProperty("contentY", list->property("contentY").toReal()
+                + delegate->mapToScene(QPointF(0, 0)).y() - list->mapToScene(QPointF(0, 0)).y());
             QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamUuid), 2000);
             auto *row = visibleItem(window->contentItem(), "stream-" + streamUuid); QVERIFY(row);
             QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
             QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "expandTopics-" + streamUuid), 3000);
             click(window, visibleItem(window->contentItem(), "expandTopics-" + streamUuid));
         };
-        // Stream rows sorted by their scene position, whatever the scroll.
+        // Order is the sidebar projection order; walking scene items would
+        // depend on which delegates the ListView currently incubates.
         const auto streamOrder = [&] {
-            QList<QPair<qreal, QString>> rows;
-            std::function<void(QQuickItem *)> walk = [&](QQuickItem *node) {
-                for (auto *child : node->childItems()) {
-                    if (child->objectName().startsWith("stream-"))
-                        rows.append({child->mapToScene(QPointF(0, 0)).y(), child->objectName()});
-                    walk(child);
-                }
-            };
-            walk(list);
-            std::sort(rows.begin(), rows.end());
-            QStringList names;
-            for (const auto &row : rows) names.append(row.second);
-            return names;
+            QStringList ids;
+            for (const auto &value : controller.sidebarStreams())
+                ids.append(value.toMap().value("id").toString());
+            return ids;
         };
         controller.selectStream(fillerIds.at(1));
         QTRY_VERIFY(!controller.busy() && controller.topics().size() == 7);
@@ -12617,9 +12614,16 @@ mv -Tf "$root/.current-new" "$root/current"
         // Pin the scroll at the filler-3 row: everything that the upcoming
         // accordion collapse removes sits above this viewport line.
         auto *anchor = item(window->contentItem(), "stream-" + fillerIds.at(3)); QVERIFY(anchor);
-        list->setProperty("contentY", anchor->y());
+        list->setProperty("contentY", list->property("contentY").toReal()
+            + anchor->mapToScene(QPointF(0, 0)).y() - list->mapToScene(QPointF(0, 0)).y());
         QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 0.0, 2000);
-        const auto pinnedY = list->property("contentY").toReal();
+        // The user-visible contract: the row at the viewport top keeps its
+        // position across the collapse, so "preserve scroll" is measured on
+        // the anchor row, not on a raw contentY value the clamp may move.
+        const auto anchorViewport = [&] {
+            return anchor->mapToScene(QPointF(0, 0)).y() - list->mapToScene(QPointF(0, 0)).y();
+        };
+        const auto pinnedVisual = anchorViewport();
         const auto orderBefore = streamOrder();
         QVERIFY2(orderBefore.size() >= 5, qPrintable(orderBefore.join(",")));
         QVERIFY(visibleItem(window->contentItem(), "stream-" + fillerIds.at(5)));
@@ -12628,7 +12632,7 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, visibleItem(window->contentItem(), "stream-" + fillerIds.at(5)));
         QTRY_COMPARE(controller.selectedStream(), fillerIds.at(5));
         QTest::qWait(200); // several layout passes for a model republish/clamp
-        QCOMPARE(list->property("contentY").toReal(), pinnedY);
+        QCOMPARE(anchorViewport(), pinnedVisual);
         QCOMPARE(streamOrder(), orderBefore);
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss(); QVERIFY(closed);

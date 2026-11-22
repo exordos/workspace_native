@@ -5168,6 +5168,53 @@ component NativeMentionChip: Item {
         function onSidebarStreamsChanged() { ++root.sidebarSearchFocusSession }
     }
 
+    // Issue #660 clause 3: switching chats collapses the other expanded
+    // streams (#95). That removes height above the fold, and an unanchored
+    // ListView clamps contentY so the rows under the user jump. Capture the
+    // first visible stream row (and its viewport offset) while the selection
+    // signal still precedes the queued collapse, then restore the anchor
+    // after the layout settles. The browser reference keeps the visual
+    // position this way because its scroll container never shrinks.
+    property var sidebarScrollAnchor: null
+    function captureSidebarScrollAnchor() {
+        const cy = streamList.contentY
+        for (let row = 0; row < streamList.count; ++row) {
+            const item = streamList.itemAtIndex(row)
+            if (item && item.y + item.height > cy + 1.0) {
+                root.sidebarScrollAnchor = {row: row, offset: item.y - cy}
+                return
+            }
+        }
+        root.sidebarScrollAnchor = null
+    }
+    function restoreSidebarScrollAnchor(clear) {
+        const anchor = root.sidebarScrollAnchor
+        if (!anchor)
+            return
+        const item = streamList.itemAtIndex(anchor.row)
+        if (item) {
+            const max = Math.max(0, streamList.contentHeight - streamList.height)
+            streamList.contentY = Math.min(max, Math.max(0, item.y - anchor.offset))
+        }
+        if (clear)
+            root.sidebarScrollAnchor = null
+    }
+    Connections {
+        target: root.controller
+        // selectStream notifies before collapseSidebarExcept's deferred
+        // sidebarExpansionChanged, so this capture sees the pre-collapse layout.
+        function onSelectedStreamChanged() {
+            root.captureSidebarScrollAnchor()
+            Qt.callLater(root.restoreSidebarScrollAnchor)
+            Qt.callLater(() => root.restoreSidebarScrollAnchor(true))
+        }
+        function onSelectedTopicChanged() {
+            root.captureSidebarScrollAnchor()
+            Qt.callLater(root.restoreSidebarScrollAnchor)
+            Qt.callLater(() => root.restoreSidebarScrollAnchor(true))
+        }
+    }
+
     function cancelSidebarSearch() {
         // Reference sidebar-search-header.ui.tsx:18-32: an unfocused field
         // with an empty query falls through; otherwise the query clears, the
