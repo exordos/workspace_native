@@ -23,6 +23,24 @@ struct TopicSummaryScene {
     QJsonArray endpointsResponse;
     int gatesStatus = 200;
     int endpointsStatus = 200;
+    // Issue #635 topic-tab helpers: topicSummaryConfig merges into every served
+    // topic row DTO (summary_enabled / summary_system_prompt / summary_reasoning_effort).
+    QJsonObject topicSummaryConfig;
+    QJsonObject topicRow(const QString &id) const
+    {
+        auto row = QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", id == secondTopicId ? "Second topic" : "Native topic"},
+            {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+            {"last_message_uuid", QJsonValue::Null}};
+        for (const auto key : topicSummaryConfig.keys()) row.insert(key, topicSummaryConfig.value(key));
+        return row;
+    }
+    void serveTopicRows(Fixture &fixture) const
+    {
+        fixture.topics = [this](const Request &) {
+            return Response{QJsonArray{topicRow(topicId), topicRow(secondTopicId)}};
+        };
+    }
     TopicSummaryScene()
     {
         fixture.streams = [this](const Request &) {
@@ -1138,6 +1156,135 @@ private slots:
         QTRY_VERIFY(!controller.topicSummarySettingsBusy());
         QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
         QVERIFY(controller.topicSummaryEndpoints().isEmpty());
+    }
+
+    // Issue #635: the dialog's topic tab save (docs/topic-summary-settings.md).
+    // Reference surface: POST set_summary_prompt/invoke with AtLeastOne dirty-only
+    // patch (workspace_ui e0194ff messenger.types.ts:435-439); empty prompt means
+    // the app default and is sent as explicit null, effort "" the provider default.
+    void topicSummaryTopicSavePatchesOnlyDirtyFields_data()
+    {
+        QTest::addColumn<QJsonObject>("rowConfig");
+        QTest::addColumn<QVariantList>("saveArgs"); // enabled, prompt, effort
+        QTest::addColumn<QJsonObject>("expectedBody"); // empty = must not dispatch
+        {
+            const QJsonObject row;
+            const QVariantList args{true, QStringLiteral("Summarize decisions"), QString()};
+            const QJsonObject expected{{"summary_system_prompt", "Summarize decisions"}};
+            QTest::newRow("prompt-only") << row << args << expected;
+        }
+        {
+            const QJsonObject row{{"summary_system_prompt", "Old prompt"}};
+            const QVariantList args{true, QString(), QString()};
+            const QJsonObject expected{{"summary_system_prompt", QJsonValue::Null}};
+            QTest::newRow("prompt-to-default") << row << args << expected;
+        }
+        {
+            const QJsonObject row{{"summary_system_prompt", "Keep"}};
+            const QVariantList args{true, QStringLiteral("Keep"), QStringLiteral("high")};
+            const QJsonObject expected{{"summary_reasoning_effort", "high"}};
+            QTest::newRow("effort-only") << row << args << expected;
+        }
+        {
+            const QJsonObject row{{"summary_enabled", false}, {"summary_reasoning_effort", "low"}};
+            const QVariantList args{false, QString(), QStringLiteral("low")};
+            const QJsonObject expected;
+            QTest::newRow("nothing-dirty") << row << args << expected;
+        }
+        {
+            const QJsonObject row{{"summary_reasoning_effort", "medium"}};
+            const QVariantList args{false, QStringLiteral("New prompt"), QStringLiteral("medium")};
+            const QJsonObject expected{{"summary_enabled", false}, {"summary_system_prompt", "New prompt"}};
+            QTest::newRow("enabled-and-prompt") << row << args << expected;
+        }
+    }
+    void topicSummaryTopicSavePatchesOnlyDirtyFields()
+    {
+        QFETCH(QJsonObject, rowConfig); QFETCH(QVariantList, saveArgs); QFETCH(QJsonObject, expectedBody);
+        TopicSummaryScene scene; scene.topicSummaryConfig = rowConfig; scene.serveTopicRows(scene.fixture);
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        // The mock echoes the patch onto the row DTO like the reference backend.
+        const auto base = scene.fixture.server.handler;
+        QList<QJsonObject> bodies;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/actions/set_summary_prompt/invoke")) {
+                bodies.append(request.body);
+                auto dto = scene.topicRow(topicId);
+                for (const auto key : request.body.keys()) dto.insert(key, request.body.value(key));
+                return Response{dto};
+            }
+            return base(request);
+        };
+        QSignalSpy finished(&controller, &NativeController::channelTopicActionFinished);
+        controller.saveTopicSummaryTopic(topicId, saveArgs.at(0).toBool(),
+            saveArgs.at(1).toString(), saveArgs.at(2).toString());
+        QTRY_COMPARE(finished.count(), 1);
+        const auto signal = finished.takeFirst();
+        QCOMPARE(signal.at(0).toString(), topicId);
+        QCOMPARE(signal.at(1).toString(), QString("summary"));
+        QCOMPARE(signal.at(2).toBool(), true);
+        const QList<QJsonObject> expectedBodies =
+            expectedBody.isEmpty() ? QList<QJsonObject>{} : QList<QJsonObject>{expectedBody};
+        QCOMPARE(bodies, expectedBodies);
+        if (!expectedBody.isEmpty() && expectedBody.contains("summary_system_prompt")) {
+            // The echoed row lands in the drawer projection the dialog reads back.
+            const QString want = expectedBody.value("summary_system_prompt").isNull()
+                ? QString() : expectedBody.value("summary_system_prompt").toString();
+            const auto rows = controller.channelInfoTopics();
+            const auto row = std::find_if(rows.cbegin(), rows.cend(), [&](const QVariant &value) {
+                return value.toMap().value("id").toString() == topicId; });
+            QVERIFY(row != rows.cend());
+            QCOMPARE(row->toMap().value("summarySystemPrompt").toString(), want);
+        }
+    }
+
+    void topicSummaryTopicSaveRejectsInvalidInputAndMembers()
+    {
+        {
+            TopicSummaryScene scene; scene.serveTopicRows(scene.fixture);
+            QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+            const auto base = scene.fixture.server.handler;
+            int invokes = 0;
+            scene.fixture.server.handler = [&](const Request &request) -> Response {
+                if (request.method == "POST" && request.target.path().endsWith("/actions/set_summary_prompt/invoke"))
+                    ++invokes;
+                return base(request);
+            };
+            QSignalSpy finished(&controller, &NativeController::channelTopicActionFinished);
+            // effort outside the reference enum, whitespace-only custom draft
+            // (reference promptEmpty), and the 16384 cap must all refuse without a request.
+            controller.saveTopicSummaryTopic(topicId, true, QStringLiteral("ok"), QStringLiteral("ultra"));
+            controller.saveTopicSummaryTopic(topicId, true, QStringLiteral("ok"), QStringLiteral("LOW"));
+            controller.saveTopicSummaryTopic(topicId, true, QStringLiteral("   "), QString());
+            controller.saveTopicSummaryTopic(topicId, true, QString(16385, QLatin1Char('p')), QString());
+            QCOMPARE(finished.count(), 4);
+            for (const auto &signal : {finished.at(0), finished.at(1), finished.at(2), finished.at(3)})
+                QCOMPARE(signal.at(2).toBool(), false);
+            QCOMPARE(invokes, 0);
+            // A 16384-char prompt is still valid (boundary).
+            controller.saveTopicSummaryTopic(topicId, true, QString(16384, QLatin1Char('p')), QString());
+            QTRY_COMPARE(finished.count(), 5);
+            QCOMPARE(finished.at(4).at(2).toBool(), true);
+            QCOMPARE(invokes, 1);
+        }
+        {
+            // A member cannot edit the topic summary: refused before dispatch.
+            TopicSummaryScene scene; scene.role = QStringLiteral("member"); scene.serveTopicRows(scene.fixture);
+            QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+            const auto base = scene.fixture.server.handler;
+            int invokes = 0;
+            scene.fixture.server.handler = [&](const Request &request) -> Response {
+                if (request.method == "POST" && request.target.path().endsWith("/actions/set_summary_prompt/invoke"))
+                    ++invokes;
+                return base(request);
+            };
+            QSignalSpy finished(&controller, &NativeController::channelTopicActionFinished);
+            controller.saveTopicSummaryTopic(topicId, false, QStringLiteral("x"), QString());
+            QCOMPARE(finished.count(), 1);
+            QCOMPARE(finished.at(0).at(2).toBool(), false);
+            QCOMPARE(invokes, 0);
+        }
     }
 };
 
