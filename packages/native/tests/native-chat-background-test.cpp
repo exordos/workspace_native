@@ -216,6 +216,69 @@ private slots:
         QVERIFY(!result.ok);
         QCOMPARE(result.error, QStringLiteral("size"));
     }
+
+    void qmlFacingApplyResolveAndFilePipeline()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QSettings ini(dir.filePath("backgrounds.ini"), QSettings::IniFormat);
+        ini.setFallbacksEnabled(false);
+        ChatBackground backgrounds(&ini);
+        QVERIFY(backgrounds.backgroundUrl(QStringLiteral("stream:2f1a")).isEmpty()); // no owner
+        backgrounds.setOwner(QStringLiteral("owner-a"));
+        QVERIFY(backgrounds.applyPreset(QStringLiteral("stream:2f1a"),
+            QStringLiteral("sea"), QStringLiteral("all")));
+        QCOMPARE(backgrounds.selectedPreset(QStringLiteral("stream:2f1a")),
+            QStringLiteral("sea"));
+        QCOMPARE(backgrounds.backgroundUrl(QStringLiteral("stream:2f1a")),
+            QStringLiteral("qrc:/workspace/chat-background/sea.svg"));
+        QVERIFY(!backgrounds.applyPreset(QStringLiteral("stream:2f1a"),
+            QStringLiteral("nope"), QStringLiteral("all")));
+        // Scope "chat" needs a well-formed chatKey; "all" is always valid.
+        QVERIFY(!backgrounds.applyPreset(QString{}, QStringLiteral("forest"),
+            QStringLiteral("chat")));
+        QVERIFY(backgrounds.applyPreset(QStringLiteral("topic:9c"),
+            QStringLiteral("forest"), QStringLiteral("chat")));
+        QCOMPARE(backgrounds.selectedPreset(QStringLiteral("topic:9c")),
+            QStringLiteral("forest"));
+        // Only a JPEG data URL inside the stored cap is accepted (lib.ts:24).
+        QVERIFY(!backgrounds.applyImage(QStringLiteral("stream:2f1a"),
+            QStringLiteral("data:image/png;base64,AUJj"), QStringLiteral("chat")));
+        QVERIFY(!backgrounds.applyImage(QStringLiteral("stream:2f1a"),
+            QStringLiteral("not a url"), QStringLiteral("all")));
+        const auto prepared = ChatBackground::prepareImage(
+            rasterFixture(8, 4, QColor(9, 9, 180)), QStringLiteral("image/png"));
+        QVERIFY(prepared.ok);
+        QVERIFY(backgrounds.applyImage(QStringLiteral("stream:2f1a"), prepared.dataUrl,
+            QStringLiteral("chat")));
+        QCOMPARE(backgrounds.customImage(QStringLiteral("stream:2f1a")), prepared.dataUrl);
+        QCOMPARE(backgrounds.selectedPreset(QStringLiteral("stream:2f1a")), QString{});
+        // "Default background": the reset applies per scope like every other value.
+        QVERIFY(backgrounds.applyDefault(QStringLiteral("stream:2f1a"),
+            QStringLiteral("chat")));
+        QVERIFY(backgrounds.customImage(QStringLiteral("stream:2f1a")).isEmpty());
+        QCOMPARE(backgrounds.selectedPreset(QStringLiteral("stream:2f1a")),
+            QString{}); // the explicit chat default wins over the global preset
+        // prepareImageFromFile: extension drives the declared MIME; anything
+        // unreadable maps to the decode line (ui.tsx catch branch).
+        const QString pngPath = dir.filePath("pic.png");
+        QFile png(pngPath);
+        QVERIFY(png.open(QIODevice::WriteOnly));
+        png.write(rasterFixture(20, 10, QColor(30, 200, 30)));
+        png.close();
+        const auto fromFile = backgrounds.prepareImageFromFile(
+            QStringLiteral("file://") + pngPath);
+        QVERIFY(fromFile.value(QStringLiteral("ok")).toBool());
+        QVERIFY(fromFile.value(QStringLiteral("dataUrl")).toString()
+                    .startsWith(QStringLiteral("data:image/jpeg;base64,")));
+        const QString txtPath = dir.filePath("note.txt");
+        QVERIFY(QFile::copy(pngPath, txtPath));
+        QCOMPARE(backgrounds.prepareImageFromFile(txtPath).value(QStringLiteral("error")),
+            QStringLiteral("type"));
+        QCOMPARE(backgrounds.prepareImageFromFile(dir.filePath("missing.png"))
+                     .value(QStringLiteral("error")),
+            QStringLiteral("decode"));
+    }
 };
 
 QTEST_GUILESS_MAIN(NativeChatBackgroundTest)

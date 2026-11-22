@@ -1,16 +1,19 @@
 #include "chat-background.h"
 
 #include <QBuffer>
+#include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPainter>
 #include <QRegularExpression>
+#include <QUrl>
 
 namespace workspace {
 
 namespace {
-const QStringList &presetIds()
+const QStringList &presetIdTable()
 {
     static const QStringList ids{QStringLiteral("mountains"), QStringLiteral("sea"),
         QStringLiteral("forest")}; // reference CHAT_BACKGROUNDS order
@@ -51,7 +54,7 @@ bool ChatBackground::validateValue(const QJsonValue &candidate, Value *out)
     const auto object = candidate.toObject();
     if (object.contains(QStringLiteral("preset"))) {
         const auto id = candidate.toObject().value(QStringLiteral("preset")).toVariant().toString();
-        if (presetIds().contains(id)) {
+        if (presetIdTable().contains(id)) {
             out->kind = Kind::Preset;
             out->text = id;
             return true;
@@ -130,8 +133,13 @@ QJsonObject ChatBackground::parsePreferences(const QString &raw)
 
 void ChatBackground::setOwner(const QString &owner)
 {
-    if (m_owner == owner)
+    const bool wasAvailable = m_authenticated;
+    m_authenticated = true;
+    if (m_owner == owner) {
+        if (!wasAvailable)
+            emit changed();
         return;
+    }
     m_owner = owner;
     m_global = Value{};
     m_chats.clear();
@@ -154,6 +162,22 @@ void ChatBackground::setOwner(const QString &owner)
     emit changed();
 }
 
+void ChatBackground::setSession(const QString &owner, bool authenticated)
+{
+    if (!authenticated) {
+        if (!m_authenticated && m_owner.isEmpty())
+            return;
+        m_owner.clear();
+        m_global = Value{};
+        m_chats.clear();
+        m_error.clear();
+        m_authenticated = false;
+        emit changed();
+        return;
+    }
+    setOwner(owner);
+}
+
 ChatBackground::Value ChatBackground::resolve(const QString &chatKey) const
 {
     if (auto found = m_chats.constFind(chatKey); found != m_chats.constEnd())
@@ -163,7 +187,7 @@ ChatBackground::Value ChatBackground::resolve(const QString &chatKey) const
 
 bool ChatBackground::applyChat(const QString &chatKey, const Value &value)
 {
-    if (m_owner.isEmpty() || !isValidChatKey(chatKey))
+    if (!m_authenticated || !isValidChatKey(chatKey))
         return false;
     m_chats.insert(chatKey, value);
     return store();
@@ -171,7 +195,7 @@ bool ChatBackground::applyChat(const QString &chatKey, const Value &value)
 
 bool ChatBackground::applyAll(const Value &value)
 {
-    if (m_owner.isEmpty())
+    if (!m_authenticated)
         return false;
     m_global = value;
     m_chats.clear(); // reference scope "all" clears every chat override
@@ -296,6 +320,108 @@ ChatBackground::Prepared ChatBackground::prepareImage(const QByteArray &bytes, c
     out.ok = true;
     out.dataUrl = dataUrl;
     return out;
+}
+
+QStringList ChatBackground::presetIds() { return presetIdTable(); }
+
+QStringList ChatBackground::presetIdList() const { return presetIdTable(); }
+
+QString ChatBackground::backgroundUrl(const QString &chatKey) const
+{
+    const auto value = resolve(chatKey);
+    if (value.kind == Kind::Preset)
+        return QStringLiteral("qrc:/workspace/chat-background/%1.svg").arg(value.text);
+    if (value.kind == Kind::Image)
+        return value.text;
+    return QString();
+}
+
+QString ChatBackground::selectedPreset(const QString &chatKey) const
+{
+    const auto value = resolve(chatKey);
+    return value.kind == Kind::Preset ? value.text : QString();
+}
+
+QString ChatBackground::customImage(const QString &chatKey) const
+{
+    const auto value = resolve(chatKey);
+    return value.kind == Kind::Image ? value.text : QString();
+}
+
+namespace {
+bool scopeApplies(const QString &scope) { return scope == QLatin1String("all") || scope == QLatin1String("chat"); }
+} // namespace
+
+bool ChatBackground::applyPreset(const QString &chatKey, const QString &presetId,
+                                 const QString &scope)
+{
+    if (!scopeApplies(scope) || !presetIdTable().contains(presetId))
+        return false;
+    const Value value{Kind::Preset, presetId};
+    return scope == QLatin1String("all") ? applyAll(value) : applyChat(chatKey, value);
+}
+
+bool ChatBackground::applyImage(const QString &chatKey, const QString &dataUrl,
+                                const QString &scope)
+{
+    QJsonValue candidate;
+    if (!scopeApplies(scope))
+        return false;
+    // The same validator the restore path uses: a JPEG data URL within the
+    // stored cap, nothing else (reference apply() receives prepared URLs).
+    if (!jpegDataUrlPattern().match(dataUrl).hasMatch()
+        || dataUrl.size() > kMaxImageLength)
+        return false;
+    Q_UNUSED(candidate);
+    const Value value{Kind::Image, dataUrl};
+    return scope == QLatin1String("all") ? applyAll(value) : applyChat(chatKey, value);
+}
+
+bool ChatBackground::applyDefault(const QString &chatKey, const QString &scope)
+{
+    if (!scopeApplies(scope))
+        return false;
+    return scope == QLatin1String("all") ? applyAll(Value{}) : applyChat(chatKey, Value{});
+}
+
+void ChatBackground::clearError()
+{
+    if (m_error.isEmpty())
+        return;
+    m_error.clear();
+    emit changed();
+}
+
+QVariantMap ChatBackground::prepareImageFromFile(const QString &localPath)
+{
+    QVariantMap result;
+    QString path = localPath;
+    if (path.startsWith(QLatin1String("file:")))
+        path = QUrl(path).toLocalFile();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        // Reference upload() maps any non-BackgroundImageError failure to
+        // the decode line (chat-background.ui.tsx catch branch).
+        result[QStringLiteral("ok")] = false;
+        result[QStringLiteral("error")] = QStringLiteral("decode");
+        return result;
+    }
+    const auto suffix = QFileInfo(path).suffix().toLower();
+    QString mime;
+    if (suffix == QLatin1String("jpg") || suffix == QLatin1String("jpeg"))
+        mime = QStringLiteral("image/jpeg");
+    else if (suffix == QLatin1String("png"))
+        mime = QStringLiteral("image/png");
+    else if (suffix == QLatin1String("webp"))
+        mime = QStringLiteral("image/webp");
+    // Any other extension keeps the declared MIME empty, so prepareImage
+    // rejects it on the allow-list exactly like an unknown file.type does.
+    const auto prepared = prepareImage(file.readAll(), mime);
+    file.close();
+    result[QStringLiteral("ok")] = prepared.ok;
+    result[QStringLiteral("dataUrl")] = prepared.dataUrl;
+    result[QStringLiteral("error")] = prepared.error;
+    return result;
 }
 
 } // namespace workspace

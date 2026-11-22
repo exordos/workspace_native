@@ -184,10 +184,11 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     // preferences; owner switching reloads that owner's stored values (the
     // setOwner no-op guard keeps this off the binding budget when it repeats).
     auto *chatBackground = new ChatBackground(&preferences->settings(), &engine);
-    chatBackground->setOwner(controller->ownerKey());
+    chatBackground->setSession(controller->ownerKey(), controller->authenticated());
     QObject::connect(controller, &NativeController::stateChanged, chatBackground,
                      [controller, chatBackground] {
-                         chatBackground->setOwner(controller->ownerKey());
+                         chatBackground->setSession(controller->ownerKey(),
+                                                    controller->authenticated());
                      });
     engine.rootContext()->setContextProperty("nativeChatBackground", chatBackground);
     QObject::connect(controller, &NativeController::reactionAdded, preferences,

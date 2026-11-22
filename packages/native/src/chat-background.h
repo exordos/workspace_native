@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QSettings>
+#include <QVariantMap>
 
 namespace workspace {
 
@@ -17,6 +18,10 @@ class ChatBackground final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool available READ available NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
+    // Reference "available" tracks the authenticated session, NOT a non-empty
+    // owner string: window fixtures legitimately log in with an empty
+    // ownerKey (the #300/#645 empty-owner lesson). owner only keys storage.
+    Q_PROPERTY(QStringList presets READ presetIdList CONSTANT)
 public:
     enum class Kind { Default, Preset, Image };
     struct Value {
@@ -26,7 +31,7 @@ public:
 
     explicit ChatBackground(QSettings *settings, QObject *parent = nullptr);
 
-    bool available() const { return !m_owner.isEmpty(); }
+    bool available() const { return m_authenticated; }
     QString error() const { return m_error; }
     QString owner() const { return m_owner; }
 
@@ -34,6 +39,9 @@ public:
     // the previous owner's in-memory state (the reference keys localStorage
     // per owner; writes from a departed owner are dropped by the stale guard).
     void setOwner(const QString &owner);
+    // Session seam used by the app wiring: availability follows the
+    // authenticated flag; the (possibly empty in fixtures) owner keys storage.
+    void setSession(const QString &owner, bool authenticated);
 
     // chatKey format from the reference: ^(stream|topic):[0-9a-f:-]+$ (case
     // insensitive on the prefix). A stored explicit chat default (null) wins
@@ -61,6 +69,25 @@ public:
     };
     static Prepared prepareImage(const QByteArray &bytes, const QString &declaredMime);
 
+    // QML-facing surface (increment 3, docs section 4). scope is the
+    // reference apply scope: "chat" (needs a well-formed chatKey) or "all".
+    Q_INVOKABLE QString backgroundUrl(const QString &chatKey) const;
+    Q_INVOKABLE QString selectedPreset(const QString &chatKey) const;
+    Q_INVOKABLE QString customImage(const QString &chatKey) const;
+    Q_INVOKABLE bool applyPreset(const QString &chatKey, const QString &presetId,
+                                 const QString &scope);
+    Q_INVOKABLE bool applyImage(const QString &chatKey, const QString &dataUrl,
+                                const QString &scope);
+    Q_INVOKABLE bool applyDefault(const QString &chatKey, const QString &scope);
+    Q_INVOKABLE void clearError();
+    QStringList presetIdList() const;
+    // File-dialog counterpart of the reference <input type=file>: reads the
+    // local file, maps the extension onto the declared MIME (the browser
+    // derives file.type from the name the same way), then runs prepareImage.
+    // Returns {ok:bool, dataUrl:QString, error:QString}.
+    Q_INVOKABLE QVariantMap prepareImageFromFile(const QString &localPath);
+    static QStringList presetIds();
+
     // Reference restore rules over the stored raw JSON string (also the
     // contract test surface). Returns the normalized {"global":...,"chats":{}}
     // object; everything malformed collapses to the empty preferences.
@@ -85,6 +112,7 @@ private:
 
     QPointer<QSettings> m_settings;
     QString m_owner;
+    bool m_authenticated = false;
     Value m_global;
     QHash<QString, Value> m_chats; // only keys explicitly present in storage
     QString m_error;

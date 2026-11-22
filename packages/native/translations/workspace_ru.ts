@@ -5293,6 +5293,7 @@
     <message><source>Vertical rail</source><translation>Вертикальная панель</translation></message>
     <message><source>Horizontal tabs</source><translation>Горизонтальные вкладки</translation></message>
     <message><source>Chat list density</source><translation>Плотность списка чатов</translation></message>
+    <message><source>Chat background</source><translation>Задний фон чата</translation></message>
     <message><source>Standard</source><translation>Стандартная</translation></message>
     <message><source>Compact</source><translation>Компактная</translation></message>
     <message><source>Chat click</source><translation>Клик по чату</translation></message>
@@ -5323,6 +5324,31 @@
     <message><source>Cold blue</source><translation>Холодный синий</translation></message>
     <message><source>Blue mist</source><translation>Синий туман</translation></message>
     <message><source>Emerald chat</source><translation>Изумрудный чат</translation></message>
+</context>
+<context>
+    <name>NativeChatBackgroundPanel</name>
+    <message><source>JPEG, PNG, WebP - up to 8 MB. Backgrounds stay on this device.</source><translation>JPEG, PNG, WebP — до 8 МБ. Фон хранится на этом устройстве.</translation></message>
+    <message><source>Mountains</source><translation>Горы</translation></message>
+    <message><source>Sea</source><translation>Море</translation></message>
+    <message><source>Forest</source><translation>Лес</translation></message>
+    <message><source>Processing image...</source><translation>Обработка…</translation></message>
+    <message><source>Add your own image</source><translation>Добавить своё изображение</translation></message>
+    <message><source>Add your own</source><translation>Добавить своё</translation></message>
+    <message><source>Your image</source><translation>Своё изображение</translation></message>
+    <message><source>Default background</source><translation>Стандартный фон</translation></message>
+    <message><source>Choose a JPEG, PNG or WebP image.</source><translation>Выбери изображение JPEG, PNG или WebP.</translation></message>
+    <message><source>The image is too large or empty. Choose a file up to 8 MB and 24 megapixels.</source><translation>Изображение слишком большое или пустое. Выбери файл до 8 МБ и до 24 мегапикселей.</translation></message>
+    <message><source>Could not save the background. Your previous background was kept.</source><translation>Не удалось сохранить фон. Предыдущий фон оставлен.</translation></message>
+    <message><source>Could not open the image. Try another file.</source><translation>Не удалось открыть изображение. Попробуй другой файл.</translation></message>
+    <message><source>Choose a background image file</source><translation>Выбрать файл для фона</translation></message>
+    <message><source>Apply background</source><translation>Применить фон</translation></message>
+    <message><source>For all chats or only the chat currently open?</source><translation>Для всех чатов или только для чата, который сейчас открыт?</translation></message>
+    <message><source>Selected background preview</source><translation>Предпросмотр выбранного фона</translation></message>
+    <message><source>The default background will be restored.</source><translation>Будет восстановлен стандартный фон.</translation></message>
+    <message><source>Open a chat to apply a background only to that chat.</source><translation>Открой нужный чат, чтобы применить фон только к нему.</translation></message>
+    <message><source>Cancel</source><translation>Отмена</translation></message>
+    <message><source>Only this chat</source><translation>Только этот чат</translation></message>
+    <message><source>For all chats</source><translation>Все чаты</translation></message>
 </context>
     <context>
         <name>NativeHotkeysDialog</name>
