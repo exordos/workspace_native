@@ -37,13 +37,27 @@ bool heifLooksLikeHeic(const QString &fileName, const QString &contentType);
 // Content sniff (reference hasHeicFileType) over the first ISO-BMFF bytes.
 bool heifSniffFtyp(const QByteArray &header);
 
+// Cooperative cancellation hook (#680 fix round). When isCancelled is set,
+// heifDecodeRgba consults it once BEFORE entering the library (a deterministic
+// stop for jobs canceled while queued) and additionally hands it to libheif's
+// heif_decoding_options::cancel_decoding (the v6 API), which libheif calls
+// with progress_user_data at decode-stage checkpoints, so a cancel that
+// arrives while the decoder is running also stops the work inside the
+// library. The hook may be called from library background threads and must be
+// thread-safe; `user` is passed through uninterpreted.
+struct HeifCancelHook {
+    bool (*isCancelled)(void *user) = nullptr;
+    void *user = nullptr;
+};
+
 // Decode HEIC/HEIF bytes to a packed RGBA8888 preview image. Backed by the
 // system libheif (HEVC via the libde265 plugin); returns false with a
 // human-readable reason on any failure so callers fall back to the file card
 // exactly like the reference display-error path. Bytes above kHeifMaxFileBytes
 // are rejected before the library sees them, and an image above
-// kHeifMaxDecodePixels is rejected before the canvas is materialised.
+// kHeifMaxDecodePixels is rejected before the canvas is materialised. A
+// canceled decode fails with an error naming "cancelled".
 bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error,
-    qint64 maxSourcePixels = kHeifMaxDecodePixels);
+    qint64 maxSourcePixels = kHeifMaxDecodePixels, const HeifCancelHook &cancel = {});
 
 } // namespace workspace

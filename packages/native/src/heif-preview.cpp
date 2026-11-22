@@ -168,9 +168,16 @@ void ensureHeifPluginsLoaded()
 
 } // namespace
 
-bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64 maxSourcePixels)
+bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64 maxSourcePixels,
+    const HeifCancelHook &cancel)
 {
     out = QImage();
+    // Deterministic stop for jobs already canceled before the library is even
+    // entered; mid-decode cancels are caught by the libheif hook below.
+    if (cancel.isCancelled && cancel.isCancelled(cancel.user)) {
+        error = QStringLiteral("heic preview: cancelled before decode");
+        return false;
+    }
     if (bytes.isEmpty()) {
         error = QStringLiteral("heic preview: empty payload");
         return false;
@@ -210,9 +217,24 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64
         return false;
     }
     heif_image *image = nullptr;
+    heif_decoding_options *options = heif_decoding_options_alloc();
+    auto optionsGuard = std::unique_ptr<heif_decoding_options, void (*)(heif_decoding_options *)>(
+        options, [](heif_decoding_options *o) { heif_decoding_options_free(o); });
+    if (cancel.isCancelled) {
+        // libheif v6 API: cancel_decoding is called with progress_user_data at
+        // decode-stage checkpoints and may fire from library background
+        // threads; a nonzero return aborts the decode with heif_error_Canceled.
+        options->progress_user_data = const_cast<void *>(static_cast<const void *>(&cancel));
+        options->cancel_decoding = [](void *hook) -> int {
+            const auto *typed = static_cast<const HeifCancelHook *>(hook);
+            return typed && typed->isCancelled && typed->isCancelled(typed->user) ? 1 : 0;
+        };
+    }
     if (heif_error decoded = heif_decode_image(handle, &image, heif_colorspace_RGB,
-            heif_chroma_interleaved_RGBA, nullptr); decoded.code != heif_error_Ok) {
-        error = QStringLiteral("heic preview: %1").arg(QString::fromLatin1(decoded.message));
+            heif_chroma_interleaved_RGBA, options); decoded.code != heif_error_Ok) {
+        error = decoded.code == heif_error_Canceled
+            ? QStringLiteral("heic preview: cancelled during decode")
+            : QStringLiteral("heic preview: %1").arg(QString::fromLatin1(decoded.message));
         return false;
     }
     auto imageGuard = std::unique_ptr<heif_image, void (*)(const heif_image *)>(
@@ -233,7 +255,8 @@ bool heifDecodeRgba(const QByteArray &bytes, QImage &out, QString &error, qint64
     return true;
 }
 #else
-bool heifDecodeRgba(const QByteArray &, QImage &out, QString &error, qint64)
+bool heifDecodeRgba(const QByteArray &, QImage &out, QString &error, qint64,
+    const HeifCancelHook &)
 {
     // Only reachable on non-Linux builds without libheif provisioned
     // (desktop-platform-packages open item); Linux configure makes libheif

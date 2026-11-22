@@ -226,6 +226,30 @@ private slots:
         QCOMPARE(image.pixelColor(47, 31), QColor(0x46, 0x82, 0xb4));
     }
 
+    // #680 fix round: the cooperative cancel hook must actually gate the
+    // decoder. A pre-set cancel stops the decode before the library is even
+    // entered (the deterministic half of the contract); the same hook is also
+    // handed to libheif's heif_decoding_options::cancel_decoding so a cancel
+    // that arrives mid-decode can abort inside the library's checkpoints.
+    void decodeCancelHookStopsBeforeLibrary()
+    {
+        int hookCalls = 0;
+        const auto alwaysCancelled = [](void *user) {
+            ++(*static_cast<int *>(user));
+            return true;
+        };
+        QImage image;
+        QString error;
+        QCOMPARE(heifDecodeRgba(heicFixture(), image, error,
+            kHeifMaxDecodePixels, HeifCancelHook{alwaysCancelled, &hookCalls}), false);
+        QVERIFY(image.isNull());
+        QVERIFY2(error.contains(QStringLiteral("cancelled")), qPrintable(error));
+        QVERIFY(hookCalls >= 1);
+        // Control: without the hook the same fixture still decodes.
+        QVERIFY2(heifDecodeRgba(heicFixture(), image, error), qPrintable(error));
+        QVERIFY(!image.isNull());
+    }
+
     // The flipped bytes sit in the ancillary 'ispe' box, not in mdat: libheif
     // (like the reference's bundled decoder) ignores that and still finds a
     // HEIC container, so the surfaces must route on the decode verdict and the
