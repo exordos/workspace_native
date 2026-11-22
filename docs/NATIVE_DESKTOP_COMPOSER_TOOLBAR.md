@@ -40,6 +40,12 @@ keep their existing calculations.
 both locales and themes, requires every complete button to fit inside the shell
 and window before pointer input, and checks typing/deleting a multiline draft,
 collapse/expansion and window resizing. At the 700×600 minimum window size the expanded row scrolls horizontally.
+Wheel is a first-class scroll input for that row: the reference overflow container scrolls under the mouse wheel,
+so native attaches a wheel observer on the row's content plane (the same observer pattern the message list uses;
+a plain Flickable ignores wheel). `angleDelta` scales by Qt's 1/8 notch convention; the observer is enabled only
+while the actions overflow the viewport (#122: when content fits, the wheel propagates). The action grid sizes
+itself from `implicitWidth` - width must never bind back to the row's `contentWidth`, whose value derives from the
+grid itself, or hit-testing beyond the viewport falls through to the window (#672).
 Moving keyboard focus reveals the whole focused action. Its real Bold click also checks draft
 mutation, restored editor focus/caret and absence of message sends. These are
 local Linux Qt Quick fixture checks, not live-service or other-platform acceptance.
