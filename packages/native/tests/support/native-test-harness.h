@@ -133,7 +133,22 @@ inline bool flushCache(NativeCacheService &cache)
     elapsed.start();
     const auto generation = cache.lease().generation;
     cache.flush(&cache, [state](bool okay) { state->okay = okay; state->done = true; });
-    const bool completed = QTest::qWaitFor([state] { return state->done; }, 2000);
+    // Bug #694: flush is a FIFO barrier, so it completes only after the worker
+    // has drained what was queued ahead of it. On a saturated runner (CI disk
+    // throttling, co-runner CPU starvation) an in-flight SQLite commit or
+    // budget pass can outlast a fixed 2 s wait; both CI occurrences showed a
+    // healthy service with the callback simply still pending. The contract is
+    // eventual completion: keep the 2 s band as a FLUSH_SLOW telemetry probe
+    // and grant a documented 12 s total budget before declaring a failure.
+    bool completed = QTest::qWaitFor([state] { return state->done; }, 2000);
+    if (!completed)
+    {
+        qInfo() << "FLUSH_SLOW" << "elapsed" << elapsed.elapsed()
+                << "available" << cache.available() << "maintenanceBusy" << cache.maintenanceBusy();
+        completed = QTest::qWaitFor([state] { return state->done; }, 10000);
+        if (completed)
+            qInfo() << "FLUSH_SLOW_COMPLETED" << "elapsed" << elapsed.elapsed();
+    }
     if (!completed || !state->okay)
         qInfo() << "FLUSH_DIAGNOSTIC" << "completed" << completed << "done" << state->done
                 << "okay" << state->okay << "elapsed" << elapsed.elapsed()
