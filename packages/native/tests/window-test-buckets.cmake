@@ -178,6 +178,8 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     attachmentCardConfirmationExpiresAcrossUnrelatedDownloadUpdates
     callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady
     callWindowEmbedReadyEchoStaysBoundedForForeignReadyId
+    channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
+    channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
     chatHeaderCountersSingularAndHiddenForDirectChats
     corruptHeicFallsBackToFileCardAndDisplayErrorSlotWithDownload
     directChatRosterUsesSourceGeometrySearchAndVirtualRows
@@ -215,6 +217,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_10
     accountPreferencePanelsApplyAndPersist
     activationRestoresFullScreenAndF11ExitsWithoutOverwritingSavedBounds
     bottomReadAnchorRepairsServerCounter
+    channelTopicSummaryDialogFailedGatesLoadKeepsSwitchesLocked
     clearCacheKeepsAccountAndOrganizations
     composerAcceptsClipboardImagesAndFileDrops
     composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart
@@ -291,6 +294,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     channelFormExplainsLoadingAndCreateFailure
     channelHeaderOpensInfoOverSettingsAndRestoresTheLayer
     channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending
+    channelTopicSummaryDialogFailedEndpointSaveKeepsForm
     composerAiNoticeTracksItsTriggerAndOtherPickers
     diagnosticsLogViewerModalLongPayloadRemainsScrollable
     diagnosticsMemoryPanelTableScrollsHorizontallyWithoutOverflow
@@ -311,6 +315,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
     attachmentCardHitAreaAndKeyboardActivateDownload
     bubbleReplyQuickAction
     callWindowFullscreenControlDrivesTheWindow
+    channelTopicSummaryDialogSaveRequiresRealTopicChanges
     composerToolbarInsertActionsProduceExactReferenceMarkers
     diagnosticsPageRendersStatusPillStatesAndPingFeedback
     directAndChannelRecoveryRestoresTheLastViewedUnresolvedTab
@@ -336,6 +341,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     aggregateStreamUsesSourceGroupsAndTopicChoices
+    channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
     deactivatedDirectPartnerShowsBlockBadge
     directHeaderPartnerBlockOpensPeerProfile
     existingEncryptedDirectFromNewChatOpensWithoutChangingThePair
@@ -422,6 +428,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
     accountScreensOpenFromNonChatSectionsWithoutStaleState
     activityStarredAuthorAndMetaRenderAsPlainText
     callsRecentEmptyStateMatchesReferenceContract
+    channelTopicSummaryDialogEndpointSaveKeepsOtherTabDraft
     chatClickActionLatestTopicOpensTheLastMessageTopic
     failedQuoteMediaPreviewRestoresTheTextOnlyLayout
     feedPageHidesConversationAndOwnsContentWidth
@@ -533,6 +540,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_24
     activityReactionsSidebarKeepsFiveVisibleChips
     callWindowPipDefaultTracksWindowPosition
+    channelTopicSummaryDialogTabsLoadGatesAndEndpoints
     chatHeaderCounterCaptionFollowsSelectionInAccessibleTree
     clipboardFilePathsRequireConfirmationBeforeUpload
     composerPollTriggerLivesInTheExpandedToolbar
