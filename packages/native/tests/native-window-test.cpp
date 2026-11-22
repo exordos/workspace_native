@@ -24277,8 +24277,10 @@ mv -Tf "$root/.current-new" "$root/current"
         scene.openChannelInfo();
         click(scene.window, visibleItem("channelTopicSummarySettings"));
         QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
-        auto *dialog = visibleItem("channelTopicSummarySettingsDialog");
-        QVERIFY(dialog);
+        // A Dialog is a QQuickPopup (QObject), not an item in the childItems tree:
+        // the repo seam for popup roots is findChild<QObject *> (see createChatDialog).
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog && dialog->property("visible").toBool());
         QCOMPARE(dialog->property("tabs").toStringList().size(), 3);
         QVERIFY(visibleItem("channelTopicSummaryTab-topic"));
         QVERIFY(visibleItem("channelTopicSummaryTab-gates"));
