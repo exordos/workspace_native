@@ -189,49 +189,56 @@ bool ChatBackground::applyChat(const QString &chatKey, const Value &value)
 {
     if (!m_authenticated || !isValidChatKey(chatKey))
         return false;
-    m_chats.insert(chatKey, value);
-    return store();
+    auto staged = m_chats;
+    staged.insert(chatKey, value);
+    return storeStaged(m_global, staged);
 }
 
 bool ChatBackground::applyAll(const Value &value)
 {
     if (!m_authenticated)
         return false;
-    m_global = value;
-    m_chats.clear(); // reference scope "all" clears every chat override
-    return store();
+    // reference scope "all" clears every chat override - on success only.
+    return storeStaged(value, {});
 }
 
 QJsonObject ChatBackground::preferences() const
 {
-    QJsonObject chats;
-    for (const auto &entry : m_chats.asKeyValueRange()) {
+    return preferencesOf(m_global, m_chats);
+}
+
+QJsonObject ChatBackground::preferencesOf(const Value &global, const QHash<QString, Value> &chats)
+{
+    QJsonObject chatsJson;
+    for (const auto &entry : chats.asKeyValueRange()) {
         if (entry.second.kind == Kind::Default)
-            chats.insert(entry.first, QJsonValue::Null);
+            chatsJson.insert(entry.first, QJsonValue::Null);
         else
-            chats.insert(entry.first,
+            chatsJson.insert(entry.first,
                 QJsonObject{{entry.second.kind == Kind::Preset ? QStringLiteral("preset")
-                                                                : QStringLiteral("image"),
+                                                               : QStringLiteral("image"),
                     entry.second.text}});
     }
-    QJsonObject global;
-    if (m_global.kind == Kind::Preset)
-        global.insert(QStringLiteral("preset"), m_global.text);
-    else if (m_global.kind == Kind::Image)
-        global.insert(QStringLiteral("image"), m_global.text);
+    QJsonObject globalJson;
+    if (global.kind == Kind::Preset)
+        globalJson.insert(QStringLiteral("preset"), global.text);
+    else if (global.kind == Kind::Image)
+        globalJson.insert(QStringLiteral("image"), global.text);
     QJsonObject result;
     result.insert(QStringLiteral("global"),
-        m_global.kind == Kind::Default ? QJsonValue::Null : QJsonValue(global));
-    result.insert(QStringLiteral("chats"), chats);
+        global.kind == Kind::Default ? QJsonValue::Null : QJsonValue(globalJson));
+    result.insert(QStringLiteral("chats"), chatsJson);
     return result;
 }
 
-bool ChatBackground::store()
+bool ChatBackground::storeStaged(const Value &global, const QHash<QString, Value> &chats)
 {
     const auto raw = QString::fromUtf8(
-        QJsonDocument(preferences()).toJson(QJsonDocument::Compact));
+        QJsonDocument(preferencesOf(global, chats)).toJson(QJsonDocument::Compact));
     // Reference saveChatBackgroundPreferences: an over-cap payload is a
     // storage error and the previous stored value stays authoritative.
+    // Bug #677: live values are swapped only after a successful persist, so a
+    // rejected apply leaves the previous live configuration untouched too.
     if (raw.size() > kMaxRawLength || !m_settings) {
         m_error = QStringLiteral("storage");
         emit changed();
@@ -243,6 +250,8 @@ bool ChatBackground::store()
         emit changed();
         return false;
     }
+    m_global = global;
+    m_chats = chats;
     if (!m_error.isEmpty())
         m_error.clear();
     emit changed();
