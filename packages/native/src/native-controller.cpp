@@ -43,6 +43,9 @@
 #include <QJsonDocument>
 #include <QGuiApplication>
 #include <QElapsedTimer>
+#include <QtConcurrentRun>
+#include <QFutureWatcher>
+#include "heif-preview.h"
 #include <QScopeGuard>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -10906,9 +10909,24 @@ QVariantList NativeController::uploadEntries() const
     for (const auto &entry : m_uploadEntries) {
         const auto &task = entry.task;
         if (entry.owner != owner || task.conversation != conversationKey() || task.editSession != session) continue;
+        // #680: decide the tile's renderable preview per row. HEIC originals
+        // only surface once the bounded decoder staged a PNG; ordinary images
+        // render from their own path directly.
+        const auto previewName = task.uploadName.isEmpty() ? QFileInfo(task.path).fileName() : task.uploadName;
+        const bool previewIsImage = QMimeDatabase().mimeTypeForFile(previewName, QMimeDatabase::MatchExtension).name().startsWith("image/");
+        QString previewValue;
+        if (m_uploadPreviews.contains(task.intent))
+            previewValue = QUrl::fromLocalFile(m_uploadPreviews.value(task.intent)).toString();
+        else if (previewIsImage && !workspace::heifLooksLikeHeic(previewName, QString{}))
+            previewValue = QUrl::fromLocalFile(task.path).toString();
         rows.append(QVariantMap{{"id", QString::number(task.intent)},
             {"name", task.uploadName.isEmpty() ? QFileInfo(task.path).fileName() : task.uploadName},
             {"path", QUrl::fromLocalFile(task.path)}, {"image", QMimeDatabase().mimeTypeForFile(task.uploadName.isEmpty() ? task.path : task.uploadName, QMimeDatabase::MatchExtension).name().startsWith("image/")}, {"size", entry.size}, {"status", entry.status},
+            // #680: the tile's renderable source: staged PNG for HEIC (empty
+            // until the decode lands, and forever empty when decoding failed -
+            // the tile then falls back to the file icon), the original path for
+            // every other image so QML never guesses the format itself.
+            {"preview", previewValue},
             {"markdown", entry.markdown},
             {"error", entry.error}, {"retryable", entry.retryable}, {"sent", entry.sent}, {"total", entry.total},
             {"alias", imageAlias(entry)}, {"inText", !imageAlias(entry).isEmpty() && (draft().contains(entry.markdown)
@@ -10961,6 +10979,55 @@ void NativeController::removeUploadFromText(const QString &id)
     if (guard && changedInactive) emit stateChanged();
 }
 
+void NativeController::scheduleUploadPreview(quint64 intent, const QString &path, quint64 generation, quint64 epoch)
+{
+    if (m_uploadPreviewJobs.contains(intent) || m_uploadPreviews.contains(intent)) return;
+    if (!m_uploadPreviewDir) m_uploadPreviewDir = std::make_unique<QTemporaryDir>();
+    if (!m_uploadPreviewDir->isValid()) return;
+    const auto staged = m_uploadPreviewDir->filePath(QStringLiteral("upload-%1-heif.png").arg(intent));
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    m_uploadPreviewJobs.insert(intent, watcher);
+    const QPointer<NativeController> guard(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, guard, intent, staged, generation, epoch, watcher] {
+        m_uploadPreviewJobs.remove(intent);
+        const QImage image = watcher->result();
+        watcher->deleteLater();
+        // Fences: session generation, file epoch, and the row still existing.
+        // A late completion after remove/sign-out must never resurrect a
+        // preview the user already dropped.
+        if (!guard || m_api->generation() != generation || m_fileEpoch != epoch) return;
+        const bool alive = std::any_of(m_uploadEntries.cbegin(), m_uploadEntries.cend(),
+            [&](const UploadEntry &row) { return row.task.intent == intent; });
+        if (!alive || image.isNull()) return;
+        if (image.save(staged, "PNG")) {
+            m_uploadPreviews.insert(intent, staged);
+            emit stateChanged(); // uploadEntries NOTIFY: the row now carries the preview
+        }
+    });
+    watcher->setFuture(QtConcurrent::run([path] {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly) || file.size() > workspace::kHeifMaxFileBytes) return QImage{};
+        QImage decoded;
+        QString error;
+        if (!workspace::heifDecodeRgba(file.readAll(), decoded, error)) return QImage{};
+        if (decoded.width() > 160 || decoded.height() > 160)
+            return decoded.scaled(160, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        return decoded;
+    }));
+}
+
+void NativeController::dropUploadPreview(quint64 intent)
+{
+    if (auto *watcher = m_uploadPreviewJobs.take(intent)) {
+        watcher->cancel();
+        // The finished fence re-checks row existence, so a completion racing
+        // the teardown cannot resurrect the dropped preview.
+        watcher->deleteLater();
+    }
+    const auto path = m_uploadPreviews.take(intent);
+    if (!path.isEmpty()) QFile::remove(path);
+}
+
 void NativeController::removeUploadEntry(quint64 intent, bool notify)
 {
     auto it = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &row) {
@@ -10970,6 +11037,7 @@ void NativeController::removeUploadEntry(quint64 intent, bool notify)
     const auto entry = *it;
     const QPointer<NativeController> guard(this);
     m_uploadEntries.erase(it);
+    dropUploadPreview(intent); // #680: the preview dies with its row.
     if (entry.status != "ready" && entry.status != "error") {
         const auto operation = m_fileOperations.take(intent);
         const auto queued = m_uploadQueue.removeIf([&](const UploadTask &task) { return task.intent == intent; });
@@ -11142,6 +11210,12 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
                 row->alias.clear();
             if (result.checksumVerified)
                 row->fileUuid = result.metadata.uuid;
+            // #680: QML Image cannot read ISO-BMFF on the bundled runtime, so
+            // a ready HEIC gets a staged decoded PNG through the same bounded
+            // decoder the media viewer uses; the tile falls back to the file
+            // icon when the preview never lands (reference display-error).
+            if (result.metadata.urnKind() == FileKind::Image && result.metadata.heicAttachment())
+                scheduleUploadPreview(task.intent, task.path, m_api->generation(), m_fileEpoch);
         }
         // Ready attachments remain independent of the visible draft. Their
         // immutable Markdown enters the outgoing body only when the composer
