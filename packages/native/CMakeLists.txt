@@ -528,7 +528,8 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_LIST_DIR}/tests/window-buckets-sync.py
             $<TARGET_FILE:native-window-test>
             ${CMAKE_CURRENT_LIST_DIR}/tests/window-test-buckets.cmake)
-    set_tests_properties(native-window-buckets-sync PROPERTIES TIMEOUT 30)
+    set_tests_properties(native-window-buckets-sync PROPERTIES TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # Test-only real TLS/source-JS grant workflow; no runtime/download dependency.
     find_program(WORKSPACE_NATIVE_E2EE_NODE_EXECUTABLE node REQUIRED)
     find_program(WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE openssl REQUIRED)
@@ -815,6 +816,12 @@ if(BUILD_TESTING)
         # The clipboard preload checks invoke selected slots in the transfers executable.
         add_dependencies(native-headless-other-tests native-controller-transfers-test
             native-clipboard-slow-read native-clipboard-path-race)
+        # native-window-buckets-sync (headless label) verifies the checked-in
+        # bucket list against the compiled QtTest function list, which only
+        # needs `native-window-test -functions` — a display-free listing. The
+        # window binary is normally excluded from headless builds; without this
+        # dependency the sync guard dies on a missing executable in CI.
+        add_dependencies(native-headless-other-tests native-window-test)
     endif()
 endif()
 
