@@ -775,7 +775,10 @@ if(BUILD_TESTING)
         # needs `native-window-test -functions` — a display-free listing. The
         # window binary is normally excluded from headless builds; without this
         # dependency the sync guard dies on a missing executable in CI.
-        add_dependencies(native-headless-other-tests native-window-test)
+        # The e2ee-ui guard runs the same display-free `-functions` listing on
+        # native-e2ee-ui-test, so that binary joins the same aggregate (#659 CI).
+        add_dependencies(native-headless-other-tests native-window-test
+            native-e2ee-ui-test)
     endif()
 endif()
 
