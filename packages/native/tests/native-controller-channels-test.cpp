@@ -1247,8 +1247,10 @@ private slots:
             const auto base = scene.fixture.server.handler;
             int invokes = 0;
             scene.fixture.server.handler = [&](const Request &request) -> Response {
-                if (request.method == "POST" && request.target.path().endsWith("/actions/set_summary_prompt/invoke"))
+                if (request.method == "POST" && request.target.path().endsWith("/actions/set_summary_prompt/invoke")) {
                     ++invokes;
+                    return Response{scene.topicRow(topicId)}; // accepted row echo like the backend
+                }
                 return base(request);
             };
             QSignalSpy finished(&controller, &NativeController::channelTopicActionFinished);
