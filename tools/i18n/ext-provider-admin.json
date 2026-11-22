@@ -1,0 +1,350 @@
+{
+ "externalAccounts.manageIntegrations": {
+  "en": "Integration settings",
+  "ru": "Настройки интеграций"
+ },
+ "externalAccounts.manageIntegrationsHint": {
+  "en": "Organization-wide external service settings",
+  "ru": "Общие настройки внешних сервисов организации"
+ },
+ "manageExternalProvider.ca.certificates": {
+  "en": "Certificates",
+  "ru": "Сертификатов"
+ },
+ "manageExternalProvider.ca.generation": {
+  "en": "Generation",
+  "ru": "Поколение"
+ },
+ "manageExternalProvider.ca.notInstalled": {
+  "en": "No custom certificate bundle is installed.",
+  "ru": "Собственный набор сертификатов не установлен."
+ },
+ "manageExternalProvider.ca.saveBlocked": {
+  "en": "Availability and limits cannot be changed while a custom certificate bundle is installed. The backend cannot safely preserve it without receiving the certificates again.",
+  "ru": "Пока установлен собственный набор сертификатов, изменение доступности и лимитов недоступно. Серверная часть не поддерживает безопасное сохранение этих полей без повторной передачи сертификатов."
+ },
+ "manageExternalProvider.ca.sha256": {
+  "en": "SHA-256 fingerprint",
+  "ru": "Отпечаток SHA-256"
+ },
+ "manageExternalProvider.ca.title": {
+  "en": "Custom certificate authority",
+  "ru": "Собственный центр сертификации"
+ },
+ "manageExternalProvider.common.notAvailable": {
+  "en": "Not available",
+  "ru": "Нет данных"
+ },
+ "manageExternalProvider.conflict.keepDraft": {
+  "en": "Keep my draft",
+  "ru": "Оставить мои правки"
+ },
+ "manageExternalProvider.conflict.loadCurrent": {
+  "en": "Load current settings",
+  "ru": "Загрузить актуальные"
+ },
+ "manageExternalProvider.conflict.message": {
+  "en": "Another administrator changed these settings. Your draft is preserved in the form.",
+  "ru": "Настройки уже изменил другой администратор. Ваши правки сохранены в форме."
+ },
+ "manageExternalProvider.danger.actionError": {
+  "en": "Could not complete the action. The form settings were not changed.",
+  "ru": "Не удалось выполнить действие. Настройки формы не изменены."
+ },
+ "manageExternalProvider.danger.confirmDescription": {
+  "en": "Zulip connections will be suspended for every user in the organization.",
+  "ru": "Подключение Zulip будет приостановлено для всех пользователей организации."
+ },
+ "manageExternalProvider.danger.confirmSuspend": {
+  "en": "Suspend for everyone",
+  "ru": "Приостановить для всех"
+ },
+ "manageExternalProvider.danger.confirmTitle": {
+  "en": "Suspend the Zulip integration?",
+  "ru": "Приостановить интеграцию Zulip?"
+ },
+ "manageExternalProvider.danger.description": {
+  "en": "These actions affect the Zulip integration for every user in the organization.",
+  "ru": "Эти действия влияют на интеграцию Zulip для всех пользователей организации."
+ },
+ "manageExternalProvider.danger.resume": {
+  "en": "Resume integration",
+  "ru": "Возобновить интеграцию"
+ },
+ "manageExternalProvider.danger.resuming": {
+  "en": "Resuming…",
+  "ru": "Возобновляем…"
+ },
+ "manageExternalProvider.danger.suspend": {
+  "en": "Suspend integration",
+  "ru": "Приостановить интеграцию"
+ },
+ "manageExternalProvider.danger.suspending": {
+  "en": "Suspending…",
+  "ru": "Приостанавливаем…"
+ },
+ "manageExternalProvider.danger.title": {
+  "en": "Emergency controls",
+  "ru": "Аварийное управление"
+ },
+ "manageExternalProvider.description": {
+  "en": "Organization-wide Zulip settings for all users.",
+  "ru": "Общие настройки Zulip для всех пользователей организации."
+ },
+ "manageExternalProvider.emergency.active": {
+  "en": "Not active",
+  "ru": "Не действует"
+ },
+ "manageExternalProvider.emergency.suspended": {
+  "en": "Integration suspended",
+  "ru": "Интеграция приостановлена"
+ },
+ "manageExternalProvider.enabled.description": {
+  "en": "Allows users in this organization to connect Zulip accounts.",
+  "ru": "Разрешает пользователям подключать аккаунты Zulip в этой организации."
+ },
+ "manageExternalProvider.enabled.label": {
+  "en": "Allow the Zulip integration",
+  "ru": "Разрешить интеграцию Zulip"
+ },
+ "manageExternalProvider.health.accounts": {
+  "en": "Accounts",
+  "ru": "Аккаунты"
+ },
+ "manageExternalProvider.health.bridges": {
+  "en": "Bridge instances",
+  "ru": "Экземпляры моста"
+ },
+ "manageExternalProvider.health.chats": {
+  "en": "Chats",
+  "ru": "Чаты"
+ },
+ "manageExternalProvider.health.healthy": {
+  "en": "Operational",
+  "ru": "Работает"
+ },
+ "manageExternalProvider.health.loadError": {
+  "en": "Could not load the technical status.",
+  "ru": "Не удалось загрузить техническое состояние."
+ },
+ "manageExternalProvider.health.loading": {
+  "en": "Loading technical status…",
+  "ru": "Загружаем техническое состояние…"
+ },
+ "manageExternalProvider.health.metrics": {
+  "en": "Metrics",
+  "ru": "Метрики"
+ },
+ "manageExternalProvider.health.noData": {
+  "en": "No data",
+  "ru": "Нет данных"
+ },
+ "manageExternalProvider.health.operations": {
+  "en": "Operations",
+  "ru": "Операции"
+ },
+ "manageExternalProvider.health.refreshError": {
+  "en": "Could not refresh the technical status.",
+  "ru": "Не удалось обновить техническое состояние."
+ },
+ "manageExternalProvider.health.status.account.auth_required": {
+  "en": "Credentials required",
+  "ru": "Требуют обновления доступа"
+ },
+ "manageExternalProvider.health.status.account.backfill": {
+  "en": "Loading history",
+  "ru": "Загружают историю"
+ },
+ "manageExternalProvider.health.status.account.connecting": {
+  "en": "Connecting",
+  "ru": "Подключаются"
+ },
+ "manageExternalProvider.health.status.account.degraded": {
+  "en": "Degraded",
+  "ru": "Работают с ошибками"
+ },
+ "manageExternalProvider.health.status.account.disconnected": {
+  "en": "Disconnected",
+  "ru": "Отключены"
+ },
+ "manageExternalProvider.health.status.account.live": {
+  "en": "Operational",
+  "ru": "Работают"
+ },
+ "manageExternalProvider.health.status.account.suspended": {
+  "en": "Suspended",
+  "ru": "Приостановлены"
+ },
+ "manageExternalProvider.health.status.bridge.active": {
+  "en": "Active",
+  "ru": "Активны"
+ },
+ "manageExternalProvider.health.status.bridge.degraded": {
+  "en": "Degraded",
+  "ru": "Работают с ошибками"
+ },
+ "manageExternalProvider.health.status.bridge.enrolling": {
+  "en": "Enrolling",
+  "ru": "Регистрируются"
+ },
+ "manageExternalProvider.health.status.bridge.incompatible": {
+  "en": "Incompatible",
+  "ru": "Несовместимы"
+ },
+ "manageExternalProvider.health.status.bridge.revoked": {
+  "en": "Revoked",
+  "ru": "Отозваны"
+ },
+ "manageExternalProvider.health.status.bridge.suspended": {
+  "en": "Suspended",
+  "ru": "Приостановлены"
+ },
+ "manageExternalProvider.health.status.chat.available": {
+  "en": "Available to connect",
+  "ru": "Доступны для подключения"
+ },
+ "manageExternalProvider.health.status.chat.live": {
+  "en": "Connected",
+  "ru": "Подключены"
+ },
+ "manageExternalProvider.health.status.metric.queue_depth": {
+  "en": "Queued and running operations",
+  "ru": "Операции в очереди и работе"
+ },
+ "manageExternalProvider.health.status.metric.selected_chats": {
+  "en": "Selected chats",
+  "ru": "Выбрано чатов"
+ },
+ "manageExternalProvider.health.status.metric.synchronized_messages": {
+  "en": "Synchronized messages",
+  "ru": "Синхронизировано сообщений"
+ },
+ "manageExternalProvider.health.status.metric.synchronized_users": {
+  "en": "Synchronized users",
+  "ru": "Синхронизировано пользователей"
+ },
+ "manageExternalProvider.health.status.operation.discarded": {
+  "en": "Discarded",
+  "ru": "Отброшены"
+ },
+ "manageExternalProvider.health.status.operation.failed": {
+  "en": "Failed",
+  "ru": "Завершились с ошибкой"
+ },
+ "manageExternalProvider.health.status.operation.manual_reconciliation_required": {
+  "en": "Manual reconciliation required",
+  "ru": "Требуют ручной проверки"
+ },
+ "manageExternalProvider.health.status.operation.queued": {
+  "en": "Queued",
+  "ru": "В очереди"
+ },
+ "manageExternalProvider.health.status.operation.running": {
+  "en": "Running",
+  "ru": "Выполняются"
+ },
+ "manageExternalProvider.health.status.operation.succeeded": {
+  "en": "Succeeded",
+  "ru": "Завершены"
+ },
+ "manageExternalProvider.health.title": {
+  "en": "Technical status",
+  "ru": "Техническое состояние"
+ },
+ "manageExternalProvider.health.unavailable": {
+  "en": "Unavailable",
+  "ru": "Недоступен"
+ },
+ "manageExternalProvider.limits.description": {
+  "en": "Limits apply to new accounts, selected chats, and transferred files.",
+  "ru": "Ограничения применяются к новым аккаунтам, чатам и передаваемым файлам."
+ },
+ "manageExternalProvider.limits.maxAccounts": {
+  "en": "Accounts per user",
+  "ru": "Аккаунтов на пользователя"
+ },
+ "manageExternalProvider.limits.maxFileSize": {
+  "en": "Maximum file size",
+  "ru": "Максимальный размер файла"
+ },
+ "manageExternalProvider.limits.maxSelectedChats": {
+  "en": "Chats per external account",
+  "ru": "Чатов на внешний аккаунт"
+ },
+ "manageExternalProvider.limits.reductionHint": {
+  "en": "Lowering these limits does not remove existing accounts or selected chats.",
+  "ru": "Уменьшение лимитов не удаляет уже подключённые аккаунты и выбранные чаты."
+ },
+ "manageExternalProvider.limits.title": {
+  "en": "Availability and limits",
+  "ru": "Доступность и лимиты"
+ },
+ "manageExternalProvider.loadingPolicy": {
+  "en": "Loading integration settings…",
+  "ru": "Загружаем настройки интеграции…"
+ },
+ "manageExternalProvider.overview.emergency": {
+  "en": "Emergency suspension",
+  "ru": "Аварийная остановка"
+ },
+ "manageExternalProvider.overview.health": {
+  "en": "Technical status",
+  "ru": "Техническое состояние"
+ },
+ "manageExternalProvider.overview.policy": {
+  "en": "Availability",
+  "ru": "Доступность"
+ },
+ "manageExternalProvider.overview.title": {
+  "en": "Overview",
+  "ru": "Общее состояние"
+ },
+ "manageExternalProvider.policy.disabled": {
+  "en": "Integration disabled",
+  "ru": "Интеграция запрещена"
+ },
+ "manageExternalProvider.policy.enabled": {
+  "en": "Integration allowed",
+  "ru": "Интеграция разрешена"
+ },
+ "manageExternalProvider.policyLoadError": {
+  "en": "Could not load the integration settings.",
+  "ru": "Не удалось загрузить настройки интеграции."
+ },
+ "manageExternalProvider.policyRefreshError": {
+  "en": "Could not refresh the integration settings.",
+  "ru": "Не удалось обновить настройки интеграции."
+ },
+ "manageExternalProvider.provider": {
+  "en": "Provider",
+  "ru": "Провайдер"
+ },
+ "manageExternalProvider.refresh": {
+  "en": "Refresh",
+  "ru": "Обновить"
+ },
+ "manageExternalProvider.saveError": {
+  "en": "Could not save the integration settings.",
+  "ru": "Не удалось сохранить настройки интеграции."
+ },
+ "manageExternalProvider.saving": {
+  "en": "Saving…",
+  "ru": "Сохраняем…"
+ },
+ "manageExternalProvider.title": {
+  "en": "External integration settings",
+  "ru": "Настройки внешних интеграций"
+ },
+ "manageExternalProvider.units.mib": {
+  "en": "MiB",
+  "ru": "МиБ"
+ },
+ "manageExternalProvider.updatedAt": {
+  "en": "Updated: {{value}}",
+  "ru": "Обновлено: {{value}}"
+ },
+ "manageExternalProvider.validation.range": {
+  "en": "Enter a value from 0 to {{maximum}}.",
+  "ru": "Укажите значение от 0 до {{maximum}}."
+ }
+}
