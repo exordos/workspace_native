@@ -22043,14 +22043,26 @@ mv -Tf "$root/.current-new" "$root/current"
             QTest::qWait(50);
             const auto frame = window->grabWindow(); QVERIFY(!frame.isNull());
             QVERIFY(insideWindow(shell));
+            // #661: the toolbar row now carries the attach/emoji/poll triggers
+            // too; past the viewport the reference ScrollArea scrolls instead
+            // of shrinking, so an action is legal either inside the shell or
+            // inside the row's scrollable extent (clip:true hides the tail).
+            const auto shellRect = sceneRect(shell);
+            const auto rowRect = sceneRect(toolbar);
+            const auto scrollRight = rowRect.left()
+                + toolbar->property("contentWidth").toReal();
             for (const auto &name : actions) {
                 auto *action = visibleItem(content, name); QVERIFY2(action, qPrintable(name));
                 const auto rect = sceneRect(action);
                 const auto details = QString("%1: action (%2,%3 %4x%5), shell (%6,%7 %8x%9), window %10x%11")
                     .arg(name).arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height())
-                    .arg(sceneRect(shell).x()).arg(sceneRect(shell).y())
-                    .arg(shell->width()).arg(shell->height()).arg(window->width()).arg(window->height());
-                QVERIFY2(insideWindow(action) && sceneRect(shell).contains(rect), qPrintable(details));
+                    .arg(shellRect.x()).arg(shellRect.y())
+                    .arg(shellRect.width()).arg(shellRect.height()).arg(window->width()).arg(window->height());
+                const bool fits = shellRect.contains(rect);
+                const bool scrolls = rect.left() >= rowRect.left() - 0.5
+                    && rect.right() <= scrollRight + 1.0
+                    && rect.top() >= shellRect.top() && rect.bottom() <= shellRect.bottom();
+                QVERIFY2((fits && insideWindow(action)) || scrolls, qPrintable(details));
                 QCOMPARE(action->size(), QSizeF(32, 32));
             }
             QVERIFY(sceneRect(editorViewport).bottom() <= sceneRect(toolbar).top());
@@ -28354,8 +28366,7 @@ private:
         QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == topicId);
         QTRY_VERIFY(!controller.busy());
         // The composer poll trigger is present on an open poll-capable channel.
-        auto *pollButton = visibleItem(window->contentItem(), "pollButton"); QVERIFY(pollButton);
-        QVERIFY(pollButton->isEnabled());
+        auto *pollButton = expandedComposerPollTrigger(window);
         click(window, pollButton);
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
@@ -28388,7 +28399,7 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         // Cancel closes the dialog and clears the draft for the next open.
         click(window, window->findChild<QQuickItem *>("pollCancelButton"));
         QTRY_VERIFY(!dialog->property("visible").toBool());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         QTRY_VERIFY(dialog->property("visible").toBool());
         QCOMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         QCOMPARE(dialog->findChildren<QObject *>("pollQuestionField").at(0)->property("text").toString(),
@@ -28420,7 +28431,7 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -28505,7 +28516,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
         click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
         QTRY_VERIFY(controller.messages().size() >= 2);
-        QVERIFY(visibleItem(window->contentItem(), "pollButton"));
+        QVERIFY(expandedComposerPollTrigger(window));
         // Editing is restricted to own messages; the Planning topic carries
         // one (index 3 of the source scene).
         QVERIFY(controller.beginEditMessage(QStringLiteral("81000000-0000-4000-8000-000000000004")));
@@ -28549,7 +28560,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -28640,9 +28651,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
             controller.selectTopic(topicId);
             QTRY_COMPARE(controller.selectedTopic(), topicId);
             QTRY_VERIFY(!controller.busy());
-            QQuickItem *pollButton = nullptr;
-            QTRY_VERIFY((pollButton = visibleItem(window->contentItem(), "pollButton"))
-                        && pollButton->isEnabled() && pollButton->width() > 0 && pollButton->height() > 0);
+            auto *pollButton = expandedComposerPollTrigger(window);
             clickReadyItem(window, pollButton);
         };
         loginAndOpen();
@@ -28758,7 +28767,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -28854,7 +28863,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -28937,7 +28946,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -29007,7 +29016,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -29088,7 +29097,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.topics().size(), 1);
         click(window, visibleItem(window->contentItem(), "topic-" + topicId));
         QTRY_VERIFY(!controller.busy());
-        click(window, visibleItem(window->contentItem(), "pollButton"));
+        click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
         dialog->findChildren<QObject *>("pollQuestionField").at(0)->setProperty("text", "When?");
@@ -42541,6 +42550,94 @@ private slots:
         QVERIFY(streamMenu);
         QTRY_VERIFY(streamMenu->property("opened").toBool());
         QCOMPARE(streamMenu->property("width").toReal(), 280.0);
+    }
+
+    // #661: the poll trigger sits in the expanded toolbar
+    // (docs/NATIVE_DESKTOP_COMPOSER_LAYOUT.md); poll cases open it first.
+    QQuickItem *expandedComposerPollTrigger(QQuickWindow *window)
+    {
+        if (auto *expand = visibleItem(window->contentItem(), "composerToolbarExpand"))
+            click(window, expand);
+        QQuickItem *pollButton = nullptr;
+        const bool ready = QTest::qWaitFor([&] {
+            pollButton = visibleItem(window->contentItem(), "pollButton");
+            return pollButton && pollButton->isEnabled()
+                && pollButton->width() > 0 && pollButton->height() > 0;
+        }, 5000);
+        if (!ready)
+            QTest::qFail("poll trigger did not appear in the expanded toolbar", __FILE__, __LINE__);
+        return pollButton;
+    }
+
+    // Issue #661: reference composer action placement
+    // (docs/NATIVE_DESKTOP_COMPOSER_LAYOUT.md). The reference compact composer
+    // keeps only attach + emoji in the field (message-composer.ui.tsx:1949-1960)
+    // and the poll trigger belongs to the expanded toolbar right after the
+    // emoji trigger (message-composer-toolbar.ui.tsx:145-151).
+    void composerPollTriggerLivesInTheExpandedToolbar()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowChannelFixture fixture;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("composer-layout.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Composer layout window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        QTRY_VERIFY(controller.channelMembersVerified());
+        preferences.setOwner(controller.ownerKey());
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == topicId);
+        QTRY_VERIFY(!controller.busy());
+        auto *content = window->contentItem();
+        const auto rectOf = [&](const QString &name) {
+            auto *target = visibleItem(content, name);
+            if (!target) return QRectF();
+            return QRectF(target->mapToItem(window->contentItem(), QPointF()), QSizeF(target->width(), target->height()));
+        };
+        // Collapsed (the reference default shape): the field keeps attach and
+        // emoji, and no poll trigger exists anywhere in the window.
+        QVERIFY(!preferences.composerToolbarExpanded());
+        QTRY_VERIFY(visibleItem(content, "attachButton"));
+        QTRY_VERIFY(visibleItem(content, "composerEmojiButton"));
+        QVERIFY(!visibleItem(content, "pollButton"));
+        // Expanded: the triggers render inside the toolbar row below the
+        // input, strictly ordered attach < emoji < poll (#215 toolbar order).
+        click(window, visibleItem(content, "composerToolbarExpand"));
+        QTRY_VERIFY(visibleItem(content, "composerToolbarRow"));
+        QTRY_VERIFY(visibleItem(content, "pollButton"));
+        QTest::qWait(50); // wait for the rendered scene, not just visibility
+        const auto toolbarRect = rectOf("composerToolbarRow");
+        const auto attachRect = rectOf("attachButton");
+        const auto emojiRect = rectOf("composerEmojiButton");
+        const auto pollRect = rectOf("pollButton");
+        QVERIFY2(toolbarRect.contains(attachRect), "attach trigger must sit inside the toolbar row");
+        QVERIFY2(toolbarRect.contains(emojiRect), "emoji trigger must sit inside the toolbar row");
+        QVERIFY2(toolbarRect.contains(pollRect), "poll trigger must sit inside the toolbar row");
+        QVERIFY(attachRect.left() < emojiRect.left());
+        QVERIFY(emojiRect.left() < pollRect.left());
+        QCOMPARE(pollRect.size(), QSizeF(32, 32));
+        // The create-poll dialog still opens from the toolbar trigger.
+        click(window, visibleItem(content, "pollButton"));
+        auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        QMetaObject::invokeMethod(dialog, "close");
+        // Collapsing hides the poll trigger again (reference: the collapsed
+        // toolbar renders nothing) while the field regains attach + emoji.
+        click(window, visibleItem(content, "composerToolbarCollapse"));
+        QTRY_VERIFY(!visibleItem(content, "pollButton"));
+        QTRY_VERIFY(visibleItem(content, "attachButton"));
+        QTRY_VERIFY(visibleItem(content, "composerEmojiButton"));
     }
 };
 
