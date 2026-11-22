@@ -1608,6 +1608,10 @@ private:
         bool retryable = true;
         bool serverProtected = false;
         quint64 generation = 0, epoch = 0;
+        // #680 review: the echoed upload metadata's HEIC verdict (-1 unknown
+        // until the echo, 0 no, 1 yes). Preview selection and decode
+        // scheduling must consult this one source, never the filename alone.
+        int heicEcho = -1;
         QString alias;
     };
     struct FileOperation {

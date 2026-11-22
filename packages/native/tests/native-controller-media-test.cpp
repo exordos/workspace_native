@@ -3,6 +3,7 @@
 #include "support/native-test-harness.h"
 #include "support/controller-media-fixtures.h"
 
+#include <QBuffer>
 #include <QImage>
 #include <QScopeGuard>
 #include <QSemaphore>
@@ -1068,6 +1069,68 @@ private slots:
         QVERIFY2(!image.isNull(), qPrintable(previewUrl.toLocalFile()));
         QCOMPARE(image.size(), QSize(48, 32));
         QCOMPARE(image.pixelColor(24, 16), QColor(0x46, 0x82, 0xb4));
+    }
+
+    // exordy round-2 finding (#680): preview selection classified by the file
+    // NAME while decode scheduling consulted the echoed upload metadata. A PNG
+    // renamed to photo.heic got neither its own preview (the name said HEIC)
+    // nor a staged decode (the echo said image/png). Both decisions must
+    // consult the same stored upload metadata.
+    void composerReadyPngRenamedToHeicKeepsOriginalPreview()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        QImage stamp(QSize(8, 4), QImage::Format_ARGB32);
+        stamp.fill(QColor(0x12, 0x34, 0x56));
+        QByteArray png;
+        {
+            QBuffer buffer(&png);
+            QVERIFY(buffer.open(QIODevice::WriteOnly));
+            QVERIFY(stamp.save(&buffer, "PNG"));
+        }
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(png, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.method == "POST") {
+                // The backend classifies the stored bytes, not the filename:
+                // echo the part's sniffed content type back.
+                QByteArray contentType("application/octet-stream");
+                const auto lowered = request.rawBody.toLower();
+                const auto namePos = lowered.indexOf("filename=\"photo.heic\"");
+                if (namePos >= 0) {
+                    const auto start = lowered.indexOf("content-type: ", namePos);
+                    if (start >= 0) contentType = request.rawBody.mid(start + 14, request.rawBody.indexOf('\n', start) - start - 14);
+                }
+                return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                    {"content_type", QString::fromLatin1(contentType).trimmed()}, {"size_bytes", png.size()}, {"hash", sha}}, 201};
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/png"}, {"size_bytes", png.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto source = directory.filePath("photo.heic");
+        QFile input(source);
+        QVERIFY(input.open(QIODevice::WriteOnly));
+        input.write(png);
+        input.close();
+        const int baseline = NativeController::uploadPreviewDecodeStartsForTest();
+        fixture.controller.attachFiles({QUrl::fromLocalFile(source)});
+        QVariantMap ready;
+        const auto readyRow = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() == "ready") { ready = row; return true; }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(readyRow(), 5000);
+        // The echo says PNG: the original IS renderable, so the row must
+        // expose it directly instead of waiting for a decode nobody scheduled.
+        QCOMPARE(QUrl(ready.value("preview").toString()).toLocalFile(), source);
+        // And no HEIC decode was ever scheduled for this row.
+        QCOMPARE(NativeController::uploadPreviewDecodeStartsForTest(), baseline);
     }
 
     // A corrupt container still uploads (the reference skips local probing for

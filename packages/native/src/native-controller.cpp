@@ -10914,10 +10914,17 @@ QVariantList NativeController::uploadEntries() const
         // render from their own path directly.
         const auto previewName = task.uploadName.isEmpty() ? QFileInfo(task.path).fileName() : task.uploadName;
         const bool previewIsImage = QMimeDatabase().mimeTypeForFile(previewName, QMimeDatabase::MatchExtension).name().startsWith("image/");
+        // #680 review: once the echo has arrived, its stored verdict decides -
+        // a PNG renamed photo.heic is renderable directly and no decode will
+        // ever be scheduled for it. The name regex stays only as the
+        // pre-echo provisional classification.
+        const bool treatedAsHeic = entry.heicEcho >= 0
+            ? entry.heicEcho == 1
+            : workspace::heifLooksLikeHeic(previewName, QString{});
         QString previewValue;
         if (m_uploadPreviews.contains(task.intent))
             previewValue = QUrl::fromLocalFile(m_uploadPreviews.value(task.intent)).toString();
-        else if (previewIsImage && !workspace::heifLooksLikeHeic(previewName, QString{}))
+        else if (previewIsImage && !treatedAsHeic)
             previewValue = QUrl::fromLocalFile(task.path).toString();
         rows.append(QVariantMap{{"id", QString::number(task.intent)},
             {"name", task.uploadName.isEmpty() ? QFileInfo(task.path).fileName() : task.uploadName},
@@ -11043,13 +11050,20 @@ void NativeController::scheduleUploadPreview(quint64 intent, const QString &path
         if (cancel->load(std::memory_order_relaxed)) return QImage{};
         g_uploadPreviewDecodeStarts.fetch_add(1, std::memory_order_relaxed);
         QFile file(path);
-        if (!file.open(QIODevice::ReadOnly) || file.size() > workspace::kHeifMaxFileBytes) return QImage{};
+        if (!file.open(QIODevice::ReadOnly)) return QImage{};
+        // #680 review: a size() probe cannot bind the later read - another
+        // process may grow the file in between and readAll() would allocate
+        // whatever the file became. Cap the read itself: at most the file
+        // budget plus one byte is ever buffered, and an oversized result is
+        // rejected before the decoder sees it.
+        const QByteArray payload = file.read(workspace::kHeifMaxFileBytes + 1);
+        if (payload.size() > workspace::kHeifMaxFileBytes) return QImage{};
         QImage decoded;
         QString error;
         const workspace::HeifCancelHook hook{
             [](void *user) { return static_cast<std::atomic_bool *>(user)->load(std::memory_order_relaxed); },
             cancel.get()};
-        if (!workspace::heifDecodeRgba(file.readAll(), decoded, error,
+        if (!workspace::heifDecodeRgba(payload, decoded, error,
                 workspace::kHeifMaxDecodePixels, hook))
             return QImage{};
         // A cancel that fired while the library was running stops the job
@@ -11254,6 +11268,10 @@ void NativeController::finishUpload(const UploadTask &task, quint64 generation, 
         auto row = std::find_if(m_uploadEntries.begin(), m_uploadEntries.end(), [&](const UploadEntry &entry) { return entry.task.intent == task.intent; });
         if (row != m_uploadEntries.end()) {
             row->status = "ready"; row->markdown = attachment;
+            // #680 review: the echo is the single HEIC verdict for this row -
+            // the preview selector below reads the same stored value the
+            // scheduling condition right after this uses.
+            row->heicEcho = result.metadata.heicAttachment() ? 1 : 0;
             if (result.metadata.kind() == FileKind::Image)
                 reserveImageAlias(*row, result.metadata.name);
             else
