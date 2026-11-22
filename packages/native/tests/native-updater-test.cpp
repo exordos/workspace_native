@@ -16,6 +16,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTcpServer>
@@ -1099,8 +1100,14 @@ void NativeUpdaterTest::postInstallConfirmationPairing()
     QFETCH(QString, expected);
     QTemporaryDir cache;
     QVERIFY(cache.isValid());
+    QTemporaryDir sandbox;
+    QVERIFY(sandbox.isValid());
+    const Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
     NativeUpdater updater(QUrl(QStringLiteral("http://127.0.0.1:1/latest")), current, cache.path());
-    const QString storePath = QDir(cache.path()).filePath(QStringLiteral("pending-update.conf"));
+    // The marker anchors at the managed install root (#634): it must survive
+    // the post-install cache purge, which the install cases pin empty.
+    const QString storePath = QDir(sandbox.filePath(QStringLiteral("data")))
+        .filePath(QStringLiteral("workspace-native-install/pending-update.conf"));
     if (!rawOverride.isNull()) {
         QSettings store(storePath, QSettings::IniFormat);
         store.setValue(QStringLiteral("pending/version"), rawOverride);

@@ -304,9 +304,11 @@ exactly once because the marker is removed on read.
 Native pairing:
 - `NativeUpdater::install()` persists the available version before the installer
   process starts (best-effort; a marker write failure never blocks installation) into
-  a QSettings IniFormat store at `<cacheRoot>/pending-update.conf`, key
-  `pending/version` — the native counterpart of the reference localStorage pair,
-  kept per-install under the updater cache so fixture tests inject their own path.
+  a QSettings IniFormat store at `<XDG_DATA_HOME>/workspace-native-install/pending-update.conf`,
+  key `pending/version` — the native counterpart of the reference localStorage pair.
+  The marker anchors at the managed install root (next to `current`), not the download
+  cache, because installation purges the cache (pinned empty by the install cases) and
+  the marker must survive to the next launch; fixture tests override `XDG_DATA_HOME`.
 - `consumeInstalledUpdate()` (Q_INVOKABLE) removes the key first, then compares with
   the reference normalization (trim + case-insensitive strip of a leading `v`);
   on match it returns the normalized running version, otherwise an empty string.
