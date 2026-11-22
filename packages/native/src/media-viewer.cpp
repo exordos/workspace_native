@@ -126,11 +126,70 @@ void MediaViewerModel::setHeifRenderTimeoutMsForTests(int ms)
     m_renderTimeoutMs = ms;
 }
 
+void MediaViewerModel::setHeifQueueTimeoutMsForTests(int ms)
+{
+    m_queueTimeoutMs = ms;
+}
+
 void MediaViewerModel::renderStarted(int slot, quint64 generation)
 {
     if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
         return; // retired or replaced session: the existing fences discard the render
+    auto &target = m_slots[slot];
+    if (target.state != QLatin1String("loading"))
+        return; // already settled (queue bound fired): the late start is fenced
+    cancelRenderQueueWatchdog(target); // the worker took the render: queue bound is obsolete
     armHeifRenderWatchdog(slot); // the bounded wait measures the render, not the queue
+}
+
+void MediaViewerModel::armHeifQueueWatchdog(int slot)
+{
+    if (m_queueTimeoutMs <= 0 || slot < 0 || slot >= m_slots.size())
+        return;
+    auto &target = m_slots[slot];
+    cancelRenderQueueWatchdog(target);
+    target.queuePending = true;
+    const auto generation = m_generation;
+    auto *timer = new QTimer(this);
+    timer->setSingleShot(true);
+    target.queueTimer = timer;
+    connect(timer, &QTimer::timeout, this, [this, timer, slot, generation] {
+        heifQueueTimeoutExpired(timer, slot, generation);
+    });
+    timer->start(m_queueTimeoutMs);
+}
+
+void MediaViewerModel::cancelRenderQueueWatchdog(Slot &slot)
+{
+    slot.queuePending = false;
+    if (!slot.queueTimer)
+        return;
+    slot.queueTimer->stop();
+    slot.queueTimer->disconnect();
+    slot.queueTimer->deleteLater();
+    slot.queueTimer = nullptr;
+}
+
+void MediaViewerModel::heifQueueTimeoutExpired(QTimer *timer, int slot, quint64 generation)
+{
+    timer->deleteLater();
+    if (m_stopping || generation != m_generation || slot < 0 || slot >= m_slots.size())
+        return;
+    auto &target = m_slots[slot];
+    if (!target.queuePending) // the worker took this render: the render watchdog owns it
+        return;
+    target.queuePending = false;
+    target.queueTimer = nullptr;
+    // #670 re-review round: the serial worker cannot be terminated, so a
+    // render stuck mid-decode would otherwise strand every queued slot in
+    // loading forever. A queued render that never gets worker start settles
+    // display-error just like a failed render (uuid stays downloadable);
+    // its late start/render is fenced by renderStarted/heifRendered.
+    if (target.state == QLatin1String("loading")) {
+        target.state = QStringLiteral("display-error");
+        target.url.clear();
+        emit mediaViewerChanged();
+    }
 }
 
 void MediaViewerModel::armHeifRenderWatchdog(int slot)
@@ -338,8 +397,10 @@ void MediaViewerModel::closeSession()
         return;
     ++m_generation;
     QList<quint64> operations;
-    for (auto &slot : m_slots)
+    for (auto &slot : m_slots) {
         cancelRenderWatchdog(slot);
+        cancelRenderQueueWatchdog(slot);
+    }
     for (const auto &slot : m_slots) {
         if (slot.operation != 0)
             operations.append(slot.operation);
@@ -406,9 +467,11 @@ void MediaViewerModel::slotDownloaded(int slot, quint64 generation, const FileRe
             const auto outPath = m_directory && m_directory->isValid()
                 ? m_directory->filePath(QStringLiteral("slot-%1-heif.png").arg(slot)) : QString{};
             if (!outPath.isEmpty()) {
-                // The bounded wait is armed by renderStarted when the serial
-                // worker takes this slot (#670 re-review): queue time behind
-                // an earlier render must not consume it.
+                // The render wait is bounded in two separate budgets: the
+                // queue bound below measures until the serial worker takes
+                // the render, the render watchdog (armed by renderStarted)
+                // measures the render itself (#670 re-review).
+                armHeifQueueWatchdog(slot);
                 emit heifRenderRequested(slot, generation, result.path, outPath);
                 emit mediaViewerChanged(); // the metadata name is visible while rendering
                 return;
@@ -433,6 +496,7 @@ void MediaViewerModel::heifRendered(int slot, quint64 generation, const QString 
         return;
     auto &target = m_slots[slot];
     cancelRenderWatchdog(target); // the render reported: its watchdog is obsolete
+    cancelRenderQueueWatchdog(target);
     if (target.state != QLatin1String("loading"))
         return; // replaced meanwhile (close, explicit mark): the late render is discarded
     if (displayPath.isEmpty())
