@@ -5,6 +5,7 @@
 
 #include <QImage>
 #include <QScopeGuard>
+#include <QSemaphore>
 #include <QThread>
 #include <QUrl>
 
@@ -1182,6 +1183,79 @@ private slots:
         fixture.controller.removeUpload(ready.value("id").toString());
         QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.uploadEntries().isEmpty(), 2000);
         QVERIFY(!QFile::exists(staged));
+    }
+
+    // exordy review finding on #695: removing a HEIC attachment must cancel
+    // its in-flight decode cooperatively. watcher->cancel() cannot stop a
+    // running decode, so the worker observes a per-attachment token at every
+    // stage boundary and inside libheif through cancel_decoding. The barrier
+    // seam parks the worker inside its flight window, which makes the cancel
+    // point deterministic instead of timing-sensitive.
+    void composerHeifRemovalCancelsInFlightDecode()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.method == "POST") {
+                QByteArray contentType("application/octet-stream");
+                const auto lowered = request.rawBody.toLower();
+                const auto namePos = lowered.indexOf("filename=\"photo.heic\"");
+                if (namePos >= 0) {
+                    const auto start = lowered.indexOf("content-type: ", namePos);
+                    if (start >= 0) contentType = request.rawBody.mid(start + 14, request.rawBody.indexOf('\n', start) - start - 14);
+                }
+                return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                    {"content_type", QString::fromLatin1(contentType).trimmed()}, {"size_bytes", bytes.size()}, {"hash", sha}}, 201};
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const auto source = directory.filePath("photo.heic");
+        QFile input(source);
+        QVERIFY(input.open(QIODevice::WriteOnly));
+        input.write(bytes);
+        input.close();
+        const int baseline = NativeController::uploadPreviewDecodeStartsForTest();
+        QSemaphore workerReached;
+        QSemaphore keepWorker;
+        // A mid-test VERIFY abort must never leave the barrier installed: it
+        // references stack semaphores the next test's worker would dangle on.
+        const auto barrierGuard = qScopeGuard([&] {
+            NativeController::setUploadPreviewBarrierForTest({});
+            keepWorker.release();
+        });
+        NativeController::setUploadPreviewBarrierForTest([&] {
+            workerReached.release();
+            keepWorker.acquire();
+        });
+        fixture.controller.attachFiles({QUrl::fromLocalFile(source)});
+        QVariantMap ready;
+        const auto readyRow = [&] {
+            for (const auto &value : fixture.controller.uploadEntries()) {
+                const auto row = value.toMap();
+                if (row.value("status").toString() == "ready") { ready = row; return true; }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(readyRow(), 5000);
+        // The preview worker is in flight now, parked at the barrier right
+        // before the decode stage.
+        QVERIFY(workerReached.tryAcquire(1, 5000));
+        // Remove the row while the worker is inside its flight window.
+        fixture.controller.removeUpload(ready.value("id").toString());
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.uploadEntries().isEmpty(), 2000);
+        keepWorker.release();
+        // With the worker unblocked, no entry into the decode stage may ever
+        // be observed: the token stopped the job at its first checkpoint.
+        QTest::qWait(1000);
+        NativeController::setUploadPreviewBarrierForTest({});
+        QCOMPARE(NativeController::uploadPreviewDecodeStartsForTest(), baseline);
     }
 };
 

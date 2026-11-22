@@ -10979,6 +10979,25 @@ void NativeController::removeUploadFromText(const QString &id)
     if (guard && changedInactive) emit stateChanged();
 }
 
+namespace {
+// Test seams for the upload preview worker (#680 fix round); the mutex keeps
+// the barrier handoff race-free between the GUI thread and worker starts.
+QMutex g_uploadPreviewSeamMutex;
+std::function<void()> g_uploadPreviewBarrier;
+std::atomic<int> g_uploadPreviewDecodeStarts{0};
+} // namespace
+
+void NativeController::setUploadPreviewBarrierForTest(std::function<void()> barrier)
+{
+    const QMutexLocker lock(&g_uploadPreviewSeamMutex);
+    g_uploadPreviewBarrier = std::move(barrier);
+}
+
+int NativeController::uploadPreviewDecodeStartsForTest()
+{
+    return g_uploadPreviewDecodeStarts.load(std::memory_order_relaxed);
+}
+
 void NativeController::scheduleUploadPreview(quint64 intent, const QString &path, quint64 generation, quint64 epoch)
 {
     if (m_uploadPreviewJobs.contains(intent) || m_uploadPreviews.contains(intent)) return;
@@ -10987,10 +11006,19 @@ void NativeController::scheduleUploadPreview(quint64 intent, const QString &path
     const auto staged = m_uploadPreviewDir->filePath(QStringLiteral("upload-%1-heif.png").arg(intent));
     auto *watcher = new QFutureWatcher<QImage>(this);
     m_uploadPreviewJobs.insert(intent, watcher);
+    // #680 fix round: a per-attachment token is set by removeUploadEntry (via
+    // dropUploadPreview) and observed at every stage boundary of the worker,
+    // including inside the library through cancel_decoding. watcher->cancel()
+    // alone cannot stop a running decode, so cancellation is cooperative.
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    m_uploadPreviewCancel.insert(intent, cancel);
     const QPointer<NativeController> guard(this);
     connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, guard, intent, staged, generation, epoch, watcher] {
         m_uploadPreviewJobs.remove(intent);
-        const QImage image = watcher->result();
+        m_uploadPreviewCancel.remove(intent);
+        // A canceled future carries no result - result() would crash in
+        // Qt's result store - and a canceled job publishes nothing anyway.
+        const QImage image = watcher->isCanceled() ? QImage{} : watcher->result();
         watcher->deleteLater();
         // Fences: session generation, file epoch, and the row still existing.
         // A late completion after remove/sign-out must never resurrect a
@@ -11004,12 +11032,29 @@ void NativeController::scheduleUploadPreview(quint64 intent, const QString &path
             emit stateChanged(); // uploadEntries NOTIFY: the row now carries the preview
         }
     });
-    watcher->setFuture(QtConcurrent::run([path] {
+    watcher->setFuture(QtConcurrent::run([path, cancel] {
+        std::function<void()> barrier;
+        {
+            const QMutexLocker lock(&g_uploadPreviewSeamMutex);
+            barrier.swap(g_uploadPreviewBarrier);
+        }
+        if (barrier) barrier();
+        // Canceled while queued (or during the barrier window): never start.
+        if (cancel->load(std::memory_order_relaxed)) return QImage{};
+        g_uploadPreviewDecodeStarts.fetch_add(1, std::memory_order_relaxed);
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly) || file.size() > workspace::kHeifMaxFileBytes) return QImage{};
         QImage decoded;
         QString error;
-        if (!workspace::heifDecodeRgba(file.readAll(), decoded, error)) return QImage{};
+        const workspace::HeifCancelHook hook{
+            [](void *user) { return static_cast<std::atomic_bool *>(user)->load(std::memory_order_relaxed); },
+            cancel.get()};
+        if (!workspace::heifDecodeRgba(file.readAll(), decoded, error,
+                workspace::kHeifMaxDecodePixels, hook))
+            return QImage{};
+        // A cancel that fired while the library was running stops the job
+        // before the scale and the handoff back to the GUI thread.
+        if (cancel->load(std::memory_order_relaxed)) return QImage{};
         if (decoded.width() > 160 || decoded.height() > 160)
             return decoded.scaled(160, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation);
         return decoded;
@@ -11018,12 +11063,17 @@ void NativeController::scheduleUploadPreview(quint64 intent, const QString &path
 
 void NativeController::dropUploadPreview(quint64 intent)
 {
-    if (auto *watcher = m_uploadPreviewJobs.take(intent)) {
+    // #680 fix round: signal the cooperative token first so an in-flight
+    // worker stops at its next checkpoint (or inside libheif's cancel
+    // checkpoints), then cancel the future itself. The watcher stays owned by
+    // the finished handler - deleteLater-ing it here would race the queued
+    // finished event - and the finished fence still re-checks row existence,
+    // so a completion racing the teardown cannot resurrect the dropped
+    // preview.
+    if (auto token = m_uploadPreviewCancel.take(intent))
+        token->store(true, std::memory_order_relaxed);
+    if (auto *watcher = m_uploadPreviewJobs.value(intent))
         watcher->cancel();
-        // The finished fence re-checks row existence, so a completion racing
-        // the teardown cannot resurrect the dropped preview.
-        watcher->deleteLater();
-    }
     const auto path = m_uploadPreviews.take(intent);
     if (!path.isEmpty()) QFile::remove(path);
 }

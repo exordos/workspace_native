@@ -283,6 +283,13 @@ class NativeController final : public QObject {
 public:
     explicit NativeController(ApiClient *api, Session *session, QObject *parent = nullptr);
     ~NativeController() override;
+    // Test-only seams for the upload preview worker (#680 fix round; no QML
+    // consumer, used by native-controller-media-test): the barrier runs once
+    // on the worker thread at job start, before the cooperative cancellation
+    // check, so a test can stop the worker inside its flight window.
+    // decodeStarts counts jobs that reached the decode stage at all.
+    static void setUploadPreviewBarrierForTest(std::function<void()> barrier);
+    static int uploadPreviewDecodeStartsForTest();
     void setRealtimeMode(bool enabled) { m_realtimeMode = enabled; if (enabled) m_poll.stop(); }
     void useRealtime(RealtimeClient *client);
     // Power state (issue #78, docs/NATIVE_DESKTOP_POWER_STATE.md): resume
@@ -2386,6 +2393,10 @@ private:
     // in-flight decode watchers owned by this controller.
     QHash<quint64, QString> m_uploadPreviews;
     QHash<quint64, QFutureWatcher<QImage>*> m_uploadPreviewJobs;
+    // #680 fix round: per-attachment cooperative cancellation token, observed
+    // at every stage boundary of the preview worker and handed to libheif's
+    // cancel_decoding, so a removed attachment stops its decode in flight.
+    QHash<quint64, std::shared_ptr<std::atomic_bool>> m_uploadPreviewCancel;
     std::unique_ptr<class QTemporaryDir> m_uploadPreviewDir;
     QList<ClipboardSnapshot> m_clipboardSnapshots;
     QVariantList m_clipboardFilesPreview;
