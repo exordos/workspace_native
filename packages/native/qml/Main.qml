@@ -9607,7 +9607,7 @@ component NativeMentionChip: Item {
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: messageAvatar.openProfile()
                         }
-                        Accessible.name: messageRow.own ? QString()
+                        Accessible.name: messageRow.own ? ""
                             : qsTr("Open profile: %1").arg(String(messageRow.modelData.author))
                         NativeAvatarImage {
                             id: messagePhoto
