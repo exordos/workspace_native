@@ -24237,7 +24237,15 @@ mv -Tf "$root/.current-new" "$root/current"
         if (gear) {
             click(scene.window, visibleItem("channelTopicSummarySettings"));
             QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
-            QCOMPARE(visibleItem("channelTopicSummaryEnabled")->isEnabled(), owner);
+            // Under the permission-gated tabs (#635 redesign) the topic
+            // section - and with it the Automatic-summary switch - is only
+            // rendered for users whose permission set includes the topic
+            // tab. A settings/endpoint-only admin sees the dialog with the
+            // switch absent, which is the disabled state this assert is
+            // about, so absence and a disabled widget both read as false.
+            auto *enabledSwitch = visibleItem("channelTopicSummaryEnabled");
+            QVERIFY2(enabledSwitch || !owner, "switch must exist for the owner row");
+            QCOMPARE(bool(enabledSwitch && enabledSwitch->isEnabled()), owner);
             QTest::keyClick(scene.window, Qt::Key_Escape);
         }
         item["summary"] = QJsonValue(QJsonValue::Null);
