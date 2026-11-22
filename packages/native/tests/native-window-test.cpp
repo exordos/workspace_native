@@ -32028,6 +32028,65 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("messageComposer"), 5000);
     }
 
+    // Issue #679: the global account screens (Settings / Appearance / Personal
+    // info) stay reachable from Calendar and Mail - the #666 route gate must
+    // scope to the drawer's chat layers only. Selecting an account entry in a
+    // non-chat section opens the screen immediately; closing it keeps the
+    // section selected, and returning to Chat surfaces no stale account layer.
+    void accountScreensOpenFromNonChatSectionsWithoutStaleState()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        // Settings opens in place on the Calendar route (repro step 3).
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(window, view("accountSettingsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("nativeRightDrawerShell"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountSetting-locale"), 5000);
+        QVERIFY(view("calendarSectionPage"));
+        // Closing the account screen leaves the section selected and the
+        // drawer hidden (repro clause 2).
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+        QVERIFY(view("calendarSectionPage"));
+        // Appearance likewise opens straight from the Calendar route.
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
+        click(window, view("accountAppearanceAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountSetting-theme"), 5000);
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+        // Personal info opens immediately from Mail as well.
+        click(window, view("sectionMailButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("personalInfoAction"));
+        click(window, view("personalInfoAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 5000);
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+        // Returning to Chat mounts the chat chrome and shows no leftover
+        // account screen from the off-route requests (repro step 4).
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("sidebar") && view("messageComposer"), 5000);
+        QVERIFY(!view("nativeRightDrawerShell"));
+        QVERIFY(!view("profileLayer"));
+        QVERIFY(!view("accountSetting-locale"));
+    }
+
     // Issue #36: the top-bar Calendar chip opens the unavailable-state section
     // page measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
     // (calendar-page.ui.tsx fallback branch + top-bar.lib.ts
