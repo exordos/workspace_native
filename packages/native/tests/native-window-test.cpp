@@ -22170,8 +22170,11 @@ mv -Tf "$root/.current-new" "$root/current"
                     QCOMPARE(action->height(), 32.0);
                 }
                 // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
+                // The reference renders FOUR spans (ui.tsx:148/160/210/240) and its own
+                // test pins four (ui.test.tsx:31 at e0194ff); the expanded toolbar gains
+                // the attach/emoji separator the poll-trigger placement (#661) requires.
                 const auto separators = toolbar->findChildren<QQuickItem *>("composerToolbarSeparator");
-                QCOMPARE(separators.size(), 3);
+                QCOMPARE(separators.size(), 4);
                 for (auto *separator : separators) {
                     QCOMPARE(separator->width(), 1.0);
                     QCOMPARE(separator->height(), 28.0);
