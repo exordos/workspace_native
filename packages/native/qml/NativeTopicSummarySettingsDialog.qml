@@ -60,7 +60,7 @@ Dialog {
         anchors.fill: parent
         spacing: 0
         // ---- Header (h 88 px, px-32 pt-24) ----
-        ItemLayout { Layout.preferredHeight: 88; Layout.fillWidth: true
+        Item { Layout.preferredHeight: 88; Layout.fillWidth: true
             RowLayout {
                 anchors.fill: parent; anchors.leftMargin: 32; anchors.rightMargin: 16; anchors.topMargin: 24
                 ColumnLayout {
@@ -85,7 +85,7 @@ Dialog {
             }
         }
         // ---- Tab strip (h 52 px, active 2 px accent underline) ----
-        ItemLayout { Layout.preferredHeight: 52; Layout.fillWidth: true
+        Item { Layout.preferredHeight: 52; Layout.fillWidth: true
             Row {
                 id: tabRow
                 anchors.left: parent.left; anchors.leftMargin: 20; height: parent.height
@@ -398,7 +398,7 @@ Dialog {
         }
 
         // ---- Footer (h 80 px): status dot + Cancel/Save ----
-        ItemLayout { Layout.preferredHeight: 80; Layout.fillWidth: true
+        Item { Layout.preferredHeight: 80; Layout.fillWidth: true
             RowLayout {
                 anchors.fill: parent; anchors.leftMargin: 32; anchors.rightMargin: 32
                 Rectangle { width: 10; height: 10; radius: 5
