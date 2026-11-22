@@ -28689,21 +28689,23 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("visible").toBool());
-        auto *dialogItem = qobject_cast<QQuickItem *>(dialog); QVERIFY(dialogItem);
-        auto *dialogParent = dialogItem->parentItem(); QVERIFY(dialogParent);
-        QTRY_VERIFY(dialogItem->height() > 0);
+        // QQuickPopup is a QObject, not a QQuickItem: read geometry through the
+        // Popup's own x/y/width/height properties and its parent item.
+        auto *par = qobject_cast<QQuickItem *>(dialog->property("parent").value<QObject *>());
+        QVERIFY(par);
+        const auto centered = [&]{
+            const qreal px = dialog->property("x").toReal(), py = dialog->property("y").toReal();
+            const qreal pw = dialog->property("width").toReal(), ph = dialog->property("height").toReal();
+            return pw > 0 && ph > 0
+                && qAbs(px + pw / 2.0 - par->width() / 2.0) <= 2.0
+                && qAbs(py + ph / 2.0 - par->height() / 2.0) <= 2.0;
+        };
         // Centered within a 2 px band after the geometry pass settles.
-        QTRY_VERIFY_WITH_TIMEOUT(qAbs(dialogItem->x() + dialogItem->width() / 2.0
-                - dialogParent->width() / 2.0) <= 2.0
-            && qAbs(dialogItem->y() + dialogItem->height() / 2.0
-                - dialogParent->height() / 2.0) <= 2.0, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(centered(), 5000);
         // A window resize keeps the dialog centered (maximize analogue: the
         // popup re-centers against the overlay, which tracks the window).
         window->resize(1024, 700);
-        QTRY_VERIFY_WITH_TIMEOUT(qAbs(dialogItem->x() + dialogItem->width() / 2.0
-                - dialogParent->width() / 2.0) <= 2.0
-            && qAbs(dialogItem->y() + dialogItem->height() / 2.0
-                - dialogParent->height() / 2.0) <= 2.0, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(centered(), 5000);
         click(window, window->findChild<QQuickItem *>("pollCancelButton"));
         QTRY_VERIFY(!dialog->property("visible").toBool());
     }
