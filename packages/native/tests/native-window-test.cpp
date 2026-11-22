@@ -2287,18 +2287,24 @@ struct ChannelInfoWindowScene {
     NativeController controller;
     QQmlApplicationEngine engine;
     QPointer<QQuickWindow> window;
-    explicit ChannelInfoWindowScene(bool streamOwner = true, const QString &permission = {})
+    explicit ChannelInfoWindowScene(bool streamOwner = true, const QString &permission = {},
+        const QString &extraPermission = {})
         : fixture(streamOwner), preferences(directory.filePath("channel-info.ini")),
           session(&api), controller(&api, &session)
     {
         QVERIFY(directory.isValid());
-        if (!permission.isEmpty()) {
+        QStringList permissions;
+        if (!permission.isEmpty()) permissions << permission;
+        if (!extraPermission.isEmpty()) permissions << extraPermission;
+        if (!permissions.isEmpty()) {
             const auto base = fixture.server.handler;
-            fixture.server.handler = [base, permission](const Request &request) {
+            fixture.server.handler = [base, permissions](const Request &request) {
                 auto response = base(request);
                 if (request.target.path().endsWith("/actions/introspect")) {
                     auto identity = response.data.toObject();
-                    identity["permissions"] = QJsonArray{permission};
+                    QJsonArray array;
+                    for (const auto &entry : permissions) array.append(entry);
+                    identity["permissions"] = array;
                     response.data = identity;
                 }
                 return response;
@@ -24239,6 +24245,77 @@ mv -Tf "$root/.current-new" "$root/current"
             ? QString("Выжимка появится после обработки сообщений.")
             : QString("The summary will appear after the messages are processed."));
         QVERIFY(!visibleItem("channelTopicSummaryStale"));
+    }
+
+    // Issue #635: the gear opens the three-tab dialog. The tab strip is
+    // permission-scoped, switching to "Common settings" loads the gates DTO on
+    // demand, switching to "LLM endpoints" loads the endpoint catalog, and each
+    // tab renders the loaded server values (not the values read at open time).
+    void channelTopicSummaryDialogTabsLoadGatesAndEndpoints()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        int gatesGets = 0;
+        int endpointGets = 0;
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/")) {
+                ++gatesGets;
+                return Response{gatesDto};
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/")) {
+                ++endpointGets;
+                return Response{QJsonArray{endpointDto}};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *dialog = visibleItem("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QCOMPARE(dialog->property("tabs").toStringList().size(), 3);
+        QVERIFY(visibleItem("channelTopicSummaryTab-topic"));
+        QVERIFY(visibleItem("channelTopicSummaryTab-gates"));
+        QVERIFY(visibleItem("channelTopicSummaryTab-endpoints"));
+        QCOMPARE(dialog->property("activeTab").toString(), QString("topic"));
+        QVERIFY(visibleItem("channelTopicSummaryEnabled"));
+        QCOMPARE(gatesGets, 0);
+        QCOMPARE(endpointGets, 0);
+        // Gates tab: load fires on the tab switch and the switches draw the DTO.
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_COMPARE(gatesGets, 1);
+        QCOMPARE(dialog->property("activeTab").toString(), QString("gates"));
+        QVERIFY(visibleItem("channelTopicSummaryGatesBanner"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool());
+        QVERIFY(!visibleItem("channelTopicSummaryGatesProject")->property("checked").toBool());
+        // Endpoints tab: catalog rows render from the DTO list.
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_COMPARE(endpointGets, 1);
+        QCOMPARE(dialog->property("activeTab").toString(), QString("endpoints"));
+        QVERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QCOMPARE(scene.text("channelTopicSummaryEndpointName"), QString("Synthetic GPT"));
+        QVERIFY(visibleItem("channelTopicSummaryEndpointAdd"));
+        // Back to the topic tab triggers no additional traffic.
+        click(scene.window, visibleItem("channelTopicSummaryTab-topic"));
+        QCOMPARE(dialog->property("activeTab").toString(), QString("topic"));
+        QCOMPARE(gatesGets, 1);
+        QCOMPARE(endpointGets, 1);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
 
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
