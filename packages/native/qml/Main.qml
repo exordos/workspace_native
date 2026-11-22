@@ -9578,6 +9578,18 @@ component NativeMentionChip: Item {
                         radius: 24
                         color: root.colors["bg-elevated"]
                         border.color: root.colors["border-subtle"]
+                        // #664: the peer avatar is the reference peer-avatar button
+                        // (workspace-message-bubble-presentation.ui.tsx:805): it opens the
+                        // profile in the right drawer so the conversation stays visible.
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !messageRow.own
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: if (!messageRow.own)
+                                rightDrawer.openWorkspaceUserProfile(String(messageRow.modelData.authorId))
+                        }
+                        Accessible.name: messageRow.own ? QString()
+                            : qsTr("Open profile: %1").arg(String(messageRow.modelData.author))
                         NativeAvatarImage {
                             id: messagePhoto
                             anchors.fill: parent
