@@ -3,6 +3,91 @@
 #include "support/controller-realtime-fixtures.h"
 #include "support/controller-chat-creation-fixtures.h"
 
+// ---- Issue #635: topic-summary settings mock scene (docs/topic-summary-settings.md) ----
+static const QString summaryEndpointUuid =
+    QStringLiteral("77770000-1111-4222-8333-444455556666");
+
+struct TopicSummaryScene {
+    Fixture fixture;
+    QJsonArray permissions;
+    QString role = QStringLiteral("owner");
+    bool ownStream = true;
+    int gatesGets = 0;
+    int gatesPuts = 0;
+    int endpointGets = 0;
+    QList<QJsonObject> endpointPosts;
+    QList<QJsonObject> endpointPuts;
+    QStringList endpointDeletes;
+    QJsonObject gatesResponse{{"project_id", projectId}, {"global_enabled", true},
+        {"project_enabled", false}};
+    QJsonArray endpointsResponse;
+    int gatesStatus = 200;
+    int endpointsStatus = 200;
+    TopicSummaryScene()
+    {
+        fixture.streams = [this](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false},
+                {"user_uuid", ownStream ? userId : QStringLiteral("99990000-1111-4222-8333-444455556666")},
+                {"role", role}}}};
+        };
+        // The stream-detail route feeds the same catalog row, so it must carry
+        // the ownership fields as well (fixture default shape plus role/user_uuid).
+        fixture.counters = [this](const Request &request) {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/messenger/streams/" + streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null},
+                    {"user_uuid", ownStream ? userId : QStringLiteral("99990000-1111-4222-8333-444455556666")},
+                    {"role", role}}};
+            return Response{QJsonObject{{"uuid", path.endsWith(secondTopicId) ? secondTopicId : topicId},
+                {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Native topic"},
+                {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}}};
+        };
+        fixture.authentication = [this](const Request &request) {
+            const auto path = request.target.path();
+            if (path.contains("topic_summary_settings")) {
+                if (request.method == "PUT") { ++gatesPuts; lastGatesPut = request.body; }
+                else ++gatesGets;
+                return Response{gatesResponse, gatesStatus};
+            }
+            if (path.contains("topic_summary_endpoints")) {
+                if (request.method == "POST") { endpointPosts.append(request.body); return Response{QJsonObject{}, 200}; }
+                if (request.method == "PUT") { endpointPuts.append(request.body); return Response{QJsonObject{}, 200}; }
+                if (request.method == "DELETE") { endpointDeletes.append(path.section('/', -1)); return Response{QJsonObject{}, 200}; }
+                ++endpointGets;
+                return Response{endpointsResponse, endpointsStatus};
+            }
+            if (path.endsWith("/actions/introspect")) {
+                auto json = sessionResponse(request).data.toObject();
+                json["permissions"] = permissions;
+                return Response{json};
+            }
+            return sessionResponse(request);
+        };
+    }
+    QJsonObject lastGatesPut;
+};
+
+static bool isUuidText(const QString &value)
+{
+    static const QRegularExpression pattern{
+        QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")};
+    return pattern.match(value).hasMatch();
+}
+
+static QJsonObject summaryEndpointRow(const QString &uuid = summaryEndpointUuid)
+{
+    return {{"uuid", uuid}, {"name", "Prod"}, {"base_url", "https://llm.example/v1"},
+        {"model", "gpt-x"}, {"enabled", true}, {"priority", 100}, {"supports_vision", false},
+        {"supports_reasoning", false}, {"temperature", 0.2}, {"max_output_tokens", 512},
+        {"top_p", 1}, {"presence_penalty", 0}, {"frequency_penalty", 0},
+        {"credential_present", true}, {"failure_count", 0}};
+}
+
 class ControllerChannelsTest final : public NativeControllerTestHarness {
     Q_OBJECT
 private slots:
@@ -893,6 +978,166 @@ private slots:
         controller.checkChannelCreation(); QTRY_COMPARE(done.size(), 1);
         QCOMPARE(controller.topics().first().toMap().value("name").toString(), QString("Newer topic metadata"));
         QCOMPARE(test.posts, 1); QCOMPARE(test.memberPosts, boundary == "adding-members" ? 1 : 0);
+    }
+
+    // ---- Issue #635: topic-summary settings controller surface ----
+
+    void topicSummaryGatesRoundTripAndErrorMapping_data()
+    {
+        QTest::addColumn<int>("status"); QTest::addColumn<QString>("kind");
+        QTest::newRow("ok") << 200 << QString("saved");
+        QTest::newRow("bad-request") << 400 << QString("invalid");
+        QTest::newRow("forbidden") << 403 << QString("forbidden");
+        QTest::newRow("server") << 503 << QString("server");
+    }
+    void topicSummaryGatesRoundTripAndErrorMapping()
+    {
+        QFETCH(int, status); QFETCH(QString, kind);
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_settings.manage")};
+        scene.gatesStatus = status; QVERIFY(scene.fixture.start());
+        auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryGates();
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(scene.gatesGets, 1);
+        if (status != 200) {
+            QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
+            QCOMPARE(controller.topicSummarySettingsError(), kind);
+            QVERIFY(controller.topicSummaryGates().isEmpty());
+            return;
+        }
+        QCOMPARE(controller.topicSummaryGates().value("globalEnabled"), QVariant(true));
+        QCOMPARE(controller.topicSummaryGates().value("projectEnabled"), QVariant(false));
+        QCOMPARE(controller.topicSummaryGates().value("projectId"), QVariant(projectId));
+        // Save sends both gates and only merges the echo booleans back.
+        scene.gatesResponse["project_enabled"] = true;
+        controller.saveTopicSummaryGates(true, true);
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(scene.gatesPuts, 1);
+        QCOMPARE(scene.lastGatesPut, QJsonObject{{"global_enabled", true}, {"project_enabled", true}});
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString("saved"));
+        QCOMPARE(controller.topicSummaryGates().value("projectEnabled"), QVariant(true));
+    }
+
+    void topicSummaryGatesSchemaMismatchReportsContract()
+    {
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_settings.manage")};
+        scene.gatesResponse = QJsonObject{{"project_id", projectId}, {"global_enabled", "true"}};
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryGates();
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
+        QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
+    }
+
+    void topicSummaryGatePermissionsFollowCapabilitiesAndRole()
+    {
+        TopicSummaryScene scene; QVERIFY(scene.fixture.start());
+        auto &controller = scene.fixture.controller;
+        // Owner of own stream: the topic tab is allowed even without capabilities.
+        QCOMPARE(controller.topicSummaryTabPermission("topic"), QString("allowed"));
+        QCOMPARE(controller.topicSummaryTabPermission("gates"), QString("denied"));
+        QCOMPARE(controller.topicSummaryTabPermission("endpoints"), QString("denied"));
+        // Gated calls short-circuit without traffic.
+        controller.loadTopicSummaryGates();
+        QCOMPARE(scene.gatesGets, 0);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("forbidden"));
+        controller.saveTopicSummaryGates(true, false);
+        QCOMPARE(scene.gatesPuts, 0);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("forbidden"));
+    }
+
+    void topicSummaryForeignStreamTopicTabIsUnknown()
+    {
+        TopicSummaryScene scene; scene.ownStream = false; QVERIFY(scene.fixture.start());
+        QCOMPARE(scene.fixture.controller.topicSummaryTabPermission("topic"), QString("unknown"));
+    }
+
+    void topicSummaryEndpointCrudRoundTrip()
+    {
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_endpoint.manage")};
+        scene.endpointsResponse = QJsonArray{summaryEndpointRow()};
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryEndpoints();
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(controller.topicSummaryEndpoints().size(), 1);
+        const auto row = controller.topicSummaryEndpoints().first().toMap();
+        QCOMPARE(row.value("uuid").toString(), summaryEndpointUuid);
+        QVERIFY(row.value("last_error_code").isNull()); // absent audit fields normalize to null
+        // Create: uuid client-generated, defaults applied, trailing slash trimmed.
+        const bool created = controller.createTopicSummaryEndpoint({{"name", " Prod "},
+            {"base_url", "https://llm.example/v1/"}, {"model", "gpt-x"}, {"api_key", "***"}});
+        QVERIFY(created); QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(scene.endpointPosts.size(), 1);
+        const auto post = scene.endpointPosts.first();
+        QVERIFY(isUuidText(post.value("uuid").toString()));
+        QCOMPARE(post.value("name").toString(), QString("Prod"));
+        QCOMPARE(post.value("base_url").toString(), QString("https://llm.example/v1"));
+        QCOMPARE(post.value("priority").toInt(), 100); QCOMPARE(post.value("temperature").toDouble(), 0.2);
+        QCOMPARE(post.value("max_output_tokens").toInt(), 512); QCOMPARE(post.value("top_p").toDouble(), 1.0);
+        QCOMPARE(post.value("enabled").toBool(), true); QCOMPARE(post.value("supports_vision").toBool(), false);
+        QCOMPARE(controller.topicSummaryEndpoints().size(), 2);
+        // Partial update: only carried fields travel; an empty api_key is omitted.
+        QVERIFY(controller.updateTopicSummaryEndpoint(summaryEndpointUuid,
+            {{"model", "gpt-y"}, {"api_key", QString()}}));
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(scene.endpointPuts.size(), 1);
+        QCOMPARE(scene.endpointPuts.first(), QJsonObject{{"model", "gpt-y"}});
+        QCOMPARE(controller.topicSummaryEndpoints().first().toMap().value("model").toString(), QString("gpt-y"));
+        // An empty patch (only a blank api_key) is rejected before dispatch.
+        const auto puts = scene.endpointPuts.size();
+        QVERIFY(!controller.updateTopicSummaryEndpoint(summaryEndpointUuid, {{"api_key", QString()}}));
+        QCOMPARE(scene.endpointPuts.size(), puts);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("invalid"));
+        // Delete removes the row on success and leaves the created row.
+        controller.deleteTopicSummaryEndpoint(summaryEndpointUuid);
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(scene.endpointDeletes, QStringList{summaryEndpointUuid});
+        QCOMPARE(controller.topicSummaryEndpoints().size(), 1);
+        QCOMPARE(controller.topicSummaryEndpoints().first().toMap().value("uuid").toString(),
+            post.value("uuid").toString());
+    }
+
+    void topicSummaryEndpointValidationBlocksDispatch_data()
+    {
+        QTest::addColumn<QVariantMap>("form"); QTest::addColumn<QString>("field");
+        auto broken = [](const QString &name, const QVariant &value) {
+            QVariantMap form{{"name", "Prod"}, {"base_url", "https://llm.example/v1"},
+                {"model", "gpt-x"}, {"api_key", "***"}};
+            form[name] = value; return form;
+        };
+        QTest::newRow("empty-name") << broken("name", "   ") << QString("name");
+        QTest::newRow("long-name") << broken("name", QString(256, 'n')) << QString("name");
+        QTest::newRow("userinfo-url") << broken("base_url", "https://user:***@llm.example/v1") << QString("base_url");
+        QTest::newRow("query-url") << broken("base_url", "https://llm.example/v1?beta=1") << QString("base_url");
+        QTest::newRow("fragment-url") << broken("base_url", "https://llm.example/v1#beta") << QString("base_url");
+        QTest::newRow("ftp-url") << broken("base_url", "ftp://llm.example/v1") << QString("base_url");
+        QTest::newRow("priority-high") << broken("priority", 1000001) << QString("priority");
+        QTest::newRow("priority-string") << broken("priority", "5") << QString("priority");
+        QTest::newRow("temperature-high") << broken("temperature", 2.5) << QString("temperature");
+        QTest::newRow("tokens-zero") << broken("max_output_tokens", 0) << QString("max_output_tokens");
+    }
+    void topicSummaryEndpointValidationBlocksDispatch()
+    {
+        QFETCH(QVariantMap, form); QFETCH(QString, field);
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_endpoint.manage")};
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        const auto errors = controller.topicSummaryEndpointValidationErrors(form, true);
+        QVERIFY2(errors.contains(field), qPrintable(errors.join(',')));
+        QVERIFY(!controller.createTopicSummaryEndpoint(form));
+        QVERIFY(scene.endpointPosts.isEmpty());
+        QCOMPARE(controller.topicSummarySettingsError(), QString("invalid"));
+    }
+
+    void topicSummaryEndpointSchemaMismatchStopsListParse()
+    {
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_endpoint.manage")};
+        auto row = summaryEndpointRow(); row["priority"] = "high";
+        scene.endpointsResponse = QJsonArray{row};
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryEndpoints();
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
+        QVERIFY(controller.topicSummaryEndpoints().isEmpty());
     }
 };
 

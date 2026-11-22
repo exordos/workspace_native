@@ -168,6 +168,8 @@ void Session::clearMemory()
     m_login.clear();
     m_publicProfile.clear();
     m_summaryServiceAllowed = false;
+    m_summaryGatesAllowed = false;
+    m_summaryEndpointsAllowed = false;
     m_project.clear();
     m_user.clear();
     m_projects.clear();
@@ -620,8 +622,11 @@ void Session::refreshProject()
             }
             m_user = user;
             const auto permissions = json.value("permissions").toArray();
-            m_summaryServiceAllowed = permissions.contains(QStringLiteral("workspace.topic_summary_settings.manage"))
-                || permissions.contains(QStringLiteral("workspace.topic_summary_endpoint.manage"));
+            m_summaryGatesAllowed =
+                permissions.contains(QStringLiteral("workspace.topic_summary_settings.manage"));
+            m_summaryEndpointsAllowed =
+                permissions.contains(QStringLiteral("workspace.topic_summary_endpoint.manage"));
+            m_summaryServiceAllowed = m_summaryGatesAllowed || m_summaryEndpointsAllowed;
             m_publicProfile = publicIdentityProfile(json.value("user_info").toObject(), user, m_login);
             m_ready = true;
             m_refreshInFlight = false;

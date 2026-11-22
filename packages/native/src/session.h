@@ -63,6 +63,11 @@ public:
     qint64 accessRemainingMs() const;
     const QVector<Project> &projects() const { return m_projects; }
     bool canConfigureSummaryService() const { return m_ready && m_summaryServiceAllowed; }
+    // Issue #635 split of the combined flag: the gates and endpoints tabs of the
+    // topic-summary settings dialog are gated by two distinct capabilities
+    // (workspace_ui entities/messenger/messenger-topic-summary-permissions.lib.ts).
+    bool canManageSummaryGates() const { return m_ready && m_summaryGatesAllowed; }
+    bool canManageSummaryEndpoints() const { return m_ready && m_summaryEndpointsAllowed; }
     QVariantMap publicProfile() const { return m_ready ? m_publicProfile : QVariantMap{}; }
 
 signals:
@@ -98,6 +103,8 @@ private:
     QString m_login;
     QVariantMap m_publicProfile;
     bool m_summaryServiceAllowed = false;
+    bool m_summaryGatesAllowed = false;
+    bool m_summaryEndpointsAllowed = false;
     QElapsedTimer m_clock;
     QTimer m_refreshTimer;
     QTimer m_expiryTimer;
