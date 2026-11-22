@@ -390,9 +390,17 @@ void MessageImages::decodeWatchdogExpired(const QString &scope, quint64 job)
 {
     if (m_stopping) return;
     auto ticket = m_jobs.find(job);
+    if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode) return;
+    // #684 (exordy on #676): this slot runs from the fired single-shot, which
+    // deleteLater()d itself. Returning on the retired-scope fence below while
+    // ticket->watchdog still pointed at it stranded a dangling pointer: the
+    // late decoded() calls stop() on the freed QTimer (use-after-free, the
+    // SIGSEGV@0x8 window-part9 crash). Drop the reference on EVERY path out
+    // of a fired timer, before the retired-scope fence.
+    ticket->watchdog = nullptr;
     // A retired-scope decode keeps its ticket until the worker completes (the
     // existing fence); its timer settles nothing and dies with the ticket.
-    if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode || scope != m_scope) return;
+    if (scope != m_scope) return;
     const auto uuid = ticket->uuid;
     // #670 findings 1/4: the watchdog cannot interrupt an in-flight decode on
     // the shared serial worker, so it must not free that worker's capacity
@@ -400,13 +408,19 @@ void MessageImages::decodeWatchdogExpired(const QString &scope, quint64 job)
     // until the late decoded() retires it, so drain() cannot feed further
     // encoded payloads to a busy worker past the pipeline limit. The entry
     // itself settles Failed right now - the user-visible timeout is unchanged.
-    ticket->watchdog = nullptr; // the fired single-shot already deleteLater'd itself
     auto entry = m_entries.find(uuid);
     if (entry != m_entries.end() && entry->job == job && entry->consumers) {
         entry->job = 0; entry->phase = Phase::Failed; // file card, like any failed decode
         notifyRevision();
     }
     drain(); // capped by the still-accounted ticket until the worker exits
+}
+int MessageImages::decodeTicketsRetainingWatchdogForTests() const
+{
+    int retained = 0;
+    for (auto it = m_jobs.cbegin(); it != m_jobs.cend(); ++it)
+        if (it->phase == JobPhase::Decode && it->watchdog) ++retained;
+    return retained;
 }
 QString MessageImages::imageUrl(const QString &urn) const
 {

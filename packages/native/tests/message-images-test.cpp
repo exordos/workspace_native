@@ -194,6 +194,7 @@ private slots:
     void corruptHeicSettlesFileCardWithoutRefetch();
     void heicDecodeWatchdogSettlesFileCardAndIgnoresLateResult();
     void shortTimeoutNeverSettlesNonHeicDecode();
+    void retiredScopeWatchdogExpiryNeverStrandsFiredTimer();
     void entryLeasePipelineAndExactCancellation();
     void repeatedDelegateReplacementRenewsTheTransferHandoff();
     void byteLruAndPinnedAdmissionRecover();
@@ -505,6 +506,33 @@ void MessageImagesTest::shortTimeoutNeverSettlesNonHeicDecode()
     QTRY_VERIFY(!f.images.imageUrl(urn()).isEmpty());
     QVERIFY(!f.images.failed(urn()));
     QCOMPARE(f.binaryGets,1);
+    f.images.release(lease);
+}
+
+void MessageImagesTest::retiredScopeWatchdogExpiryNeverStrandsFiredTimer()
+{
+    // #684 (exordy findings 1/3 on #676): the HEIC watchdog timeout slot
+    // deleteLater()s its own timer and used to return on the retired-scope
+    // fence WITHOUT clearing ticket->watchdog. The event loop then destroys
+    // the timer, and the late decoded() calls stop() on the freed QTimer -
+    // a use-after-free matching the SIGSEGV@0x8 window-part9 crash. The
+    // retired-scope ticket must survive (worker fence) but never with a
+    // reference to the fired timer. Gate + shortened timeout reproduce the
+    // 15 s production path deterministically: the assertion window is
+    // [watchdog fired, worker stalled] - 50 ms vs a >=500 ms stall.
+    Fixture f; QVERIFY(f.start()); f.bytes = heicFixture();
+    const auto restore = qScopeGuard([] { MessageImages::setDecodeGateForTests(nullptr); });
+    f.images.setDecodeTimeoutMsForTests(50);
+    MessageImages::setDecodeGateForTests([](const QByteArray &) { QThread::msleep(500); });
+    const auto lease = f.images.acquire(urn()); QVERIFY(lease);
+    QTRY_COMPARE(f.images.stats().decodeJobs, 1); // decode started, watchdog armed
+    f.api.setAccessToken("synthetic-message-retired-scope"); // retire mid-decode
+    QTest::qWait(150); // watchdog fired on the retired scope; its deleteLater was processed
+    QCOMPARE(f.images.stats().decodeJobs, 1); // retired-scope fence keeps the ticket
+    QCOMPARE(f.images.decodeTicketsRetainingWatchdogForTests(), 0); // RED before the fix: 1 (dangling)
+    QTest::qWait(700); // the stalled decode completes; the late decoded() must touch no dead timer
+    QCOMPARE(f.images.stats().pipelineJobs, 0);
+    QCOMPARE(f.images.stats().decodeJobs, 0);
     f.images.release(lease);
 }
 
