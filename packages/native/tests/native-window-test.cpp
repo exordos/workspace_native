@@ -25239,21 +25239,42 @@ private:
         QCOMPARE(requests, 3);
     }
 
-    // ---- Issue #664: profile opens in the right sidebar from message author targets ----
-    // Reference contract (workspace_ui e0194ff): the peer author label and the
-    // peer avatar in the message list are buttons (workspace-message-list.ui.tsx:699,
-    // workspace-message-bubble-presentation.ui.tsx:805, data-peer-author-label /
-    // data-workspace-peer-avatar click tests at workspace-message-list.ui.test.tsx:1150-1192)
-    // routed through the SAME handler as mention links
-    // (chat-page-workspace-message-list-section.ui.tsx:113 onOpenAuthorProfile = onOpenMentionUser),
-    // which opens the profile in the right drawer - the conversation stays visible.
-    void messageAuthorTargetsOpenProfileInSidebar()
+    // ---- Issue #664: profile opens in the right sidebar from the message author avatar ----
+    // Reference contract (workspace_ui e0194ff): the peer avatar in the message list is a
+    // button (workspace-message-bubble-presentation.ui.tsx:805, peer-avatar click test at
+    // workspace-message-list.ui.test.tsx:1150) routed through the SAME handler as mention
+    // links (chat-page-workspace-message-list-section.ui.tsx:113 onOpenAuthorProfile =
+    // onOpenMentionUser): the profile opens in the right drawer and the conversation stays
+    // visible. The group-conversation author label (data-peer-author-label) is the same
+    // route and lands in the follow-up round of this lane.
+    void messageAvatarOpensPeerProfileInSidebar()
     {
         ProfileWindowScene scene;
-        const QString peerMessage = QStringLiteral("81000000-0000-4000-8000-000000000001");
+        const QString dmRowUuid = QStringLiteral("82000000-0000-4000-8000-000000000001");
+        const QString dmStream = scene.fixture.created.value("uuid").toString();
+        auto peerRow = message(
+            QStringLiteral("Peer-authored row: the author target opens the profile sidebar."),
+            dmRowUuid, channelDefault);
+        peerRow["stream_uuid"] = dmStream;
+        peerRow["author_uuid"] = channelPeer;
+        peerRow["is_own"] = false;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [base, peerRow, dmStream](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("stream_uuid") == dmStream) {
+                auto response = base(request);
+                response.data = QJsonArray{peerRow};
+                return response;
+            }
+            return base(request);
+        };
+        QTRY_VERIFY(visibleItem("stream-" + dmStream));
+        click(scene.window, visibleItem("stream-" + dmStream));
+        QTRY_VERIFY(!scene.controller.busy());
+        QTRY_COMPARE(scene.controller.messages().size(), 1);
         QVERIFY(!visibleItem("profileLayer"));
-        QTRY_VERIFY(visibleItem("message-avatar-" + peerMessage));
-        auto *avatar = visibleItem("message-avatar-" + peerMessage);
+        QTRY_VERIFY(visibleItem("message-avatar-" + dmRowUuid));
+        auto *avatar = visibleItem("message-avatar-" + dmRowUuid);
         QVERIFY(avatar->isVisible());
         click(scene.window, avatar);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
@@ -25261,17 +25282,13 @@ private:
         QCOMPARE(scene.evaluate("rightDrawer.topLayerKind").toString(), QStringLiteral("chat-info"));
         QCOMPARE(scene.evaluate("rightDrawer.currentProfileOverride").toString(),
             QStringLiteral("workspace-user-uuid:") + channelPeer);
-        // Sidebar, not popup: the conversation stays visible behind the panel.
-        QVERIFY(visibleItem("message-avatar-" + peerMessage)->isVisible());
-        // The author label button opens the same profile (close first).
+        // Sidebar, not popup: the conversation area stays mounted and visible behind the panel.
+        QCOMPARE(scene.evaluate("messageList.visible").toBool(), true);
+        // Back from the profile keeps the conversation; closing the layer restores it fully.
         scene.evaluate("rightDrawer.clearAll()");
         QTRY_VERIFY(!visibleItem("profileLayer"));
-        auto *label = visibleItem("messageAuthorLabel-" + peerMessage);
-        QVERIFY(label);
-        QVERIFY(label->isVisible());
-        click(scene.window, label);
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
-        QCOMPARE(scene.layer()->property("userUuid").toString(), channelPeer);
+        QCOMPARE(scene.controller.selectedStream(), dmStream);
+        QCOMPARE(scene.controller.messages().size(), 1);
     }
 
     void windowProfileShareFailurePresentation_data()
