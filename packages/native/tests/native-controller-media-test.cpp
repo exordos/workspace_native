@@ -447,6 +447,54 @@ private slots:
         viewer->close();
     }
 
+    // #670 re-review round 3 (finding 4656047886): a healthy queue must not
+    // expire late slots just because earlier healthy renders were being
+    // processed. The bound measures worker STALL (gap between worker starts),
+    // re-armed by every start - not each slot's absolute wait. Here three
+    // renders are healthy (200 ms each, under the 800 ms render bound) but the
+    // full drain (~600 ms) exceeds the 300 ms queue bound: the previous
+    // per-slot absolute timer settled B and C to display-error before their
+    // turn although the worker never stalled.
+    void mediaViewerHealthyQueueDrainDoesNotExpireQueuedSlots()
+    {
+        Fixture fixture;
+        FileClient files(&fixture.api);
+        fixture.controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture.files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/heic";
+                return result;
+            }
+            const QString uuid = request.target.path().contains(mvFileB) ? mvFileB
+                : request.target.path().contains(mvFileC) ? mvFileC : mvFileA;
+            return Response{QJsonObject{{"uuid", uuid}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture.start());
+        auto *viewer = fixture.controller.mediaViewer();
+        // Every render is healthy: 200 ms, far below the 800 ms render bound.
+        MediaViewerModel::setHeifRenderGateForTests([] { QThread::msleep(200); });
+        const auto restore = qScopeGuard([] { MediaViewerModel::setHeifRenderGateForTests(nullptr); });
+        viewer->setHeifRenderTimeoutMsForTests(800);
+        viewer->setHeifQueueTimeoutMsForTests(300); // shorter than the full drain
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA) << mediaViewerRow("m2", mvFileB)
+             << mediaViewerRow("m3", mvFileC);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        // A stall-bound settles nothing here: worker starts at ~0/200/400 ms
+        // keep re-arming the clock; every slot must render ready even though
+        // B and C waited longer than the 300 ms queue bound.
+        QTRY_COMPARE_WITH_TIMEOUT(viewer->items().at(2).toMap().value("state").toString(),
+            QStringLiteral("ready"), 2500);
+        QCOMPARE(viewer->items().at(0).toMap().value("state").toString(), QStringLiteral("ready"));
+        QCOMPARE(viewer->items().at(1).toMap().value("state").toString(), QStringLiteral("ready"));
+        viewer->close();
+    }
+
     // --- Issue #79: copy image to clipboard (docs/NATIVE_DESKTOP_CLIPBOARD_IMAGE.md) ---
     // Mirrors the Electron clipboard:writeImage handler measured at workspace_ui
     // 61dacef7 (main.ts:1054-1067, cap main.ts:50): over-cap payloads are
