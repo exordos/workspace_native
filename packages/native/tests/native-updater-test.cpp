@@ -24,6 +24,9 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextStream>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <QWindow>
 
 #include <algorithm>
@@ -674,8 +677,28 @@ void NativeUpdaterTest::restartAfterVerifiedReuseRecordsConfirmation()
 // exordy round-2 finding (#685): a marker whose removal could not be persisted
 // must not hand out a confirmation, or the success toast keeps firing on every
 // launch while the stale marker lingers. Only a persisted removal counts.
+// Two fixtures, because the gate runs containers as root and root silently
+// bypasses every DAC gate (CAP_DAC_OVERRIDE): the old chmod-only test passed
+// there while pinning nothing. Under root the consumption is re-executed by an
+// unprivileged child (setuid nobody, CASSI_UPDATER_CONSUME_CHILD) against a
+// root-owned world-writable + sticky store dir: the child may create its own
+// claim/lock/temp files inside it but cannot replace or remove the root-owned
+// marker, so the sync's commit fails for a uid that cannot bypass. As a
+// regular user the directory permission bits bind the owner too, so the
+// read-only-directory fixture is the faithful injection there.
 void NativeUpdaterTest::failedMarkerRemovalWithholdsConfirmation()
 {
+    if (qEnvironmentVariableIsSet("CASSI_UPDATER_CONSUME_CHILD")) {
+        // Dropped-privilege role (main() already called setuid): consume against
+        // the inherited store and report the verdict on stdout.
+        NativeUpdater dropped(QUrl(QStringLiteral("http://127.0.0.1:1/latest")),
+            qEnvironmentVariable("CASSI_UPDATER_CONSUME_VERSION"),
+            QDir(qEnvironmentVariable("XDG_DATA_HOME"))
+                .filePath(QStringLiteral("cache")));
+        QTextStream out(stdout);
+        out << "CASSI_CONSUME=" << dropped.consumeInstalledUpdate() << Qt::endl;
+        return;
+    }
     QTemporaryDir sandbox;
     QVERIFY(sandbox.isValid());
     const Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
@@ -687,19 +710,48 @@ void NativeUpdaterTest::failedMarkerRemovalWithholdsConfirmation()
         store.setValue(QStringLiteral("pending/version"), QStringLiteral("1.2.4"));
         store.sync();
     }
-    // Make the marker's directory unwritable: no sync can succeed there.
-    const QString storeDir = QFileInfo(storePath).absolutePath();
-    QVERIFY(QFile::setPermissions(storeDir,
-        QFileDevice::ReadOwner | QFileDevice::ExeOwner |
-        QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-        QFileDevice::ReadOther | QFileDevice::ExeOther));
     NativeUpdater updater(QUrl(QStringLiteral("http://127.0.0.1:1/latest")), QStringLiteral("1.2.4"),
                           sandbox.filePath(QStringLiteral("cache")));
-    QCOMPARE(updater.consumeInstalledUpdate(), QString());
-    QVERIFY(QFile::setPermissions(storeDir,
-        QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
-        QFileDevice::ReadGroup | QFileDevice::ExeGroup |
-        QFileDevice::ReadOther | QFileDevice::ExeOther));
+    const QString storeDir = QFileInfo(storePath).absolutePath();
+    if (geteuid() == 0) {
+        // Root role: let the unprivileged child traverse in, then make the dir
+        // world-writable + sticky so only the child's own files are touchable.
+        ::chmod(sandbox.path().toLocal8Bit().constData(), 0755);
+        ::chmod(storeDir.toLocal8Bit().constData(), 01777);
+        QProcess child;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("CASSI_UPDATER_CONSUME_CHILD"), QStringLiteral("1"));
+        env.insert(QStringLiteral("CASSI_UPDATER_CONSUME_VERSION"), QStringLiteral("1.2.4"));
+        env.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
+        child.setProcessEnvironment(env);
+        child.start(QCoreApplication::applicationFilePath(),
+            { QStringLiteral("failedMarkerRemovalWithholdsConfirmation") });
+        QVERIFY(child.waitForFinished(30000));
+        const auto output = child.readAllStandardOutput() + child.readAllStandardError();
+        QCOMPARE(child.exitStatus(), QProcess::NormalExit);
+        QVERIFY2(child.exitCode() == 0, output.constData());
+        // The dropped consumption saw no confirmation...
+        QVERIFY2(output.contains("CASSI_CONSUME=\n"), output.constData());
+        // ...and the marker survived the failed removal.
+        {
+            QSettings after(storePath, QSettings::IniFormat);
+            QCOMPARE(after.value(QStringLiteral("pending/version")).toString(),
+                QStringLiteral("1.2.4"));
+        }
+        // Drop the sticky bit: the marker is now removable and a later launch confirms once.
+        ::chmod(storeDir.toLocal8Bit().constData(), 0777);
+    } else {
+        // Non-root role: permission bits bind the owner too; no sync can succeed.
+        QVERIFY(QFile::setPermissions(storeDir,
+            QFileDevice::ReadOwner | QFileDevice::ExeOwner |
+            QFileDevice::ReadGroup | QFileDevice::ExeGroup |
+            QFileDevice::ReadOther | QFileDevice::ExeOther));
+        QCOMPARE(updater.consumeInstalledUpdate(), QString());
+        QVERIFY(QFile::setPermissions(storeDir,
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
+            QFileDevice::ReadGroup | QFileDevice::ExeGroup |
+            QFileDevice::ReadOther | QFileDevice::ExeOther));
+    }
     // The marker survived the failed removal: a later launch confirms once.
     QCOMPARE(updater.consumeInstalledUpdate(), QStringLiteral("1.2.4"));
     QCOMPARE(updater.consumeInstalledUpdate(), QString());
@@ -1227,6 +1279,11 @@ void NativeUpdaterTest::postInstallConfirmationPairing()
 int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
+    if (qEnvironmentVariableIsSet("CASSI_UPDATER_CONSUME_CHILD")) {
+        // The drop-privilege consume role must run as an unprivileged uid so
+        // DAC actually binds it, even in a container that is root (65534 = nobody).
+        if (::setuid(65534) != 0) return 9;
+    }
     QGuiApplication app(argc, argv);
     NativeUpdaterTest test;
     return QTest::qExec(&test, argc, argv);
