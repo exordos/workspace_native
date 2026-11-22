@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLockFile>
 #include <QPointer>
 #include <QNetworkReply>
 #include <QProcess>
@@ -221,6 +222,8 @@ private slots:
     void alreadyInstalledUpdate_data();
     void alreadyInstalledUpdate();
     void restartAfterVerifiedReuseRecordsConfirmation();
+    void failedMarkerRemovalWithholdsConfirmation();
+    void claimedMarkerSkipsSecondConsumer();
     void invalidExistingInstallation_data();
     void invalidExistingInstallation();
     void rejectedInstall_data();
@@ -666,6 +669,68 @@ void NativeUpdaterTest::restartAfterVerifiedReuseRecordsConfirmation()
     NativeUpdater restarted(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.4"), sandbox.filePath(QStringLiteral("cache")));
     QCOMPARE(restarted.consumeInstalledUpdate(), QStringLiteral("1.2.4"));
     QCOMPARE(restarted.consumeInstalledUpdate(), QString());
+}
+
+// exordy round-2 finding (#685): a marker whose removal could not be persisted
+// must not hand out a confirmation, or the success toast keeps firing on every
+// launch while the stale marker lingers. Only a persisted removal counts.
+void NativeUpdaterTest::failedMarkerRemovalWithholdsConfirmation()
+{
+    QTemporaryDir sandbox;
+    QVERIFY(sandbox.isValid());
+    const Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
+    const QString storePath = QDir(sandbox.filePath(QStringLiteral("data")))
+        .filePath(QStringLiteral("workspace-native-install/pending-update.conf"));
+    QDir().mkpath(QFileInfo(storePath).absolutePath());
+    {
+        QSettings store(storePath, QSettings::IniFormat);
+        store.setValue(QStringLiteral("pending/version"), QStringLiteral("1.2.4"));
+        store.sync();
+    }
+    // Make the marker's directory unwritable: no sync can succeed there.
+    const QString storeDir = QFileInfo(storePath).absolutePath();
+    QVERIFY(QFile::setPermissions(storeDir,
+        QFileDevice::ReadOwner | QFileDevice::ExeOwner |
+        QFileDevice::ReadGroup | QFileDevice::ExeGroup |
+        QFileDevice::ReadOther | QFileDevice::ExeOther));
+    NativeUpdater updater(QUrl(QStringLiteral("http://127.0.0.1:1/latest")), QStringLiteral("1.2.4"),
+                          sandbox.filePath(QStringLiteral("cache")));
+    QCOMPARE(updater.consumeInstalledUpdate(), QString());
+    QVERIFY(QFile::setPermissions(storeDir,
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
+        QFileDevice::ReadGroup | QFileDevice::ExeGroup |
+        QFileDevice::ReadOther | QFileDevice::ExeOther));
+    // The marker survived the failed removal: a later launch confirms once.
+    QCOMPARE(updater.consumeInstalledUpdate(), QStringLiteral("1.2.4"));
+    QCOMPARE(updater.consumeInstalledUpdate(), QString());
+}
+
+// exordy round-2 finding (#685): reading and removing the marker is a claim
+// that must be atomic across processes. A launch that loses the claim reports
+// nothing and leaves the marker to the winner; QLockFile ages out a crashed
+// claimant, so a lost process can never silence the toast forever.
+void NativeUpdaterTest::claimedMarkerSkipsSecondConsumer()
+{
+    QTemporaryDir sandbox;
+    QVERIFY(sandbox.isValid());
+    const Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
+    const QString storePath = QDir(sandbox.filePath(QStringLiteral("data")))
+        .filePath(QStringLiteral("workspace-native-install/pending-update.conf"));
+    QDir().mkpath(QFileInfo(storePath).absolutePath());
+    {
+        QSettings store(storePath, QSettings::IniFormat);
+        store.setValue(QStringLiteral("pending/version"), QStringLiteral("1.2.4"));
+        store.sync();
+    }
+    QLockFile claim(storePath + QStringLiteral(".claim"));
+    QVERIFY(claim.tryLock(200));
+    NativeUpdater second(QUrl(QStringLiteral("http://127.0.0.1:1/latest")), QStringLiteral("1.2.4"),
+                         sandbox.filePath(QStringLiteral("cache")));
+    QCOMPARE(second.consumeInstalledUpdate(), QString());
+    claim.unlock();
+    // The winner released its claim without consuming: the next consumer still can.
+    QCOMPARE(second.consumeInstalledUpdate(), QStringLiteral("1.2.4"));
+    QCOMPARE(second.consumeInstalledUpdate(), QString());
 }
 
 void NativeUpdaterTest::invalidExistingInstallation_data()

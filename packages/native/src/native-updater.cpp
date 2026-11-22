@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -428,11 +429,24 @@ QString NativeUpdater::consumeInstalledUpdate()
 {
     const QString storePath = pendingStorePath();
     if (storePath.isEmpty()) return { };
+    // #685 review: read-then-remove is a claim and must be atomic across
+    // processes; the loser of the claim shows no toast and leaves the marker
+    // to the winner. A crashed claimant ages out via QLockFile's stale time,
+    // so a lost process can never silence the toast for good. The claim file
+    // is its own name, NOT <store>.lock: QSaveFile (inside QSettings::sync)
+    // locks <file>.lock itself, and claiming that path would self-deadlock
+    // the sync below against our own still-alive pid.
+    QLockFile claim(storePath + QStringLiteral(".claim"));
+    if (!claim.tryLock(0)) return { };
     QSettings store(storePath, QSettings::IniFormat);
     if (!store.contains(QStringLiteral("pending/version"))) return { };
     const QString expected = store.value(QStringLiteral("pending/version")).toString();
     store.remove(QStringLiteral("pending/version"));
     store.sync();
+    // #685 review: a removal that failed to persist did not consume anything -
+    // withholding the confirmation here costs one toast, honouring it would
+    // repeat the toast on every launch while the marker lingers.
+    if (store.status() == QSettings::AccessError) return { };
     const QString installed = normalizeAppVersion(m_currentVersion);
     const QString wanted = normalizeAppVersion(expected);
     return (!wanted.isEmpty() && wanted == installed) ? installed : QString{ };
