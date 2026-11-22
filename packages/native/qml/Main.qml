@@ -124,10 +124,12 @@ ApplicationWindow {
     // chat-info root screen content.
     NativeRightDrawer {
         id: rightDrawer
-        // #666 test seam + route gate: the drawer is chat-route chrome, so it
-        // unmounts while a non-chat section is active (its open state and
-        // layers are kept for the way back, like the reference route model).
-        objectName: "rightDrawer"
+        // #666 route gate: the drawer is chat-route chrome, so it unmounts
+        // while a non-chat section is active (its open state and layers are
+        // kept for the way back, like the reference route model). The
+        // objectName stays the established nativeRightDrawer seam - 48 test
+        // handles (window + e2ee-read suites) collect it by that name.
+        objectName: "nativeRightDrawer"
         visible: root.controller.section === "chat" && drawerOpen
         anchors.right: parent.right
         anchors.top: root.controller.authenticated ? topBar.bottom : parent.top

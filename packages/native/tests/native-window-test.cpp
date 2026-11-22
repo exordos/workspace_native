@@ -31870,7 +31870,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         const auto pos = [window](QQuickItem *it) { return it->mapToItem(window->contentItem(), QPointF(0, 0)); };
         QVERIFY(view("sidebar"));
-        auto *drawer = item(window->contentItem(), "rightDrawer"); QVERIFY(drawer);
+        auto *drawer = item(window->contentItem(), "nativeRightDrawer"); QVERIFY(drawer);
         QMetaObject::invokeMethod(drawer, "openWorkspaceUserProfile", Q_ARG(QVariant, channelPeer));
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 5000);
         const QString selected = controller.selectedStream();
@@ -33780,12 +33780,19 @@ private slots:
         }
     }
 
-    void servicesHeaderHintWrapsAtMinimumWindowWidth()
+    void servicesHeaderHintFitsAtMinimumWindowWidth()
     {
-        // Review PR #380 finding 1: the header hint (settings.servicesPlannedHint,
-        // reference sub mt-1 text-sm text-text-muted, services-page.ui.tsx:88)
-        // is width-constrained and must wrap instead of overflowing the content
-        // slot at the minimum window width, growing the header to contain it.
+        // Review PR #380 finding 1 (pre-#666 slot) + #666 route model sweep.
+        // The header hint (settings.servicesPlannedHint, reference sub
+        // mt-1 text-sm text-text-muted, services-page.ui.tsx:88) used to sit in
+        // a sidebar-narrowed slot where the NoWrap default overflowed. Since
+        // #666 the services section renders without the chat shell (reference
+        // shouldShowChatShell, layout-main-workspace.ui.tsx:172 @ e0194ff), so
+        // at the 700 px minimum window the full-width slot holds the hint on
+        // one line - like the reference does. The permanent requirements stay
+        // pinned: the hint must never be clipped (fits or wraps, never overflows)
+        // and keeps a wrap-capable mode so any future narrower slot still grows
+        // the header to contain it.
         WindowChannelFixture fixture; fixture.sourceScene = true;
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
@@ -33806,21 +33813,22 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeServicesPage"), 5000);
         auto *sub = view("servicesPlannedHint"); QVERIFY(sub);
         auto *headerBg = view("servicesHeaderBg"); QVERIFY(headerBg);
-        // The hint line is wider than its box at the minimum window width, so
-        // the default NoWrap mode overflows instead of growing the header.
-        QVERIFY2(sub->property("implicitWidth").toReal() > sub->width() + 1.0,
-            qPrintable(QStringLiteral("narrow case did not reproduce: box %1 implicit %2")
+        // The shell-less full-width slot contains the hint on one line: no
+        // overflow (implicit width must not exceed the box), settled line
+        // count 1. Poll the page width first - the freshly-mounted section
+        // reports width 0 until the first layout pass settles.
+        QTRY_VERIFY_WITH_TIMEOUT(sub->width() > 0.0, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(sub->property("lineCount").toInt() == 1, 5000);
+        QVERIFY2(sub->property("lineCount").toInt() == 1,
+            qPrintable(QStringLiteral("hint lines %1 height %2")
+                .arg(sub->property("lineCount").toInt()).arg(sub->height())));
+        QVERIFY2(sub->property("implicitWidth").toReal() <= sub->width() + 1.0,
+            qPrintable(QStringLiteral("hint overflows the minimum-width slot: box %1 implicit %2")
                 .arg(sub->width()).arg(sub->property("implicitWidth").toReal())));
         QVERIFY2(sub->property("wrapMode").toInt() != 0,
             "the header hint must not stay on the default NoWrap mode");
-        // The wrapped document layout lands one polish round after the
-        // narrow width is applied; poll until the line count settles.
-        QTRY_VERIFY_WITH_TIMEOUT(sub->property("lineCount").toInt() >= 2, 5000);
-        QVERIFY2(sub->property("lineCount").toInt() >= 2,
-            qPrintable(QStringLiteral("hint lines %1 height %2")
-                .arg(sub->property("lineCount").toInt()).arg(sub->height())));
-        // The header rectangle contains the wrapped hint plus the 16 px
-        // bottom padding (py-4 top, mt-1 gap, the wrapped sub, 16 px bottom).
+        // The header rectangle contains the hint plus the 16 px
+        // bottom padding (py-4 top, mt-1 gap, the sub, 16 px bottom).
         QVERIFY2(qAbs(headerBg->height()
             - (pos(sub).y() - pos(headerBg).y() + sub->height() + 16.0)) < 1.0,
             qPrintable(QStringLiteral("header %1 hint bottom %2")
@@ -35672,6 +35680,14 @@ private slots:
         auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
         auto *body=visibleItem("diagnosticsContent"); QVERIFY(body);
         auto *toggle=visibleItem("diagnosticsAdvancedToggle"); QVERIFY(toggle);
+        // #666 route model: the diagnostics section renders WITHOUT the chat
+        // shell (reference shouldShowChatShell, layout-main-workspace.ui.tsx:172
+        // @ e0194ff), so the full-width page packs its content to ~687 px and the
+        // 900 px fixture no longer overflows. Re-create the fold at the app
+        // minHeight height - the scroll-into-view contract under test is
+        // unchanged, it just needs the toggle to start below the window bottom.
+        window->resize(window->width(), 620);
+        QTRY_VERIFY_WITH_TIMEOUT(body->height() < window->height(), 4000);
         // The content overflows the viewport, and the toggle's unscrolled
         // scene position sits at or below the window bottom - the exact
         // off-window click the issue reports (mouse event at y=913).
@@ -35737,6 +35753,11 @@ private slots:
         auto *body=visibleItem("diagnosticsContent"); QVERIFY(body);
         auto *toggle=visibleItem("diagnosticsAdvancedToggle"); QVERIFY(toggle);
         QCOMPARE(page->property("advancedExpanded").toBool(), false);
+        // #666 route model: without the chat shell the full-width diagnostics
+        // page no longer overflows the 900 px fixture (see the sibling
+        // viewport test) - re-create the fold at the app minHeight height.
+        window->resize(window->width(), 620);
+        QTRY_VERIFY_WITH_TIMEOUT(body->height() < window->height(), 4000);
         QVERIFY2(body->property("contentHeight").toReal()>body->height(),
                  qPrintable(QStringLiteral("content %1 body %2: page must overflow the fixture")
                             .arg(body->property("contentHeight").toReal()).arg(body->height())));
