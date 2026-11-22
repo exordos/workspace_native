@@ -519,6 +519,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     pollBubbleExpiredDeadlineTreatedAsClosed
     pollBubbleNarrowCardKeepsContentInside
     pollBubbleOptionKeyboardActivation
+    pollCreateDialogOpensCenteredInWindow
     pollCreateDialogRetriesUncertainSendWithSameCanonicalUuids
     rightClickOnBodyLinkOffersCopyLinkAndPlainClickDoesNot
     sidebarCompactDensityKeepsTheAvatarInLatestTopicMode
