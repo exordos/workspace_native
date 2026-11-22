@@ -3758,55 +3758,12 @@ component NativeMentionChip: Item {
         }
     }
 
-    Popup {
-        id: updateInstalledToast
-        objectName: "updateInstalledToast"
+    // Post-install update confirmation (#634): the probe/toast pair lives in
+    // NativeUpdateInstalledToast so the contract is testable standalone.
+    NativeUpdateInstalledToast {
+        updater: root.updater
+        colors: root.colors
         parent: Overlay.overlay
-        x: root.width - width - 16
-        y: 16
-        z: 10000
-        width: Math.min(384, root.width - 32)
-        leftPadding: 16; rightPadding: 16; topPadding: 12; bottomPadding: 12
-        closePolicy: Popup.NoAutoClose
-        modal: false
-        focus: false
-        background: Rectangle {
-            radius: 8
-            color: Qt.rgba(root.colors["call-green"].r, root.colors["call-green"].g, root.colors["call-green"].b, 0.1)
-            border.color: Qt.rgba(root.colors["call-green"].r, root.colors["call-green"].g, root.colors["call-green"].b, 0.4)
-        }
-        contentItem: Text {
-            id: updateInstalledText
-            objectName: "updateInstalledText"
-            wrapMode: Text.WordWrap
-            color: root.colors["text-primary"]
-            font.pixelSize: 13
-        }
-    }
-    // Post-install update confirmation (#634): consume the pending marker once
-    // at start; a match shows the success toast exactly once (reference
-    // useInstalledAppUpdateToast). Mismatch/corrupt values clear silently.
-    Timer {
-        id: updateInstalledProbe
-        objectName: "updateInstalledProbe"
-        interval: 0
-        singleShot: true
-        onTriggered: {
-            const installed = root.updater ? root.updater.consumeInstalledUpdate() : ""
-            if (installed.length > 0) {
-                updateInstalledText.text = qsTr("Update %1 installed successfully").arg(installed)
-                updateInstalledToast.open()
-                updateInstalledCloser.restart()
-            }
-        }
-        Component.onCompleted: start()
-    }
-    Timer {
-        id: updateInstalledCloser
-        objectName: "updateInstalledCloser"
-        interval: 4000
-        singleShot: true
-        onTriggered: updateInstalledToast.close()
     }
 
     Popup {

@@ -250,6 +250,7 @@ qt_add_resources(workspace-native-ui native_call_bridge_js PREFIX /workspace/qml
 set(native_qml_files
 qml/NativeExternalAccountBlock.qml
 qml/NativeExternalProviderDialog.qml
+qml/NativeUpdateInstalledToast.qml
 qml/Main.qml qml/NativeTheme.qml qml/NativeIconButton.qml qml/NativeButton.qml qml/NativeField.qml
 qml/NativeSelect.qml qml/NativeAccountPreferences.qml
 qml/NativeChatBackgroundPanel.qml
@@ -473,7 +474,8 @@ if(BUILD_TESTING)
     target_link_libraries(native-about-policy-test PRIVATE workspace-native-ui Qt6::Test)
     qt_add_resources(native-about-policy-test native_about_policy_qml
         PREFIX /workspace/qml BASE qml FILES
-            qml/NativeAboutDrawer.qml qml/NativeIconButton.qml qml/NativeTheme.qml)
+            qml/NativeAboutDrawer.qml qml/NativeIconButton.qml qml/NativeTheme.qml
+            qml/NativeUpdateInstalledToast.qml)
     add_test(NAME native-about-policy COMMAND native-about-policy-test)
     set_tests_properties(native-about-policy PROPERTIES TIMEOUT 30)
 
