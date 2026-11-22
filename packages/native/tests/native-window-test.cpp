@@ -1516,6 +1516,32 @@ static QJsonObject mediaViewerHeicRow(const QString &uuid, const QString &fileUu
     return row;
 }
 
+// Bug #690: sample the HEIC bubble's solid fill against its CURRENT geometry.
+// A hint-less HEIC keeps the 240x180 reservation until the decode publishes
+// its size, so the bubble collapses when a slow preview finally lands; a rect
+// captured while the reservation was expanded can sit permanently outside the
+// painted image (the deterministic pixel FAIL under CI parallel load). Every
+// pass of a pixel wait must re-read the live geometry instead.
+static bool heicBubbleShowsSolidFill(QQuickWindow *window, QQuickItem *bubble,
+                                     const QColor &expected)
+{
+    const QRectF imageRect(bubble->mapToScene(QPointF{}), bubble->size());
+    if (imageRect.width() < 40 || imageRect.height() < 24) return false;
+    const auto pixels = window->grabWindow();
+    if (pixels.isNull() || !pixels.rect().contains(imageRect.toAlignedRect())) return false;
+    const auto close = [&](const QColor &a) {
+        return qAbs(a.red() - expected.red()) <= 12 && qAbs(a.green() - expected.green()) <= 12
+            && qAbs(a.blue() - expected.blue()) <= 12;
+    };
+    const QPointF points[] = {QPointF(.25, .25), QPointF(.5, .5), QPointF(.75, .5), QPointF(.5, .75)};
+    for (const auto &point : points) {
+        const auto at = imageRect.topLeft() + QPointF(imageRect.width() * point.x(),
+                                                      imageRect.height() * point.y());
+        if (!close(pixels.pixelColor(at.toPoint()))) return false;
+    }
+    return true;
+}
+
 // ---- Poll bubble fixtures (issue #216, docs/NATIVE_DESKTOP_POLLS_BUBBLE.md) ----
 // Wire-shaped fixtures mirror the reference poll DTO at workspace_ui
 // 230e02b8b0273dee556a406746d122180a68b3e7 (same uuids as the controller-side
@@ -21716,22 +21742,21 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.messages().size(), 1);
         // 1. Bubble thumbnail: the ISO-BMFF bytes decode through libheif and
         // paint the fixture's solid fill inside the inline image bounds.
+        // Bug #690: a hint-less HEIC holds the 240x180 reservation until the
+        // decode publishes its size, so the bubble collapses when a slow
+        // preview lands. Waiting on a rect captured before that collapse made
+        // the pixel assertion race the paint - deterministic FAIL under CI
+        // parallel load. Wait for the pipeline verdict event-driven (17 s
+        // covers the production 15 s decode watchdog), then sample the live
+        // geometry, which the paint must reach within a few render passes.
         auto *bubble = visibleItem(content, "inline-image-" + first); QVERIFY(bubble);
         QVERIFY(!bubble->property("failed").toBool());
-        const QRectF imageRect(bubble->mapToScene(QPointF{}), bubble->size());
-        QVERIFY2(imageRect.width() >= 40 && imageRect.height() >= 24,
-            qPrintable(QStringLiteral("bubble image painted at %1x%2")
-                .arg(imageRect.width()).arg(imageRect.height())));
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
-            const auto pixels = window->grabWindow();
-            if (pixels.isNull() || !pixels.rect().contains(imageRect.toAlignedRect())) return false;
-            for (const auto &point : {QPointF(.25, .25), QPointF(.5, .5), QPointF(.75, .5), QPointF(.5, .75)}) {
-                const auto at = imageRect.topLeft() + QPointF(imageRect.width() * point.x(),
-                                                              imageRect.height() * point.y());
-                if (!closeColor(pixels.pixelColor(at.toPoint()))) return false;
-            }
-            return true;
-        })(), 8000);
+            return !bubble->property("imageUrl").toString().isEmpty()
+                || bubble->property("failed").toBool();
+        })(), 17000);
+        QVERIFY2(!bubble->property("failed").toBool(), "HEIC preview decode failed");
+        QTRY_VERIFY_WITH_TIMEOUT(heicBubbleShowsSolidFill(window, bubble, heicColor), 8000);
         // 2. Viewer: the slot stays loading through the decode and lands ready
         // on the decoded PNG render, not on the ISO-BMFF original.
         auto *viewer = controller.mediaViewer();
@@ -21776,6 +21801,88 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(savedFile.readAll(), heic); // byte-identical original, not the PNG render
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
+    }
+
+    // Bug #690 regression: a late-landing HEIC preview must still paint in
+    // the bubble. The metadata fetch is deferred, so the bubble is first
+    // observed at the expanded 240x180 reservation; when the preview lands,
+    // the row collapses to the decoded 48x32 frame. The pixel wait must
+    // follow the live geometry and the pipeline verdict - a rect captured
+    // mid-reservation races the paint, which is how both #687 CI runs failed
+    // this area deterministically (the reinstated stale-rect pattern turns
+    // this case RED; see heicBubbleShowsSolidFill).
+    void lateHeicDecodeCollapsesBubbleGeometryAndStillPaints()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QByteArray heic = heicFixture();
+        const QColor heicColor(0x46, 0x82, 0xb4);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto releaseMeta = std::make_shared<std::function<void()>>();
+        auto metaArrived = std::make_shared<bool>(false);
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = heic; result.rawContentType = "image/heic";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, heic);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "trip.heic";
+                metadata["content_type"] = "image/heic";
+                Response result{metadata};
+                result.defer = [releaseMeta, metaArrived](std::function<void()> send) {
+                    *releaseMeta = std::move(send); *metaArrived = true;
+                };
+                return result;
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerHeicRow(first, fileA, heic.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("heic-late.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Late HEIC window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *bubble = visibleItem(content, "inline-image-" + first); QVERIFY(bubble);
+        // The held metadata keeps the reservation expanded (no decoded size).
+        QTRY_VERIFY_WITH_TIMEOUT(bubble->width() >= 120
+            && bubble->property("imageUrl").toString().isEmpty(), 4000);
+        QTRY_VERIFY_WITH_TIMEOUT(*metaArrived, 4000);
+        // Late delivery, like a decode lane starved under CI parallel load.
+        QTimer::singleShot(600, qApp, [releaseMeta] { if (*releaseMeta) (*releaseMeta)(); });
+        // The preview lands within the production contract...
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return !bubble->property("imageUrl").toString().isEmpty()
+                || bubble->property("failed").toBool();
+        })(), 17000);
+        QVERIFY2(!bubble->property("failed").toBool(), "late HEIC decode failed");
+        // ...and the row collapses to the decoded frame while doing so.
+        QTRY_VERIFY_WITH_TIMEOUT(bubble->width() < 120, 8000);
+        // The painted pixels follow the collapsed, live geometry.
+        QTRY_VERIFY_WITH_TIMEOUT(heicBubbleShowsSolidFill(window, bubble, heicColor), 8000);
     }
 
     // Issue #638 sec 4/5: a corrupt HEIC (sniffs as HEIC, fails to decode)
