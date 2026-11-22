@@ -4589,7 +4589,25 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
             // Dispatched as current, the route moved away before the reply:
             // the write settles and the retired route's cache goes stale,
             // but the newly current route's catalog is never touched.
+            // Issue #682: if the retired route is now expanded as a sidebar
+            // stream, its in-memory rows must settle with the reply too -
+            // a stale cache flag cannot repair rows the user is already
+            // looking at. Same reconcile as the sidebar-dispatched path;
+            // without a safe merge the view is invalidated and refetched.
             if (accepted) staleCache(NativeCache::Kind::Topics, stream);
+            if (accepted && m_inboxTopics.contains(stream)) {
+                auto rows = m_inboxTopics.value(stream);
+                auto row = std::find_if(rows.begin(), rows.end(),
+                    [&](const Topic &t) { return t.uuid == topic; });
+                if (row != rows.end()) {
+                    *row = *updated;
+                    m_inboxTopics.insert(stream, rows);
+                    emit sidebarTopicsChanged(stream);
+                } else {
+                    m_inboxStaleTopics.insert(stream);
+                    requestSidebarTopics(stream);
+                }
+            }
             finish(accepted);
             return;
         }
