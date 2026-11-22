@@ -168,13 +168,29 @@ def render(prefix, buckets, heavy, fragments_id):
     return "\n".join(lines) + "\n"
 
 
-def code_lines(text):
-    """Generated content to compare: every line except the header comments.
+BRACKET_TOKEN_RE = re.compile(r"#\[=*\[|\]=*\]#")
 
-    The bucket members live on indented lines inside multi-line set() blocks,
-    so dropping anything but the set( lines would let member edits slip
-    through the guard (issue #675 review findings 1/5)."""
-    return [line for line in text.splitlines() if not line.startswith("#")]
+
+def guard_lines(text):
+    """Lines the --check comparison uses: the complete rendering, comments included.
+
+    The only tolerated difference is line 2, the informational membership line
+    that records the generator's fragments-id path (it depends on the cwd of
+    whoever ran the generation). Every other line is compared verbatim - unlike
+    the old filter that dropped all '#'-leading lines, which let a CMake
+    bracket comment (a standalone "#[[" line closed by "#]]#") hide a member
+    from the parsed set() while the guard still saw the member line
+    (re-review finding 2; boundary behaviour verified against cmake -P).
+    Line 2 keeps its content in the comparison when it smuggles a bracket
+    comment token."""
+    lines = text.splitlines()
+    kept = []
+    for index, line in enumerate(lines):
+        if (index == 1 and line.startswith("# membership: ")
+                and not BRACKET_TOKEN_RE.search(line)):
+            continue
+        kept.append(line)
+    return kept
 
 
 def layout_count(path):
@@ -210,16 +226,27 @@ def pick_count(per, ceiling, start):
 
     The search is bounded by the function count: above it at least one bucket
     is empty for every larger count, so an unbounded grow-only loop hangs
-    forever (finding 2). Returns None when no valid count exists."""
+    forever (finding 2). When growth exhausts the bound, smaller counts are
+    tried too: a crc32 collision can make every count from the current one
+    up to the function count leave an empty bucket, while a smaller count
+    packs every bucket non-empty under the ceiling (re-review finding 1).
+    Returns None when no valid count exists."""
     limit = max(1, len(per))
     count = max(1, min(start, limit))
-    while True:
-        buckets = assign(per, count)
-        if not any(not b for b in buckets) and max(bucket_secs(buckets, per)) <= ceiling:
-            return count
-        if count >= limit:
-            return None
+
+    def valid(candidate):
+        buckets = assign(per, candidate)
+        return (not any(not b for b in buckets)
+                and max(bucket_secs(buckets, per)) <= ceiling)
+
+    while not valid(count) and count < limit:
         count += 1
+    if valid(count):
+        return count
+    for smaller in range(count - 1, 0, -1):
+        if valid(smaller):
+            return smaller
+    return None
 
 
 def main():
@@ -289,7 +316,9 @@ def main():
             with open(args.out) as handle:
                 committed = handle.read()
             bucketable, heavy = split_heavy(per, args.ceiling)
-            if code_lines(committed) != code_lines(
+            # Compare the complete rendering, comments included (guard_lines);
+            # a comment-smuggled hidden member must fail the guard.
+            if guard_lines(committed) != guard_lines(
                     render(args.prefix, assign(bucketable, count),
                            heavy, args.fragments_id)):
                 errors.append("layout is not the deterministic rendering of the fragments")
