@@ -62,9 +62,12 @@ public slots:
                 }
             }
         }
-        QMetaObject::invokeMethod(this, [this, slot, generation, outPath, ok] {
-            emit rendered(slot, generation, ok ? outPath : QString{});
-        }, Qt::QueuedConnection);
+        // #688: emit the result signal directly instead of posting through the
+        // model's raw pointer: the queued connection is auto-disconnected when
+        // the model is destroyed, so a late result from an abandoned worker
+        // (bounded shutdown let the destructor return while this render was
+        // still inside the codec) is discarded safely.
+        emit rendered(slot, generation, ok ? outPath : QString{});
     }
 signals:
     void started(int slot, quint64 generation);
@@ -75,16 +78,17 @@ MediaViewerModel::MediaViewerModel(NativeController *controller, QObject *parent
     : QObject(parent), m_controller(controller), m_markdown(std::make_unique<NativeMarkdown>(this))
 {
     auto *renderer = new MediaViewerHeifRenderer;
-    m_decoder = renderer; renderer->moveToThread(&m_decodeThread);
-    m_decodeThread.setObjectName("mediaViewerHeifRenderer");
-    connect(&m_decodeThread, &QThread::finished, renderer, &QObject::deleteLater);
+    m_decodeThread = new QThread; // abandoned (leaked) if #688 abandon fires
+    m_decoder = renderer; renderer->moveToThread(m_decodeThread);
+    m_decodeThread->setObjectName("mediaViewerHeifRenderer");
+    connect(m_decodeThread, &QThread::finished, renderer, &QObject::deleteLater);
     connect(this, &MediaViewerModel::heifRenderRequested, renderer, &MediaViewerHeifRenderer::render,
         Qt::QueuedConnection);
     connect(renderer, &MediaViewerHeifRenderer::started, this, &MediaViewerModel::renderStarted,
         Qt::QueuedConnection);
     connect(renderer, &MediaViewerHeifRenderer::rendered, this, &MediaViewerModel::heifRendered,
         Qt::QueuedConnection);
-    m_decodeThread.start();
+    m_decodeThread->start();
     if (controller) {
         // The reference viewer auto-closes when its conversation scope changes
         // (workspace-media-viewer.hook.ts:129-135); session end closes too.
@@ -104,7 +108,19 @@ MediaViewerModel::~MediaViewerModel()
     m_stopping = true;
     if (m_decoder) disconnect(m_decoder, nullptr, this, nullptr);
     closeSession();
-    m_decodeThread.requestInterruption(); m_decodeThread.quit(); m_decodeThread.wait();
+    m_decodeThread->requestInterruption();
+    m_decodeThread->quit();
+    // #688: an in-flight libheif decode is uninterruptible, so the wait for
+    // the serial worker is bounded. Past the bound the thread is abandoned:
+    // its QThread and whatever the renderer still own are intentionally
+    // leaked and never touched again - shutdown stays responsive at the
+    // price of the stuck decode's memory (documented guarantee).
+    if (!m_decodeThread->wait(kDecodeShutdownBoundMs)) {
+        m_decoder = nullptr;
+        m_decodeThread = nullptr; // abandoned: intentional leak, see comment
+        return;
+    }
+    delete m_decodeThread; // finished: safe to destroy now
 }
 
 void MediaViewerModel::setFileClient(FileClient *files)

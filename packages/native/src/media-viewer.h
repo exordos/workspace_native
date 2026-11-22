@@ -128,8 +128,13 @@ private:
     // Issue #638 sec 4.2: image slots whose staged bytes are HEIC get their
     // display render decoded on a dedicated worker thread (QML Image cannot
     // read ISO-BMFF); results are fenced by m_generation like the downloads.
-    QThread m_decodeThread;
+    QThread *m_decodeThread = nullptr;
     QPointer<QObject> m_decoder;
+    // #688: a serial libheif decode cannot be interrupted mid-call, so the
+    // destructor waits at most this bound for the worker and then abandons
+    // it (intentional leak of the hung thread and its owned buffers, the
+    // #670 watchdog accounting precedent applied to shutdown).
+    static constexpr int kDecodeShutdownBoundMs = 2000;
     int m_renderTimeoutMs = kHeifDecodeTimeoutMs; // #670 finding 2
     // Queue bound (#670 re-review round 3): the maximum time the serial worker
     // may go without STARTING any render while slots wait in the queue. Every
