@@ -31,6 +31,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     attachmentCardHitAreaAndKeyboardActivateDownload
     chatHeaderStreamBindingsExclusionOnlyHidesCountedGet
     clipboardFilePathsRequireConfirmationBeforeUpload
+    composerPollTriggerLivesInTheExpandedToolbar
     diagnosticsMemoryPanelHidesFreeCardWhenMemFreeMissing
     diagnosticsMemoryPanelTableScrollsHorizontallyWithoutOverflow
     ownStatusPickerMatchesMeasuredSourcePreviewAndSearch
@@ -135,6 +136,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
     rightDrawerConversationSwitchDropsNestedChatScreens
     rightDrawerShellMatchesReferenceGeometry
     selectedStreamEncryptionProjectsEachNeededModelOnce
+    servicesHeaderHintFitsAtMinimumWindowWidth
     topicContextMenuReopenDuringInFlightActionStillSurfacesFailure
     windowChannelInfoFetchesMembersOnlyWhenInfoScreenOpens
 )
@@ -260,7 +262,6 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     pollVoterQueuesStopWhenResultsBecomeAnonymous
     realMenuInputWaitsForSourceLayout
     servicesChatButtonShowsFocusIndicatorOnKeyboardFocus
-    servicesHeaderHintWrapsAtMinimumWindowWidth
     topicContextMenuMarkReadVisibilityAndAction
     uploadedAvatarsUseRealMainPixels
     windowProfileAvatarDialogGeometryAndDisabledRemove
@@ -278,11 +279,13 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
     folderRenameAfterCatalogReload
     globalChannelEncryptedSwitchClearsAndDisablesExclusiveOptions
     globalUserSearchMatchesDirectoryAndOpensDirect
+    lateHeicDecodeCollapsesBubbleGeometryAndStillPaints
     localCachedMessageSearchNavigatesByKeyboard
     meetingCardsShowOneTimestampBesideParticipants
     ownStatusActualMainOwnerLossClosesThePendingEditor
     prefetchLandsMidGestureKeepingAnchor
     quickFileDialogsUploadThenSaveAnAuthenticatedAttachment
+    sectionSwitchUnmountsChatChromeAndRestoresOnChat
     sidebarSearchEscapeWithQueryElsewhereClearsOnly
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
@@ -498,6 +501,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_21
     startupDirectoryDoesNotPopulateHiddenPickers
     widenedPickerKeyboardDownUsesTheActualNineColumnRow
     windowChannelInfoAddBusyIsPerStreamRequestScoped
+    windowStreamContextMenuNotificationHover
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
     anchorOverlayOwnsOnlyItsVisibleConversation
