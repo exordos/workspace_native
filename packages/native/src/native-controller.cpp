@@ -21643,9 +21643,12 @@ void NativeController::deleteTopicSummaryEndpoint(const QString &uuid)
         const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
         if (!current || !authenticated() || ownerKey() != owner) return;
         if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
-        std::erase_if(m_topicSummaryEndpoints, [&uuid](const QVariant &entry) {
-            return entry.toMap().value("uuid").toString() == uuid;
-        });
+        for (int i = 0; i < m_topicSummaryEndpoints.size(); ++i) {
+            if (m_topicSummaryEndpoints.at(i).toMap().value("uuid").toString() == uuid) {
+                m_topicSummaryEndpoints.removeAt(i);
+                break;
+            }
+        }
         setTopicSummaryStatus("saved");
     });
 }
