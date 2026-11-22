@@ -191,6 +191,8 @@ Popup {
         onTriggered: dialog.clockTick++
     }
     width: Math.min(600, parent && parent.width > 0 ? parent.width - 48 : 600)
+    // Bug #667: open centered like the other dialogs (cf. NativePollManagementDialog).
+    anchors.centerIn: parent
     readonly property int formBudget: parent && parent.height > 0 ? parent.height - 48 : 760
     modal: true
     Overlay.modal: Rectangle { color: "#80000000" }
