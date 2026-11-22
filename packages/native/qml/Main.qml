@@ -3892,8 +3892,14 @@ component NativeMentionChip: Item {
                 Layout.fillWidth: true
                 visible: root.controller.authenticated
                 directory: root.controller.externalAccounts
+                admin: root.controller.externalProviderAdmin
                 colors: root.colors
                 menuOpen: accountPopup.visible
+            }
+            NativeExternalProviderDialog {
+                id: externalProviderDialog
+                admin: root.controller.externalProviderAdmin
+                colors: root.colors
             }
             NativeButton {
                 objectName: "ownStatusAction"

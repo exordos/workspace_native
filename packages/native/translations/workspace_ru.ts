@@ -3815,6 +3815,8 @@
     </context>
 <context>
     <name>NativeExternalAccountBlock</name>
+    <message><source>Integration settings</source><translation>Настройки интеграций</translation></message>
+    <message><source>Organization-wide external service settings</source><translation>Общие настройки внешних сервисов организации</translation></message>
     <message><source>External accounts</source><translation>Внешние аккаунты</translation></message>
     <message><source>Could not load external accounts. Check access and try again.</source><translation>Не удалось загрузить внешние аккаунты. Проверь доступ и повтори попытку.</translation></message>
     <message><source>Checking…</source><translation>Проверяем…</translation></message>
@@ -5451,5 +5453,90 @@
             <source>Mark topic as not done</source>
             <translation>Снять отметку выполнения темы</translation>
         </message>
+    </context>
+
+<context>
+    <name>NativeExternalProviderDialog</name>
+    <message><source>Credentials required</source><translation>Требуют обновления доступа</translation></message>
+    <message><source>Loading history</source><translation>Загружают историю</translation></message>
+    <message><source>Connecting</source><translation>Подключаются</translation></message>
+    <message><source>Degraded</source><translation>Работают с ошибками</translation></message>
+    <message><source>Disconnected</source><translation>Отключены</translation></message>
+    <message><source>Operational</source><translation>Работают</translation></message>
+    <message><source>Suspended</source><translation>Приостановлены</translation></message>
+    <message><source>Active</source><translation>Активны</translation></message>
+    <message><source>Enrolling</source><translation>Регистрируются</translation></message>
+    <message><source>Incompatible</source><translation>Несовместимы</translation></message>
+    <message><source>Revoked</source><translation>Отозваны</translation></message>
+    <message><source>Available to connect</source><translation>Доступны для подключения</translation></message>
+    <message><source>Connected</source><translation>Подключены</translation></message>
+    <message><source>Discarded</source><translation>Отброшены</translation></message>
+    <message><source>Failed</source><translation>Завершились с ошибкой</translation></message>
+    <message><source>Manual reconciliation required</source><translation>Требуют ручной проверки</translation></message>
+    <message><source>Queued</source><translation>В очереди</translation></message>
+    <message><source>Running</source><translation>Выполняются</translation></message>
+    <message><source>Succeeded</source><translation>Завершены</translation></message>
+    <message><source>Queued and running operations</source><translation>Операции в очереди и работе</translation></message>
+    <message><source>Selected chats</source><translation>Выбрано чатов</translation></message>
+    <message><source>Synchronized messages</source><translation>Синхронизировано сообщений</translation></message>
+    <message><source>Synchronized users</source><translation>Синхронизировано пользователей</translation></message>
+    <message><source>No data</source><translation>Нет данных</translation></message>
+    <message><source>External integration settings</source><translation>Настройки внешних интеграций</translation></message>
+    <message><source>Close</source><translation>Закрыть</translation></message>
+    <message><source>Loading integration settings…</source><translation>Загружаем настройки интеграции…</translation></message>
+    <message><source>Could not load the integration settings.</source><translation>Не удалось загрузить настройки интеграции.</translation></message>
+    <message><source>Refresh</source><translation>Обновить</translation></message>
+    <message><source>Another administrator changed these settings. Your draft is preserved in the form.</source><translation>Настройки уже изменил другой администратор. Ваши правки сохранены в форме.</translation></message>
+    <message><source>Load current settings</source><translation>Загрузить актуальные</translation></message>
+    <message><source>Keep my draft</source><translation>Оставить мои правки</translation></message>
+    <message><source>Overview</source><translation>Общее состояние</translation></message>
+    <message><source>Provider</source><translation>Провайдер</translation></message>
+    <message><source>Technical status</source><translation>Техническое состояние</translation></message>
+    <message><source>Unavailable</source><translation>Недоступен</translation></message>
+    <message><source>Availability</source><translation>Доступность</translation></message>
+    <message><source>Integration allowed</source><translation>Интеграция разрешена</translation></message>
+    <message><source>Integration disabled</source><translation>Интеграция запрещена</translation></message>
+    <message><source>Emergency suspension</source><translation>Аварийная остановка</translation></message>
+    <message><source>Integration suspended</source><translation>Интеграция приостановлена</translation></message>
+    <message><source>Not active</source><translation>Не действует</translation></message>
+    <message><source>Updated: %1</source><translation>Обновлено: %1</translation></message>
+    <message><source>Availability and limits</source><translation>Доступность и лимиты</translation></message>
+    <message><source>Limits apply to new accounts, selected chats, and transferred files.</source><translation>Ограничения применяются к новым аккаунтам, чатам и передаваемым файлам.</translation></message>
+    <message><source>Allow the Zulip integration</source><translation>Разрешить интеграцию Zulip</translation></message>
+    <message><source>Allows users in this organization to connect Zulip accounts.</source><translation>Разрешает пользователям подключать аккаунты Zulip в этой организации.</translation></message>
+    <message><source>Accounts per user</source><translation>Аккаунтов на пользователя</translation></message>
+    <message><source>Chats per external account</source><translation>Чатов на внешний аккаунт</translation></message>
+    <message><source>Maximum file size</source><translation>Максимальный размер файла</translation></message>
+    <message><source>MiB</source><translation>МиБ</translation></message>
+    <message><source>Enter a value from 0 to %1.</source><translation>Укажите значение от 0 до %1.</translation></message>
+    <message><source>Lowering these limits does not remove existing accounts or selected chats.</source><translation>Уменьшение лимитов не удаляет уже подключённые аккаунты и выбранные чаты.</translation></message>
+    <message><source>Availability and limits cannot be changed while a custom certificate bundle is installed. The backend cannot safely preserve it without receiving the certificates again.</source><translation>Пока установлен собственный набор сертификатов, изменение доступности и лимитов недоступно. Серверная часть не поддерживает безопасное сохранение этих полей без повторной передачи сертификатов.</translation></message>
+    <message><source>Could not save the integration settings.</source><translation>Не удалось сохранить настройки интеграции.</translation></message>
+    <message><source>Custom certificate authority</source><translation>Собственный центр сертификации</translation></message>
+    <message><source>No custom certificate bundle is installed.</source><translation>Собственный набор сертификатов не установлен.</translation></message>
+    <message><source>Certificates</source><translation>Сертификатов</translation></message>
+    <message><source>Generation</source><translation>Поколение</translation></message>
+    <message><source>SHA-256 fingerprint</source><translation>Отпечаток SHA-256</translation></message>
+    <message><source>Loading technical status…</source><translation>Загружаем техническое состояние…</translation></message>
+    <message><source>Could not load the technical status.</source><translation>Не удалось загрузить техническое состояние.</translation></message>
+    <message><source>Could not refresh the technical status.</source><translation>Не удалось обновить техническое состояние.</translation></message>
+    <message><source>Accounts</source><translation>Аккаунты</translation></message>
+    <message><source>Chats</source><translation>Чаты</translation></message>
+    <message><source>Bridge instances</source><translation>Экземпляры моста</translation></message>
+    <message><source>Operations</source><translation>Операции</translation></message>
+    <message><source>Metrics</source><translation>Метрики</translation></message>
+    <message><source>Emergency controls</source><translation>Аварийное управление</translation></message>
+    <message><source>These actions affect the Zulip integration for every user in the organization.</source><translation>Эти действия влияют на интеграцию Zulip для всех пользователей организации.</translation></message>
+    <message><source>Could not complete the action. The form settings were not changed.</source><translation>Не удалось выполнить действие. Настройки формы не изменены.</translation></message>
+    <message><source>Suspending…</source><translation>Приостанавливаем…</translation></message>
+    <message><source>Suspend integration</source><translation>Приостановить интеграцию</translation></message>
+    <message><source>Resuming…</source><translation>Возобновляем…</translation></message>
+    <message><source>Resume integration</source><translation>Возобновить интеграцию</translation></message>
+    <message><source>Suspend the Zulip integration?</source><translation>Приостановить интеграцию Zulip?</translation></message>
+    <message><source>Zulip connections will be suspended for every user in the organization.</source><translation>Подключение Zulip будет приостановлено для всех пользователей организации.</translation></message>
+    <message><source>Suspend for everyone</source><translation>Приостановить для всех</translation></message>
+    <message><source>Cancel</source><translation>Отмена</translation></message>
+    <message><source>Saving…</source><translation>Сохраняем…</translation></message>
+    <message><source>Save</source><translation>Сохранить</translation></message>
     </context>
 </TS>

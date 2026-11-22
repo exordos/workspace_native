@@ -7,6 +7,7 @@ import QtQuick.Effects
 ColumnLayout {
     id: block
     required property var directory
+    required property var admin
     required property var colors
     required property bool menuOpen
     property bool expanded: false
@@ -31,7 +32,10 @@ ColumnLayout {
         selected = ({})
         formMode = ""
     }
-    onExpandedChanged: { if (expanded) directory.open(); else { finish(); directory.close() } }
+    onExpandedChanged: {
+        if (expanded) { directory.open(); admin.probe() }
+        else { finish(); directory.close() }
+    }
     onMenuOpenChanged: if (!menuOpen) expanded = false
     Connections {
         target: block.directory
@@ -136,6 +140,70 @@ ColumnLayout {
                 background: Rectangle { radius: 8; color: block.colors["card-bg-active"]; border.width: connectButton.visualFocus ? 2 : 0; border.color: block.colors.accent }
                 enabled: !block.directory.busy && !block.directory.loading && !block.directory.loadFailed
                 onClicked: block.begin("create", {})
+            }
+            Rectangle {
+                objectName: "externalProviderSeparator"
+                visible: providerEntry.visible
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: block.colors["border-subtle"]
+            }
+            Button {
+                id: providerEntry
+                objectName: "externalProviderEntry"
+                visible: block.admin.accessStatus === "granted"
+                Layout.fillWidth: true
+                flat: true
+                padding: 8
+                hoverEnabled: true
+                Accessible.name: text
+                contentItem: RowLayout {
+                    spacing: 10
+                    Rectangle {
+                        Layout.preferredWidth: 32
+                        Layout.preferredHeight: 32
+                        radius: 6
+                        color: block.colors["bg"]
+                        Accessible.ignored: true
+                        Image {
+                            anchors.centerIn: parent
+                            source: "qrc:/workspace/icons/business_center.svg"
+                            sourceSize.width: 18
+                            sourceSize.height: 18
+                            fillMode: Image.PreserveAspectFit
+                            layer.enabled: true
+                            layer.effect: MultiEffect { colorization: 1; colorizationColor: block.colors["text-secondary"] }
+                            Accessible.ignored: true
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        spacing: 2
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Integration settings")
+                            elide: Text.ElideRight
+                            font.pixelSize: 12
+                            font.weight: Font.Medium
+                            color: block.colors["text-primary"]
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Organization-wide external service settings")
+                            elide: Text.ElideRight
+                            font.pixelSize: 11
+                            color: block.colors["text-muted"]
+                        }
+                    }
+                }
+                background: Rectangle {
+                    radius: 8
+                    border.width: 1
+                    border.color: providerEntry.visualFocus ? block.colors.accent : block.colors["border-subtle"]
+                    color: providerEntry.hovered ? block.colors["sidebar-item-hover"] : Qt.alpha(block.colors["bg-elevated"], 0.3)
+                }
+                onClicked: block.admin.openDialog()
             }
         }
     }
