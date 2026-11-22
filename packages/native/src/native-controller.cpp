@@ -4809,7 +4809,14 @@ void NativeController::setChatKeySharing(bool allow)
                 // this GET captured wins, and the stale answer is dropped.
                 if (at->keySharingUpdatedMicros && settled->keySharingUpdatedMicros
                     && *at->keySharingUpdatedMicros > *settled->keySharingUpdatedMicros) return;
-                *at = *settled;
+                // Issue #681: the GET is a snapshot for ONE setting. Merge only
+                // the key-sharing fields onto the latest row (the confirmed-PUT
+                // contract, messenger-sidebar-actions.lib.ts:626-631): a whole
+                // replacement would revert unrelated fields - e.g. a realtime
+                // rename that landed at an equal key-sharing stamp.
+                at->allowKeySharingByHolders = settled->allowKeySharingByHolders;
+                at->keySharingUpdatedMicros = settled->keySharingUpdatedMicros;
+                at->updatedMicros = std::max(at->updatedMicros, settled->updatedMicros);
                 emit streamsChanged();
                 emit stateChanged();
             });
