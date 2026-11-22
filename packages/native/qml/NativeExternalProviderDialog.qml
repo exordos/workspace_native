@@ -481,7 +481,7 @@ Dialog {
                             visible: dialog.confirming
                             Layout.fillWidth: true
                             spacing: 8
-                            Accessible.role: Accessible.AlertDialog
+                            Accessible.role: Accessible.Dialog
                             Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: qsTr("Suspend the Zulip integration?"); font.pixelSize: 14; font.bold: true; color: dialog.colors["text-primary"] }
                             Label { Layout.fillWidth: true; wrapMode: Text.Wrap; text: qsTr("Zulip connections will be suspended for every user in the organization."); font.pixelSize: 12; color: dialog.colors["text-muted"] }
                             RowLayout {
