@@ -4192,6 +4192,10 @@ QVariantList NativeController::channelInfoTopics() const
         row.insert("hasUnreadPersonalMention", mentions.contains(id));
         row.insert("summary", topic->summary);
         row.insert("summaryEnabled", topic->summaryEnabled);
+        // Issue #635: the settings dialog's topic tab dirty-diff reads these
+        // projections; "" means the app/provider default (see parseTopic).
+        row.insert("summarySystemPrompt", topic->summarySystemPrompt.value_or(QString()));
+        row.insert("summaryReasoningEffort", topic->summaryReasoningEffort.value_or(QString()));
         row.insert("summaryHasNewMessages", topic->summaryHasNewMessages);
         value = row;
     }
@@ -4479,6 +4483,21 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
             [&](const Topic &row) { return row.uuid == topic; });
     }
     if (!known) { report(false); return; }
+    dispatchTopicAction(stream, topic, action, current, method, path, body);
+}
+
+// Extraction seam for issue #635: the arbitration + fenced transport below is
+// byte-identical to the tail applyTopicAction used before; only the request
+// coordinates (method/path/body) are now parameters so the rich summary save
+// can ride the same per-topic arbitration, renewal fencing and merge paths.
+void NativeController::dispatchTopicAction(const QString &stream, const QString &topic,
+    const QString &action, bool current, const QByteArray &method, const QString &path,
+    const QJsonObject &body)
+{
+    const auto report = [this, &stream, &topic, &action](bool ok) {
+        emit channelTopicActionFinished(topic, action, ok);
+        emit topicActionFinished(stream, topic, action, ok);
+    };
     // Arbitration: at most one in-flight action per topic. A competing action
     // for the same topic is rejected as finished-false without a second
     // request (the pinned drawer retry case depends on this granularity); a
@@ -4625,6 +4644,51 @@ void NativeController::applyTopicAction(const QString &stream, const QString &to
         }
         finish(accepted);
     }, ApiClient::TokenRenewal::AwaitReply);
+}
+
+// Issue #635 (docs/topic-summary-settings.md): the topic-tab save of the
+// three-tab settings dialog. Reference surface set_summary_prompt/invoke with
+// AtLeastOne dirty-only patching (messenger.types.ts:435-439 at workspace_ui
+// e0194ff): empty prompt string means the app default and is sent as null to
+// clear a custom prompt; reasoning effort "" means the provider default.
+void NativeController::saveTopicSummaryTopic(const QString &topic, bool enabled,
+    const QString &prompt, const QString &effort)
+{
+    const auto report = [this, &topic](bool ok) {
+        emit channelTopicActionFinished(topic, QStringLiteral("summary"), ok);
+        emit topicActionFinished(m_stream, topic, QStringLiteral("summary"), ok);
+    };
+    // Same drawer preconditions as the enabled-only seam (issue #636).
+    const auto *stream = channelInfoStreamRow();
+    const auto row = std::find_if(m_topics.cbegin(), m_topics.cend(),
+        [&](const Topic &t) { return t.uuid == topic && t.stream == m_stream; });
+    if (!stream || !m_topicsVerified || row == m_topics.cend() || row->done
+        || !authenticated() || !isUuid(topic)
+        || !channelInfoStream().value(QLatin1String("canEditTopicSummary")).toBool())
+        { report(false); return; }
+    // Reference validation: effort enum, prompt trimmed with a 16384 cap, and
+    // a whitespace-only custom draft is an error, never a silent clear to null.
+    static const QStringList efforts{QStringLiteral("off"), QStringLiteral("minimal"),
+        QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
+    const auto trimmedPrompt = prompt.trimmed();
+    if (!effort.isEmpty() && !efforts.contains(effort)) { report(false); return; }
+    if (!prompt.isEmpty() && trimmedPrompt.isEmpty()) { report(false); return; }
+    if (trimmedPrompt.size() > 16384) { report(false); return; }
+    const std::optional<QString> nextPrompt =
+        trimmedPrompt.isEmpty() ? std::optional<QString>{} : std::optional<QString>(trimmedPrompt);
+    const std::optional<QString> nextEffort =
+        effort.isEmpty() ? std::optional<QString>{} : std::optional<QString>(effort);
+    QJsonObject body;
+    if (enabled != row->summaryEnabled) body.insert("summary_enabled", enabled);
+    if (nextPrompt != row->summarySystemPrompt)
+        body.insert("summary_system_prompt",
+            nextPrompt ? QJsonValue(*nextPrompt) : QJsonValue(QJsonValue::Null));
+    if (nextEffort != row->summaryReasoningEffort)
+        body.insert("summary_reasoning_effort",
+            nextEffort ? QJsonValue(*nextEffort) : QJsonValue(QJsonValue::Null));
+    if (body.isEmpty()) { report(true); return; } // nothing dirty: nothing to patch
+    dispatchTopicAction(m_stream, topic, QStringLiteral("summary"), true, QByteArrayLiteral("POST"),
+        messenger + "/stream_topics/" + topic + "/actions/set_summary_prompt/invoke", body);
 }
 
 // Issue #645: a generation bump silences the wrapper callbacks of everything that

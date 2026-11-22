@@ -182,6 +182,11 @@ struct Topic {
     QString summary;
     bool summaryEnabled = true;
     bool summaryHasNewMessages = false;
+    // Issue #635: per-topic summary configuration carried on the topic DTO
+    // (summary_system_prompt / summary_reasoning_effort at workspace_ui e0194ff);
+    // nullopt means the app/provider default respectively.
+    std::optional<QString> summarySystemPrompt;
+    std::optional<QString> summaryReasoningEffort;
 };
 
 struct Message {

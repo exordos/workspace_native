@@ -269,6 +269,21 @@ static bool optionalMode(const QJsonObject &json, const QStringList &allowed)
     return value.isUndefined() || (value.isString() && allowed.contains(value.toString()));
 }
 
+// Issue #635: optional string DTO field with explicit-null-means-default
+// semantics (messenger.types.ts:1335-1339 at workspace_ui e0194ff): absent or
+// null parses to nullopt (app/provider default), any other non-string is a
+// schema mismatch and nulls the whole row.
+static std::optional<std::optional<QString>> optionalNullableText(
+    const QJsonObject &json, const char *key, const QStringList &allowed = {})
+{
+    const auto value = json.value(QLatin1String(key));
+    if (value.isUndefined() || value.isNull()) return std::optional<QString>{};
+    if (!value.isString()) return {};
+    const auto text = value.toString();
+    if (!allowed.isEmpty() && !allowed.contains(text)) return {};
+    return std::optional<QString>(text);
+}
+
 static std::optional<qint64> optionalUpdatedMicros(const QJsonObject &json)
 {
     if (!json.contains("updated_at")) return 0;
@@ -543,12 +558,20 @@ std::optional<Topic> parseTopic(const QJsonObject &json, const QString &project,
         || !unread || !active || !passive || !validLastMessage(json) || !updated
         || !optionalMode(json, {"default", "mute", "unmute", "follow"}))
         return std::nullopt;
+    // Issue #635: the settings dialog reads the topic config back off this row,
+    // so a schema mismatch here must reject the row rather than guess defaults.
+    const auto summaryPrompt = optionalNullableText(json, "summary_system_prompt");
+    static const QStringList efforts{QStringLiteral("off"), QStringLiteral("minimal"),
+        QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
+    const auto summaryEffort = optionalNullableText(json, "summary_reasoning_effort", efforts);
+    if (!summaryPrompt || !summaryEffort) return std::nullopt;
     return Topic{id, stream, json.value("name").toString(), *unread,
                  json.value("is_done").toBool(), json.value("is_default").toBool(),
                  *active, *passive, json.value("last_message_uuid").toString(),
                  json.value("notification_mode").toString("default"), *updated,
                  json.value("summary").toString(), json.value("summary_enabled").toBool(true),
-                 json.value("summary_has_new_messages").toBool()};
+                 json.value("summary_has_new_messages").toBool(),
+                 *summaryPrompt, *summaryEffort};
 }
 
 std::optional<Message> parseMessage(const QJsonObject &json, const QString &project)

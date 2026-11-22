@@ -475,6 +475,12 @@ public:
     Q_INVOKABLE void requestSidebarTopics(const QString &stream);
     Q_INVOKABLE void toggleSidebarStream(const QString &stream);
 
+    // Issue #635: topic-tab save of the topic summary settings dialog - dirty-only
+    // patching of summary_enabled / summary_system_prompt / summary_reasoning_effort
+    // over the reference set_summary_prompt surface. Empty prompt = app default (sent
+    // as null), empty effort = provider default.
+    Q_INVOKABLE void saveTopicSummaryTopic(const QString &topic, bool enabled,
+        const QString &prompt, const QString &effort);
     // Issue #636 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): topic context
     // menu actions, reference runWorkspaceTopicNotificationUpdate /
     // runWorkspaceTopicRead / runWorkspaceTopicRenameRequest /
@@ -1955,6 +1961,10 @@ private:
     quint64 m_topicActionToken = 0;
     void settleTopicAction(const QString &stream, const QString &topic,
         const QString &action, bool ok, const QString &errorMessage = QString());
+    // Issue #635: shared transport of applyTopicAction (extraction seam) - per-topic
+    // arbitration, renewal fencing and row merge with caller-supplied coordinates.
+    void dispatchTopicAction(const QString &stream, const QString &topic, const QString &action,
+        bool current, const QByteArray &method, const QString &path, const QJsonObject &body);
     void interruptTopicActions();
     QVector<ChannelInfoMember> m_channelInfoMembers;
     quint64 m_channelInfoTicket = 0;
