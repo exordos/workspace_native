@@ -19,6 +19,13 @@ class QTemporaryFile;
 
 namespace workspace {
 
+namespace updater {
+// Issue #702: the periodic update check cadence mirrors the reference desktop
+// app (workspace_ui packages/electron/src/main.ts:1442 `CHECK_INTERVAL_MS`,
+// one hour). Named constant so the updater test group can pin it.
+inline constexpr int kPeriodicCheckIntervalMs = 60 * 60 * 1000;
+} // namespace updater
+
 // Public release transport only: never shares the authenticated Workspace client.
 class NativeUpdater final : public QObject {
     Q_OBJECT

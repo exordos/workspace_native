@@ -237,6 +237,7 @@ private slots:
     void downloadProgressMirrorsTheTaskbarHint();
     void downloadProgressReachesTheLauncherEntryChannel_data();
     void downloadProgressReachesTheLauncherEntryChannel();
+    void periodicCheckIntervalMatchesReferenceConstant();
 };
 
 void NativeUpdaterTest::explicitCheckAndVerifiedStreamingDownload()
@@ -1274,6 +1275,13 @@ void NativeUpdaterTest::postInstallConfirmationPairing()
     QCOMPARE(updater.consumeInstalledUpdate(), QString());
     QSettings after(storePath, QSettings::IniFormat);
     QVERIFY(!after.contains(QStringLiteral("pending/version")));
+}
+
+void NativeUpdaterTest::periodicCheckIntervalMatchesReferenceConstant()
+{
+    // Issue #702: the reference (workspace_ui main.ts:1442) checks hourly;
+    // re-widening this constant is a parity regression and must fail here.
+    QCOMPARE(workspace::updater::kPeriodicCheckIntervalMs, 60 * 60 * 1000);
 }
 
 int main(int argc, char *argv[])
