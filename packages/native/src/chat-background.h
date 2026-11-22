@@ -108,7 +108,11 @@ signals:
 
 private:
     QJsonObject preferences() const;
-    bool store();
+    static QJsonObject preferencesOf(const Value &global, const QHash<QString, Value> &chats);
+    // Bug #677 contract: apply* stages the proposed preferences, validates
+    // their serialized size and persists them BEFORE replacing the live
+    // values - a rejected write keeps the previous live and stored config.
+    bool storeStaged(const Value &global, const QHash<QString, Value> &chats);
 
     QPointer<QSettings> m_settings;
     QString m_owner;
