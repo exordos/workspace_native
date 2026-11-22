@@ -21775,7 +21775,15 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(render.size(), QSize(48, 32));
         QVERIFY2(closeColor(render.pixelColor(24, 16)),
             qPrintable(render.pixelColor(24, 16).name()));
-        QTRY_VERIFY(visibleItem(content, "mediaViewer-image")->isVisible());
+        // The viewer image materializes a render pass after the slot reports
+        // ready under CI parallel load; visibleItem returns null in that
+        // window and the old unguarded dereference segfaulted the group
+        // (null this into QQuickItem::isVisible, Bug #684).
+        QQuickItem *viewerImage = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            viewerImage = visibleItem(content, "mediaViewer-image");
+            return viewerImage && viewerImage->isVisible();
+        })(), 8000);
         // 3. Download saves the ORIGINAL container, never the render.
         auto *downloadButton = visibleItem(content, "mediaViewer-download"); QVERIFY(downloadButton);
         QVERIFY(downloadButton->property("enabled").toBool());
