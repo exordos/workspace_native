@@ -66,11 +66,19 @@ source strings against the reviewed translation catalog. The runtime needs the Q
 Controls, Layouts, Dialogs, Effects and the dialogs' folder-list model. Real remembered
 sessions require a functioning operating-system secure credential service.
 
+HEIC previews are mandatory on Linux (see `docs/NATIVE_DESKTOP_HEIC_PREVIEWS.md`), so the
+configure step also requires the HEIC dependency set: `libheif-dev` provides the libheif
+development files that CMake detects with pkg-config (and pulls in the `libheif1` runtime
+library), `libheif-plugin-libde265` provides the `libheif-libde265.so` codec plugin that
+HEVC-encoded HEIC files are decoded through, and `libde265-0` provides the runtime library
+the plugin loads from next to it. A missing one of these fails CMake configure on Linux.
+
 On a Debian/Ubuntu development machine:
 
 ```sh
 sudo apt-get install --no-install-recommends cmake ninja-build patchelf qt6-base-dev qt6-image-formats-plugins \
   qt6-declarative-dev qt6-svg-dev qt6-svg-plugins qt6-websockets-dev qt6-l10n-tools qt6-translations-l10n qt6-wayland qtkeychain-qt6-dev libqt6sql6-sqlite libmd4c-dev libssl-dev \
+  libheif-dev libheif1 libheif-plugin-libde265 libde265-0 \
   qml6-module-qtquick qml6-module-qtquick-dialogs \
   qml6-module-qt-labs-folderlistmodel \
   qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-effects \
