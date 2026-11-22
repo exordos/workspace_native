@@ -25,7 +25,7 @@ def main():
     ap.add_argument("--prefix", required=True)
     ap.add_argument("--fragments", required=True)
     ap.add_argument("--only-file", default=None)
-    ap.add_argument("--exclude", nargs="*", default=[])
+    ap.add_argument("--exclude", nargs="*", action="extend", default=[])
     args = ap.parse_args()
 
     cmd = [sys.executable, os.path.join(HERE, "..", "scripts", "gen-test-buckets.py"),
