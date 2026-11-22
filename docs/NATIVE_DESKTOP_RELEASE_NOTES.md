@@ -1,3 +1,17 @@
+# Workspace Native 0.44.0 - Linux development preview
+
+- The client confirms an installed update once on the next start, so you can see the new version landed instead of guessing.
+- Settings gained an integrations entry: administrators can manage external providers - probe them, resolve policy conflicts and use the emergency actions.
+- Composer attachments for HEIC photos now show a decoded preview while you compose, and the preview decode is cancelled the moment the attachment is removed.
+- Fixed: your global account screens stay reachable when you navigate back from Calendar or Mail, the sidebar keeps your scroll position when you switch chats (and yields it instantly when you scroll yourself), and a topic rename that replies late no longer corrupts a retired stream's channel list.
+- Fixed: attachment previews are now classified from the confirmed upload metadata, and the pending-update marker survives updater runs and install-root changes.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.43.0 to 0.44.0](https://github.com/exordos/workspace_native/compare/0.43.0...0.44.0)
+
+---
+
 # Workspace Native 0.43.0 - Linux development preview
 
 - HEIC/HEIF photo support: attachment tiles, the media viewer and the composer preview now decode Apple's high-efficiency format.
