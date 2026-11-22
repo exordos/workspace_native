@@ -28704,7 +28704,13 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         QTRY_VERIFY_WITH_TIMEOUT(centered(), 5000);
         // A window resize keeps the dialog centered (maximize analogue: the
         // popup re-centers against the overlay, which tracks the window).
+        // First require the overlay to reach the requested size: resize delivery
+        // is asynchronous, and until it lands the popup's OLD geometry against
+        // the OLD parent size still satisfies centered() - the assertion would
+        // pass vacuously before any re-centering happened.
         window->resize(1024, 700);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            qAbs(par->width() - 1024.0) <= 2.0 && qAbs(par->height() - 700.0) <= 2.0, 5000);
         QTRY_VERIFY_WITH_TIMEOUT(centered(), 5000);
         click(window, window->findChild<QQuickItem *>("pollCancelButton"));
         QTRY_VERIFY(!dialog->property("visible").toBool());
