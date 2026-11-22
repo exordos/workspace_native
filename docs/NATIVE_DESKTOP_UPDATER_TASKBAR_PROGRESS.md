@@ -290,3 +290,30 @@ zero frames); it went RED before the publish implementation went GREEN.
 The binary needs a `QWindow`, so the test main switches from
 `QTEST_GUILESS_MAIN` to a `QGuiApplication` main with the platform forced to
 `offscreen`; all pre-existing updater cases are unchanged.
+
+## Post-install update confirmation (#634)
+
+Reference contract (workspace_ui 230e02b, features/app-update/app-update-installation.lib.ts
++ app-update-installation.hook.ts): remembering the installed version on the
+Install-and-restart click and confirming it once on next start with
+`update.installedSuccessfully` = "Update {{version}} installed successfully" /
+"Обновление до версии {{version}} успешно установлено". Absent / mismatched / corrupt
+pending values are consumed silently with no toast; a successful confirmation happens
+exactly once because the marker is removed on read.
+
+Native pairing:
+- `NativeUpdater::install()` persists the available version before the installer
+  process starts (best-effort; a marker write failure never blocks installation) into
+  a QSettings IniFormat store at `<cacheRoot>/pending-update.conf`, key
+  `pending/version` — the native counterpart of the reference localStorage pair,
+  kept per-install under the updater cache so fixture tests inject their own path.
+- `consumeInstalledUpdate()` (Q_INVOKABLE) removes the key first, then compares with
+  the reference normalization (trim + case-insensitive strip of a leading `v`);
+  on match it returns the normalized running version, otherwise an empty string.
+- `Main.qml` probes once at start (zero-interval singleShot Timer) and shows
+  `updateInstalledToast` for 4000 ms (reference toast duration is a library default,
+  not part of the contract). Strings go through the Main tr context + workspace_ru.ts.
+- Tests: native-updater group `postInstallConfirmationPairing` (match, v-prefix,
+  mismatch, empty remember, corrupt value, missing marker; each asserts one-shot
+  consumption). A window-layer row (toast visible with a seeded marker) belongs to
+  native-about-policy and is not implemented yet.

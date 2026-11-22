@@ -73,6 +73,8 @@
     </context>
     <context>
         <name>Main</name>
+        <!-- Issue #634 post-install update confirmation (docs/NATIVE_DESKTOP_UPDATER_TASKBAR_PROGRESS.md) -->
+        <message><source>Update %1 installed successfully</source><translation>Обновление до версии %1 успешно установлено</translation></message>
         <!-- Issue #631 downloads.* reference keys (docs/NATIVE_DESKTOP_ATTACHMENT_DOWNLOAD_STATE.md) -->
         <message><source>Downloading…</source><translation>Скачивание…</translation></message>
         <message><source>Downloading… %1%</source><translation>Скачивание… %1%</translation></message>

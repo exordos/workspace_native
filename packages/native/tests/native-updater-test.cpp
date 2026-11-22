@@ -215,6 +215,8 @@ private slots:
     void outwardNotificationMayCancelOrDelete();
     void invalidEndpointDoesNotMakeARequest();
     void installAndRestartUseTheManagedContract();
+    void postInstallConfirmationPairing_data();
+    void postInstallConfirmationPairing();
     void alreadyInstalledUpdate_data();
     void alreadyInstalledUpdate();
     void invalidExistingInstallation_data();
@@ -1074,6 +1076,45 @@ void NativeUpdaterTest::downloadProgressReachesTheLauncherEntryChannel()
 
 // The window progress hint case needs a real QWindow, so the suite runs on
 // QGuiApplication; forcing offscreen keeps every case headless as before.
+void NativeUpdaterTest::postInstallConfirmationPairing_data()
+{
+    QTest::addColumn<QString>("current");
+    QTest::addColumn<QString>("remembered"); // null: remember nothing
+    QTest::addColumn<QString>("rawOverride"); // non-null: write verbatim (corrupt case)
+    QTest::addColumn<QString>("expected");
+    QTest::newRow("exact match") << "0.44.0" << "0.44.0" << QString() << "0.44.0";
+    QTest::newRow("v prefix normalized") << "0.44.0" << "v0.44.0" << QString() << "0.44.0";
+    QTest::newRow("mismatch clears silently") << "0.44.0" << "0.43.0" << QString() << QString();
+    QTest::newRow("empty remember is a no-op") << "0.44.0" << QString() << QString() << QString();
+    QTest::newRow("corrupt value clears silently") << "0.44.0" << QString()
+        << QStringLiteral("not-a-version{") << QString();
+    QTest::newRow("no marker stays silent") << "0.44.0" << QString() << QString() << QString();
+}
+
+void NativeUpdaterTest::postInstallConfirmationPairing()
+{
+    QFETCH(QString, current);
+    QFETCH(QString, remembered);
+    QFETCH(QString, rawOverride);
+    QFETCH(QString, expected);
+    QTemporaryDir cache;
+    QVERIFY(cache.isValid());
+    NativeUpdater updater(QUrl(QStringLiteral("http://127.0.0.1:1/latest")), current, cache.path());
+    const QString storePath = QDir(cache.path()).filePath(QStringLiteral("pending-update.conf"));
+    if (!rawOverride.isNull()) {
+        QSettings store(storePath, QSettings::IniFormat);
+        store.setValue(QStringLiteral("pending/version"), rawOverride);
+        store.sync();
+    } else if (!remembered.isNull()) {
+        updater.rememberPendingUpdate(remembered);
+    }
+    QCOMPARE(updater.consumeInstalledUpdate(), expected);
+    // One-shot: the marker is consumed even on mismatch, so a confirmation never repeats.
+    QCOMPARE(updater.consumeInstalledUpdate(), QString());
+    QSettings after(storePath, QSettings::IniFormat);
+    QVERIFY(!after.contains(QStringLiteral("pending/version")));
+}
+
 int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
