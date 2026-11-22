@@ -25239,6 +25239,41 @@ private:
         QCOMPARE(requests, 3);
     }
 
+    // ---- Issue #664: profile opens in the right sidebar from message author targets ----
+    // Reference contract (workspace_ui e0194ff): the peer author label and the
+    // peer avatar in the message list are buttons (workspace-message-list.ui.tsx:699,
+    // workspace-message-bubble-presentation.ui.tsx:805, data-peer-author-label /
+    // data-workspace-peer-avatar click tests at workspace-message-list.ui.test.tsx:1150-1192)
+    // routed through the SAME handler as mention links
+    // (chat-page-workspace-message-list-section.ui.tsx:113 onOpenAuthorProfile = onOpenMentionUser),
+    // which opens the profile in the right drawer - the conversation stays visible.
+    void messageAuthorTargetsOpenProfileInSidebar()
+    {
+        ProfileWindowScene scene;
+        const QString peerMessage = QStringLiteral("81000000-0000-4000-8000-000000000001");
+        QVERIFY(!visibleItem("profileLayer"));
+        QTRY_VERIFY(visibleItem("message-avatar-" + peerMessage));
+        auto *avatar = visibleItem("message-avatar-" + peerMessage);
+        QVERIFY(avatar->isVisible());
+        click(scene.window, avatar);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
+        QCOMPARE(scene.layer()->property("userUuid").toString(), channelPeer);
+        QCOMPARE(scene.evaluate("rightDrawer.topLayerKind").toString(), QStringLiteral("chat-info"));
+        QCOMPARE(scene.evaluate("rightDrawer.currentProfileOverride").toString(),
+            QStringLiteral("workspace-user-uuid:") + channelPeer);
+        // Sidebar, not popup: the conversation stays visible behind the panel.
+        QVERIFY(visibleItem("message-avatar-" + peerMessage)->isVisible());
+        // The author label button opens the same profile (close first).
+        scene.evaluate("rightDrawer.clearAll()");
+        QTRY_VERIFY(!visibleItem("profileLayer"));
+        auto *label = visibleItem("messageAuthorLabel-" + peerMessage);
+        QVERIFY(label);
+        QVERIFY(label->isVisible());
+        click(scene.window, label);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 3000);
+        QCOMPARE(scene.layer()->property("userUuid").toString(), channelPeer);
+    }
+
     void windowProfileShareFailurePresentation_data()
     {
         QTest::addColumn<QString>("locale"); QTest::addColumn<bool>("dark");
