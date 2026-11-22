@@ -220,6 +220,7 @@ private slots:
     void postInstallConfirmationPairing();
     void alreadyInstalledUpdate_data();
     void alreadyInstalledUpdate();
+    void restartAfterVerifiedReuseRecordsConfirmation();
     void invalidExistingInstallation_data();
     void invalidExistingInstallation();
     void rejectedInstall_data();
@@ -629,6 +630,42 @@ void NativeUpdaterTest::alreadyInstalledUpdate()
     updater.restart();
     QCOMPARE(updater.state(), QStringLiteral("error"));
     QCOMPARE(restart.size(), 1);
+}
+
+// exordy fix round (#685): the verified reuse paths (parseRelease/install reach
+// "ready" through reuseInstalledVersion without a fresh install) restart into an
+// already-installed version; restart must record the pairing marker then, so the
+// next launch confirms the update exactly once, like a fresh install does.
+void NativeUpdaterTest::restartAfterVerifiedReuseRecordsConfirmation()
+{
+    QTemporaryDir sandbox;
+    QVERIFY(sandbox.isValid());
+    Environment data("XDG_DATA_HOME", sandbox.filePath(QStringLiteral("data")).toUtf8());
+    Server server;
+    QVERIFY(server.listening);
+    server.handler = [&](QTcpSocket *socket, const QByteArray &request) {
+        Server::reply(socket, request.startsWith("GET /latest ") ? json(server.release()) : server.archive);
+    };
+    QVERIFY(installedFixture(sandbox));
+    NativeUpdater updater(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.3"), sandbox.filePath(QStringLiteral("cache")));
+    QSignalSpy restart(&updater, &NativeUpdater::restartRequested);
+    updater.check();
+    QTRY_VERIFY(updater.state() != QStringLiteral("checking"));
+    QCOMPARE(updater.state(), QStringLiteral("ready"));
+    const QString storePath = QDir(sandbox.filePath(QStringLiteral("data")))
+        .filePath(QStringLiteral("workspace-native-install/pending-update.conf"));
+    {
+        QSettings before(storePath, QSettings::IniFormat);
+        QVERIFY(!before.contains(QStringLiteral("pending/version")));
+    }
+    updater.restart();
+    QCOMPARE(restart.size(), 1);
+    QSettings after(storePath, QSettings::IniFormat);
+    QCOMPARE(after.value(QStringLiteral("pending/version")).toString(), QStringLiteral("1.2.4"));
+    // The restarted process consumes the marker exactly once.
+    NativeUpdater restarted(server.url(QStringLiteral("/latest")), QStringLiteral("1.2.4"), sandbox.filePath(QStringLiteral("cache")));
+    QCOMPARE(restarted.consumeInstalledUpdate(), QStringLiteral("1.2.4"));
+    QCOMPARE(restarted.consumeInstalledUpdate(), QString());
 }
 
 void NativeUpdaterTest::invalidExistingInstallation_data()

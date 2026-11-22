@@ -309,13 +309,20 @@ Native pairing:
   The marker anchors at the managed install root (next to `current`), not the download
   cache, because installation purges the cache (pinned empty by the install cases) and
   the marker must survive to the next launch; fixture tests override `XDG_DATA_HOME`.
+  `restart()` additionally records the marker after its own verification, so a
+  verified reuse (state "ready" reached via `reuseInstalledVersion` without a fresh
+  install) also pairs the version it restarts into.
 - `consumeInstalledUpdate()` (Q_INVOKABLE) removes the key first, then compares with
   the reference normalization (trim + case-insensitive strip of a leading `v`);
   on match it returns the normalized running version, otherwise an empty string.
-- `Main.qml` probes once at start (zero-interval singleShot Timer) and shows
-  `updateInstalledToast` for 4000 ms (reference toast duration is a library default,
-  not part of the contract). Strings go through the Main tr context + workspace_ru.ts.
+- `NativeUpdateInstalledToast.qml` (mounted by `Main.qml` on the overlay) probes
+  once at mount (zero-interval singleShot Timer) and shows `updateInstalledToast`
+  for 4000 ms (reference toast duration is a library default, not part of the
+  contract). Strings go through the component's own tr context
+  (`NativeUpdateInstalledToast`) + workspace_ru.ts.
 - Tests: native-updater group `postInstallConfirmationPairing` (match, v-prefix,
   mismatch, empty remember, corrupt value, missing marker; each asserts one-shot
-  consumption). A window-layer row (toast visible with a seeded marker) belongs to
-  native-about-policy and is not implemented yet.
+  consumption) and `restartAfterVerifiedReuseRecordsConfirmation` (the verified
+  reuse path records the marker at restart); the window-layer rows live in the
+  native-about-policy group (`updateInstalledToastConsumesOnceAndShowsVersion`,
+  `updateInstalledToastStaysSilentWithoutMarker`).

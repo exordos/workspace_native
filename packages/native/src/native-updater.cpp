@@ -655,6 +655,11 @@ void NativeUpdater::restart()
         fail(m_ticket, tr("The installed update could not be verified."));
         return;
     }
+    // #634 pairing: the verified reuse paths (parseRelease/install reaching
+    // "ready" through reuseInstalledVersion) never write the marker, so record
+    // it here before restarting into the already-installed version. Best-effort
+    // and idempotent against the install-time write.
+    rememberPendingUpdate(m_availableVersion);
     emit restartRequested(QDir(installRoot()).filePath(QStringLiteral("current/bin/workspace-native")));
 }
 
