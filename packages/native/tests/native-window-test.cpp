@@ -31836,15 +31836,63 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!view("mailSectionPage"));
         click(window, chatButton);
         QTRY_VERIFY_WITH_TIMEOUT(!controller.mentionsVisible(), 5000);
-        // Selecting a conversation from the sidebar is chat navigation.
+        // #666: the sidebar is chat-route chrome, so it is unmounted while a
+        // non-chat section is up (reference route model,
+        // app-route-definitions.tsx:159-197).
         click(window, mailButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
-        auto *streamRow = view("stream-" + streamId); QVERIFY(streamRow);
-        click(window, streamRow);
-        // The stream root has no topic selected, so only the section switch
-        // (page dismissal) is asserted here; conversation restore via the Chat
-        // button is covered above.
-        QTRY_VERIFY_WITH_TIMEOUT(!view("mailSectionPage"), 5000);
+        QTRY_VERIFY(!view("sidebar"));
+        // The Chat chip returns to the conversation with the sidebar
+        // remounted; conversation restore via the Chat button is covered above.
+        click(window, chatButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("mailSectionPage") && view("sidebar"), 5000);
+    }
+
+    // Issue #666: sections are routes in the reference shell and the chat
+    // sidebar is part of the chat route element only (workspace_ui e0194ff
+    // app-route-definitions.tsx:159-197), so calendar/mail unmount the chat
+    // sidebar and the right drawer and the section placeholder fills the full
+    // width; the Chat button remounts the chrome with selection intact.
+    void sectionSwitchUnmountsChatChromeAndRestoresOnChat()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *it) { return it->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        QVERIFY(view("sidebar"));
+        auto *drawer = item(window->contentItem(), "rightDrawer"); QVERIFY(drawer);
+        QMetaObject::invokeMethod(drawer, "openWorkspaceUserProfile", Q_ARG(QVariant, channelPeer));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 5000);
+        const QString selected = controller.selectedStream();
+        QVERIFY(!selected.isEmpty());
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        // Chat chrome is unmounted off the chat route (mirrors route unmount);
+        // the placeholder fills the whole row width below the top bar. The
+        // Layout repack lands one pass after the visibility flip, hence QTRY.
+        QTRY_VERIFY(!view("sidebar"));
+        QTRY_VERIFY(!view("profileLayer"));
+        auto *page = view("calendarSectionPage");
+        auto *row = page->parentItem(); QVERIFY(row);
+        QTRY_VERIFY_WITH_TIMEOUT(page->width() >= row->width() - 8.0
+            && qAbs(pos(page).x() - pos(row).x()) < 8.0, 5000);
+        QCOMPARE(controller.selectedStream(), selected);
+        // The Chat button remounts the chrome; the stream selection survived
+        // the section round-trip untouched.
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("sidebar") && visibleItem("profileLayer"), 5000);
+        QCOMPARE(controller.selectedStream(), selected);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("messageComposer"), 5000);
     }
 
     // Issue #36: the top-bar Calendar chip opens the unavailable-state section
@@ -31973,10 +32021,11 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(!view("calendarSectionPage") && view("mailSectionPage"), 5000);
         click(window, calendarButton);
         QTRY_VERIFY_WITH_TIMEOUT(!view("mailSectionPage") && view("calendarSectionPage"), 5000);
-        // Selecting a conversation from the sidebar is chat navigation.
-        auto *streamRow = view("stream-" + streamId); QVERIFY(streamRow);
-        click(window, streamRow);
-        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarSectionPage"), 5000);
+        // #666: the sidebar is chat-route chrome, so it is unmounted while
+        // calendar is up and the way back is the Chat chip.
+        QTRY_VERIFY(!view("sidebar"));
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarSectionPage") && view("sidebar"), 5000);
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string
@@ -32113,16 +32162,15 @@ QTRY_VERIFY(create->property("enabled").toBool());
         controller.showSection("calls");
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
         auto *page = view("nativeCallsPage"); QVERIFY(page);
-        // Full-width page: it fills the content slot the conversation used,
-        // same left edge, no narrow-page cap (calls-page.test.tsx:22-36).
-        // The Layout repack that hides the conversation and gives the calls
-        // page the slot lands one pass after the visibility flip.
-        QTRY_VERIFY_WITH_TIMEOUT(page->width() >= contentWidth - 8
-            && qAbs(pos(page).x() - contentLeft) < 8, 5000);
-        QVERIFY2(page->width() >= contentWidth - 8,
-            qPrintable(QStringLiteral("calls page %1 vs conversation %2")
-                .arg(page->width()).arg(contentWidth)));
-        QVERIFY(qAbs(pos(page).x() - contentLeft) < 8);
+        // Full-width page: #666 unmounts the chat sidebar on non-chat routes,
+        // so the page fills the whole row below the top bar (wider than the
+        // slot the conversation used; reference route model).
+        QTRY_VERIFY_WITH_TIMEOUT(page->width() >= contentWidth - 8, 5000);
+        auto *callRow = page->parentItem(); QVERIFY(callRow);
+        QVERIFY2(page->width() >= callRow->width() - 8.0,
+            qPrintable(QStringLiteral("calls page %1 vs row %2")
+                .arg(page->width()).arg(callRow->width())));
+        QVERIFY(qAbs(pos(page).x() - pos(callRow).x()) < 8.0);
         QVERIFY(!view("messageComposer")); // The conversation surfaces are hidden.
         QTest::qWait(250); // Let any stray late reply land in the counters.
         QCOMPARE(fixture.catalogGets, catalog);
@@ -32190,7 +32238,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(!view("nativeCallsPage") && view("messageComposer"), 5000);
         controller.showSection(QStringLiteral("calls"));
         QTRY_VERIFY_WITH_TIMEOUT(view("nativeCallsPage"), 5000);
-        click(window, view("stream-" + streamId));
+        // #666: while a non-chat section is up the chat sidebar is unmounted,
+        // so the Chat chip is the only way back to the conversation.
+        QTRY_VERIFY(!view("sidebar"));
+        click(window, view("sectionChatButton"));
         QTRY_VERIFY_WITH_TIMEOUT(!view("nativeCallsPage")
             && controller.section() == QStringLiteral("chat"), 5000);
     }

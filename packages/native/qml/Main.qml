@@ -124,6 +124,11 @@ ApplicationWindow {
     // chat-info root screen content.
     NativeRightDrawer {
         id: rightDrawer
+        // #666 test seam + route gate: the drawer is chat-route chrome, so it
+        // unmounts while a non-chat section is active (its open state and
+        // layers are kept for the way back, like the reference route model).
+        objectName: "rightDrawer"
+        visible: root.controller.section === "chat" && drawerOpen
         anchors.right: parent.right
         anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
         anchors.topMargin: root.controller.authenticated ? 4 : 8
@@ -5325,7 +5330,10 @@ component NativeMentionChip: Item {
             // Issue #85: in horizontal mode the rail remounts inside the
             // sidebar (sidebar-shell.ui.tsx activityPanelBottomSlot), so the
             // 72 px column collapses completely.
-            visible: !root.folderRailHorizontalMode
+            // #666: the rail lives inside the reference SidebarShell, which is
+            // route-gated (layout-main-workspace.ui.tsx:172
+            // shouldShowChatShell), so it unmounts off the chat route too.
+            visible: root.controller.section === "chat" && !root.folderRailHorizontalMode
             Layout.preferredWidth: root.folderRailHorizontalMode ? 0 : 72
             Layout.fillHeight: true
             // Issue #83: real folders (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md).
@@ -5383,7 +5391,11 @@ component NativeMentionChip: Item {
         Rectangle {
             id: sidebar
             objectName: "sidebar"
-            visible: root.shortcutSidebarVisible
+            // #666: sections are routes (workspace_ui e0194ff
+            // app-route-definitions.tsx:159-197) and the sidebar belongs to
+            // the chat route element only, so it unmounts for calendar/mail/
+            // calls/services and the section page fills the whole width.
+            visible: root.controller.section === "chat" && root.shortcutSidebarVisible
             Layout.preferredWidth: root.sidebarWidth
             Layout.fillHeight: true
             color: root.colors["bg-elevated"]
