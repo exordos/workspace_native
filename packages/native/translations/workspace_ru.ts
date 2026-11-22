@@ -5544,4 +5544,187 @@
     <message><source>Saving…</source><translation>Сохраняем…</translation></message>
     <message><source>Save</source><translation>Сохранить</translation></message>
     </context>
+<context>
+    <name>NativeTopicSummarySettingsDialog</name>
+    <message>
+        <source>AI summary settings</source>
+        <translation>Настройки AI-выжимок</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>Закрыть</translation>
+    </message>
+    <message>
+        <source>This topic</source>
+        <translation>Этот топик</translation>
+    </message>
+    <message>
+        <source>Common settings</source>
+        <translation>Общие настройки</translation>
+    </message>
+    <message>
+        <source>LLM endpoints</source>
+        <translation>LLM endpoint-ы</translation>
+    </message>
+    <message>
+        <source>You do not have permission to change these settings.</source>
+        <translation>У вас нет права изменять эти настройки.</translation>
+    </message>
+    <message>
+        <source>Automatic summary updates</source>
+        <translation>Автоматическая генерация выжимки</translation>
+    </message>
+    <message>
+        <source>System prompt</source>
+        <translation>Системный промпт</translation>
+    </message>
+    <message>
+        <source>Leave empty to use the default prompt.</source>
+        <translation>Можно оставить пустым, чтобы использовать стандартный промпт.</translation>
+    </message>
+    <message>
+        <source>Use default prompt</source>
+        <translation>Использовать стандартный промпт</translation>
+    </message>
+    <message>
+        <source>The prompt must not be empty.</source>
+        <translation>Введите свой промпт или выберите стандартный.</translation>
+    </message>
+    <message>
+        <source>The prompt is too long (maximum %1 characters).</source>
+        <translation>Промпт должен быть не длиннее %1 символов.</translation>
+    </message>
+    <message>
+        <source>Reasoning effort</source>
+        <translation>Уровень рассуждения</translation>
+    </message>
+    <message>
+        <source>Provider default</source>
+        <translation>По умолчанию провайдера</translation>
+    </message>
+    <message>
+        <source>Could not update the topic. Please try again.</source>
+        <translation>Не удалось обновить топик. Попробуйте ещё раз.</translation>
+    </message>
+    <message>
+        <source>Generation is active</source>
+        <translation>Генерация активна</translation>
+    </message>
+    <message>
+        <source>Generation is paused</source>
+        <translation>Генерация приостановлена</translation>
+    </message>
+    <message>
+        <source>Global summary generation</source>
+        <translation>Включено для всей системы</translation>
+    </message>
+    <message>
+        <source>Enable summaries in this workspace</source>
+        <translation>Включить выжимки для этого проекта</translation>
+    </message>
+    <message>
+        <source>Add endpoint</source>
+        <translation>Добавить endpoint</translation>
+    </message>
+    <message>
+        <source>Edit</source>
+        <translation>Изменить</translation>
+    </message>
+    <message>
+        <source>Delete</source>
+        <translation>Удалить</translation>
+    </message>
+    <message>
+        <source>Delete this endpoint? Existing summaries are not affected.</source>
+        <translation>Удалить этот endpoint? Существующие выжимки не будут затронуты.</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <translation>Отмена</translation>
+    </message>
+    <message>
+        <source>Name *</source>
+        <translation>Название *</translation>
+    </message>
+    <message>
+        <source>Model *</source>
+        <translation>Модель *</translation>
+    </message>
+    <message>
+        <source>Base URL (https://...) *</source>
+        <translation>Базовый URL (https://...) *</translation>
+    </message>
+    <message>
+        <source>API key *</source>
+        <translation>API-ключ *</translation>
+    </message>
+    <message>
+        <source>Priority (0-1000000)</source>
+        <translation>Приоритет (0-1000000)</translation>
+    </message>
+    <message>
+        <source>Temperature (0-2)</source>
+        <translation>Температура (0-2)</translation>
+    </message>
+    <message>
+        <source>Max output tokens (1-32768)</source>
+        <translation>Лимит выходных токенов (1-32768)</translation>
+    </message>
+    <message>
+        <source>Top-p (0-1)</source>
+        <translation>Top P (0-1)</translation>
+    </message>
+    <message>
+        <source>Presence penalty (-2..2)</source>
+        <translation>Штраф за присутствие (-2..2)</translation>
+    </message>
+    <message>
+        <source>Frequency penalty (-2..2)</source>
+        <translation>Штраф за частоту (-2..2)</translation>
+    </message>
+    <message>
+        <source>Enabled</source>
+        <translation>Включен</translation>
+    </message>
+    <message>
+        <source>Supports vision</source>
+        <translation>Поддерживает изображения</translation>
+    </message>
+    <message>
+        <source>Supports reasoning</source>
+        <translation>Поддерживает управление reasoning</translation>
+    </message>
+    <message>
+        <source>Unsaved changes</source>
+        <translation>Есть несохранённые изменения</translation>
+    </message>
+    <message>
+        <source>Saved</source>
+        <translation>Сохранено</translation>
+    </message>
+    <message>
+        <source>Save</source>
+        <translation>Сохранить</translation>
+    </message>
+    <message>
+        <source>Network error. Your changes were kept, try again.</source>
+        <translation>Ошибка сети. Изменения сохранены для повторной попытки.</translation>
+    </message>
+    <message>
+        <source>The server rejected the values.</source>
+        <translation>Проверьте введенные значения.</translation>
+    </message>
+    <message>
+        <source>The server returned an unexpected response.</source>
+        <translation>Сервер вернул некорректный ответ.</translation>
+    </message>
+    <message>
+        <source>The server failed. Please try again.</source>
+        <translation>Сервер не смог сохранить настройки.</translation>
+    </message>
+    <message>
+        <source>Something went wrong. Please try again.</source>
+        <translation>Не удалось выполнить операцию.</translation>
+    </message>
+</context>
 </TS>
