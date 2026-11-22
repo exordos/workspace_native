@@ -1,3 +1,21 @@
+# Workspace Native 0.43.0 - Linux development preview
+
+- HEIC/HEIF photo support: attachment tiles, the media viewer and the composer preview now decode Apple's high-efficiency format.
+- Chat backgrounds: pick a local preset or set your own image, per chat.
+- The sidebar chat search opens from the keyboard (Ctrl+K), moves with the arrow keys and closes on Escape.
+- Topic context menu: rename, subscribe and manage a topic straight from the channel list.
+- Clicking a message author's avatar opens their profile in the right sidebar.
+- The chat rail, stream sidebar and right drawer unmount when you switch to Calendar or Mail, so non-chat screens keep their full width.
+- Encrypted channels: the owner can now turn key sharing on or off from the channel settings.
+- The poll trigger moved into the expanded composer toolbar, and attachment cards react across the whole card and activate with Enter or Space.
+- Fixed: attachment download cards for links inside formatted message text, attachment cards built from rendered Markdown links, stale topic actions after a sign-in renewal, and a media-viewer crash guard for late HEIC decodes.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.42.0 to 0.43.0](https://github.com/exordos/workspace_native/compare/0.42.0...0.43.0)
+
+---
+
 # Workspace Native 0.42.0 - Linux development preview
 
 - Search cached messages in the current account and project, or use the workspace directory to find a person and open a direct conversation.
