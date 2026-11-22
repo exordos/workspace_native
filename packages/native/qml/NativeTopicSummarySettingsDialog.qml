@@ -321,7 +321,7 @@ Dialog {
                                     Layout.maximumWidth: implicitWidth; Layout.fillWidth: true; elide: Text.ElideRight }
                                 Text { text: String(modelData.model || ""); font.pixelSize: 12; color: dlg.colors["text-muted"] }
                                 Rectangle {   // credential + enabled markers
-                                    width: 10; height: 10; radius: 5
+                                    implicitWidth: 10; implicitHeight: 10; radius: 5
                                     color: modelData.enabled ? dlg.colors["call-green"] : dlg.colors["border-subtle"]
                                 }
                                 Button { objectName: "channelTopicSummaryEndpointEdit"
@@ -336,9 +336,9 @@ Dialog {
                     Rectangle {
                         visible: endpointsTab.confirmDelete
                         objectName: "channelTopicSummaryDeleteConfirm"
-                        Layout.fillWidth: true; radius: 8; padding: 12
+                        Layout.fillWidth: true; radius: 8; implicitHeight: confirmRow.implicitHeight + 24
                         color: "transparent"; border.color: dlg.colors.danger
-                        RowLayout { spacing: 10
+                        RowLayout { id: confirmRow; anchors.fill: parent; anchors.margins: 12; spacing: 10
                             Text { Layout.fillWidth: true; wrapMode: Text.Wrap
                                 text: qsTr("Delete this endpoint? Existing summaries are not affected.")
                                 color: dlg.colors["text-primary"]; font.pixelSize: 13 }
@@ -401,7 +401,7 @@ Dialog {
         Item { Layout.preferredHeight: 80; Layout.fillWidth: true
             RowLayout {
                 anchors.fill: parent; anchors.leftMargin: 32; anchors.rightMargin: 32
-                Rectangle { width: 10; height: 10; radius: 5
+                Rectangle { implicitWidth: 10; implicitHeight: 10; radius: 5
                     visible: statusText.text.length > 0
                     color: dlg.footerStatus === "unsaved" ? dlg.colors["indicator-yellow"] : dlg.colors["call-green"] }
                 Text {
