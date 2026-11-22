@@ -4,11 +4,14 @@
 #include "support/controller-media-fixtures.h"
 
 #include <QBuffer>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QScopeGuard>
 #include <QSemaphore>
 #include <QThread>
 #include <QUrl>
+#include <atomic>
+#include <memory>
 
 class ControllerMediaTest final : public NativeControllerTestHarness {
     Q_OBJECT
@@ -352,6 +355,53 @@ private slots:
         QCOMPARE(settled.value("url").toString(), QString());
         QCOMPARE(settled.value("uuid").toString(), mvFileA); // download-by-uuid stays enabled
         viewer->close();
+    }
+
+    // #688: destroying the viewer while the serial HEIC decode is stuck must
+    // complete within a bounded time. The watchdog cannot interrupt an
+    // in-flight libheif call (#670 accounting precedent), so the model must
+    // abandon the worker thread instead of waiting on it without a bound.
+    // Deterministic stall: the render gate guarantees >=5 s inside the decode
+    // seam; a pre-fix destructor blocks on it and trips the bound.
+    void mediaViewerStuckHeicDecodeShutdownIsBounded()
+    {
+        static std::atomic<bool> gateEntered{false};
+        gateEntered.store(false);
+        auto fixture = std::make_unique<Fixture>();
+        FileClient files(&fixture->api);
+        fixture->controller.useFiles(&files);
+        const QByteArray bytes = heicFixture();
+        const auto sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+        fixture->files = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/download")) {
+                Response result;
+                result.rawBody = bytes;
+                result.rawContentType = "image/heic";
+                return result;
+            }
+            return Response{QJsonObject{{"uuid", mvFileA}, {"stream_uuid", streamId}, {"name", "photo.heic"},
+                {"content_type", "image/heic"}, {"size_bytes", bytes.size()}, {"hash", sha}}};
+        };
+        QVERIFY(fixture->start());
+        auto *viewer = fixture->controller.mediaViewer();
+        MediaViewerModel::setHeifRenderGateForTests([] {
+            gateEntered.store(true);
+            QThread::msleep(5000); // uncatchable decode: longer than any shutdown bound
+        });
+        const auto restore = qScopeGuard([] { MediaViewerModel::setHeifRenderGateForTests(nullptr); });
+        viewer->setHeifRenderTimeoutMsForTests(50); // slot settles while the render stays stuck
+        QVariantList rows;
+        rows << mediaViewerRow("m1", mvFileA);
+        QVERIFY(viewer->openFromMessages(rows, mvFileA));
+        QTRY_VERIFY_WITH_TIMEOUT(gateEntered.load(), 3000); // the worker is inside the stalled decode
+        QElapsedTimer clock;
+        clock.start();
+        fixture.reset(); // destroys the controller and with it the viewer's destructor
+        const qint64 teardownMs = clock.elapsed();
+        QVERIFY2(teardownMs < 3000,
+            qPrintable(QStringLiteral("shutdown took %1 ms with a stuck decode; "
+                                      "expected the bounded abandon (<=2 s bound + margin)")
+                           .arg(teardownMs)));
     }
 
     // #670 re-review: the render watchdog measures from the moment the serial
