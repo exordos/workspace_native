@@ -261,7 +261,7 @@ int main(int argc, char **argv)
 #ifdef Q_OS_LINUX
     QTimer::singleShot(10000, &updater, &workspace::NativeUpdater::check);
     QTimer updateChecks;
-    updateChecks.setInterval(4 * 60 * 60 * 1000);
+    updateChecks.setInterval(workspace::updater::kPeriodicCheckIntervalMs);
     QObject::connect(&updateChecks, &QTimer::timeout, &updater, &workspace::NativeUpdater::check);
     updateChecks.start();
 #endif

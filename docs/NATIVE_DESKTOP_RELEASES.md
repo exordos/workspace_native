@@ -152,3 +152,15 @@ object graph without a native surface; that is not a visual/window check.
 Full visual equivalence, licenses navigation and complete live application
 acceptance remain separate. Actual public asset delivery and anonymous installed
 upgrade are recorded above; they do not establish all account/session workflows.
+
+## Periodic update check cadence (issue #702)
+
+The reference Electron shell schedules its periodic update check hourly
+(`workspace_ui` `packages/electron/src/main.ts:1442`, `CHECK_INTERVAL_MS =
+60 * 60 * 1000`). The native client previously checked every 4 hours; the
+periodic `QTimer` in `packages/native/src/main.cpp` now uses the named constant
+`workspace::updater::kPeriodicCheckIntervalMs` (`packages/native/src/
+native-updater.h`), set to the same 3600000 ms. The startup check (+10 s, also
+reference-shaped), the tray "Check for updates" entry and the About drawer
+manual check are unchanged. The updater test group pins the constant so a future
+re-widen fails the gate (`periodicCheckIntervalMatchesReferenceConstant`).
