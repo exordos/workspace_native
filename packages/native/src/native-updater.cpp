@@ -395,7 +395,13 @@ void NativeUpdater::stopProcess()
 
 QString NativeUpdater::pendingStorePath() const
 {
-    return QDir(m_cachePath).filePath(QStringLiteral("pending-update.conf"));
+    // #634: the marker must survive the post-install cache purge (install
+    // cases pin an empty cache afterwards), so it anchors at the managed
+    // install root next to `current`, not at the download cache.
+    const QString root = installRoot();
+    if (root.isEmpty()) return {};
+    QDir().mkpath(root);
+    return QDir(root).filePath(QStringLiteral("pending-update.conf"));
 }
 
 namespace {
@@ -411,15 +417,18 @@ QString normalizeAppVersion(QString version)
 void NativeUpdater::rememberPendingUpdate(const QString &version)
 {
     const QString normalized = normalizeAppVersion(version);
-    if (normalized.isEmpty()) return;
-    QSettings store(pendingStorePath(), QSettings::IniFormat);
+    const QString storePath = pendingStorePath();
+    if (normalized.isEmpty() || storePath.isEmpty()) return;
+    QSettings store(storePath, QSettings::IniFormat);
     store.setValue(QStringLiteral("pending/version"), normalized);
     store.sync(); // best-effort by contract
 }
 
 QString NativeUpdater::consumeInstalledUpdate()
 {
-    QSettings store(pendingStorePath(), QSettings::IniFormat);
+    const QString storePath = pendingStorePath();
+    if (storePath.isEmpty()) return { };
+    QSettings store(storePath, QSettings::IniFormat);
     if (!store.contains(QStringLiteral("pending/version"))) return { };
     const QString expected = store.value(QStringLiteral("pending/version")).toString();
     store.remove(QStringLiteral("pending/version"));
