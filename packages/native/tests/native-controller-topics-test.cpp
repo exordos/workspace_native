@@ -1029,6 +1029,99 @@ private slots:
         QCOMPARE(fixture.controller.selectedStream(), peerStream);
     }
 
+    // ---- Issue #682: a held rename reply on a route that moved away must
+    // reconcile the retired route's in-memory sidebar catalog too. Marking
+    // only the persistent cache stale leaves already-expanded rows showing
+    // the old name until some unrelated event refreshes the catalog. ----
+    void topicActionHeldReplyAfterRouteMoveReconcilesRetiredRouteRows_data()
+    {
+        QTest::addColumn<bool>("expandBeforeRelease");
+        QTest::newRow("expanded") << true;
+        QTest::newRow("collapsed") << false;
+    }
+    void topicActionHeldReplyAfterRouteMoveReconcilesRetiredRouteRows()
+    {
+        QFETCH(bool, expandBeforeRelease);
+        Fixture fixture;
+        const auto peerStream = QStringLiteral("96400000-0000-4000-8000-000000000001");
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}},
+                QJsonObject{{"uuid", peerStream}, {"project_id", projectId},
+                    {"name", "Peer channel"}, {"encryption", false}}}};
+        };
+        const auto renamedTo = QStringLiteral("Renamed peer-view topic");
+        QJsonObject dto{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+            {"name", "Native topic"}, {"unread_count", 0}, {"active_unread_count", 0},
+            {"passive_unread_count", 0}, {"notification_mode", "default"}, {"is_done", false}};
+        bool committed = false;
+        int renames = 0;
+        std::function<void()> release;
+        const auto base = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "PUT"
+                && request.target.path() == "/api/workspace/v1/messenger/stream_topics/" + topicId) {
+                ++renames;
+                Response response{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", renamedTo},
+                    {"notification_mode", "default"}, {"is_done", false}}};
+                // The write commits only when the held reply is delivered: the
+                // sidebar read inside the held window must see the old name.
+                response.defer = [&](auto finish) {
+                    release = [finish, &committed] { committed = true; finish(); };
+                };
+                return response;
+            }
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/")) {
+                const auto streamUuid = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                QJsonArray rows;
+                if (streamUuid == streamId) {
+                    QJsonObject row = dto;
+                    if (committed) row["name"] = renamedTo;
+                    rows.append(row);
+                }
+                return Response{rows};
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start({}, 2));
+        QSignalSpy finished(&fixture.controller, &NativeController::topicActionFinished);
+        fixture.controller.applyTopicAction(streamId, topicId, "rename", renamedTo);
+        QTRY_COMPARE(renames, 1);
+        QVERIFY(bool(release));
+        fixture.controller.selectStream(peerStream);
+        QTRY_VERIFY(!fixture.controller.busy());
+        const auto sidebarRowName = [&] {
+            const auto rows = fixture.controller.sidebarTopicState(streamId, true).value("rows").toList();
+            for (const auto &row : rows)
+                if (row.toMap().value("id").toString() == topicId)
+                    return row.toMap().value("name").toString();
+            return QString();
+        };
+        if (expandBeforeRelease) {
+            fixture.controller.toggleSidebarStream(streamId);
+            QTRY_VERIFY_WITH_TIMEOUT(sidebarRowName() == QStringLiteral("Native topic"), 4000);
+        }
+        release();
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !fixture.controller.topicActionState(streamId, topicId).value("renamePending").toBool(), 4000);
+        if (!expandBeforeRelease) {
+            // Collapsed at reply time: the next expansion shows the confirmed name.
+            fixture.controller.toggleSidebarStream(streamId);
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(sidebarRowName() == renamedTo, 4000);
+        // AC: the newly selected channel keeps its selection, and the original
+        // rename settles exactly once.
+        QCOMPARE(fixture.controller.selectedStream(), peerStream);
+        int okCount = 0;
+        for (const auto &args : finished)
+            if (args.at(0).toString() == streamId && args.at(1).toString() == topicId
+                && args.at(2).toString() == "rename" && args.at(3).toBool())
+                ++okCount;
+        QCOMPARE(okCount, 1);
+    }
+
     void topicActionSettlingIntoTheNewlySelectedStreamReconcilesSelectedCatalog()
     {
         // Review finding 4652383420: the reply must reconcile the catalog the
