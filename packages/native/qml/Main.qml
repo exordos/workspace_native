@@ -12680,14 +12680,15 @@ component NativeMentionChip: Item {
                                 // action is hidden and the other actions move to the left rail.
                                 Layout.minimumWidth: composerHeightButton.visible ? composerHeightButton.width + 8 : 0
                                 visible: !messageComposerShell.preview
-                                columns: 3
+                                columns: 2
                                 rowSpacing: 0
                                 columnSpacing: 0
                                 Layout.alignment: Qt.AlignBottom
                                 NativeIconButton {
-                                    parent: messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
+                                    parent: root.preferences.composerToolbarExpanded ? composerToolbarActions
+                                        : messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
                                     Layout.row: 0
-                                    Layout.column: 0
+                                    Layout.column: root.preferences.composerToolbarExpanded ? 2 : 0
                                     objectName: "attachButton"
                                     colors: root.colors
                                     asset: "composer-attach-compact.svg"
@@ -12707,9 +12708,11 @@ component NativeMentionChip: Item {
                                 }
                                 NativeIconButton {
                                     id: composerEmojiButton
-                                    parent: messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
-                                    Layout.row: messageComposerShell.compactRail ? 1 : 0
-                                    Layout.column: messageComposerShell.compactRail ? 0 : 1
+                                    parent: root.preferences.composerToolbarExpanded ? composerToolbarActions
+                                        : messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
+                                    Layout.row: !root.preferences.composerToolbarExpanded && messageComposerShell.compactRail ? 1 : 0
+                                    Layout.column: root.preferences.composerToolbarExpanded ? 4
+                                        : messageComposerShell.compactRail ? 0 : 1
                                     objectName: "composerEmojiButton"
                                     colors: root.colors
                                     asset: "composer-emoji.svg"
@@ -12720,25 +12723,10 @@ component NativeMentionChip: Item {
                                     glyphSize: 24
                                     onClicked: root.toggleComposerEmojiPicker()
                                 }
-                                // Issue #215 poll trigger (message-composer.ui.tsx PollButton):
-                                // sits after the emoji trigger, hidden while an edit session is
-                                // open and on channels without poll support.
-                                NativeIconButton {
-                                    id: composerPollButton
-                                    Layout.row: 0
-                                    Layout.column: 2
-                                    objectName: "pollButton"
-                                    colors: root.colors
-                                    asset: "poll.svg"
-                                    help: qsTr("Create poll")
-                                    visible: root.controller.pollCreationAllowed
-                                        && root.controller.editingMessageId.length === 0
-                                    enabled: root.composerAvailable
-                                    implicitWidth: 32
-                                    implicitHeight: 32
-                                    glyphSize: 24
-                                    onClicked: pollCreateDialog.openForCreate()
-                                }
+                                // #661: the poll trigger moved to the expanded toolbar
+                                // (docs/NATIVE_DESKTOP_COMPOSER_LAYOUT.md); the reference
+                                // compact composer keeps only attach + emoji in the field
+                                // (message-composer.ui.tsx:1949-1960).
                             }
                         }
                     }
@@ -12806,13 +12794,22 @@ component NativeMentionChip: Item {
                                 }
                             }
                         }
-                        RowLayout {
+                        // #661: GridLayout (single row, explicit Layout.column per child)
+                        // because RowLayout orders by child-list insertion and a
+                        // reparented trigger would land at the tail; GridLayout honours
+                        // the explicit columns that mirror the reference toolbar order.
+                        GridLayout {
                             id: composerToolbarActions
                             x: 8
                             width: composerToolbarRow.contentWidth - x
                             height: composerToolbarRow.height
-                            spacing: 8
+                            columns: 19
+                            flow: Qt.LeftToRight
+                            rowSpacing: 0
+                            columnSpacing: 8
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 0
                                 objectName: "composerToolbarCollapse"
                                 colors: root.colors
                                 asset: "composer-bottom-panel-close.svg"
@@ -12824,6 +12821,8 @@ component NativeMentionChip: Item {
                                 onClicked: root.preferences.composerToolbarExpanded = false
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 1
                                 id: composerPreviewToggle
                                 objectName: "composerPreviewToggle"
                                 colors: root.colors
@@ -12852,7 +12851,38 @@ component NativeMentionChip: Item {
                                     composerMentionPopup.close();
                                 }
                             }
+                            // #661: the file/emoji separator and the poll trigger at the
+                            // reference toolbar positions (message-composer-toolbar.ui.tsx:145-151);
+                            // attach and the emoji trigger reparent into columns 2 and 4 when
+                            // the toolbar is expanded, the poll trigger exists only in this row.
+                            Rectangle {
+                                objectName: "composerToolbarSeparator"
+                                visible: !messageComposerShell.preview
+                                Layout.column: 3
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 28
+                                Layout.alignment: Qt.AlignVCenter
+                                color: root.colors["border-subtle"]
+                            }
                             NativeIconButton {
+                                id: composerPollTriggerButton
+                                Layout.column: 5
+                                objectName: "pollButton"
+                                colors: root.colors
+                                asset: "poll.svg"
+                                help: qsTr("Create poll")
+                                visible: !messageComposerShell.preview
+                                    && root.controller.pollCreationAllowed
+                                    && root.controller.editingMessageId.length === 0
+                                enabled: root.composerAvailable
+                                implicitWidth: 32
+                                implicitHeight: 32
+                                glyphSize: 24
+                                onClicked: pollCreateDialog.openForCreate()
+                            }
+                            NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 6
                                 id: composerTimeButton
                                 objectName: "composerTimeButton"
                                 colors: root.colors
@@ -12869,6 +12899,8 @@ component NativeMentionChip: Item {
                                 onVisibleChanged: if (!visible && composerTimePicker) composerTimePicker.close()
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 7
                                 id: composerSnippetsButton
                                 objectName: "composerSnippetsButton"
                                 colors: root.colors
@@ -12885,6 +12917,8 @@ component NativeMentionChip: Item {
                                 onVisibleChanged: if (!visible && composerSnippets) composerSnippets.close()
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 8
                                 id: composerAiButton
                                 objectName: "composerAiButton"
                                 colors: root.colors
@@ -12920,6 +12954,8 @@ component NativeMentionChip: Item {
                             }
                             // message-composer-toolbar.ui.tsx separators: h-7 w-px bg-border-subtle.
                             Rectangle {
+                            Layout.row: 0
+                            Layout.column: 9
                                 visible: !messageComposerShell.preview
                                 objectName: "composerToolbarSeparator"
                                 Layout.preferredWidth: 1
@@ -12929,6 +12965,8 @@ component NativeMentionChip: Item {
                             }
                             // TOOLBAR_TEXT_STYLE_GROUP: link/B/I/S sit flush (gap-0).
                             RowLayout {
+                            Layout.row: 0
+                            Layout.column: 10
                                 visible: !messageComposerShell.preview
                                 spacing: 0
                                 NativeIconButton {
@@ -12990,6 +13028,8 @@ component NativeMentionChip: Item {
                                 }
                             }
                             Rectangle {
+                            Layout.row: 0
+                            Layout.column: 11
                                 visible: !messageComposerShell.preview
                                 objectName: "composerToolbarSeparator"
                                 Layout.preferredWidth: 1
@@ -12998,6 +13038,8 @@ component NativeMentionChip: Item {
                                 color: root.colors["border-subtle"]
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 12
                                 visible: !messageComposerShell.preview
                                 objectName: "composerFormatNumbered"
                                 colors: root.colors
@@ -13012,6 +13054,8 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertNumberedList(); }
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 13
                                 visible: !messageComposerShell.preview
                                 objectName: "composerFormatBulleted"
                                 colors: root.colors
@@ -13026,6 +13070,8 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertBulletedList(); }
                             }
                             Rectangle {
+                            Layout.row: 0
+                            Layout.column: 14
                                 visible: !messageComposerShell.preview
                                 objectName: "composerToolbarSeparator"
                                 Layout.preferredWidth: 1
@@ -13034,6 +13080,8 @@ component NativeMentionChip: Item {
                                 color: root.colors["border-subtle"]
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 15
                                 visible: !messageComposerShell.preview
                                 objectName: "composerFormatQuote"
                                 colors: root.colors
@@ -13048,6 +13096,8 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertQuote(); }
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 16
                                 visible: !messageComposerShell.preview
                                 objectName: "composerFormatCodeBlock"
                                 colors: root.colors
@@ -13062,6 +13112,8 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.insertCodeBlock(); }
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 17
                                 visible: !messageComposerShell.preview
                                 objectName: "composerFormatCode"
                                 colors: root.colors
@@ -13076,6 +13128,8 @@ component NativeMentionChip: Item {
                                 onClicked: { composerText.forceActiveFocus(); composerText.wrapFormatting("`"); }
                             }
                             NativeIconButton {
+                            Layout.row: 0
+                            Layout.column: 18
                                 visible: !messageComposerShell.preview
                                 id: composerFormatSpoilerButton
                                 objectName: "composerFormatSpoiler"
