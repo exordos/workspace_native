@@ -21446,6 +21446,10 @@ void NativeController::loadTopicSummaryGates()
         setTopicSummaryStatus("error", "forbidden");
         return;
     }
+    // Review #708 finding 8: unverified gate values must never be editable or
+    // saveable; the flag stays false until THIS dispatch succeeds. begin() emits
+    // topicSummaryStateChanged below, so QML locks on this very transition.
+    m_topicSummaryGatesLoaded = false;
     const auto token = beginTopicSummaryOp("gates");
     if (!token) return;
     const auto owner = ownerKey();
@@ -21463,6 +21467,7 @@ void NativeController::loadTopicSummaryGates()
         }
         m_topicSummaryGates = {{"projectId", json.value("project_id").toString()},
             {"globalEnabled", global.toBool()}, {"projectEnabled", local.toBool()}};
+        m_topicSummaryGatesLoaded = true;
         // The NOTIFY belongs to the gates property itself: a reply that arrives
         // with an unchanged status ("") must still re-notify, or QML drafts seeded
         // at dialog-open time never see the loaded values.

@@ -18,6 +18,10 @@ Dialog {
     // Emitted when the topic tab carries prompt/reasoning edits; the owning panel
     // routes them to the controller summary-config seam.
     signal topicConfigRequested(string topic, bool enabled, string prompt, bool promptIsDefault, string effort)
+    // Which section dispatched the in-flight op; only ITS OWN success may reset
+    // that draft - a shared "saved" reset discarded unsaved edits in the other
+    // section (review finding 5). Save buttons gate on !busy, so one op is in flight.
+    property string pendingOp: ""
 
     modal: true
     focus: true
@@ -127,7 +131,11 @@ Dialog {
         // ---- Body ----
         StackLayout {
             Layout.fillWidth: true; Layout.fillHeight: true
-            currentIndex: Math.max(0, dlg.tabs.indexOf(dlg.activeTab))
+            currentIndex: dlg.activeTab === "gates" ? 1 : (dlg.activeTab === "endpoints" ? 2 : 0)
+            // FIXED mapping (review finding 1): the three children below are static;
+            // indexing by the permission-FILTERED tabs list shifted every section
+            // when an earlier tab was not permitted (a gates-only admin saw the
+            // disabled topic section).
 
             // ===== Tab 1: this topic =====
             Flickable {
@@ -148,7 +156,7 @@ Dialog {
                     saving = false; failed = false
                 }
                 readonly property bool topicEditable: Boolean(dlg.controller.channelInfoStream.canEditTopicSummary) && !saving
-                readonly property bool dirty: enabledDraft !== (!topicFind().summaryEnabled)
+                readonly property bool dirty: enabledDraft !== (topicFind().summaryEnabled !== false)
                     || promptDraft !== (String(topicFind().summarySystemPrompt || ""))
                     || (promptDraft.length === 0) !== promptIsDefault
                     || effortDraft !== String(topicFind().summaryReasoningEffort || "")
@@ -246,12 +254,12 @@ Dialog {
                     }
                     SwitchRow {
                         objectNameRow: "channelTopicSummaryGatesGlobal"; label: qsTr("Global summary generation")
-                        checkedFlag: gatesTab.globalDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy
+                        checkedFlag: gatesTab.globalDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy && controller.topicSummaryGatesLoaded
                         onFlipped: checked => { gatesTab.userEdited = true; gatesTab.globalDraft = checked }
                     }
                     SwitchRow {
                         objectNameRow: "channelTopicSummaryGatesProject"; label: qsTr("Enable summaries in this workspace")
-                        checkedFlag: gatesTab.projectDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy
+                        checkedFlag: gatesTab.projectDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy && controller.topicSummaryGatesLoaded
                         onFlipped: checked => { gatesTab.userEdited = true; gatesTab.projectDraft = checked }
                     }
                     ErrorNotice { name: "channelTopicSummaryGatesError" }
@@ -265,11 +273,125 @@ Dialog {
                 clip: true; contentWidth: width; boundsBehavior: Flickable.StopAtBounds
                 property string editingUuid: ""      // "" = not editing; "new" = create form
                 property var form: ({})
+                property var editBaseline: ({})      // DTO snapshot taken at startEdit
                 property bool confirmDelete: false
-                function reset() { editingUuid = ""; form = ({}); confirmDelete = false }
+                function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false }
                 readonly property bool endpointsAllowed: dlg.perm("endpoints") === "allowed"
                 readonly property bool editing: editingUuid.length > 0
                 readonly property bool dirty: editing
+                // Mutable numeric fields with the reference bounds
+                // (topic-summary-endpoints.lib.ts validateInteger/validateNumber ranges).
+                readonly property var numberRules: ({
+                    priority: {min: 0, max: 1000000, integer: true},
+                    max_output_tokens: {min: 1, max: 32768, integer: true},
+                    temperature: {min: 0, max: 2, integer: false},
+                    top_p: {min: 0, max: 1, integer: false},
+                    presence_penalty: {min: -2, max: 2, integer: false},
+                    frequency_penalty: {min: -2, max: 2, integer: false}
+                })
+                // Reference isValidBaseUrl: http(s) only, host required, no userinfo,
+                // no query, no fragment, <=2048 after trimming trailing slashes.
+                function isEndpointUrl(value) {
+                    const t = String(value).trim().replace(/\/+$/, "")
+                    if (t.length === 0 || t.length > 2048) return false
+                    const parts = /^(https?):\/\/([^/]*)([\s\S]*)$/i.exec(t)
+                    if (!parts) return false
+                    if (parts[2].length === 0 || parts[2].indexOf("@") !== -1) return false
+                    return parts[3].indexOf("?") === -1 && parts[3].indexOf("#") === -1
+                }
+                // Live per-field validation (reference endpointValidationErrorText):
+                // every error is shown beside its field and Save stays gated while any
+                // field is invalid (review finding 7). The controller re-validates on
+                // dispatch as the authoritative second gate.
+                readonly property var formErrors: validateDraft(editingUuid === "new")
+                function validateDraft(isCreate) {
+                    const msgs = ({})
+                    const src = form && Object.keys(form).length ? form : ({})
+                    const reqText = qsTr("This field is required.")
+                    const text = function (name) { return String(src[name] !== undefined ? src[name] : "").trim() }
+                    if (isCreate || src.name !== undefined) {
+                        if (text("name").length === 0) msgs.name = reqText
+                        else if (text("name").length > 255) msgs.name = qsTr("The value is too long.")
+                    }
+                    if (isCreate || src.model !== undefined) {
+                        if (text("model").length === 0) msgs.model = reqText
+                        else if (text("model").length > 255) msgs.model = qsTr("The value is too long.")
+                    }
+                    if (isCreate || src.base_url !== undefined) {
+                        if (text("base_url").length === 0) msgs.base_url = reqText
+                        else if (!isEndpointUrl(String(src.base_url))) msgs.base_url = qsTr("Check the entered values.")
+                    }
+                    if (isCreate) {
+                        const key = String(src.api_key || "")
+                        if (key.length === 0) msgs.api_key = reqText
+                        else if (key.length > 8192) msgs.api_key = qsTr("The value is too long.")
+                    } else if (String(src.api_key || "").length > 8192) {
+                        msgs.api_key = qsTr("The value is too long.")
+                    }
+                    for (const field in numberRules) {
+                        if (src[field] === undefined) continue
+                        if (!isCreate && String(src[field]) === String(editBaseline[field])) continue
+                        const rule = numberRules[field]
+                        let value = src[field]
+                        if (typeof value !== "number") {
+                            const raw = String(value).trim()
+                            if (raw.length === 0 || !isFinite(Number(raw))) {
+                                msgs[field] = rule.integer ? qsTr("Enter a whole number.") : qsTr("Enter a valid value.")
+                                continue
+                            }
+                            value = Number(raw)
+                        }
+                        if (rule.integer && value !== Math.floor(value))
+                            msgs[field] = qsTr("Enter a whole number.")
+                        else if (value < rule.min || value > rule.max)
+                            msgs[field] = qsTr("The value is outside the allowed range.")
+                    }
+                    return msgs
+                }
+                readonly property bool hasChanges: {
+                    if (editingUuid === "new") return form && Object.keys(form).length > 0
+                    const src = form || ({})
+                    for (const key in src) {
+                        if (key === "api_key") { if (String(src.api_key || "").length > 0) return true; continue }
+                        if (String(src[key]) !== String(editBaseline[key])) return true
+                    }
+                    return false
+                }
+                readonly property bool canDispatch: editing && hasChanges
+                    && Object.keys(formErrors).length === 0 && !confirmDelete
+                // An update carries ONLY fields changed from the edit baseline - reference
+                // topicSummaryEndpointUpdateBody(): "absent means unchanged", so an
+                // untouched base_url can never overwrite a concurrent administrator's
+                // change (review finding 9); a blank api_key means "keep the credential".
+                // Edited numeric text is coerced to a number - the controller validation
+                // accepts numeric QVariants only (review finding 3).
+                function buildDispatchPayload(isCreate) {
+                    const out = ({})
+                    const src = form || ({})
+                    for (const key in src) {
+                        if (key === "api_key") {
+                            const value = String(src.api_key || "")
+                            if (isCreate || value.length > 0) out[key] = value
+                            continue
+                        }
+                        if (!isCreate && String(src[key]) === String(editBaseline[key])) continue
+                        if (numberRules[key] === undefined) { out[key] = src[key]; continue }
+                        const value = src[key]
+                        out[key] = (typeof value === "number") ? value : Number(String(value).trim())
+                    }
+                    return out
+                }
+                // The draft is kept until its OWN request succeeds (review finding 4):
+                // on failure the values stay for retry; endpointsTab.reset() runs from
+                // the pendingOp-scoped "saved" handler below.
+                function commit() {
+                    if (!canDispatch) return
+                    const isCreate = editingUuid === "new"
+                    const payload = buildDispatchPayload(isCreate)
+                    dlg.pendingOp = "endpoint"
+                    if (isCreate) controller.createTopicSummaryEndpoint(payload)
+                    else controller.updateTopicSummaryEndpoint(editingUuid, payload)
+                }
                 function field(name, fallback) {
                     const f = form && Object.keys(form).length ? form : ({})
                     return f[name] !== undefined ? f[name] : fallback
@@ -286,19 +408,22 @@ Dialog {
                 }
                 function startCreate() {
                     editingUuid = "new"
+                    editBaseline = ({})
                     form = {name: "", base_url: "", model: "", api_key: "", priority: 100, temperature: 0.2,
                             max_output_tokens: 512, top_p: 1, presence_penalty: 0, frequency_penalty: 0,
                             enabled: true, supports_vision: false, supports_reasoning: false}
                 }
                 function startEdit(row) {
                     editingUuid = String(row.uuid)
-                    form = {name: String(row.name || ""), base_url: String(row.base_url || ""),
+                    const seeded = {name: String(row.name || ""), base_url: String(row.base_url || ""),
                             model: String(row.model || ""), api_key: "", priority: Number(row.priority ?? 100),
                             temperature: Number(row.temperature ?? 0.2), max_output_tokens: Number(row.max_output_tokens ?? 512),
                             top_p: Number(row.top_p ?? 1), presence_penalty: Number(row.presence_penalty ?? 0),
                             frequency_penalty: Number(row.frequency_penalty ?? 0),
                             enabled: Boolean(row.enabled), supports_vision: Boolean(row.supports_vision),
                             supports_reasoning: Boolean(row.supports_reasoning)}
+                    form = seeded
+                    editBaseline = JSON.parse(JSON.stringify(seeded))
                 }
                 contentHeight: endpointsCol.implicitHeight
                 ScrollBar.vertical: ScrollBar {}
@@ -352,37 +477,96 @@ Dialog {
                                 onClicked: {
                                     const uuid = endpointsTab.editingUuid.startsWith("confirm:") ? endpointsTab.editingUuid.slice(8) : ""
                                     endpointsTab.confirmDelete = false; endpointsTab.editingUuid = ""
-                                    if (uuid) dlg.controller.deleteTopicSummaryEndpoint(uuid)
+                                    if (uuid) { dlg.pendingOp = "endpoint"; dlg.controller.deleteTopicSummaryEndpoint(uuid) }
                                 } }
                         }
                     }
-                    // Create/edit form (reference form fields order).
+                    // Create/edit form (reference form fields order). Every field sits
+                    // beside its live validation message (reference error= rendering).
                     GridLayout {
                         visible: endpointsTab.editing && !endpointsTab.confirmDelete
                         objectName: "channelTopicSummaryEndpointForm"
                         columns: 2; columnSpacing: 12; rowSpacing: 8; Layout.fillWidth: true
-                        TextField { objectName: "channelTopicSummaryField-name"; placeholderText: qsTr("Name *")
-                            text: String(endpointsTab.field("name", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("name", text)) }
-                        TextField { objectName: "channelTopicSummaryField-model"; placeholderText: qsTr("Model *")
-                            text: String(endpointsTab.field("model", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("model", text)) }
-                        TextField { objectName: "channelTopicSummaryField-base_url"; placeholderText: qsTr("Base URL (https://...) *")
-                            Layout.columnSpan: 2; Layout.fillWidth: true
-                            text: String(endpointsTab.field("base_url", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("base_url", text.trim())) }
-                        TextField { objectName: "channelTopicSummaryField-api_key"; placeholderText: qsTr("API key *")
-                            echoMode: TextInput.Password; visible: endpointsTab.editingUuid === "new"
-                            text: String(endpointsTab.field("api_key", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("api_key", text)) }
-                        TextField { objectName: "channelTopicSummaryField-priority"; placeholderText: qsTr("Priority (0-1000000)")
-                            text: String(endpointsTab.field("priority", 100)); onTextChanged: Qt.callLater(() => endpointsTab.setField("priority", text)) }
-                        TextField { objectName: "channelTopicSummaryField-temperature"; placeholderText: qsTr("Temperature (0-2)")
-                            text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: Qt.callLater(() => endpointsTab.setField("temperature", text)) }
-                        TextField { objectName: "channelTopicSummaryField-max_output_tokens"; placeholderText: qsTr("Max output tokens (1-32768)")
-                            text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: Qt.callLater(() => endpointsTab.setField("max_output_tokens", text)) }
-                        TextField { objectName: "channelTopicSummaryField-top_p"; placeholderText: qsTr("Top-p (0-1)")
-                            text: String(endpointsTab.field("top_p", 1)); onTextChanged: Qt.callLater(() => endpointsTab.setField("top_p", text)) }
-                        TextField { objectName: "channelTopicSummaryField-presence_penalty"; placeholderText: qsTr("Presence penalty (-2..2)")
-                            text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("presence_penalty", text)) }
-                        TextField { objectName: "channelTopicSummaryField-frequency_penalty"; placeholderText: qsTr("Frequency penalty (-2..2)")
-                            text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("frequency_penalty", text)) }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-name"; placeholderText: qsTr("Name *")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("name", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("name", text)) }
+                            FieldError { errorField: "name" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-model"; placeholderText: qsTr("Model *")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("model", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("model", text)) }
+                            FieldError { errorField: "model" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; Layout.columnSpan: 2; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-base_url"; placeholderText: qsTr("Base URL (https://...) *")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("base_url", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("base_url", text.trim())) }
+                            FieldError { errorField: "base_url" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; Layout.columnSpan: 2; spacing: 2
+                            // The write-only key is rotatable from the edit form too
+                            // (reference apiKeyEditHint): a blank field means "keep the
+                            // current credential", so it is only sent when typed.
+                            TextField { objectName: "channelTopicSummaryField-api_key";
+                                placeholderText: endpointsTab.editingUuid === "new"
+                                    ? qsTr("API key *") : qsTr("New API key")
+                                echoMode: TextInput.Password; Layout.fillWidth: true
+                                text: String(endpointsTab.field("api_key", "")); onTextChanged: Qt.callLater(() => endpointsTab.setField("api_key", text)) }
+                            FieldError { errorField: "api_key" }
+                            Text { objectName: "channelTopicSummaryApiKeyHint"
+                                text: endpointsTab.editingUuid === "new"
+                                    ? qsTr("Required. The key is encrypted and never shown again.")
+                                    : qsTr("Leave blank to keep the current write-only credential.")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-priority"; placeholderText: qsTr("Priority (0-1000000)")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("priority", 100)); onTextChanged: Qt.callLater(() => endpointsTab.setField("priority", text)) }
+                            FieldError { errorField: "priority" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-temperature"; placeholderText: qsTr("Temperature (0-2)")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: Qt.callLater(() => endpointsTab.setField("temperature", text)) }
+                            FieldError { errorField: "temperature" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-max_output_tokens"; placeholderText: qsTr("Max output tokens (1-32768)")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: Qt.callLater(() => endpointsTab.setField("max_output_tokens", text)) }
+                            FieldError { errorField: "max_output_tokens" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-top_p"; placeholderText: qsTr("Top-p (0-1)")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("top_p", 1)); onTextChanged: Qt.callLater(() => endpointsTab.setField("top_p", text)) }
+                            FieldError { errorField: "top_p" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-presence_penalty"; placeholderText: qsTr("Presence penalty (-2..2)")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("presence_penalty", text)) }
+                            FieldError { errorField: "presence_penalty" }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true; spacing: 2
+                            TextField { objectName: "channelTopicSummaryField-frequency_penalty"; placeholderText: qsTr("Frequency penalty (-2..2)")
+                                Layout.fillWidth: true
+                                text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: Qt.callLater(() => endpointsTab.setField("frequency_penalty", text)) }
+                            FieldError { errorField: "frequency_penalty" }
+                        }
                         SwitchRow { objectNameRow: "channelTopicSummaryField-enabled"; label: qsTr("Enabled")
                             Layout.columnSpan: 2
                             checkedFlag: Boolean(endpointsTab.field("enabled", true)); enabledFlag: true
@@ -424,8 +608,12 @@ Dialog {
                     enabled: dlg.activeTab === "topic"
                         ? (topicTab.dirty && topicTab.topicEditable)
                         : (dlg.activeTab === "gates"
-                            ? (gatesTab.dirty && gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy)
-                            : (endpointsTab.editing && endpointsTab.endpointsAllowed && !controller.topicSummarySettingsBusy))
+                            // A failed gates GET must keep the section locked: unverified
+                            // gate values are never dispatched (review finding 8).
+                            ? (gatesTab.dirty && gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy
+                               && controller.topicSummaryGatesLoaded)
+                            : (endpointsTab.canDispatch && endpointsTab.endpointsAllowed
+                               && !controller.topicSummarySettingsBusy))
                     onClicked: {
                         if (dlg.activeTab === "topic") {
                             const t = topicTab.topicFind()
@@ -436,15 +624,10 @@ Dialog {
                             else dlg.topicConfigRequested(dlg.topicId, topicTab.enabledDraft, topicTab.promptDraft,
                                 topicTab.promptDraft.length === 0, topicTab.effortDraft)
                         } else if (dlg.activeTab === "gates") {
+                            dlg.pendingOp = "gates"
                             controller.saveTopicSummaryGates(gatesTab.globalDraft, gatesTab.projectDraft)
                         } else {
-                            const uuid = endpointsTab.editingUuid
-                            const errors = controller.topicSummaryEndpointValidationErrors(endpointsTab.form, uuid === "new")
-                            if (errors.length === 0) {
-                                if (uuid === "new") controller.createTopicSummaryEndpoint(endpointsTab.form)
-                                else controller.updateTopicSummaryEndpoint(uuid, endpointsTab.form)
-                                endpointsTab.reset()
-                            }
+                            endpointsTab.commit()
                         }
                     }
                 }
@@ -465,6 +648,9 @@ Dialog {
         Switch {
             id: sw
             objectName: swRow.objectNameRow
+            // The Basic style does not fold the indicator into implicitWidth, so an
+            // explicit 36x20 (reference track size) keeps the control clickable.
+            Layout.preferredWidth: 36; Layout.preferredHeight: 20
             checked: swRow.checkedFlag
             enabled: swRow.enabledFlag
             padding: 0; spacing: 0
@@ -491,6 +677,16 @@ Dialog {
         readonly property color swBorder: dlg.colors["border-subtle"]
     }
 
+    // Live per-field validation message beside an endpoint form field (reference
+    // endpointValidationErrorText() rendering: a 12px danger line under the input).
+    component FieldError: Text {
+        required property string errorField
+        objectName: "channelTopicSummaryFieldError-" + errorField
+        visible: text.length > 0
+        text: String(endpointsTab.formErrors[errorField] || "")
+        font.pixelSize: 12; color: dlg.colors.danger
+    }
+
     // Error notice band shared by the gates/endpoints tabs (reference: border danger/30, bg danger/5).
     component ErrorNotice: Rectangle {
         id: errBand
@@ -515,7 +711,14 @@ Dialog {
         target: dlg.controller
         function onTopicSummaryStateChanged() {
             const s = controller.topicSummarySettingsStatus
-            if (s === "saved") { gatesTab.reset(); endpointsTab.reset() }
+            if (s === "saved") {
+                // Only the section whose OWN request completed may reset: a shared
+                // reset discarded unsaved edits in the other section (review finding 5),
+                // and the endpoint draft no longer resets at dispatch time (finding 4).
+                if (dlg.pendingOp === "gates") gatesTab.reset()
+                else if (dlg.pendingOp === "endpoint") endpointsTab.reset()
+                dlg.pendingOp = ""
+            }
             else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }
             // A seeded draft predates the on-demand GET: when the gates DTO lands
             // (map populated, no op in flight, no error) and nobody flipped a
