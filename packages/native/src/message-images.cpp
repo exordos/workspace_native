@@ -16,8 +16,10 @@
 #include <algorithm>
 #include <cmath>
 #include <QQuickImageProvider>
+#include <QThread>
 #include <QTimer>
 #include <QUuid>
+#include <cstdio>
 #include <limits>
 
 namespace workspace {
@@ -27,6 +29,17 @@ struct MessageImageState {
     QHash<QString, QImage> images;
     const QImage transparent;
 };
+namespace {
+// #684 CI diagnostic breadcrumbs - see heif-preview.cpp for rationale
+// (stderr bypasses the Qt message handler, so test warning seams stay clean).
+void heifCrumb(const char *stage, quint64 a = 0, quint64 b = 0)
+{
+    std::fprintf(stderr, "[heif-crumb] t=%p %s %llu %llu\n",
+        QThread::currentThreadId(), stage, static_cast<unsigned long long>(a),
+        static_cast<unsigned long long>(b));
+    std::fflush(stderr);
+}
+} // namespace
 namespace {
 // Reads only already-published bounded previews. No manager, network, decode,
 // scaling, event loop, condition variable or wait can be reached from here.
@@ -351,22 +364,26 @@ void MessageImages::downloaded(const QString &scope, quint64 job, const FileResu
         auto *watchdog = new QTimer(this);
         watchdog->setSingleShot(true);
         connect(watchdog, &QTimer::timeout, this, [this, watchdog, scope, job] {
+            heifCrumb("mi-watchdog-fired", job);
             watchdog->deleteLater();
             decodeWatchdogExpired(scope, job);
         });
         watchdog->start(m_decodeTimeoutMs);
         ticket->watchdog = watchdog;
     }
+    heifCrumb("mi-decode-requested", job, ticket->watchdog ? 1 : 0);
     emit decodeRequested(scope, job, result.bytes);
     notifyRevision();
 }
 void MessageImages::decoded(const QString &scope, quint64 job, const QImage &image, const QSize &naturalSize)
 {
+    heifCrumb("mi-decoded-in", job, m_stopping ? 1 : 0);
     if (m_stopping) return;
     auto ticket = m_jobs.find(job); if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode) return;
     if (ticket->watchdog) { ticket->watchdog->stop(); ticket->watchdog->deleteLater(); }
     const auto uuid = ticket->uuid; m_jobs.erase(ticket);
     if (!scopeCurrent()) {
+        heifCrumb("mi-decoded-retired", job);
         const QPointer<MessageImages> guard(this); refreshScope();
         if (guard) drain();
         return;
@@ -377,6 +394,7 @@ void MessageImages::decoded(const QString &scope, quint64 job, const QImage &ima
         const bool retain = !image.isNull() && !naturalSize.isEmpty() && reservePreview(bytes);
         entry = m_entries.find(uuid); // LRU removal above never owns this leased row.
         entry->job = 0; entry->phase = retain ? Phase::Ready : Phase::Failed;
+        heifCrumb("mi-decoded-settled", job, retain ? 1 : 0);
         if (retain) {
             entry->naturalSize = naturalSize; entry->previewBytes = bytes; m_retainedBytes += bytes;
             QMutexLocker lock(&m_images->mutex); m_images->images.insert(cacheKey(uuid), image);
@@ -388,6 +406,7 @@ void MessageImages::decoded(const QString &scope, quint64 job, const QImage &ima
 }
 void MessageImages::decodeWatchdogExpired(const QString &scope, quint64 job)
 {
+    heifCrumb("mi-watchdog-expired", job);
     if (m_stopping) return;
     auto ticket = m_jobs.find(job);
     if (ticket == m_jobs.end() || ticket->phase != JobPhase::Decode) return;
