@@ -43,12 +43,12 @@ strictly, default `false`; mirrored by `NativePreferences`,
   only while the toolbar is collapsed (was: always outside preview), and keeps
   exactly attach (col 0) + emoji (col 1) - the reference `compactSecondaryActions`
   set. The poll trigger is removed from the grid.
-- `composerToolbarActions` (the expanded `RowLayout`) gains, at the reference
-  positions: attach (column 2), the file/emoji separator (3), emoji (4), poll
-  (5); the pre-existing time/snippets/AI and format groups shift to columns
-  6..21 with explicit `Layout.column` values so a reparented child cannot
-  land at the row tail (`RowLayout` honours the `Layout.column` attached
-  property).
+- `composerToolbarActions` (the expanded `GridLayout`, `columns: 19`) gains,
+  at the reference positions: attach (column 2), the file/emoji separator (3),
+  emoji (4), poll (5); the pre-existing time/snippets/AI and format groups
+  shift to columns 6..18 with explicit `Layout.column` values so a reparented
+  child cannot land at the row tail (`GridLayout` honours the `Layout.column`
+  attached property).
 - Attach and emoji are single instances reparented declaratively: expanded ->
   `composerToolbarActions`; collapsed -> the in-field grid, or the tall-editor
   left rail (`composerLeadingControls`, the documented addition of
