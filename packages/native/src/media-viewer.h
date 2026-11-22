@@ -56,6 +56,11 @@ public:
     // watchdog. Neither changes behaviour with defaults installed.
     static void setHeifRenderGateForTests(std::function<void()> gate);
     void setHeifRenderTimeoutMsForTests(int ms);
+    // #670 re-review round: a queued HEIC render is bounded separately from
+    // the per-render watchdog, because the watchdog cannot kill the serial
+    // worker: a render stuck mid-decode must not strand later slots in
+    // loading forever. Neither knob changes behaviour with defaults installed.
+    void setHeifQueueTimeoutMsForTests(int ms);
 
     // Returns false (viewer untouched) when there is no image slot or the
     // requested file is not part of the collected gallery.
@@ -88,6 +93,11 @@ private:
         // late render is discarded by the existing fences.
         QTimer *renderTimer = nullptr;
         bool renderPending = false;
+        // #670 re-review round: the wait for the serial worker to even TAKE
+        // this render is bounded on its own (the render watchdog only starts
+        // at worker start and the worker can be stuck inside an earlier job).
+        QTimer *queueTimer = nullptr;
+        bool queuePending = false;
     };
 
     void closeSession();
@@ -99,6 +109,9 @@ private:
     void armHeifRenderWatchdog(int slot);
     void cancelRenderWatchdog(Slot &slot);
     void heifRenderTimeoutExpired(QTimer *timer, int slot, quint64 generation);
+    void armHeifQueueWatchdog(int slot);
+    void cancelRenderQueueWatchdog(Slot &slot);
+    void heifQueueTimeoutExpired(QTimer *timer, int slot, quint64 generation);
     QPointer<NativeController> m_controller;
     QPointer<FileClient> m_files;
     std::unique_ptr<NativeMarkdown> m_markdown;
@@ -115,6 +128,10 @@ private:
     QThread m_decodeThread;
     QPointer<QObject> m_decoder;
     int m_renderTimeoutMs = kHeifDecodeTimeoutMs; // #670 finding 2
+    // Queue bound: how long a HEIC render may wait for the serial worker to
+    // take it. Deliberately larger than the per-render bound - queueing is
+    // legal work (N gallery slots), only an UNBOUNDED queue is the bug.
+    int m_queueTimeoutMs = kHeifDecodeTimeoutMs * 4; // #670 re-review round
     bool m_stopping = false;
     Q_SIGNAL void heifRenderRequested(int slot, quint64 generation, const QString &path,
         const QString &outPath);
