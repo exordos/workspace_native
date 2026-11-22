@@ -337,6 +337,23 @@ FocusScope {
             lines.push(qsTr("Last %1 event %2s ago")
                 .arg(String(realtimeStats.lastEventType || "?"))
                 .arg(Math.round((collectedMs - Number(lastEventAt)) / 1000)));
+        // Issue #668 (docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md): websocket
+        // transport rows appended to the Realtime card. Every extra line is
+        // raw telemetry data (state token, endpoint, close code) rendered
+        // like the connection card's phase line - untranslated by design.
+        const websocket = snapshot.websocket || {};
+        const wsState = String(websocket.state || "");
+        if (wsState && wsState !== "disabled") {
+            const wsEndpoint = String(websocket.endpoint || "");
+            lines.push(wsEndpoint ? wsState + " \u00b7 " + wsEndpoint : wsState);
+            const recentPerMinute = Number(websocket.recentEventsPerMinute || 0);
+            if (recentPerMinute > 0)
+                lines.push(String(Math.round(recentPerMinute)) + " / min");
+            const failures = Array.isArray(websocket.recentFailures) ? websocket.recentFailures : [];
+            if (failures.length > 0)
+                lines.push(String(failures[0].reason || "") + " ("
+                    + String(Number(failures[0].closeCode || 0)) + ")");
+        }
         cards.push({ key: "realtime", kind: "lines", lines: lines, badges: [] });
 
         lines = [String(workspaceSession.login || qsTr("Not signed in")),

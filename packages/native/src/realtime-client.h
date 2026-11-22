@@ -1,6 +1,7 @@
 #pragma once
 
 #include "api-client.h"
+#include "native-diagnostics.h"
 #include "session.h"
 
 #include <QJsonObject>
@@ -33,6 +34,11 @@ public:
     void nudge();
     quint64 acknowledgedEpoch() const { return m_epoch; }
     QString epochGeneration() const { return m_epochGeneration; }
+    // Issue #668 (docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md): transport-level
+    // WebSocket summary for the diagnostics dataset: lifecycle stamps,
+    // receive traffic by event type, recent failures with close codes and
+    // the state-change history. Metadata only - no payloads, no tokens.
+    QVariantMap websocketSummary() const;
 
 signals:
     void eventReceived(const QJsonObject &envelope);
@@ -91,6 +97,7 @@ private:
     QString m_owner;
     QString m_epochGeneration;
     QString m_state;
+    workspace::diagnostics::RealtimeActivityLedger m_activity;
     QByteArray m_nextMarker;
     quint64 m_epoch = 0;
     quint64 m_run = 0;

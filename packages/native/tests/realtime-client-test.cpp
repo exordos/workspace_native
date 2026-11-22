@@ -506,6 +506,84 @@ private slots:
         QCOMPARE(fixture.snapshots, 1);
     }
 
+    // Issue #668 (docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md): the websocket
+    // dataset mirrors lifecycle, traffic and failures from metadata only.
+    void websocketSummaryTracksLifecycleTrafficAndFailures()
+    {
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        connect(&fixture.client, &RealtimeClient::eventReceived, &fixture.client, [&](const QJsonObject &event) {
+            fixture.client.acknowledge(event.value("uuid").toString());
+        });
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        fixture.events.insert(12, realtimeEvent(12));
+        fixture.send(realtimeEvent(12));
+        QTRY_COMPARE(fixture.client.acknowledgedEpoch(), quint64(12));
+        {
+            const auto summary = fixture.client.websocketSummary();
+            QCOMPARE(summary.value(QStringLiteral("state")).toString(), QStringLiteral("live"));
+            const auto connectedSince = summary.value(QStringLiteral("connectedSinceMs")).toLongLong();
+            QVERIFY(connectedSince > 0);
+            QCOMPARE(summary.value(QStringLiteral("lastConnectedAtMs")).toLongLong(), connectedSince);
+            QVERIFY(summary.value(QStringLiteral("lastDisconnectedAtMs")).isNull());
+            QCOMPARE(summary.value(QStringLiteral("eventsReceivedCount")).toULongLong(), Q_UINT64_C(1));
+            QCOMPARE(summary.value(QStringLiteral("lastEventType")).toString(), QStringLiteral("message.updated"));
+            QVERIFY(!summary.value(QStringLiteral("lastEventAt")).isNull());
+            QCOMPARE(summary.value(QStringLiteral("receivedByType")).toMap()
+                         .value(QStringLiteral("message.updated")).toULongLong(), Q_UINT64_C(1));
+            QVERIFY(summary.value(QStringLiteral("recentEventsPerMinute")).toDouble() >= 1.0);
+            const auto history = summary.value(QStringLiteral("connectionHistory")).toList();
+            QVERIFY(!history.isEmpty());
+            QCOMPARE(history.first().toMap().value(QStringLiteral("state")).toString(),
+                     QStringLiteral("live"));
+            QVERIFY(summary.value(QStringLiteral("recentFailures")).toList().isEmpty());
+        }
+        // A plain transport drop: failure record with the close code and
+        // the disconnect stamp. The ledger must show it regardless of the
+        // client's immediate auto-reconnect, so the drop is observed
+        // through the failure record and the span is closed deterministically
+        // via stop() (no reconnect race inside the assertions).
+        fixture.sockets.first()->close(QWebSocketProtocol::CloseCodeGoingAway);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !fixture.client.websocketSummary().value(QStringLiteral("recentFailures")).toList().isEmpty(), 2000);
+        fixture.client.stop();
+        {
+            const auto summary = fixture.client.websocketSummary();
+            QVERIFY(summary.value(QStringLiteral("connectedSinceMs")).isNull());
+            QVERIFY(!summary.value(QStringLiteral("lastDisconnectedAtMs")).isNull());
+            QVERIFY(summary.value(QStringLiteral("state")).toString() != QStringLiteral("live"));
+            const auto failures = summary.value(QStringLiteral("recentFailures")).toList();
+            QVERIFY(!failures.isEmpty());
+            QCOMPARE(failures.first().toMap().value(QStringLiteral("reason")).toString(),
+                     QStringLiteral("socket_closed"));
+            QCOMPARE(failures.first().toMap().value(QStringLiteral("closeCode")).toInt(),
+                     int(QWebSocketProtocol::CloseCodeGoingAway));
+            const auto history = summary.value(QStringLiteral("connectionHistory")).toList();
+            // Newest first: the list must stay time-ordered regardless of
+            // which transitional state the reconnect happened to log first.
+            for (qsizetype index = 1; index < history.size(); ++index)
+                QVERIFY(history.at(index - 1).toMap().value(QStringLiteral("atMs")).toLongLong()
+                        >= history.at(index).toMap().value(QStringLiteral("atMs")).toLongLong());
+        }
+    }
+
+    void websocketSummaryEndpointOmitsCredentials()
+    {
+        RealtimeFixture fixture;
+        fixture.autoSnapshot = true;
+        QVERIFY(fixture.login());
+        fixture.client.start();
+        QTRY_COMPARE(fixture.sockets.size(), 1);
+        const auto summary = fixture.client.websocketSummary();
+        const auto endpoint = summary.value(QStringLiteral("endpoint")).toString();
+        QCOMPARE(endpoint, QStringLiteral("ws://127.0.0.1:%1/api/workspace/v1/events/ws")
+                                 .arg(fixture.gateway.serverPort()));
+        QVERIFY(!endpoint.contains(QLatin1String("bearer"), Qt::CaseInsensitive));
+        QVERIFY(!endpoint.contains(QLatin1String("token"), Qt::CaseInsensitive));
+    }
+
     void generationChangeRejectsOldAcknowledgementAndLogoutStopsTransport()
     {
         RealtimeFixture fixture;

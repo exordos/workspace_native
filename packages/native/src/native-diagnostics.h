@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -189,6 +190,53 @@ private:
     mutable qint64 m_previousStart = -1;
     mutable QVariant m_cpuPercent;
     mutable qint64 m_peakWorkingSetKb = 0; // monotonic across polls
+};
+
+// Issue #668 (docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md): transport-level
+// WebSocket accounting for the Server Diagnostics websocket dataset.
+// A value class fed from RealtimeClient's existing seams (setState, the
+// socket disconnected/errorOccurred handlers, dispatch). Records only
+// metadata: state transitions, close codes, event type strings and
+// timestamps - never payload bodies, tokens or URLs with credentials.
+// Not thread-safe; callers run on a single thread.
+class RealtimeActivityLedger final {
+public:
+    static constexpr int HistoryCap = 50;
+    static constexpr int FailureCap = 20;
+    static constexpr int RecentEventWindowMs = 60'000;
+    static constexpr int RecentEventCap = 300;
+
+    // Mirrors every RealtimeClient::setState transition. "live" is the
+    // connected sentinel: entering it stamps connectedSince/lastConnected;
+    // leaving it ends the span WITHOUT stamping a disconnect (the
+    // live<->catching_up oscillation is not a drop). The disconnect stamp is
+    // written by recordFailure, which only fires on real socket close/error.
+    void recordStateChange(const QString &state, qint64 atMs);
+    // reason is a fixed token ("socket_closed", "socket_error"); closeCode
+    // is the WebSocket close code or a QAbstractSocket::SocketError value.
+    void recordFailure(qint64 atMs, const QString &reason, int closeCode);
+    void recordReceived(const QString &eventType, qint64 atMs);
+
+    // The dataset documented in docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md,
+    // minus endpoint/state (the realtime client injects those, it owns the
+    // transport configuration). newestFirst applies to both history lists.
+    QVariantMap summary(qint64 nowMs) const;
+
+    QString lastState() const { return m_lastState; }
+    qint64 connectedSinceMs() const { return m_connectedSinceMs; }
+
+private:
+    QString m_lastState;
+    qint64 m_connectedSinceMs = 0;
+    qint64 m_lastConnectedAtMs = 0;
+    qint64 m_lastDisconnectedAtMs = 0;
+    qint64 m_lastEventAtMs = 0;
+    QString m_lastEventType;
+    quint64 m_eventsReceived = 0;
+    QHash<QString, quint64> m_byType;
+    QList<qint64> m_recentEventTimes;             // oldest first, cap tail
+    QList<QVariantMap> m_failures;               // newest first, cap head
+    QList<QVariantMap> m_history;                // newest first, cap head
 };
 
 } // namespace workspace::diagnostics

@@ -483,3 +483,95 @@ QVariantMap NativeMemoryDiagnostics::snapshot(bool sampleCpu) const
 }
 
 } // namespace workspace::diagnostics
+
+namespace workspace::diagnostics {
+
+// Issue #668: see docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md. Every method runs
+// on the realtime client's thread; the "live" sentinel handling keeps the
+// connectedSince/disconnected stamps consistent even when transitions skip
+// states (the client hops connecting -> live, but failures can land on
+// retrying or snapshot_required straight from live).
+void RealtimeActivityLedger::recordStateChange(const QString &state, qint64 atMs)
+{
+    // Leaving "live" ends the connected span, but does NOT stamp a
+    // disconnect: the live <-> catching_up/snapshot_required oscillation is
+    // not a transport drop. The disconnect stamp belongs to recordFailure,
+    // which only fires on real socket close/error events.
+    if (state != QLatin1String("live"))
+        m_connectedSinceMs = 0;
+    if (state == QLatin1String("live") && m_connectedSinceMs == 0) {
+        m_connectedSinceMs = atMs;
+        m_lastConnectedAtMs = atMs;
+    }
+    m_lastState = state;
+    m_history.prepend(QVariantMap{{QStringLiteral("atMs"), atMs},
+        {QStringLiteral("state"), state}});
+    while (m_history.size() > HistoryCap)
+        m_history.removeLast();
+}
+
+void RealtimeActivityLedger::recordFailure(qint64 atMs, const QString &reason, int closeCode)
+{
+    if (m_connectedSinceMs != 0) {
+        m_lastDisconnectedAtMs = atMs;
+        m_connectedSinceMs = 0;
+    }
+    m_failures.prepend(QVariantMap{{QStringLiteral("atMs"), atMs},
+        {QStringLiteral("reason"), reason}, {QStringLiteral("closeCode"), closeCode}});
+    while (m_failures.size() > FailureCap)
+        m_failures.removeLast();
+}
+
+void RealtimeActivityLedger::recordReceived(const QString &eventType, qint64 atMs)
+{
+    ++m_eventsReceived;
+    m_byType[eventType] += 1;
+    m_lastEventAtMs = atMs;
+    m_lastEventType = eventType;
+    m_recentEventTimes.append(atMs);
+    while (m_recentEventTimes.size() > RecentEventCap)
+        m_recentEventTimes.removeFirst();
+}
+
+QVariantMap RealtimeActivityLedger::summary(qint64 nowMs) const
+{
+    int recentCount = 0;
+    const auto windowStart = nowMs - RecentEventWindowMs;
+    for (auto it = m_recentEventTimes.rbegin(); it != m_recentEventTimes.rend(); ++it) {
+        if (*it < windowStart)
+            break;
+        ++recentCount;
+    }
+    QVariantMap byType;
+    for (auto it = m_byType.constBegin(); it != m_byType.constEnd(); ++it)
+        byType.insert(it.key(), it.value());
+    QVariantList failures;
+    failures.reserve(m_failures.size());
+    for (const auto &failure : m_failures)
+        failures.append(failure);
+    QVariantList history;
+    history.reserve(m_history.size());
+    for (const auto &entry : m_history)
+        history.append(entry);
+    QVariantMap summary;
+    summary.insert(QStringLiteral("receiveOnly"), true);
+    summary.insert(QStringLiteral("connectedSinceMs"),
+        m_connectedSinceMs > 0 ? QVariant(m_connectedSinceMs) : QVariant());
+    summary.insert(QStringLiteral("lastConnectedAtMs"),
+        m_lastConnectedAtMs > 0 ? QVariant(m_lastConnectedAtMs) : QVariant());
+    summary.insert(QStringLiteral("lastDisconnectedAtMs"),
+        m_lastDisconnectedAtMs > 0 ? QVariant(m_lastDisconnectedAtMs) : QVariant());
+    summary.insert(QStringLiteral("eventsReceivedCount"),
+        static_cast<qulonglong>(m_eventsReceived));
+    summary.insert(QStringLiteral("lastEventAt"),
+        m_lastEventAtMs > 0 ? QVariant(m_lastEventAtMs) : QVariant());
+    summary.insert(QStringLiteral("lastEventType"),
+        m_lastEventType.isEmpty() ? QVariant() : QVariant(m_lastEventType));
+    summary.insert(QStringLiteral("receivedByType"), byType);
+    summary.insert(QStringLiteral("recentEventsPerMinute"), double(recentCount));
+    summary.insert(QStringLiteral("recentFailures"), failures);
+    summary.insert(QStringLiteral("connectionHistory"), history);
+    return summary;
+}
+
+} // namespace workspace::diagnostics

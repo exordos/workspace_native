@@ -1047,6 +1047,26 @@ private slots:
         QVERIFY(finished.first().at(1).toInt() >= 0);
     }
 
+    // Issue #668 (docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md): the websocket
+    // dataset is always present and summary-only. Transport-level details
+    // (lifecycle stamps, by-type traffic, close codes) are pinned against a
+    // live transport in realtime-client-test websocketSummary* cases; this
+    // controller fixture has no realtime client, so the documented disabled
+    // shape must appear instead of the key being omitted.
+    void websocketDatasetIsSummaryOnly()
+    {
+        Fixture f; QVERIFY(f.start());
+        const auto snapshot = f.controller.diagnosticsSnapshot();
+        QVERIFY(snapshot.contains(QStringLiteral("websocket")));
+        const auto websocket = snapshot.value(QStringLiteral("websocket")).toMap();
+        QCOMPARE(websocket.value(QStringLiteral("state")).toString(), QStringLiteral("disabled"));
+        QVERIFY(websocket.value(QStringLiteral("receiveOnly")).toBool());
+        // Summary level only: no payload-bearing keys can ever be inserted.
+        QVERIFY(!websocket.contains(QStringLiteral("payload")));
+        QVERIFY(!websocket.contains(QStringLiteral("envelope")));
+        QVERIFY(!websocket.contains(QStringLiteral("token")));
+    }
+
     void diagnosticsPingRequiresAuthentication()
     {
         ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
