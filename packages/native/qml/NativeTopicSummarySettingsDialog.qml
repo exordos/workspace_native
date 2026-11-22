@@ -50,7 +50,11 @@ Dialog {
 
     onOpened: {
         dlg.tabs = allowedTabs()
-        dlg.activeTab = dlg.tabs.length ? dlg.tabs[0] : ""
+        // The gear that opens this dialog always belongs to a topic's summary
+        // row, so the topic section is the promised landing tab; fall back to
+        // the first permitted tab only when this user may not see "topic".
+        dlg.activeTab = dlg.tabs.indexOf("topic") >= 0 ? "topic"
+            : (dlg.tabs.length ? dlg.tabs[0] : "")
         topicTab.reset()
         gatesTab.reset()
         endpointsTab.reset()
