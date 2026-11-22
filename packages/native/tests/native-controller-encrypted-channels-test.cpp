@@ -1814,6 +1814,35 @@ private slots:
         QTest::qWait(300);
         QCOMPARE(test.projection().value("checked").toBool(), false);
     }
+
+    // Issue #681: the reconcile GET is a snapshot for ONE setting. A realtime
+    // rename with no newer key-sharing timestamp must survive its arrival:
+    // merging only the key-sharing fields (the confirmed-PUT contract) keeps
+    // the newer name, while a wholesale row replacement reverts it.
+    void keySharingReconcileKeepsNewerRealtimeName()
+    {
+        KeySharingToggleFixture test;
+        test.putStatus = 503;              // ambiguous write: reply lost
+        test.commitDespiteFailure = true;  // the server did commit the toggle
+        test.deferReconcile = true;        // hold the reconcile answer in flight
+        QVERIFY(test.start());
+        auto &controller = test.fixture.controller;
+        controller.setChatKeySharing(false);
+        QTRY_COMPARE(test.puts, 1);
+        QTRY_VERIFY(static_cast<bool>(test.releaseReconcile));
+        // A rename lands while the GET is held. It carries the CURRENT flag at
+        // an equal updated_at, so it is not a newer key-sharing write: the
+        // timestamp-precedence guard must not be what protects this field.
+        auto renamed = keySharingStream(true, false, QStringLiteral("2026-01-02T10:00:00.000Z"));
+        renamed["name"] = QStringLiteral("Renamed after read");
+        QVERIFY(controller.applyRealtimeEvent(test.snapshot(renamed)));
+        QCOMPARE(streamRowName(controller), QStringLiteral("Renamed after read"));
+        // The held snapshot arrives: the committed flag recovers, and the
+        // newer unrelated field (the name) is preserved.
+        test.releaseReconcile();
+        QTRY_VERIFY(test.projection().value("checked").toBool() == false);
+        QCOMPARE(streamRowName(controller), QStringLiteral("Renamed after read"));
+    }
 };
 
 QTEST_MAIN(ControllerEncryptedChannelsTest)
