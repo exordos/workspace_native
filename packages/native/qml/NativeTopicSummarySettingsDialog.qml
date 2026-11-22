@@ -275,6 +275,11 @@ Dialog {
                     return f[name] !== undefined ? f[name] : fallback
                 }
                 function setField(name, value) {
+                    // Identity guard: every text field writes back through here,
+                    // and re-assigning the whole map re-notifies every binding.
+                    // Without this guard the form re-reduces onto itself and Qt
+                    // reports a binding loop the moment the dialog loads.
+                    if (form && String(form[name]) === String(value)) return
                     const next = Object.assign({}, form)
                     next[name] = value
                     form = next
