@@ -12523,6 +12523,126 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    // Issue #660 clause 3: switching between chats keeps the sidebar stream
+    // order and the user's scroll position. The accordion collapse of the
+    // previously expanded streams (#95 spec) must not clamp contentY: the
+    // content removed sits above the viewport, so a stable scroll position
+    // is observable without any anchoring assumption about row heights.
+    void switchingStreamKeepsSidebarScrollAndOrder()
+    {
+        WindowChannelFixture fixture;
+        const QString otherStream = "93000000-0000-4000-8000-000000000001";
+        const auto secondTopic = windowChannelTopic(secondTopicId, otherStream, "Support topic");
+        QJsonArray streams;
+        streams.append(windowChannel(streamId, "Engineering"));
+        streams.append(windowChannel(otherStream, "Support"));
+        QStringList fillerIds;
+        QHash<QString, QJsonArray> topicsByStream;
+        for (int i = 0; i < 6; ++i) {
+            const auto id = QString("93000000-0000-4000-8000-%1").arg(10 + i, 12, 10, QLatin1Char('0'));
+            fillerIds.append(id);
+            streams.append(windowChannel(id, QString("Filler %1").arg(i)));
+        }
+        QJsonArray planning;
+        for (int i = 0; i < 7; ++i) {
+            const auto id = QString("94000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            auto topic = windowChannelTopic(id, streamId, QString("Topic %1").arg(i));
+            topic["is_default"] = i == 0;
+            topic["is_done"] = i >= 5;
+            planning.append(topic);
+        }
+        topicsByStream.insert(streamId, planning);
+        topicsByStream.insert(otherStream, QJsonArray{secondTopic});
+        for (const auto &id : fillerIds) {
+            const auto topicId = QString("95000000-0000-4000-8000-%1").arg(fillerIds.indexOf(id), 12, 10, QLatin1Char('0'));
+            topicsByStream.insert(id, QJsonArray{windowChannelTopic(topicId, id, "Filler topic")});
+        }
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) return {streams};
+            if (request.method == "GET" && request.target.path().endsWith("/stream_topics/"))
+                return {topicsByStream.value(QUrlQuery(request.target).queryItemValue("stream_uuid"))};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("switch-scroll.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Sidebar switch-scroll teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 600);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-switch", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 8);
+        auto *list = item(window->contentItem(), "streamList"); QVERIFY(list);
+        const auto expandStream = [&](const QString &streamUuid) {
+            auto *row = visibleItem(window->contentItem(), "stream-" + streamUuid);
+            if (!row) { // the row may sit below the fold; walk it into view
+                list->setProperty("contentY", list->property("contentY").toReal() + 200.0);
+                QTest::qWait(50);
+                row = visibleItem(window->contentItem(), "stream-" + streamUuid);
+            }
+            QVERIFY(row);
+            QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "expandTopics-" + streamUuid), 3000);
+            click(window, visibleItem(window->contentItem(), "expandTopics-" + streamUuid));
+        };
+        // Three independently hover-expanded streams (no navigation, #142)
+        // plus the selected stream's own topics make the list scrollable.
+        controller.selectStream(otherStream);
+        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 1);
+        expandStream(streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(),
+            "topic-" + planning.at(0).toObject().value("uuid").toString()), 5000);
+        expandStream(fillerIds.at(3));
+        expandStream(fillerIds.at(5));
+        QTRY_VERIFY(list->property("contentHeight").toReal()
+                    > list->height() + 120.0);
+        const auto travel = list->property("contentHeight").toReal() - list->height();
+        QVERIFY2(travel > 120.0, qPrintable(QString("scroll travel %1 px").arg(travel)));
+        list->setProperty("contentY", 150.0);
+        QTRY_COMPARE_WITH_TIMEOUT(list->property("contentY").toReal(), 150.0, 2000);
+        QStringList orderBefore;
+        {
+            QList<QQuickItem *> rows;
+            const auto children = list->childItems();
+            for (auto *child : children)
+                if (child->objectName().startsWith("stream-")) rows.append(child);
+            std::sort(rows.begin(), rows.end(), [](const QQuickItem *a, const QQuickItem *b) {
+                return a->y() < b->y(); });
+            for (auto *row : rows) orderBefore.append(row->objectName());
+        }
+        QVERIFY(orderBefore.size() >= 3);
+        // Switch chats by clicking the Engineering stream row: the accordion
+        // collapses the other expanded streams (#95), all above this viewport.
+        list->setProperty("contentY", 150.0);
+        QTest::qWait(100); // let the collapse settle only if it re-clamps contentY
+        const auto pinnedY = list->property("contentY").toReal();
+        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.selectedStream(), streamId);
+        QTest::qWait(200); // several layout passes for a model republish/clamp
+        QCOMPARE(list->property("contentY").toReal(), pinnedY);
+        QStringList orderAfter;
+        {
+            QList<QQuickItem *> rows;
+            const auto children = list->childItems();
+            for (auto *child : children)
+                if (child->objectName().startsWith("stream-")) rows.append(child);
+            std::sort(rows.begin(), rows.end(), [](const QQuickItem *a, const QQuickItem *b) {
+                return a->y() < b->y(); });
+            for (auto *row : rows) orderAfter.append(row->objectName());
+        }
+        QCOMPARE(orderAfter, orderBefore);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss(); QVERIFY(closed);
+    }
+
     void sidebarReexpandedStreamUsesUpdatedCatalog_data()
     {
         QTest::addColumn<bool>("holdBackground");
