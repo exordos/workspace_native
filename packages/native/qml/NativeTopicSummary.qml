@@ -40,8 +40,10 @@ Column {
             icon.source: "qrc:/workspace/icons/settings.svg"; icon.width: 16; icon.height: 16; icon.color: panel.colors["text-muted"]
             Accessible.name: qsTr("Open AI summary settings")
             onClicked: {
-                panel.settingsTopic = panel.topicId; enabledCheck.checked = panel.enabledForTopic
-                panel.failed = false; panel.saving = false; settings.open()
+                panel.settingsTopic = panel.topicId
+                panel.failed = false; panel.saving = false
+                if (settings.tabs.length === 0 && settings.allowedTabs().length === 0) return
+                settings.open()
             }
         }
         ToolButton {
@@ -94,39 +96,28 @@ Column {
             }
         }
     }
-    Dialog {
+    NativeTopicSummarySettingsDialog {
         id: settings
-        parent: Overlay.overlay; anchors.centerIn: parent; modal: true; focus: true
-        width: Math.min(460, parent ? parent.width - 32 : 460)
-        closePolicy: panel.saving ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        contentItem: ColumnLayout {
-            Text { objectName: "channelTopicSummarySettingsTitle"; text: qsTr("AI summary settings"); color: panel.colors["text-primary"]; font.pixelSize: 18; font.weight: Font.DemiBold }
-            CheckBox {
-                id: enabledCheck; objectName: "channelTopicSummaryEnabled"
-                text: qsTr("Automatic summary updates"); enabled: panel.permissions.canEditTopicSummary && !panel.saving
-            }
-            Text { visible: panel.failed; text: qsTr("Could not update the topic. Please try again."); color: panel.colors.danger }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight
-                Button { text: qsTr("Close"); enabled: !panel.saving; onClicked: settings.close() }
-                Button {
-                    objectName: "channelTopicSummarySave"
-                    text: qsTr("Save"); visible: panel.permissions.canEditTopicSummary
-                    enabled: !panel.saving && enabledCheck.checked !== panel.enabledForTopic
-                    onClicked: {
-                        panel.saving = true
-                        panel.controller.applyChannelTopicAction(panel.settingsTopic, "summary", String(enabledCheck.checked))
-                    }
-                }
-            }
+        parent: Overlay.overlay
+        controller: panel.controller
+        colors: panel.colors
+        topicId: panel.settingsTopic
+        topicName: panel.topic && panel.topic.name ? String(panel.topic.name) : ""
+        streamName: panel.permissions.name ? String(panel.permissions.name) : ""
+        onTopicConfigRequested: (topic, enabled, prompt, promptIsDefault, effort) => {
+            panel.saving = true
+            // Controller seam for prompt/reasoning edits (this round's controller extension).
+            if (typeof panel.controller.saveTopicSummaryTopic === "function")
+                panel.controller.saveTopicSummaryTopic(topic, enabled, promptIsDefault ? "" : prompt, effort)
+            else
+                panel.controller.applyChannelTopicAction(topic, "summary", String(enabled))
         }
     }
     Connections {
         target: panel.controller
         function onChannelTopicActionFinished(id, action, ok) {
             if (!settings.visible || !panel.saving || id !== panel.settingsTopic || action !== "summary") return
-            panel.saving = false; panel.failed = !ok
-            if (ok) settings.close()
+            panel.saving = false
         }
     }
 }
