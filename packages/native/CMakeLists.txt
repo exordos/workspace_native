@@ -577,16 +577,25 @@ if(BUILD_TESTING)
         ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")
     # Issue #657: native-native-window ran 1716 s in CI as a single ctest entry,
     # dictating the wall clock of every full-gate shard. Register it instead as
-    # source-order-contiguous buckets generated from measured per-case QtTest
-    # timings (scripts/gen-test-buckets.py), each targeting well under 120 s of
-    # CI time; the stride shard slices spread the parts across shards. The
-    # headless sync guard fails with the regenerate command whenever a QtTest
-    # case is added without regenerating the checked-in bucket list.
+    # hash-stable buckets generated from committed per-case timing fragments
+    # (scripts/gen-test-buckets.py, issue #675): bucket = crc32(name) mod N, so
+    # adding a case edits only its own lines and lane rebases stay mergeable.
+    # Each bucket targets under 120 s of CI time; functions measured over the
+    # ceiling run as their own entries (BUCKETS_OVER). The stride shard slices
+    # spread the parts across shards. The headless sync guard recomputes the
+    # layout from the fragments and fails whenever a QtTest case is added
+    # without recording its timing fragment.
     include(${CMAKE_CURRENT_LIST_DIR}/tests/window-test-buckets.cmake)
     foreach(window_bucket RANGE 1 ${WORKSPACE_NATIVE_WINDOW_BUCKETS_COUNT})
         add_test(NAME native-native-window-part${window_bucket}
             COMMAND native-window-test ${WORKSPACE_NATIVE_WINDOW_BUCKET_${window_bucket}})
         set_tests_properties(native-native-window-part${window_bucket} PROPERTIES
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+    endforeach()
+    foreach(window_heavy IN LISTS WORKSPACE_NATIVE_WINDOW_BUCKETS_OVER)
+        add_test(NAME native-native-window-heavy-${window_heavy}
+            COMMAND native-window-test ${window_heavy})
+        set_tests_properties(native-native-window-heavy-${window_heavy} PROPERTIES
             TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
     endforeach()
     find_program(WORKSPACE_NATIVE_PYTHON3_EXECUTABLE NAMES python3 REQUIRED)
@@ -725,12 +734,19 @@ if(BUILD_TESTING)
             set_tests_properties(native-native-e2ee-read-part${e2ee_read_bucket} PROPERTIES
                 TIMEOUT 600 RESOURCE_LOCK "xdisplay")
         endforeach()
+        foreach(e2ee_read_heavy IN LISTS WORKSPACE_NATIVE_E2EE_READ_BUCKETS_OVER)
+            add_test(NAME native-native-e2ee-read-heavy-${e2ee_read_heavy}
+                COMMAND native-e2ee-read-test ${e2ee_read_heavy})
+            set_tests_properties(native-native-e2ee-read-heavy-${e2ee_read_heavy} PROPERTIES
+                TIMEOUT 600 RESOURCE_LOCK "xdisplay")
+        endforeach()
         add_test(NAME native-e2ee-read-buckets-sync
             COMMAND ${WORKSPACE_NATIVE_PYTHON3_EXECUTABLE}
                 ${CMAKE_CURRENT_LIST_DIR}/tests/qt-test-buckets-sync.py
                 $<TARGET_FILE:native-e2ee-read-test>
                 ${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-read-test-buckets.cmake
                 --prefix WORKSPACE_NATIVE_E2EE_READ
+                --fragments ${CMAKE_CURRENT_LIST_DIR}/tests/bucket-timings/e2ee-read
                 --exclude ${e2ee_pulse_cases})
         set_tests_properties(native-e2ee-read-buckets-sync PROPERTIES TIMEOUT 30
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
@@ -766,12 +782,19 @@ if(BUILD_TESTING)
         set_tests_properties(native-native-e2ee-ui-part${e2ee_ui_bucket} PROPERTIES
             TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
     endforeach()
+    foreach(e2ee_ui_heavy IN LISTS WORKSPACE_NATIVE_E2EE_UI_BUCKETS_OVER)
+        add_test(NAME native-native-e2ee-ui-heavy-${e2ee_ui_heavy}
+            COMMAND native-e2ee-ui-test ${e2ee_ui_heavy})
+        set_tests_properties(native-native-e2ee-ui-heavy-${e2ee_ui_heavy} PROPERTIES
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+    endforeach()
     add_test(NAME native-e2ee-ui-buckets-sync
         COMMAND ${WORKSPACE_NATIVE_PYTHON3_EXECUTABLE}
             ${CMAKE_CURRENT_LIST_DIR}/tests/qt-test-buckets-sync.py
             $<TARGET_FILE:native-e2ee-ui-test>
             ${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-ui-test-buckets.cmake
             --prefix WORKSPACE_NATIVE_E2EE_UI
+            --fragments ${CMAKE_CURRENT_LIST_DIR}/tests/bucket-timings/e2ee-ui
             --only-file ${CMAKE_CURRENT_LIST_DIR}/tests/e2ee-ui-cases.txt)
     set_tests_properties(native-e2ee-ui-buckets-sync PROPERTIES TIMEOUT 30
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
