@@ -53,11 +53,20 @@ public:
     Q_INVOKABLE void restart();
     Q_INVOKABLE void cancel();
 
+    // Post-install confirmation (#634): consume the pending marker written by
+    // install(). Returns the normalized running version on an exact match and
+    // clears the marker; any mismatch, corrupt or absent value clears silently
+    // and returns an empty string. Called once per process by the shell UI.
+    Q_INVOKABLE QString consumeInstalledUpdate();
+    // Public for tests and the install path; not a QML surface.
+    void rememberPendingUpdate(const QString &version);
+
 signals:
     void changed();
     void restartRequested(const QString &managedExecutable);
 
 private:
+    QString pendingStorePath() const;
     void stopReply();
     void discardFile();
     void stopProcess();

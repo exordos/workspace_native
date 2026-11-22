@@ -13,6 +13,7 @@
 #include <QRegularExpression>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QSettings>
 #include <QSet>
 #include <QSslConfiguration>
 #include <QStandardPaths>
@@ -392,6 +393,42 @@ void NativeUpdater::stopProcess()
     process->deleteLater();
 }
 
+QString NativeUpdater::pendingStorePath() const
+{
+    return QDir(m_cachePath).filePath(QStringLiteral("pending-update.conf"));
+}
+
+namespace {
+QString normalizeAppVersion(QString version)
+{
+    version = version.trimmed();
+    if (version.startsWith(QLatin1Char('v'), Qt::CaseInsensitive))
+        version.remove(0, 1);
+    return version;
+}
+} // namespace
+
+void NativeUpdater::rememberPendingUpdate(const QString &version)
+{
+    const QString normalized = normalizeAppVersion(version);
+    if (normalized.isEmpty()) return;
+    QSettings store(pendingStorePath(), QSettings::IniFormat);
+    store.setValue(QStringLiteral("pending/version"), normalized);
+    store.sync(); // best-effort by contract
+}
+
+QString NativeUpdater::consumeInstalledUpdate()
+{
+    QSettings store(pendingStorePath(), QSettings::IniFormat);
+    if (!store.contains(QStringLiteral("pending/version"))) return { };
+    const QString expected = store.value(QStringLiteral("pending/version")).toString();
+    store.remove(QStringLiteral("pending/version"));
+    store.sync();
+    const QString installed = normalizeAppVersion(m_currentVersion);
+    const QString wanted = normalizeAppVersion(expected);
+    return (!wanted.isEmpty() && wanted == installed) ? installed : QString{ };
+}
+
 void NativeUpdater::install()
 {
     if (m_state != QStringLiteral("downloaded") || !m_file || m_downloadedPath.isEmpty()) return;
@@ -405,6 +442,10 @@ void NativeUpdater::install()
         fail(ticket, tr("The update could not be prepared."));
         return;
     }
+    // #634 pairing (reference app-update-installation.lib.ts): remember the
+    // version we are about to install so the next launch can confirm it once.
+    // Best-effort: a failed marker must never block installation.
+    rememberPendingUpdate(m_availableVersion);
     m_state = QStringLiteral("installing");
     QPointer<NativeUpdater> guard(this);
     emit changed();
