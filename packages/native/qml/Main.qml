@@ -74,13 +74,11 @@ ApplicationWindow {
     function openAbout(fromProfile) {
         if (!updatesVisible)
             aboutFromProfile = fromProfile;
-        accountPopup.close();
         updatesVisible = true;
         aboutDrawer.forceActiveFocus();
     }
     onUpdatesVisibleChanged: {
         if (updatesVisible) {
-            accountPopup.close();
             aboutDrawer.forceActiveFocus();
         } else {
             aboutFromProfile = false;
@@ -110,14 +108,11 @@ ApplicationWindow {
         }
         onBackRequested: {
             root.updatesVisible = false;
-            accountPopup.open();
+            rightDrawer.openAccountScreen("root");
         }
     }
-    property bool preferencesFromAccountMenu: false
     function openPreferencePanel(screen) {
-        accountPopup.close()
         rightDrawer.openAccountScreen(screen)
-        preferencesFromAccountMenu = true
     }
     // Right drawer shell (issue #129): docks beside the chat like aboutDrawer.
     // The channel info content (issue #132) mounts on the body slot as the
@@ -146,15 +141,37 @@ ApplicationWindow {
         onFavoritesActiveChanged: if (favoritesActive) rightDrawer.close()
         readonly property bool preferenceScreen: topLayerKind === "account"
             && (currentAccountScreen === "settings" || currentAccountScreen === "appearance")
-        Connections {
-            target: rightDrawer
-            function onCurrentAccountScreenChanged() {
-                if (!root.preferencesFromAccountMenu || rightDrawer.preferenceScreen) return
-                root.preferencesFromAccountMenu = false
-                if (rightDrawer.currentAccountScreen === "root") {
-                    rightDrawer.closeCurrent()
-                    accountPopup.open()
-                }
+        // Account root screen (#724): the reference user-menu rendered as the
+        // account layer's root content instead of the old floating popup.
+        readonly property bool accountRootVisible: drawerOpen
+            && topLayerKind === "account" && currentAccountScreen === "root"
+        NativeAccountMenu {
+            id: accountMenuLayer
+            objectName: "accountMenuLayer"
+            colors: root.colors
+            controller: root.controller
+            preferences: root.preferences
+            menuOpen: accountMenuLayer.visible
+            visible: rightDrawer.accountRootVisible
+            onStatusRequested: root.openOwnStatus()
+            onPersonalInfoRequested: rightDrawer.openPersonalInfo()
+            onSettingsRequested: root.openPreferencePanel("settings")
+            onAppearanceRequested: root.openPreferencePanel("appearance")
+            onAboutRequested: root.openAbout(true)
+            onDiagnosticsRequested: {
+                root.controller.showSection("diagnostics")
+            }
+            onClearCacheRequested: {
+                clearLocalCacheDialog.owner = root.controller.ownerKey
+                clearLocalCacheDialog.open()
+            }
+            onRefreshRequested: {
+                root.controller.refresh();
+                rightDrawer.closeCurrent();
+            }
+            onSignOutRequested: {
+                root.controller.closeDrafts();
+                root.controller.logout();
             }
         }
         Loader {
@@ -3149,11 +3166,11 @@ component NativeMentionChip: Item {
                         anchors.alignWhenCentered: false
                         glyphSize: 16
                         icon.color: root.colors["text-muted"]
-                        rotation: accountPopup.visible ? 180 : 0
+                        rotation: rightDrawer.accountRootVisible ? 180 : 0
                         Accessible.ignored: true
                     }
                 }
-                onClicked: accountPopup.open()
+                onClicked: rightDrawer.toggleUserMenu()
             }
         }
     }
@@ -3171,7 +3188,6 @@ component NativeMentionChip: Item {
         ownStatusAway.checked = Boolean(facts.away);
         ownStatusDialog.submitted = false;
         ownStatusDialog.emojiPickerOpen = false;
-        accountPopup.close();
         ownStatusDialog.open();
     }
 
@@ -3811,394 +3827,6 @@ component NativeMentionChip: Item {
         Timer { interval: 5000; running: ownStatusErrorToast.visible; onTriggered: ownStatusErrorToast.close() }
     }
 
-    Popup {
-        id: accountPopup
-        x: root.width - width - 16
-        y: topBar.height - 4
-        width: 315
-        height: Math.min(accountActions.implicitHeight + 8 + signOutFooter.implicitHeight + topPadding + bottomPadding, root.height - y - 8)
-        padding: 12
-        closePolicy: externalAccountsBlock.formOpen ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle {
-            color: root.colors["bg-elevated"]
-            border.color: root.colors["border-subtle"]
-            radius: 10
-        }
-        contentItem: Item {
-            Flickable {
-                id: accountScroll
-                objectName: "accountMenuScroll"
-                anchors.top: parent.top
-                anchors.bottom: signOutFooter.top
-                anchors.bottomMargin: 8
-                width: parent.width
-                clip: true
-                contentWidth: width
-                contentHeight: accountActions.implicitHeight
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
-            }
-            NativeButton {
-                id: signOutFooter
-                colors: root.colors
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                text: qsTr("Sign out")
-                objectName: "signOutButton"
-                onClicked: {
-                    accountPopup.close();
-                    root.controller.closeDrafts();
-                    root.controller.logout();
-                }
-            }
-        }
-        ColumnLayout {
-            id: accountActions
-            parent: accountScroll.contentItem
-            width: accountScroll.width
-            spacing: 8
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: 4
-                Layout.rightMargin: 4
-                spacing: 8
-                Image {
-                    Layout.preferredWidth: 32
-                    Layout.preferredHeight: 32
-                    source: "qrc:/workspace/icons/dashboard_customize.svg"
-                    sourceSize: Qt.size(22, 22)
-                    fillMode: Image.Pad
-                    Accessible.ignored: true
-                }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 2
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Current server")
-                        font.weight: Font.Medium
-                        color: root.colors["text-primary"]
-                    }
-                    Label {
-                        objectName: "currentServerLabel"
-                        Layout.fillWidth: true
-                        text: root.controller.account.serverLabel || ""
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        color: root.colors["text-muted"]
-                    }
-                    Label {
-                        objectName: "currentServerLogin"
-                        Layout.fillWidth: true
-                        text: root.controller.account.login || ""
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        color: root.colors["text-muted"]
-                    }
-                }
-            }
-            NativeExternalAccountBlock {
-                id: externalAccountsBlock
-                Layout.fillWidth: true
-                visible: root.controller.authenticated
-                directory: root.controller.externalAccounts
-                admin: root.controller.externalProviderAdmin
-                colors: root.colors
-                menuOpen: accountPopup.visible
-            }
-            NativeExternalProviderDialog {
-                id: externalProviderDialog
-                admin: root.controller.externalProviderAdmin
-                colors: root.colors
-            }
-            NativeButton {
-                objectName: "ownStatusAction"
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Status")
-                enabled: root.controller.authenticated && String(root.controller.ownStatusContextKey || "").length > 0
-                onClicked: root.openOwnStatus()
-            }
-            NativeButton {
-                objectName: "personalInfoAction"
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Personal info")
-                enabled: root.controller.authenticated
-                onClicked: {
-                    accountPopup.close()
-                    rightDrawer.openPersonalInfo()
-                }
-            }
-            NativeButton {
-                objectName: "accountSettingsAction"; Layout.fillWidth: true
-                colors: root.colors; text: qsTr("Settings")
-                onClicked: root.openPreferencePanel("settings")
-            }
-            NativeButton {
-                objectName: "accountAppearanceAction"; Layout.fillWidth: true
-                colors: root.colors; text: qsTr("Appearance")
-                onClicked: root.openPreferencePanel("appearance")
-            }
-            NativeButton {
-                objectName: "aboutAction"
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("App version")
-                onClicked: root.openAbout(true)
-            }
-            // Issue #50: the reference user menu lists Diagnostics directly
-            // below the App version row and navigates to /settings/logs
-            // (right-panel-user-menu.ui.tsx:361-379, settings.connectionDiagnostics).
-            NativeButton {
-                objectName: "diagnosticsAction"
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Diagnostics")
-                enabled: root.controller.authenticated
-                onClicked: {
-                    accountPopup.close()
-                    root.controller.showSection("diagnostics")
-                }
-            }
-            NativeButton {
-                colors: root.colors
-                Layout.fillWidth: true
-                text: theme.dark ? qsTr("Use light appearance") : qsTr("Use dark appearance")
-                objectName: "appearanceToggle"
-                onClicked: root.preferences.toggleMode()
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                Repeater {
-                    model: [
-                        {
-                            id: "light",
-                            name: qsTr("Light")
-                        },
-                        {
-                            id: "dark",
-                            name: qsTr("Dark")
-                        },
-                        {
-                            id: "system",
-                            name: qsTr("System")
-                        }
-                    ]
-                    delegate: NativeButton {
-                        required property var modelData
-                        objectName: "appearance-mode-" + modelData.id
-                        colors: root.colors
-                        Layout.fillWidth: true
-                        implicitWidth: 0
-                        text: modelData.name
-                        primary: root.preferences.mode === modelData.id
-                        onClicked: root.preferences.mode = modelData.id
-                    }
-                }
-            }
-            Repeater {
-                model: [
-                    {
-                        id: "orange-warm",
-                        name: qsTr("Orange Warm")
-                    },
-                    {
-                        id: "blue-cold",
-                        name: qsTr("Blue Cold")
-                    },
-                    {
-                        id: "blue-mist",
-                        name: qsTr("Blue Mist")
-                    },
-                    {
-                        id: "emerald-chat",
-                        name: qsTr("Emerald Chat")
-                    }
-                ]
-                delegate: NativeButton {
-                    required property var modelData
-                    objectName: "palette-" + modelData.id
-                    colors: root.colors
-                    Layout.fillWidth: true
-                    text: modelData.name
-                    primary: theme.paletteId === modelData.id
-                    onClicked: root.preferences.paletteId = modelData.id
-                }
-            }
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 1
-                color: root.colors["border-subtle"]
-            }
-            NativeButton {
-                id: languageSetting
-                objectName: "languageSetting"
-                property bool expanded: false
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Language") + " · " + (root.preferences.locale === "ru" ? "Русский" : "English")
-                onClicked: expanded = !expanded
-            }
-            RowLayout {
-                visible: languageSetting.expanded
-                Layout.fillWidth: true
-                NativeButton {
-                    objectName: "language-en"
-                    colors: root.colors
-                    Layout.fillWidth: true
-                    text: qsTr("English")
-                    primary: root.preferences.locale === "en"
-                    onClicked: root.preferences.locale = "en"
-                }
-                NativeButton {
-                    objectName: "language-ru"
-                    colors: root.colors
-                    Layout.fillWidth: true
-                    text: qsTr("Русский")
-                    primary: root.preferences.locale === "ru"
-                    onClicked: root.preferences.locale = "ru"
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                Text {
-                    text: qsTr("Disk cache (GB)")
-                    textFormat: Text.PlainText
-                    color: root.colors["text-secondary"]
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    font.pixelSize: 12
-                }
-                SpinBox {
-                    id: cacheLimit
-                    objectName: "cacheLimitGb"
-                    from: 1
-                    to: 1000
-                    value: root.preferences.cacheLimitGb
-                    editable: true
-                    implicitWidth: 104
-                    implicitHeight: 32
-                    Accessible.name: qsTr("Disk cache limit in GB")
-                    onValueModified: root.preferences.cacheLimitGb = value
-                }
-            }
-            Text {
-                objectName: "cacheSettingsBusy"
-                visible: root.controller.authenticated && root.preferences.cacheBusy
-                text: qsTr("Updating disk cache…")
-                textFormat: Text.PlainText
-                color: root.colors["text-secondary"]
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                Layout.fillWidth: true
-                Accessible.role: Accessible.AlertMessage
-            }
-            Text {
-                objectName: "cacheSettingsLimits"
-                visible: root.controller.authenticated && (root.preferences.cacheBusy || root.preferences.cacheAppliedLimitBytes > 0)
-                text: root.preferences.cacheAppliedLimitBytes > 0
-                    ? qsTr("Requested: %1 GB · Applied: %2 GB").arg(root.preferences.cacheLimitGb).arg(root.preferences.cacheAppliedLimitBytes / 1000000000)
-                    : qsTr("Requested: %1 GB").arg(root.preferences.cacheLimitGb)
-                textFormat: Text.PlainText
-                color: root.colors["text-muted"]
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-            Text {
-                objectName: "cacheSettingsUsage"
-                visible: root.controller.authenticated && root.preferences.cacheAppliedLimitBytes > 0
-                text: qsTr("Used: %1").arg(Qt.locale(root.preferences.locale).formattedDataSize(root.preferences.cacheUsageBytes, 1, Locale.DataSizeSIFormat))
-                textFormat: Text.PlainText
-                color: root.colors["text-muted"]
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-            Text {
-                objectName: "cacheSettingsUnavailable"
-                visible: root.controller.authenticated && !root.preferences.cacheBusy && !root.preferences.cacheAvailable
-                text: qsTr("Disk cache is unavailable.")
-                textFormat: Text.PlainText
-                color: root.colors["text-muted"]
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-            Text {
-                objectName: "cacheSettingsError"
-                visible: root.preferences.cacheError.length > 0
-                text: root.preferences.cacheError
-                textFormat: Text.PlainText
-                color: root.colors.danger
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                Layout.fillWidth: true
-                Accessible.role: Accessible.AlertMessage
-            }
-            Text {
-                visible: root.preferences.error.length > 0
-                text: root.preferences.error
-                textFormat: Text.PlainText
-                color: root.colors.danger
-                wrapMode: Text.Wrap
-                font.pixelSize: 12
-                Layout.fillWidth: true
-                Accessible.role: Accessible.AlertMessage
-            }
-            ItemDelegate {
-                objectName: "clearLocalCacheAction"
-                Layout.fillWidth: true
-                text: qsTr("Clear cache")
-                Accessible.description: qsTr("Message cache, local settings, then reload")
-                enabled: root.controller.authenticated && !root.controller.busy
-                contentItem: RowLayout {
-                    spacing: 8
-                    Image {
-                        source: "qrc:/workspace/icons/delete.svg"
-                        sourceSize: Qt.size(22, 22)
-                        Accessible.ignored: true
-                    }
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 2
-                        Label { text: qsTr("Clear cache"); color: root.colors["text-primary"] }
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Message cache, local settings, then reload")
-                            color: root.colors["text-muted"]
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 12
-                        }
-                    }
-                    Image {
-                        source: "qrc:/workspace/icons/chevron-right.svg"
-                        sourceSize: Qt.size(16, 16)
-                        Accessible.ignored: true
-                    }
-                }
-                onClicked: {
-                    clearLocalCacheDialog.owner = root.controller.ownerKey
-                    clearLocalCacheDialog.open()
-                }
-            }
-            NativeButton {
-                objectName: "refreshButton"
-                colors: root.colors
-                Layout.fillWidth: true
-                text: qsTr("Refresh")
-                enabled: !root.controller.busy
-                onClicked: {
-                    root.controller.refresh();
-                    accountPopup.close();
-                }
-            }
-
-        }
-    }
 
     Dialog {
         id: clearLocalCacheDialog
@@ -4218,7 +3846,6 @@ component NativeMentionChip: Item {
         }
         onAccepted: {
             if (root.controller.authenticated && root.controller.ownerKey === owner) {
-                accountPopup.close()
                 root.controller.clearLocalCache()
             }
         }
@@ -8205,7 +7832,7 @@ component NativeMentionChip: Item {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && !anchorTransitionLayer.visible && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation && visible && width > 0 && height > 0 && !accountPopup.visible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
+                readonly property bool readActive: openingApplied && !anchorTransitionLayer.visible && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation                && visible && width > 0 && height > 0 && !root.accountRootVisible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }

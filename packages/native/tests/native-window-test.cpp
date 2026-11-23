@@ -4655,16 +4655,15 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *statusAction = visibleItem(window->contentItem(), "ownStatusAction");
         auto *aboutAction = visibleItem(window->contentItem(), "aboutAction");
         QVERIFY(statusAction && aboutAction);
-        QQmlExpression statusPopupExpression(qmlContext(window), window, QStringLiteral("accountPopup"));
-        const auto statusPopupValue = statusPopupExpression.evaluate();
-        auto *statusPopup = statusPopupValue.metaType() == QMetaType::fromType<QJSValue>()
-            ? statusPopupValue.value<QJSValue>().toQObject() : statusPopupValue.value<QObject *>();
-        QVERIFY(statusPopup && !statusPopupExpression.hasError());
+        // #724: the account surface is the drawer's account root now, not the
+        // old floating popup; the layer item is the placement contract holder.
+        auto *statusPopup = visibleItem(window->contentItem(), "accountMenuLayer");
+        QVERIFY(statusPopup && statusPopup->isVisible());
         const auto statusActionReady = [&] {
             auto *column = statusAction->parentItem();
             if (!column || aboutAction->parentItem() != column || !statusAction->isVisible()
                 || !statusAction->isEnabled() || statusAction->window() != window
-                || !statusPopup->property("visible").toBool() || !statusPopup->property("opened").toBool()
+                || !statusPopup->isVisible()
                 || column->height() != column->implicitHeight()
                 || statusAction->height() != statusAction->implicitHeight()) return false;
             const QRectF statusRect(statusAction->mapToScene(QPointF{}), statusAction->size());
@@ -10621,6 +10620,10 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "accountMenuButton"));
         QTRY_VERIFY(visibleItem("ownStatusAction"));
         click(window, composer);
+        // #724: the account surface is the right drawer; an outside click does
+        // not dismiss it (reference model), the trigger's second click toggles
+        // the account layer closed instead.
+        click(window, item(content, "accountMenuButton"));
         QTRY_VERIFY(!visibleItem("ownStatusAction"));
         composer->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Left, Qt::ShiftModifier);
@@ -13871,14 +13874,20 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto darkScreenshot = qEnvironmentVariable("CASSI_NATIVE_TEST_DARK_SCREENSHOT");
         if (!darkScreenshot.isEmpty()) {
             const auto lightColor = window->color();
+            // #724: theme controls live on the drawer's Appearance screen now
+            // (reference keeps them there once), opened via the account root.
             click(window, item(content, "accountMenuButton"));
-            QTRY_VERIFY(item(content, "appearanceToggle"));
-            const QPointer<QQuickItem> appearance = item(content, "appearanceToggle");
-            QTRY_VERIFY(appearance->isVisible());
-            click(window, appearance);
+            QTRY_VERIFY(item(content, "accountAppearanceAction"));
+            click(window, item(content, "accountAppearanceAction"));
+            QTRY_VERIFY(item(content, "accountSetting-theme"));
+            click(window, item(content, "accountSetting-theme"));
+            QTRY_VERIFY(item(content, "accountOption-mode-dark"));
+            click(window, item(content, "accountOption-mode-dark"));
             QTRY_VERIFY(window->color() != lightColor);
-            QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(1100, 500));
-            QTRY_VERIFY(!appearance || !appearance->isVisible());
+            // The reference drawer does not close on press-outside; the
+            // top-bar trigger toggles the account layer closed again.
+            click(window, item(content, "accountMenuButton"));
+            QTRY_VERIFY(!item(content, "accountAppearanceAction"));
             QTest::mouseMove(window, QPoint(1100, 500));
             QVERIFY(window->grabWindow().save(darkScreenshot));
         }
@@ -14020,8 +14029,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(profile);
         auto *surface = profile->property("background").value<QQuickItem *>();
         QVERIFY(surface);
+        // #724: the account surface is the right drawer now; opening it hands
+        // keyboard focus to the drawer chrome, and the second mouse click on
+        // the trigger toggles it closed, returning plain mouse focus.
         click(window, profile);
-        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!profile->hasActiveFocus());
+        click(window, profile);
         QTRY_VERIFY(profile->hasActiveFocus());
         QVERIFY(!profile->property("visualFocus").toBool());
         QCOMPARE(QQmlProperty::read(surface, "border.width").toReal(), 0);
@@ -14033,14 +14046,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(profile->hasActiveFocus());
         QVERIFY(profile->property("visualFocus").toBool());
         QCOMPARE(QQmlProperty::read(surface, "border.width").toReal(), 1);
+        // Space (keyboard) opens the account layer; the drawer holds focus
+        // while it is open, the mouse toggle closes it again.
         QTest::keyClick(window, Qt::Key_Space);
-        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(item(window->contentItem(), "accountMenuLayer"));
+        QTRY_VERIFY(!profile->hasActiveFocus());
+        click(window, profile);
         QTRY_VERIFY(profile->hasActiveFocus());
-        QCOMPARE(QQmlProperty::read(surface, "border.width").toReal(), 1);
         click(window, item(window->contentItem(), "sidebarSearch"));
         QTRY_VERIFY(!profile->hasActiveFocus());
         click(window, profile);
-        QTest::keyClick(window, Qt::Key_Escape);
+        click(window, profile);
         QTRY_VERIFY(!profile->property("visualFocus").toBool());
         QCOMPARE(QQmlProperty::read(surface, "border.width").toReal(), 0);
         const bool closed=closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
@@ -17122,11 +17138,19 @@ mv -Tf "$root/.current-new" "$root/current"
             QVERIFY(QTest::qWaitForWindowExposed(window));
             auto *content = window->contentItem();
             click(window, item(content, "accountMenuButton"));
-            QTRY_VERIFY(item(content, "appearance-mode-dark"));
-            click(window, item(content, "appearance-mode-dark"));
+            // #724: mode/palette sit on the Appearance screen (accountSetting-theme
+            // section); the language and disk-cache widgets stay on the account root.
+            QTRY_VERIFY(item(content, "accountAppearanceAction"));
+            click(window, item(content, "accountAppearanceAction"));
+            QTRY_VERIFY(item(content, "accountSetting-theme"));
+            click(window, item(content, "accountSetting-theme"));
+            QTRY_VERIFY(item(content, "accountOption-mode-dark"));
+            click(window, item(content, "accountOption-mode-dark"));
             QCOMPARE(preferences.mode(), QString("dark"));
-            click(window, item(content, "palette-emerald-chat"));
+            click(window, item(content, "accountOption-paletteId-emerald-chat"));
             QCOMPARE(preferences.paletteId(), QString("emerald-chat"));
+            click(window, item(content, "nativeRightDrawerBack"));
+            QTRY_VERIFY(item(content, "accountMenuLayer"));
             clickAccountMenuControl(window, item(content, "languageSetting"));
             clickAccountMenuControl(window, item(content, "language-ru"));
             QCOMPARE(preferences.locale(), QString("ru"));
@@ -17190,8 +17214,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(window->property("preferredSidebarWidth").toDouble(), savedWidth);
         auto *content = window->contentItem();
         click(window, item(content, "accountMenuButton"));
-        QTRY_VERIFY(item(content, "appearance-mode-system"));
-        click(window, item(content, "appearance-mode-system"));
+        QTRY_VERIFY(item(content, "accountAppearanceAction"));
+        click(window, item(content, "accountAppearanceAction"));
+        QTRY_VERIFY(item(content, "accountSetting-theme"));
+        click(window, item(content, "accountSetting-theme"));
+        QTRY_VERIFY(item(content, "accountOption-mode-system"));
+        click(window, item(content, "accountOption-mode-system"));
         QCOMPARE(restored.mode(), QString("system"));
         const bool closed=closeObservedTestWindow(window); closeBeforeEngine.dismiss(); QVERIFY(closed);
     }
@@ -22668,7 +22696,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // Header clicks keep reaching the top bar while the banner is up.
         click(window, visibleItem("accountMenuButton"));
         QTRY_VERIFY(visibleItem("ownStatusAction"));
-        click(window, overlay); // press outside closes the account popup
+        click(window, visibleItem("accountMenuButton")); // second click toggles the account layer closed (#724)
         QTRY_VERIFY(!visibleItem("ownStatusAction"));
         // The next successful response clears the banner again.
         fixture.dropRound = false;
@@ -22692,7 +22720,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("bootstrapErrorText")->property("text").toString().isEmpty());
         click(window, visibleItem("accountMenuButton"));
         QTRY_VERIFY(visibleItem("ownStatusAction"));
-        click(window, overlay); // press outside closes the account popup
+        click(window, visibleItem("accountMenuButton")); // second click toggles the account layer closed (#724)
         QTRY_VERIFY(!visibleItem("ownStatusAction"));
         fixture.breakStreams = false;
         click(window, visibleItem("bootstrapRetryButton"));
@@ -33509,6 +33537,185 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!view("nativeRightDrawerShell"));
         QVERIFY(!view("profileLayer"));
         QVERIFY(!view("accountSetting-locale"));
+    }
+
+    // Issue #724: the signed-in account entry opens the Account page inside the
+    // right drawer instead of the removed floating popup (reference
+    // right-panel-user-menu.ui.tsx at e0194ff, docs/NATIVE_DESKTOP_ACCOUNT_DRAWER.md).
+    // The root is a flat section list: Description / Settings / App version.
+    void accountButtonOpensAccountRootInDrawer()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto pos = [window](QQuickItem *it) { return it->mapToItem(window->contentItem(), QPointF(0, 0)); };
+        QVERIFY(!view("nativeRightDrawerShell"));
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeRightDrawerShell"), 5000);
+        auto *drawer = item(window->contentItem(), "nativeRightDrawer"); QVERIFY(drawer);
+        QVERIFY(drawer->property("drawerOpen").toBool());
+        QCOMPARE(drawer->property("topLayerKind").toString(), QString("account"));
+        QCOMPARE(drawer->property("currentAccountScreen").toString(), QString("root"));
+        auto *root = view("accountMenuLayer"); QVERIFY(root);
+        QVERIFY(view("accountMenuScroll"));
+        // Reference order top-to-bottom: current server, external accounts,
+        // personal info, status | settings, appearance | app version,
+        // diagnostics, clear cache | sign out footer.
+        const auto y = [&](const char *name) { return pos(view(name)).y(); };
+        QVERIFY(y("personalInfoAction") < y("ownStatusAction"));
+        QVERIFY(y("ownStatusAction") < y("accountSettingsAction"));
+        QVERIFY(y("accountSettingsAction") < y("accountAppearanceAction"));
+        QVERIFY(y("accountAppearanceAction") < y("aboutAction"));
+        QVERIFY(y("aboutAction") < y("diagnosticsAction"));
+        QVERIFY(y("diagnosticsAction") < y("clearLocalCacheAction"));
+        QVERIFY(y("clearLocalCacheAction") < y("signOutButton"));
+        // Theme controls appear exactly on the Appearance screen, never here.
+        QVERIFY(!view("accountSetting-theme"));
+        QVERIFY(!view("accountOption-mode-dark"));
+        QVERIFY(!view("appearanceToggle"));
+    }
+
+    // Second click on the trigger hides the account layer while the reference
+    // store keeps its history (toggleUserMenu -> toggleVisibility).
+    void accountButtonTogglesAccountLayer()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *drawer = item(window->contentItem(), "nativeRightDrawer"); QVERIFY(drawer);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountMenuLayer"), 5000);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+        // History survives the hide: the account layer is still on top.
+        QCOMPARE(drawer->property("topLayerKind").toString(), QString("account"));
+        QVERIFY(drawer->property("layerCount").toInt() >= 1);
+        // A third click reopens the same layer at the root screen.
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountMenuLayer"), 5000);
+        QCOMPARE(drawer->property("currentAccountScreen").toString(), QString("root"));
+    }
+
+    // The account top layer keeps the drawer mounted on non-chat routes
+    // (#679 gate), so the Account page is visible from Calendar and Mail.
+    void accountLayerSurvivesSectionSwitch()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountMenuLayer"), 5000);
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        QTRY_VERIFY(view("accountMenuLayer"));
+        QVERIFY(view("personalInfoAction"));
+        click(window, view("sectionMailButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
+        QTRY_VERIFY(view("accountMenuLayer"));
+        // Back in Chat the account root is still the open layer.
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("sidebar") && view("accountMenuLayer"), 5000);
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+    }
+
+    // Back pops one nested screen inside the account layer, lands on the root,
+    // and the root takes key focus (reference back() contract).
+    void accountNestedBackRestoresRootAndFocus()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *drawer = item(window->contentItem(), "nativeRightDrawer"); QVERIFY(drawer);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountMenuLayer"), 5000);
+        click(window, view("accountSettingsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountSetting-locale"), 5000);
+        QVERIFY(!view("accountMenuLayer")); // The root screens out under Settings.
+        QCOMPARE(drawer->property("canGoBack").toBool(), true);
+        click(window, view("nativeRightDrawerBack"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountMenuLayer"), 5000);
+        QCOMPARE(drawer->property("currentAccountScreen").toString(), QString("root"));
+        QVERIFY(view("nativeRightDrawerShell")); // The layer itself stays open.
+        QTRY_VERIFY(window->focusObject() == view("accountMenuLayer"));
+    }
+
+    // The Appearance screen exposes the mode/palette controls exactly once
+    // (reference: RightPanelUserAppearance is the only theme editor).
+    void accountAppearanceExposesThemeControlsOnce()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto visibleCount = [window](const QString &name) {
+            int count = 0;
+            const auto matches = window->contentItem()->findChildren<QQuickItem *>(name);
+            for (auto *item : matches)
+                if (item->isVisible()) ++count;
+            return count;
+        };
+        QCOMPARE(visibleCount("accountOption-mode-dark"), 0);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountMenuLayer"), 5000);
+        QCOMPARE(visibleCount("accountOption-mode-dark"), 0); // not on the root
+        click(window, view("accountAppearanceAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("accountSetting-theme"), 5000);
+        click(window, view("accountSetting-theme"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleCount("accountOption-mode-dark") == 1, 5000);
+        QCOMPARE(visibleCount("accountOption-mode-light"), 1);
+        QCOMPARE(visibleCount("accountOption-paletteId-blue-cold"), 1);
+        click(window, view("accountOption-mode-dark"));
+        QCOMPARE(preferences.mode(), QString("dark"));
     }
 
     // Issue #36: the top-bar Calendar chip opens the unavailable-state section
