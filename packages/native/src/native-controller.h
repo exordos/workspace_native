@@ -536,6 +536,9 @@ public:
     QString syncState() const { return m_syncState; }
     // docs/NATIVE_DESKTOP_OVERLAY_BANNERS.md: mapping of realtime sync state,
     // transport failures and HTTP 429 retries into the reference banner kinds.
+    // Test seam: overrides the bounded escalation window (ms) after which a
+    // stalled realtime reconnect surfaces the banner (issue #717).
+    void setReconnectEscalationGraceMs(int ms);
     QString connectionPhase() const;
     QString connectionSeverity() const;
     int connectionRetryInSeconds() const;
@@ -2557,6 +2560,17 @@ private:
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;
     int m_realtimeReconnectAttempts = 0;
+    // Issue #717: backoff retries seen since the last live link. The
+    // reconnecting banner stays quiet while a drop is self-recovering and
+    // surfaces only once the first reconnect retry has also failed.
+    int m_reconnectRetriesSinceLive = 0;
+    // Issue #717 (exo-review): bounded escalation window. A realtime phase
+    // that stays unstable without further retry transitions (a held catch-up
+    // request) must still surface the banner once this window expires.
+    int m_reconnectEscalationGraceMs = 10000;
+    // Start of the current unstable realtime streak (0 while stable); the
+    // banner escalates once the streak outlives the grace window.
+    qint64 m_reconnectUnstableSinceMs = 0;
     qsizetype m_supportLatencyCount = 0;
     QList<QPair<QString, qint64>> m_apiLatencySamples; // bounded to 200, insertion order
     bool m_pingInFlight = false;

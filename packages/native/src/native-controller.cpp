@@ -11708,6 +11708,15 @@ void NativeController::useRealtime(RealtimeClient *client)
         // diagnostics Connection card (connection.reconnectAttempt).
         if (state == QLatin1String("retrying"))
             ++m_realtimeReconnectAttempts;
+        // Issue #717: automatic recovery is silent in the reference
+        // (connection-health requestReconnect with showReconnecting:false),
+        // so the visible reconnecting phase is gated on escalation: a second
+        // retrying phase between two live links means the first reconnect
+        // retry also failed and the outage is sustained, not self-recovering.
+        if (state == QLatin1String("live"))
+            m_reconnectRetriesSinceLive = 0;
+        else if (state == QLatin1String("retrying"))
+            ++m_reconnectRetriesSinceLive;
         // Issue #51: real connection-health transitions feed the session log
         // (reference scope "connection-health", connection-health logger).
         if (state == QLatin1String("live"))
@@ -11722,6 +11731,23 @@ void NativeController::useRealtime(RealtimeClient *client)
                 QStringLiteral("Realtime connection state: %1").arg(state));
         const bool previous = m_syncBlocked;
         m_syncState = state;
+        // Issue #717 (exo-review finding 1): bounded escalation. A drop that
+        // parks in an unstable phase without entering further retry
+        // transitions (e.g. a catch-up request the server never answers)
+        // must not stay invisible forever: stamp the unstable streak and
+        // schedule one escalation notice for the window's expiry.
+        const bool unstablePhase = state == QLatin1String("connecting")
+            || state == QLatin1String("catching_up") || state == QLatin1String("retrying")
+            || state == QLatin1String("waiting_for_session");
+        if (unstablePhase && m_reconnectUnstableSinceMs == 0) {
+            m_reconnectUnstableSinceMs = QDateTime::currentMSecsSinceEpoch();
+            QTimer::singleShot(m_reconnectEscalationGraceMs, this, [this]() {
+                if (m_reconnectUnstableSinceMs)
+                    emit stateChanged();
+            });
+        } else if (!unstablePhase && m_reconnectUnstableSinceMs != 0) {
+            m_reconnectUnstableSinceMs = 0;
+        }
         if (state == "live") {
             m_syncBlocked = false;
             if (previous) ++m_realtimeRecovery;
@@ -16400,6 +16426,12 @@ void NativeController::observeTransport(const ApiResult &result)
         emit stateChanged();
 }
 
+void NativeController::setReconnectEscalationGraceMs(int ms)
+{
+    m_reconnectEscalationGraceMs = qMax(0, ms);
+    emit stateChanged();
+}
+
 QString NativeController::connectionPhase() const
 {
     // Reference priority (layout-connection-banner.lib.ts:8-40): offline >
@@ -16410,7 +16442,16 @@ QString NativeController::connectionPhase() const
         return QStringLiteral("rate_limited");
     if (m_syncState == QLatin1String("connecting") || m_syncState == QLatin1String("catching_up")
         || m_syncState == QLatin1String("retrying") || m_syncState == QLatin1String("waiting_for_session"))
-        return QStringLiteral("reconnecting");
+        // Issue #717: a drop that self-recovers (first reconnect retry lands)
+        // leaves the interface steady; only an escalated outage surfaces.
+        // Escalation has two independent triggers (exo-review finding 1 on
+        // PR #721): a second failed retry, or an unstable streak that has
+        // outlived the bounded window even without further retries.
+        return m_reconnectRetriesSinceLive >= 2
+            || (m_reconnectUnstableSinceMs > 0
+                && QDateTime::currentMSecsSinceEpoch() - m_reconnectUnstableSinceMs
+                       >= m_reconnectEscalationGraceMs)
+            ? QStringLiteral("reconnecting") : QStringLiteral("online");
     if (m_syncState == QLatin1String("invalid_data") || m_syncState == QLatin1String("snapshot_required"))
         return QStringLiteral("degraded");
     return QStringLiteral("online");
