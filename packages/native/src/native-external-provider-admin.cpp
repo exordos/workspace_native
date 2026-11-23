@@ -115,6 +115,7 @@ void NativeExternalProviderAdmin::reset()
     m_health = { };
     m_etag.clear();
     m_conflict = m_saveBusy = m_saveFailed = m_actionFailed = m_mutationBusy = false;
+    m_refreshDeferred = false;
     emit changed();
 }
 
@@ -123,7 +124,16 @@ void NativeExternalProviderAdmin::forbidAccess()
     m_accessStatus = QStringLiteral("denied");
     m_dialogOpen = false;
     m_policyStatus = QStringLiteral("idle");
+    m_refreshDeferred = false; // A denied session must not queue refreshes.
     emit changed();
+}
+
+void NativeExternalProviderAdmin::adoptDeferredRefresh()
+{
+    if (!m_refreshDeferred)
+        return;
+    m_refreshDeferred = false;
+    refreshPolicy();
 }
 
 bool NativeExternalProviderAdmin::parsePolicy(const QJsonObject& dto, const QByteArray& etag)
@@ -274,7 +284,13 @@ void NativeExternalProviderAdmin::refreshPolicy()
     if (m_owner.isEmpty() || m_mutationBusy)
         return;
     const auto ticket = m_ticket;
-    const auto previous = m_policyStatus == QStringLiteral("ready") ? snapshot(m_policy) : QVariantMap { };
+    // The last parsed policy stays the rebase base even when policyStatus has
+    // moved to error (a malformed 412 marks the error without adopting a
+    // snapshot, then reissues the dropped refresh from that path): the retry
+    // must rebase the user's draft, not replace it wholesale
+    // (#735 finding 4670483902). Presence of a parsed policy, not its status,
+    // decides whether a draft exists to protect.
+    const auto previous = m_policy.isEmpty() ? QVariantMap { } : snapshot(m_policy);
     const auto slot = ++m_policySerial;
     m_policyRequest = m_api->request("GET", policyUrl(), { }, { },
         [this, ticket, slot, previous](const ApiResult& result) {
@@ -284,22 +300,39 @@ void NativeExternalProviderAdmin::refreshPolicy()
             if (!result.ok()) {
                 const auto forbidden = result.status == 401
                     || (result.status == 403 && errorType(result) == "ExternalResourceForbiddenError");
+                // A revocation reply is never stale: it must land even while a
+                // mutation is in flight, otherwise a failing mutation leaves
+                // the dialog open with access already revoked server-side
+                // (#735 review finding 4670132627).
                 if (forbidden) {
                     forbidAccess();
                     return;
                 }
+            }
+            if (m_mutationBusy) {
+                // A save/action was dispatched while this refresh was in
+                // flight. Adopting the late reply now would move the rebase
+                // base out from under the pending mutation: a local edit that
+                // matches the refreshed value would then read as "untouched"
+                // at the 412 and be discarded. Drop the reply; the mutation's
+                // own reply (200 echo or 412 snapshot) is authoritative. If
+                // that mutation later fails without adopting a policy, the
+                // requested refresh is reissued then (#735 finding 4670132621).
+                m_refreshDeferred = true;
+                return;
+            }
+            if (!result.ok()) {
                 m_policyStatus = QStringLiteral("error");
                 emit changed();
                 return;
             }
             m_accessStatus = QStringLiteral("granted");
-            const auto hadPolicy = m_policyStatus == QStringLiteral("ready");
             if (!parsePolicy(result.data.toObject(), result.etag)) {
                 m_policyStatus = QStringLiteral("error");
                 emit changed();
                 return;
             }
-            if (!hadPolicy || previous.isEmpty())
+            if (previous.isEmpty())
                 m_draft = snapshot(m_policy);
             else
                 rebaseDraft(previous, snapshot(m_policy));
@@ -412,6 +445,7 @@ void NativeExternalProviderAdmin::save()
             m_saveRequest = { };
             m_mutationBusy = m_saveBusy = false;
             if (result.ok() && parsePolicy(result.data.toObject(), result.etag)) {
+                m_refreshDeferred = false; // The echo is the newer snapshot.
                 m_draft = snapshot(m_policy);
                 m_conflict = false;
                 m_saveFailed = false;
@@ -427,15 +461,23 @@ void NativeExternalProviderAdmin::save()
                 const auto had = m_policyStatus == QStringLiteral("ready");
                 const auto previous = had ? snapshot(m_policy) : QVariantMap { };
                 if (!fresh.isEmpty() && parsePolicy(fresh, result.etag)) {
+                    m_refreshDeferred = false; // The 412 snapshot is the newer base.
                     if (!had || previous.isEmpty())
                         m_draft = snapshot(m_policy);
+                    else
+                        // Three-way rebase (design: conflict keeps per-field
+                        // local edits, untouched fields adopt the fresh policy).
+                        rebaseDraft(previous, snapshot(m_policy));
                 } else {
                     m_policyStatus = QStringLiteral("error");
+                    // Nothing newer was adopted: honor the dropped refresh.
+                    adoptDeferredRefresh();
                 }
                 emit changed();
                 return;
             }
             m_saveFailed = true;
+            adoptDeferredRefresh(); // The failed save did not adopt a policy.
             emit changed();
         },
         false, headers);
@@ -464,6 +506,7 @@ void NativeExternalProviderAdmin::suspend()
             m_actionStatus = QStringLiteral("none");
             if (result.ok() && parsePolicy(result.data.toObject(), result.etag)) {
                 m_actionFailed = false;
+                m_refreshDeferred = false; // The action reply carries the newer policy.
                 if (pristine)
                     m_draft = snapshot(m_policy);
                 else
@@ -472,6 +515,7 @@ void NativeExternalProviderAdmin::suspend()
                 return;
             }
             m_actionFailed = true;
+            adoptDeferredRefresh(); // The failed action did not adopt a policy.
             emit changed();
         });
 }
@@ -499,6 +543,7 @@ void NativeExternalProviderAdmin::resume()
             m_actionStatus = QStringLiteral("none");
             if (result.ok() && parsePolicy(result.data.toObject(), result.etag)) {
                 m_actionFailed = false;
+                m_refreshDeferred = false; // The action reply carries the newer policy.
                 if (pristine)
                     m_draft = snapshot(m_policy);
                 else
@@ -507,6 +552,7 @@ void NativeExternalProviderAdmin::resume()
                 return;
             }
             m_actionFailed = true;
+            adoptDeferredRefresh(); // The failed action did not adopt a policy.
             emit changed();
         });
 }
