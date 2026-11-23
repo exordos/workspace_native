@@ -24528,6 +24528,58 @@ mv -Tf "$root/.current-new" "$root/current"
         }
     }
 
+    // Issue #725 (workspace_ui e0194ff): inline disclosure chevrons share the
+    // 16 px SVG family - the preferences drawer used literal "›"/"⌃" text
+    // glyphs (NativeAccountPreferences) and the channel topics header tinted
+    // off-row. Reference: right-panel-user-settings.ui.tsx:253 (nested section
+    // = chevron-right collapsed, chevron-up expanded, size 16) and
+    // right-panel-topic-list.ui.tsx:147 (16 px, inherits the text-text-primary
+    // row color). Pin family, size, direction change and glyph absence.
+    void disclosureChevronsUseSharedSvgFamily()
+    {
+        ChannelInfoWindowScene scene;
+        scene.controller.setPreferences(&scene.preferences);
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountSettingsAction"));
+        click(scene.window, visibleItem("accountSettingsAction"));
+        auto *toggle = visibleItem("accountSetting-chatClickAction");
+        QVERIFY(toggle);
+        auto *chevron = visibleItem("accountSettingChevron-chatClickAction");
+        QVERIFY2(chevron,
+            "the disclosure must be the shared SVG chevron component, not a text glyph");
+        QTRY_COMPARE(chevron->width(), 16.0);
+        QCOMPARE(chevron->height(), 16.0);
+        QVERIFY(chevron->property("source").toUrl().path().endsWith("chevron-right.svg"));
+        const QString rightGlyph = QString::fromUtf8("\u203a");
+        const QString upGlyph = QString::fromUtf8("\u2303");
+        QStringList survivingGlyphs;
+        const auto rows = toggle->childItems();
+        for (auto *row : rows) {
+            const auto leaves = row->childItems();
+            for (auto *leaf : leaves) {
+                const auto text = leaf->property("text").toString();
+                if (text == rightGlyph || text == upGlyph)
+                    survivingGlyphs << (leaf->objectName().isEmpty()
+                        ? leaf->metaObject()->className() : leaf->objectName());
+            }
+        }
+        QCOMPARE(survivingGlyphs, QStringList());
+        click(scene.window, toggle);
+        QTRY_VERIFY(chevron->property("source").toUrl().path().endsWith("chevron-up.svg"));
+        // The channel drawer topics header uses the same family (16 px,
+        // chevron-up expanded -> chevron-down collapsed, chevron-up reference).
+        scene.openChannelInfo();
+        auto *topicsToggle = visibleItem("channelTopicsToggle");
+        QVERIFY(topicsToggle);
+        auto *topicsChevron = visibleItem("channelTopicsChevron");
+        QVERIFY(topicsChevron);
+        QTRY_COMPARE(topicsChevron->width(), 16.0);
+        QCOMPARE(topicsChevron->height(), 16.0);
+        QVERIFY(topicsChevron->property("source").toUrl().path().endsWith("chevron-up.svg"));
+        click(scene.window, topicsToggle);
+        QTRY_VERIFY(topicsChevron->property("source").toUrl().path().endsWith("chevron-down.svg"));
+    }
+
     // Issue #637 (docs/NATIVE_DESKTOP_CHAT_BACKGROUNDS.md section 5): the
     // appearance "background" section end-to-end - preset card opens the apply
     // dialog, applying paints the resolved image on the conversation surface

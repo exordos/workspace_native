@@ -112,7 +112,21 @@ ScrollView {
                                 : section.modelData.choices.find(choice => choice[0] === panel.preferences[section.modelData.key])
                             text: selected ? selected[1] : ""; font.pixelSize: 12; color: panel.colors["text-secondary"]
                         }
-                        Label { text: section.expanded ? "⌃" : "›"; color: panel.colors["text-muted"]; font.pixelSize: 16; Accessible.ignored: true }
+                        // Issue #725 (workspace_ui e0194ff, right-panel-user-settings.ui.tsx:253):
+                        // inline disclosure uses the shared 16 px SVG chevron family with a
+                        // right (collapsed) -> up (expanded) direction change, tinted like the
+                        // row (panel-menu-row.ui.tsx button is text-text-primary). Literal
+                        // "›"/"⌃" glyphs are not part of that family.
+                        Image {
+                            objectName: "accountSettingChevron-" + section.modelData.key
+                            Layout.preferredWidth: 16
+                            Layout.preferredHeight: 16
+                            sourceSize: Qt.size(16, 16)
+                            source: "qrc:/workspace/icons/" + (section.expanded ? "chevron-up" : "chevron-right") + ".svg"
+                            layer.enabled: true
+                            layer.effect: MultiEffect { colorization: 1; colorizationColor: panel.colors["text-primary"] }
+                            Accessible.ignored: true
+                        }
                     }
                     background: Rectangle { radius: 8; color: toggle.hovered || toggle.visualFocus ? panel.colors["card-bg-active"] : "transparent" }
                 }

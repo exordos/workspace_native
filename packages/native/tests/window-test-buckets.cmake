@@ -83,6 +83,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_3
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_4
     activityPanelExpandedSearchRemovesChatListGap
     attachmentCardMalformedNameEscapeStillProjectsEveryCard
+    disclosureChevronsUseSharedSvgFamily
     folderRailLayoutTogglesHorizontallyAndSurvivesRestart
     fullscreenExitDetachDuringGatePersistsUserMoveMadeDuringTheGate
     globalChannelFormKeepsNarrowKeyboardFieldsVisible
