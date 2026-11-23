@@ -383,7 +383,7 @@ Dialog {
                         spacing: 8
                         Label {
                             objectName: "extProviderCaEmpty"
-                            visible: !dialog.admin.policy.ca.present
+                            visible: !dialog.admin.policy.ca?.present
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             text: qsTr("No custom certificate bundle is installed.")
@@ -391,12 +391,12 @@ Dialog {
                             color: dialog.colors["text-muted"]
                         }
                         ColumnLayout {
-                            visible: dialog.admin.policy.ca.present
+                            visible: Boolean(dialog.admin.policy.ca?.present)
                             Layout.fillWidth: true
                             spacing: 6
-                            FieldRow { colors: dialog.colors; label: qsTr("Certificates"); value: String(dialog.admin.policy.ca.certificateCount ?? "") }
-                            FieldRow { colors: dialog.colors; label: qsTr("Generation"); value: String(dialog.admin.policy.ca.generation ?? "") }
-                            FieldRow { colors: dialog.colors; label: qsTr("SHA-256 fingerprint"); value: String(dialog.admin.policy.ca.sha256 ?? "") }
+                            FieldRow { colors: dialog.colors; label: qsTr("Certificates"); value: String(dialog.admin.policy.ca?.certificateCount ?? "") }
+                            FieldRow { colors: dialog.colors; label: qsTr("Generation"); value: String(dialog.admin.policy.ca?.generation ?? "") }
+                            FieldRow { colors: dialog.colors; label: qsTr("SHA-256 fingerprint"); value: String(dialog.admin.policy.ca?.sha256 ?? "") }
                         }
                     }
                 }
