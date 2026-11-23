@@ -97,6 +97,12 @@ private:
     // flight; reissued if that mutation fails without adopting a policy.
     bool m_refreshDeferred = false;
     quint64 m_policySerial = 0, m_healthSerial = 0, m_saveSerial = 0, m_actionSerial = 0;
+    // Issue #740: bumped on every CONFIRMED policy mutation (saved PUT, suspend,
+    // resume, adopted conflict snapshot). A policy refresh captures it at dispatch
+    // and discards its reply when a confirmed mutation landed in the meantime -
+    // such a reply's snapshot predates our write and must not roll back
+    // revision/ETag/values.
+    quint64 m_policyGeneration = 0;
     ApiClient::RequestId m_policyRequest, m_healthRequest, m_saveRequest, m_actionRequest;
 };
 } // namespace workspace

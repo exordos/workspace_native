@@ -292,8 +292,9 @@ void NativeExternalProviderAdmin::refreshPolicy()
     // decides whether a draft exists to protect.
     const auto previous = m_policy.isEmpty() ? QVariantMap { } : snapshot(m_policy);
     const auto slot = ++m_policySerial;
+    const auto generation = m_policyGeneration;
     m_policyRequest = m_api->request("GET", policyUrl(), { }, { },
-        [this, ticket, slot, previous](const ApiResult& result) {
+        [this, ticket, slot, previous, generation](const ApiResult& result) {
             if (!current(ticket) || slot != m_policySerial)
                 return;
             m_policyRequest = { };
@@ -326,6 +327,9 @@ void NativeExternalProviderAdmin::refreshPolicy()
                 emit changed();
                 return;
             }
+            if (generation != m_policyGeneration)
+                return; // #740: a confirmed mutation landed after this GET was
+                        // dispatched - its snapshot predates our write; discard.
             m_accessStatus = QStringLiteral("granted");
             if (!parsePolicy(result.data.toObject(), result.etag)) {
                 m_policyStatus = QStringLiteral("error");
@@ -446,6 +450,7 @@ void NativeExternalProviderAdmin::save()
             m_mutationBusy = m_saveBusy = false;
             if (result.ok() && parsePolicy(result.data.toObject(), result.etag)) {
                 m_refreshDeferred = false; // The echo is the newer snapshot.
+                ++m_policyGeneration; // #740: confirmed mutation - late refresh replies die.
                 m_draft = snapshot(m_policy);
                 m_conflict = false;
                 m_saveFailed = false;
@@ -462,6 +467,7 @@ void NativeExternalProviderAdmin::save()
                 const auto previous = had ? snapshot(m_policy) : QVariantMap { };
                 if (!fresh.isEmpty() && parsePolicy(fresh, result.etag)) {
                     m_refreshDeferred = false; // The 412 snapshot is the newer base.
+                    ++m_policyGeneration; // #740: adopted server state is a new baseline.
                     if (!had || previous.isEmpty())
                         m_draft = snapshot(m_policy);
                     else
@@ -505,6 +511,7 @@ void NativeExternalProviderAdmin::suspend()
             m_mutationBusy = false;
             m_actionStatus = QStringLiteral("none");
             if (result.ok() && parsePolicy(result.data.toObject(), result.etag)) {
+                ++m_policyGeneration; // #740: confirmed mutation - late refresh replies die.
                 m_actionFailed = false;
                 m_refreshDeferred = false; // The action reply carries the newer policy.
                 if (pristine)
@@ -542,6 +549,7 @@ void NativeExternalProviderAdmin::resume()
             m_mutationBusy = false;
             m_actionStatus = QStringLiteral("none");
             if (result.ok() && parsePolicy(result.data.toObject(), result.etag)) {
+                ++m_policyGeneration; // #740: confirmed mutation - late refresh replies die.
                 m_actionFailed = false;
                 m_refreshDeferred = false; // The action reply carries the newer policy.
                 if (pristine)

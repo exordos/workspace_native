@@ -549,6 +549,42 @@ private slots:
         QCOMPARE(ca.value("generation").toInt(), 1);
     }
 
+    // Issue #740: a policy GET that started before a confirmed save must not
+    // roll back the confirmed revision, ETag or values when it lands late;
+    // the form stays clean and a refresh started after the mutation still
+    // adopts the newer server snapshot.
+    void stalePolicyRefreshCannotRollBackConfirmedSave()
+    {
+        Server test;
+        std::function<void()> release;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        // Only the refresh GET is held - the initial load already landed.
+        test.deferPolicyGet = [&release](std::function<void()> send) { release = std::move(send); };
+        admin->refreshPolicy(); // Holds the rev-3 snapshot across the save.
+        QTRY_VERIFY(release);
+        test.deferPolicyGet = nullptr; // Later refreshes flow freely.
+        admin->setLimit("max_accounts", 7);
+        QVERIFY(admin->dirty());
+        admin->save();
+        QTRY_COMPARE(test.policyPuts, 1);
+        QTRY_VERIFY(!admin->dirty()); // Confirmed draft at revision 4.
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        release(); // The late GET lands with the rev-3 snapshot and ETag "3".
+        QTest::qWait(150);
+        // The late response is discarded: revision, values, clean draft survive.
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 7LL);
+        QVERIFY(!admin->dirty());
+        QVERIFY(!admin->conflict());
+        // A refresh started after the mutation still applies the server state.
+        admin->refreshPolicy();
+        QTRY_COMPARE(test.policyGets, 3);
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+    }
+
     void suspendRunsPendingThenFlipsAndResumeReturns()
     {
         Server test;
