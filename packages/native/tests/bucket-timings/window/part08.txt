@@ -1,3 +1,4 @@
+accountNestedBackRestoresRootAndFocus=1.22741
 activityReactionsDeeplinkRendersUnsupportedState=8.18551
 archiveKeyboardAndOwnerLifetimeRemainScoped=0.554851
 archiveUsesExactHistoryAndCanonicalRestore=12.5666

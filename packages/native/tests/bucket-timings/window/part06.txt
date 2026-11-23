@@ -1,3 +1,4 @@
+accountButtonOpensAccountRootInDrawer=1.14255
 archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable=0.81737
 closedTopicPromptPreservesTheDraftThroughRealtimeReopen=0.718425
 composerFormattingDefaultsPreserveUtf16MultilineAndScroll=1.48761
