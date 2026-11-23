@@ -25117,6 +25117,50 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
 
+    // Issue #738: reopening the dialog must reload the initial permitted
+    // section even when the landing tab is unchanged - a transient load
+    // failure would otherwise strand the section until restart.
+    void channelTopicSummaryDialogReopenReloadsInitialSection()
+    {
+        ChannelInfoWindowScene scene(false,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        int gatesGets = 0;
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().contains("/topic_summary_settings/")) {
+                ++gatesGets;
+                if (gatesGets == 1)
+                    return Response{QJsonObject{{"type", "ServerError"}}, 503};
+                return Response{gatesDto};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog && dialog->property("visible").toBool());
+        QCOMPARE(dialog->property("activeTab").toString(), QString("gates"));
+        // First open: the single load fails and the switches stay gated.
+        QTRY_COMPARE(gatesGets, 1);
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")
+                    && !visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+        // Reopen from the same gear: the tab does not change, yet the section
+        // reloads exactly once and the controls recover.
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QVERIFY(dialog->property("visible").toBool());
+        QTRY_COMPARE(gatesGets, 2);
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
+        // Open and tab-change paths are coordinated: exactly one GET per open,
+        // never a duplicate on the open path.
+        QTest::qWait(200);
+        QCOMPARE(gatesGets, 2);
+    }
+
+
     // The prompt field mirrors the contract in either order: editing the prompt
     // while the remote admin moves only the effort sends the prompt alone.
     void channelTopicSummaryDialogSendsOnlyUserEditedPromptAfterRemoteEffortUpdate()
@@ -25207,49 +25251,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(saveBodies.size(), 1);
         const QJsonObject expected{{"summary_enabled", false}};
         QCOMPARE(saveBodies.at(0), expected);
-    // Issue #738: reopening the dialog must reload the initial permitted
-    // section even when the landing tab is unchanged - a transient load
-    // failure would otherwise strand the section until restart.
-    void channelTopicSummaryDialogReopenReloadsInitialSection()
-    {
-        ChannelInfoWindowScene scene(false,
-            QStringLiteral("workspace.topic_summary_settings.manage"));
-        int gatesGets = 0;
-        const QJsonObject gatesDto{
-            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
-        const auto base = scene.fixture.server.handler;
-        scene.fixture.server.handler = [&](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().contains("/topic_summary_settings/")) {
-                ++gatesGets;
-                if (gatesGets == 1)
-                    return Response{QJsonObject{{"type", "ServerError"}}, 503};
-                return Response{gatesDto};
-            }
-            return base(request);
-        };
-        scene.openChannelInfo();
-        click(scene.window, visibleItem("channelTopicSummarySettings"));
-        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
-        QVERIFY(dialog && dialog->property("visible").toBool());
-        QCOMPARE(dialog->property("activeTab").toString(), QString("gates"));
-        // First open: the single load fails and the switches stay gated.
-        QTRY_COMPARE(gatesGets, 1);
-        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")
-                    && !visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
-        QTest::keyClick(scene.window, Qt::Key_Escape);
-        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
-        // Reopen from the same gear: the tab does not change, yet the section
-        // reloads exactly once and the controls recover.
-        click(scene.window, visibleItem("channelTopicSummarySettings"));
-        QVERIFY(dialog->property("visible").toBool());
-        QTRY_COMPARE(gatesGets, 2);
-        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->isEnabled());
-        // Open and tab-change paths are coordinated: exactly one GET per open,
-        // never a duplicate on the open path.
-        QTest::qWait(200);
-        QCOMPARE(gatesGets, 2);
-    }
-
         QTest::keyClick(scene.window, Qt::Key_Escape);
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
