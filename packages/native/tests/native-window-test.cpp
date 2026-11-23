@@ -28494,7 +28494,7 @@ private:
         // Only the Loader's own onStatusChanged can make this transition.
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 2000);
-        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowLoadingState")));
+        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowErrorState")));
         QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);

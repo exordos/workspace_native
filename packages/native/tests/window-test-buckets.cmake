@@ -451,6 +451,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     appearanceAndSidebarRestoreAfterQuickWindowRecreation
     archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling
+    callWindowEmbedLoaderErrorSettlesShellToLoadFailed
     channelTopicMenuAndSummarySaveUseTheSelectedTopic
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable
     codeCopyButtonIsKeyboardOperableAndAccessible
