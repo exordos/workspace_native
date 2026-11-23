@@ -578,7 +578,7 @@ if(BUILD_TESTING)
     add_test(NAME native-hotkeys-ui COMMAND native-window-test shortcutSettingsSearchRecordingAndHelp)
     add_test(NAME native-native-draft-workload COMMAND native-window-test)
     set_tests_properties(native-native-draft-workload PROPERTIES TIMEOUT 180
-        ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json")
+        ENVIRONMENT "CASSI_NATIVE_DRAFT_WORKLOAD=1;CASSI_NATIVE_DRAFT_WORKLOAD_REPORT=${CMAKE_CURRENT_BINARY_DIR}/Testing/native-draft-workload.json;WORKSPACE_NATIVE_TOPIC_PRELOAD=0")
     # Issue #657: native-native-window ran 1716 s in CI as a single ctest entry,
     # dictating the wall clock of every full-gate shard. Register it instead as
     # hash-stable buckets generated from committed per-case timing fragments
@@ -594,13 +594,15 @@ if(BUILD_TESTING)
         add_test(NAME native-native-window-part${window_bucket}
             COMMAND native-window-test ${WORKSPACE_NATIVE_WINDOW_BUCKET_${window_bucket}})
         set_tests_properties(native-native-window-part${window_bucket} PROPERTIES
-            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay"
+            ENVIRONMENT "WORKSPACE_NATIVE_TOPIC_PRELOAD=0")
     endforeach()
     foreach(window_heavy IN LISTS WORKSPACE_NATIVE_WINDOW_BUCKETS_OVER)
         add_test(NAME native-native-window-heavy-${window_heavy}
             COMMAND native-window-test ${window_heavy})
         set_tests_properties(native-native-window-heavy-${window_heavy} PROPERTIES
-            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay"
+            ENVIRONMENT "WORKSPACE_NATIVE_TOPIC_PRELOAD=0")
     endforeach()
     find_program(WORKSPACE_NATIVE_PYTHON3_EXECUTABLE NAMES python3 REQUIRED)
     add_test(NAME native-window-buckets-sync
@@ -784,7 +786,8 @@ if(BUILD_TESTING)
         add_test(NAME native-native-e2ee-ui-part${e2ee_ui_bucket}
             COMMAND native-e2ee-ui-test ${WORKSPACE_NATIVE_E2EE_UI_BUCKET_${e2ee_ui_bucket}})
         set_tests_properties(native-native-e2ee-ui-part${e2ee_ui_bucket} PROPERTIES
-            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay")
+            TIMEOUT 600 LABELS "gui" RESOURCE_LOCK "xdisplay"
+            ENVIRONMENT "WORKSPACE_NATIVE_TOPIC_PRELOAD=0")
     endforeach()
     foreach(e2ee_ui_heavy IN LISTS WORKSPACE_NATIVE_E2EE_UI_BUCKETS_OVER)
         add_test(NAME native-native-e2ee-ui-heavy-${e2ee_ui_heavy}
