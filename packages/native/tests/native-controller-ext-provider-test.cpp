@@ -253,6 +253,61 @@ private slots:
         QVERIFY(admin->canSave());
     }
 
+    void conflictKeepDraftRetryRebasesUntouchedFields()
+    {
+        // Issue #735: after a 412 + "Keep my draft", the retry must keep only
+        // the locally edited fields and adopt the server values for every
+        // untouched field, so another administrator's change survives.
+        Server test;
+        QVERIFY(test.start());
+        auto admin = test.fixture.controller.externalProviderAdmin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        admin->setLimit("max_accounts", 11); // The only local edit.
+        // Another admin saved the chat cap meanwhile (50 -> 77); the server
+        // policy now carries 5 accounts and 77 chats against our old etag.
+        auto fresh = policyDto(9, true, false, 5, 77);
+        fresh.insert("type", "ExternalPreconditionFailedError");
+        int putAttempt = 0;
+        test.putOverride = [&fresh, &putAttempt](const Request& request) {
+            ++putAttempt;
+            if (putAttempt == 1)
+                return Response { fresh, 412, 0, { { "ETag", "\"9\"" } } };
+            const auto settings = request.body.value("settings").toObject();
+            const auto limits = settings.value("limits").toObject();
+            return Response { policyDto(10, settings.value("enabled").toBool(), false,
+                                      static_cast<qint64>(limits.value("max_accounts").toDouble()),
+                                      static_cast<qint64>(limits.value("max_selected_chats_per_account").toDouble()),
+                                      static_cast<qint64>(limits.value("max_file_bytes").toDouble())),
+                200, 0, { { "ETag", "\"10\"" } } };
+        };
+        admin->save();
+        QTRY_VERIFY(admin->conflict());
+        // The conflict reply settles the policy: the fresh chat cap is visible
+        // and the draft rebases field-wise (local edit kept, untouched field adopts 77).
+        QTRY_COMPARE(admin->policy().value("limits").toMap().value("max_selected_chats_per_account").toLongLong(), 77LL);
+        QCOMPARE(admin->draft().value("max_accounts").toLongLong(), 11LL);
+        QCOMPARE(admin->draft().value("max_selected_chats_per_account").toLongLong(), 77LL);
+        QVERIFY(admin->dirty());
+        // "Keep my draft" then Save: the full retry body carries 11 accounts
+        // AND the other administrator's 77 chats under the fresh etag.
+        admin->keepDraft();
+        QVERIFY(!admin->conflict());
+        QVERIFY(admin->canSave());
+        admin->save();
+        QTRY_COMPARE(putAttempt, 2);
+        QCOMPARE(test.lastIfMatch, QByteArray("\"9\""));
+        const auto retried = test.lastPutBody.value("settings").toObject();
+        const auto retriedLimits = retried.value("limits").toObject();
+        QCOMPARE(retriedLimits.value("max_accounts").toDouble(), 11.0);
+        QCOMPARE(retriedLimits.value("max_selected_chats_per_account").toDouble(), 77.0);
+        // The confirmed policy holds both administrators' values.
+        QTRY_VERIFY(!admin->saveBusy());
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 11LL);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_selected_chats_per_account").toLongLong(), 77LL);
+        QVERIFY(!admin->dirty());
+    }
+
     void limitCapsMarkFieldsInvalidAndDisableSave()
     {
         Server test;
