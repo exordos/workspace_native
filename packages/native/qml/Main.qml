@@ -16296,4 +16296,29 @@ component NativeMentionChip: Item {
             }
         }
     }
+
+    // #720: on light backgrounds the platform decoration supplies no edge and the
+    // in-app toolbar's elevated surface runs white into the title bar, so a
+    // restored window is impossible to find against white. This one-pixel ring is
+    // drawn inside the window's own bounds (the reference treats the perimeter as
+    // part of the app chrome), which keeps the outline on resize without touching
+    // geometry, and it is suppressed while maximized where the screen frame is the
+    // edge. It is the last child so nothing paints over it, and it never takes
+    // input.
+    Rectangle {
+        id: windowEdgeOutline
+        objectName: "windowEdgeOutline"
+        anchors.fill: parent
+        visible: root.visibility != Window.Maximized && root.visibility != Window.FullScreen
+        z: 1000
+        color: "transparent"
+        border.width: 1
+        border.color: root.colors["border-subtle"]
+        readonly property real edgeWidth: border.width
+        readonly property color edgeColor: border.color
+        // The ring's top edge doubles as the title-bar/toolbar seam: on a light
+        // background the decoration and the elevated toolbar are the same white,
+        // so the seam gets the same restrained separation the toolbar already
+        // draws below itself.
+    }
 }
