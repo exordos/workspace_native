@@ -1047,6 +1047,58 @@ private slots:
         QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
     }
 
+    // Issue #736: a token renewal for the SAME account retires the transport
+    // generation, so the wrapper never answers the in-flight gates callback and
+    // nothing released the shared busy flag: the retry was ignored and both
+    // tabs stayed locked. The renewal must settle the retired summary
+    // operations with a retryable outcome, fence the late reply, and let the
+    // renewed session load the gates again without a restart.
+    void topicSummaryGatesRenewalReleasesBusyAndRetries()
+    {
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_settings.manage")};
+        bool deferFirst = true;
+        std::function<void()> release;
+        const auto base = scene.fixture.authentication;
+        scene.fixture.authentication = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().contains("topic_summary_settings")
+                && deferFirst) {
+                deferFirst = false;
+                ++scene.gatesGets;
+                Response response{scene.gatesResponse};
+                response.defer = [&](auto finish) { release = std::move(finish); };
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryGates();
+        QTRY_COMPARE(scene.gatesGets, 1);
+        QVERIFY(bool(release));
+        QVERIFY(controller.topicSummarySettingsBusy());
+        // Same-owner renewal: a replacement access token bumps the generation.
+        scene.fixture.api.setAccessToken("summary-736-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.topicSummarySettingsBusy(), 4000);
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        // Unverified gates stay uneditable: the loaded flag cannot be set by a
+        // reply that never settled (review #708 finding 8 contract).
+        QVERIFY(!controller.topicSummaryGatesLoaded());
+        const auto statusAfterSettle = controller.topicSummarySettingsStatus();
+        // The late reply of the retired generation must settle nothing and must
+        // not apply its values to the renewed session.
+        release();
+        QTest::qWait(300);
+        QCOMPARE(controller.topicSummarySettingsStatus(), statusAfterSettle);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        QVERIFY(!controller.topicSummaryGatesLoaded());
+        // The renewed session loads the gates again with no restart.
+        controller.loadTopicSummaryGates();
+        QTRY_COMPARE(scene.gatesGets, 2);
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString(""));
+        QVERIFY(controller.topicSummaryGatesLoaded());
+    }
+
     void topicSummaryGatePermissionsFollowCapabilitiesAndRole()
     {
         TopicSummaryScene scene; QVERIFY(scene.fixture.start());

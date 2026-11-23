@@ -848,6 +848,7 @@ Dialog {
         const kind = controller.topicSummarySettingsError
         if (kind === "forbidden") return qsTr("You do not have permission to change these settings.")
         if (kind === "network") return qsTr("Network error. Your changes were kept, try again.")
+        if (kind === "interrupted") return qsTr("The settings operation was interrupted by a session refresh. Try again.")
         if (kind === "invalid") return qsTr("The server rejected the values.")
         if (kind === "contract") return qsTr("The server returned an unexpected response.")
         if (kind === "server") return qsTr("The server failed. Please try again.")
