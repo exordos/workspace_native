@@ -2759,6 +2759,7 @@ private:
     QVariantMap m_topicSummaryGates;
     bool m_topicSummaryGatesLoaded = false;
     QVariantList m_topicSummaryEndpoints;
+    bool m_topicSummaryCreateNeedsReconcile = false;
     bool m_topicSummarySettingsBusy = false;
     QString m_topicSummarySettingsStatus;
     QString m_topicSummarySettingsError;

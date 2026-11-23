@@ -21729,6 +21729,13 @@ bool NativeController::finishTopicSummaryOp(const QString &key, quint64 token)
 void NativeController::interruptTopicSummaryOps()
 {
     if (m_topicSummaryOps.isEmpty()) return;
+    // A retired create may still have committed server-side before the
+    // transport died (the reply fence does not prove the write failed): a
+    // blind retry would duplicate the endpoint, so mark the list as needing
+    // reconciliation before any next create is dispatched
+    // (#755 finding 4670644138).
+    if (m_topicSummaryOps.contains(QStringLiteral("endpoint-new")))
+        m_topicSummaryCreateNeedsReconcile = true;
     m_topicSummaryOps.clear();
     m_topicSummarySettingsBusy = false;
     setTopicSummaryStatus(QStringLiteral("error"), QStringLiteral("interrupted"));
@@ -21851,6 +21858,10 @@ void NativeController::loadTopicSummaryEndpoints()
             rows.append(row);
         }
         m_topicSummaryEndpoints = rows;
+        // Verified list: an interrupted create is reconciled now (the row is
+        // visible if it committed server-side), so a fresh create may dispatch
+        // again (#755 finding 4670644138).
+        m_topicSummaryCreateNeedsReconcile = false;
         emit topicSummaryStateChanged();
         setTopicSummaryStatus("");
     });
@@ -21921,6 +21932,14 @@ bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
     }
     if (!topicSummaryEndpointValidationErrors(form, true).isEmpty()) {
         setTopicSummaryStatus("error", "invalid");
+        return false;
+    }
+    if (m_topicSummaryCreateNeedsReconcile) {
+        // The previous create was retired without a settled reply, so it may
+        // have committed server-side: refuse a blind duplicate POST and
+        // reconcile the list instead; the committed row surfaces and a fresh
+        // create is dispatched only afterwards (#755 finding 4670644138).
+        loadTopicSummaryEndpoints();
         return false;
     }
     const auto token = beginTopicSummaryOp("endpoint-new");
