@@ -1,3 +1,14 @@
+# Workspace Native 0.46.0 - Linux development preview
+
+- Settings gained the topic-summary dialog: three tabs for the summary prompt and effort, per-workspace gate switches, and the endpoint registry. Administrators can add, edit and delete summary endpoints with server-side validation; users without permission see the controls as disabled instead of losing the screen.
+- Fixed: a late endpoint reply can no longer overwrite a newer draft you started in the meantime - each save only touches its own submission, and the submitted key is consumed once accepted.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.45.1 to 0.46.0](https://github.com/exordos/workspace_native/compare/0.45.1...0.46.0)
+
+---
+
 # Workspace Native 0.45.1 - Linux development preview
 
 - Fixed: custom chat background photos are now rotated by the camera orientation metadata before they are saved, so a photo taken sideways no longer appears turned in the chat wallpaper.
