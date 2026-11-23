@@ -56,6 +56,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     sidebarNormalDensityKeepsTheMeasuredLadder
     windowChannelInfoStaleMembersLoadKeepsAddedMember
     windowResizeHandOffReArmsForWheelAfterSendCapture
+    zoomedImageDragsToPanWithinTheMediaViewport
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_3
     anchorOverlayOwnsOnlyItsVisibleConversation
