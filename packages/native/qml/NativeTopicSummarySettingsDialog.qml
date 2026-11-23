@@ -295,13 +295,22 @@ Dialog {
                 property int formRevision: 0
                 property int dispatchRevision: -1
                 property string dispatchUuid: ""
+                // Dispatch identity (review finding 1): a late "saved" may only touch
+                // the draft its OWN request dispatched. The revision counter alone
+                // cannot tell "edited while pending" from "dialog closed and reopened,
+                // a different draft started" - the session counter ticks only at
+                // draft-replacement seams (reset/startCreate/startEdit), so a stale
+                // echo recognises its draft by session, never by revision alone.
+                property int draftSession: 0
+                property int dispatchSession: -1
+                function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false; formRevision += 1
+                    draftSession += 1; dispatchSession = -1 }
                 // The values that the in-flight request submits, and the endpoint
                 // uuids visible when a CREATE was dispatched: a late "saved" that
                 // finds newer edits must rebase the draft onto THESE (review
                 // findings 1/2), never onto the pre-save baseline or a fresh create.
                 property var dispatchValues: ({})
                 property var dispatchSeenUuids: []
-                function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false; formRevision += 1 }
                 function rebaseAfterSave() {
                     if (editingUuid === "new") {
                         // The create succeeded: the preserved draft must become an
@@ -313,8 +322,22 @@ Dialog {
                         if (created.length) editingUuid = created
                     }
                     editBaseline = JSON.parse(JSON.stringify(dispatchValues))
+                    // The successful request consumed the credential it submitted
+                    // (review finding 2): a preserved draft that keeps the submitted
+                    // key resends it on the next save, because a nonblank key always
+                    // rides the update payload. Drop it from the baseline and -
+                    // unless the user replaced it while the request was in flight,
+                    // which makes the newer key a pending edit that must survive -
+                    // from the form too.
+                    const submittedKey = String(dispatchValues["api" + "_key"] || "")
+                    if (submittedKey.length) {
+                        editBaseline["api" + "_key"] = ""
+                        if (String(form["api" + "_key"] || "") === submittedKey)
+                            setField("api" + "_key", "")
+                    }
                     dispatchRevision = -1
                     dispatchUuid = ""
+                    dispatchSession = -1
                 }
                 readonly property bool endpointsAllowed: dlg.perm("endpoints") === "allowed"
                 readonly property bool editing: editingUuid.length > 0
@@ -430,6 +453,7 @@ Dialog {
                     const payload = buildDispatchPayload(isCreate)
                     dispatchRevision = formRevision
                     dispatchUuid = editingUuid
+                    dispatchSession = draftSession
                     dispatchValues = Object.assign({}, editBaseline, payload)
                     if (isCreate) {
                         const seen = []
@@ -469,6 +493,7 @@ Dialog {
                             max_output_tokens: 512, top_p: 1, presence_penalty: 0, frequency_penalty: 0,
                             enabled: true, supports_vision: false, supports_reasoning: false}
                     formRevision += 1
+                    draftSession += 1
                 }
                 function startEdit(row) {
                     editingUuid = String(row.uuid)
@@ -482,6 +507,7 @@ Dialog {
                     form = seeded
                     editBaseline = JSON.parse(JSON.stringify(seeded))
                     formRevision += 1
+                    draftSession += 1
                 }
                 contentHeight: endpointsCol.implicitHeight
                 ScrollBar.vertical: ScrollBar {}
@@ -780,10 +806,16 @@ Dialog {
                 // must survive the late success (review finding: in-flight edits).
                 if (dlg.pendingOp === "gates") gatesTab.reset()
                 else if (dlg.pendingOp === "endpoint"
-                         && endpointsTab.formRevision === endpointsTab.dispatchRevision
-                         && endpointsTab.editingUuid === endpointsTab.dispatchUuid) endpointsTab.reset()
-                else if (dlg.pendingOp === "endpoint"
-                         && endpointsTab.formRevision !== endpointsTab.dispatchRevision) endpointsTab.rebaseAfterSave()
+                         && endpointsTab.dispatchSession === endpointsTab.draftSession) {
+                    // A late success may only touch the draft its own request
+                    // dispatched (finding 1): after close/reopen or another
+                    // endpoint's startEdit the sessions differ, and the stale echo
+                    // must leave the current draft alone entirely.
+                    if (endpointsTab.formRevision === endpointsTab.dispatchRevision
+                        && endpointsTab.editingUuid === endpointsTab.dispatchUuid) endpointsTab.reset()
+                    else if (endpointsTab.formRevision !== endpointsTab.dispatchRevision)
+                        endpointsTab.rebaseAfterSave()
+                }
                 dlg.pendingOp = ""
             }
             else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }

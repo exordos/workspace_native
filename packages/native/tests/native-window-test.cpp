@@ -24811,6 +24811,185 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(lastPutBody.value("priority").toDouble(), 100.0);
     }
 
+    // exordy finding 1 [medium]: the "saved" rebase may only touch the draft that
+    // belongs to the dispatched operation. Closing and reopening the dialog while
+    // an endpoint PUT is in flight and starting another endpoint's edit must leave
+    // the newly opened draft untouched: its own save sends only its own diff.
+    void channelTopicSummaryDialogLateEndpointSaveDoesNotRebaseAnotherDraft()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QString uuidA = QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77");
+        const QString uuidB = QStringLiteral("5d7c8a91-3f46-4b28-a1c9-6e0d4b7f2a83");
+        const QJsonObject endpointA{
+            {"uuid", uuidA}, {"name", QStringLiteral("Alpha GPT")},
+            {"base_url", QStringLiteral("https://alpha.invalid/v1")},
+            {"model", QStringLiteral("alpha-model")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const QJsonObject endpointB{
+            {"uuid", uuidB}, {"name", QStringLiteral("Beta GPT")},
+            {"base_url", QStringLiteral("https://beta.invalid/v1")},
+            {"model", QStringLiteral("beta-model")},
+            {"enabled", true}, {"supports_vision", true}, {"supports_reasoning", false},
+            {"credential_present", true}, {"priority", 200}, {"temperature", 0.7},
+            {"max_output_tokens", 1024}, {"top_p", 0.9}, {"presence_penalty", 0.1},
+            {"frequency_penalty", 0.2}, {"failure_count", 0}};
+        int puts = 0;
+        QString lastPutPath;
+        QJsonObject lastPutBody;
+        std::function<void()> releasePut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointA, endpointB}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                lastPutPath = path;
+                lastPutBody = request.body;
+                if (puts == 1) {
+                    Response response{endpointA};
+                    response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                    return response;
+                }
+                return Response{endpointB};
+            }
+            return base(request);
+        };
+        auto editButtonInRow = [&](int index) -> QQuickItem* {
+            auto *row = visibleItem(scene.window->contentItem(),
+                QStringLiteral("channelTopicSummaryEndpoint-%1").arg(index));
+            if (!row) return nullptr;
+            return visibleItem(row, QStringLiteral("channelTopicSummaryEndpointEdit"));
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-1"));
+        // Draft 1: submit a priority change on endpoint A; the PUT is held open.
+        auto *editA = editButtonInRow(0);
+        QVERIFY(editA);
+        click(scene.window, editA);
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        QVERIFY2(lastPutPath.contains(uuidA), qPrintable(lastPutPath));
+        // The dialog is closed and reopened WHILE that request is still in flight,
+        // and a fresh draft for endpoint B is opened (the finding's scenario).
+        click(scene.window, visibleItem("channelTopicSummarySettingsClose"));
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsDialog"));
+        QTest::qWait(250); // let the popup exit transition fully settle
+        auto *gearAgain = visibleItem("channelTopicSummarySettings");
+        QVERIFY(gearAgain);
+        click(scene.window, gearAgain);
+        auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("visible").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-1"));
+        auto *editB = editButtonInRow(1);
+        QVERIFY(editB);
+        click(scene.window, editB);
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        QCOMPARE(visibleItem("channelTopicSummaryField-name")->property("text").toString(),
+            QStringLiteral("Beta GPT"));
+        visibleItem("channelTopicSummaryField-priority")->setProperty("text", QStringLiteral("250"));
+        QTest::qWait(50);
+        // A's stale success lands while B's draft is open.
+        auto send = std::move(releasePut);
+        QVERIFY(send);
+        send();
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        // B's draft must carry ONLY B's own edit: 250 over B's own baseline. The
+        // bug rebased B onto A's submitted values, leaking A's fields into the PUT.
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 2);
+        QVERIFY2(lastPutPath.contains(uuidB), qPrintable(lastPutPath));
+        const QJsonObject expected{{"priority", 250}};
+        QCOMPARE(lastPutBody, expected);
+    }
+
+    // exordy finding 2 [medium]: a preserved draft must not resend the API key the
+    // successful request already stored. The rebase consumes the submitted key:
+    // the field clears and a later save of another field carries no key at all.
+    void channelTopicSummaryDialogRebasedDraftDoesNotResendSubmittedApiKey()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int puts = 0;
+        QJsonObject lastPutBody;
+        std::function<void()> releasePut;
+        auto updated = endpointDto;
+        updated["priority"] = 150;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                lastPutBody = request.body;
+                if (puts == 1) {
+                    Response response{updated};
+                    response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                    return response;
+                }
+                return Response{updated};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        visibleItem("channelTopicSummaryField-api_key")->setProperty("text", QStringLiteral("***"));
+        visibleItem("channelTopicSummaryField-priority")->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        QVERIFY(lastPutBody.contains("api_key"));   // the first save legitimately rotates the key
+        // In-flight edit of ANOTHER field keeps the draft savable after the rebase.
+        visibleItem("channelTopicSummaryField-temperature")->setProperty("text", QStringLiteral("0.9"));
+        QTest::qWait(50);
+        auto send = std::move(releasePut);
+        QVERIFY(send);
+        send();
+        auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        // The success consumed the key it submitted: the field must be blank again...
+        QTRY_COMPARE(visibleItem("channelTopicSummaryField-api_key")->property("text").toString(),
+            QString());
+        // ...and the follow-up save carries only the field still changed by the user.
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 2);
+        QVERIFY2(!lastPutBody.contains("api_key"), qPrintable(QJsonDocument(lastPutBody).toJson(QJsonDocument::Compact)));
+        const QJsonObject expected{{"temperature", 0.9}};
+        QCOMPARE(lastPutBody, expected);
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
