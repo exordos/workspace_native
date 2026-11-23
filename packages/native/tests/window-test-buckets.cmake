@@ -296,6 +296,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     channelHeaderOpensInfoOverSettingsAndRestoresTheLayer
     channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending
     channelTopicSummaryDialogFailedEndpointSaveKeepsForm
+    channelTopicSummaryDialogLateEndpointSaveDoesNotRebaseAnotherDraft
     composerAiNoticeTracksItsTriggerAndOtherPickers
     diagnosticsLogViewerModalLongPayloadRemainsScrollable
     diagnosticsMemoryPanelTableScrollsHorizontallyWithoutOverflow
@@ -521,6 +522,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     activityStarredRefreshErrorKeepsListBelowRetryControl
     activityStarredShortFirstPageAutoLoadsNextMarker
     canonicalUsersHttpNameAppearsInTheActualMainAuthorLabel
+    channelTopicSummaryDialogRebasedDraftDoesNotResendSubmittedApiKey
     composerHashPopupInsertsReferenceAndPastesKnownLink
     diagnosticsLogViewerModalExportErrorWrapsWithinNarrowModal
     globalTopicUsesTypedHttpForEveryMetadataKind
