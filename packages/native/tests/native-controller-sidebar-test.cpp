@@ -2097,6 +2097,70 @@ private slots:
         QTest::qWait(500);
         QCOMPARE(*gets, getsAfterFollowup);
     }
+
+    // Issue #718: sidebar sort keys must be independent of the active message
+    // window. A stream whose history was hydrated keeps its position when the
+    // route moves away and the window is swapped; only real activity moves rows.
+    void sidebarActivityOrderSurvivesLeavingTheHydratedStream()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString recent = "77777777-7777-4777-8777-000000000001";
+        const QString bgA = "aaaaaaaa-aaaa-4aaa-8aaa-00000000000a";
+        const QString bgB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        auto hero = message("Hero message", recent, topicId);
+        hero["created_at"] = "2026-06-01T10:00:00Z";
+        const auto streamDto = [](const QString &id, const QString &name,
+                                  const QString &updated, const QString &last) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", updated},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+        };
+        const QJsonArray streams{streamDto(streamId, "Hydrated", "2026-01-01T00:00:00Z", recent),
+            streamDto(bgA, "Alpha", "2026-01-02T00:00:00Z", QString()),
+            streamDto(bgB, "Beta", "2026-01-03T00:00:00Z", QString())};
+        fixture.streams = [&](const Request &) { return Response{streams}; };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            for (const auto &value : streams)
+                if (value.toObject().value("uuid").toString() == id) return Response{value.toObject()};
+            return Response{QJsonObject{{"uuid", id}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Native topic"}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+        };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto parent = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", parent.isEmpty() ? streamId : parent}, {"name", "Native topic"}}}};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            if (request.target.toString().contains(bgA) || request.target.toString().contains(bgB))
+                return Response{QJsonArray{}};
+            return Response{QJsonArray{hero}};
+        };
+        auto &c = fixture.controller;
+        const auto position = [&](const QString &id) {
+            const auto rows = c.streams();
+            for (int i = 0; i < rows.size(); ++i)
+                if (rows.at(i).toMap().value("id").toString() == id) return i;
+            return -1;
+        };
+        c.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 3);
+        QCOMPARE(position(streamId), 2); // Oldest updated_at sorts last before hydration.
+        c.selectStream(streamId);
+        QTRY_COMPARE(c.messages().size(), 1); QTRY_VERIFY(!c.busy());
+        QCOMPARE(position(streamId), 0); // The hydrated last-message stamp ranks it first.
+        c.selectStream(bgA);
+        QTRY_VERIFY(!c.busy());
+        QTest::qWait(200);
+        QCOMPARE(position(streamId), 0); // Leaving must not rewind the sort key.
+        c.selectStream(streamId);
+        QTRY_COMPARE(c.messages().size(), 1); QTRY_VERIFY(!c.busy());
+        QCOMPARE(position(streamId), 0);
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)
