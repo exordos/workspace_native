@@ -1,3 +1,14 @@
+# Workspace Native 0.46.1 - Linux development preview
+
+- Fixed: the sidebar no longer reorders chats when their older history is edited or swapped in - the row order follows its own stable keys instead of the currently loaded message window.
+- Fixed: switching into a chat publishes its prepared topic history as one settled swap, so the topic list no longer flashes incomplete or stale rows mid-switch.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.46.0 to 0.46.1](https://github.com/exordos/workspace_native/compare/0.46.0...0.46.1)
+
+---
+
 # Workspace Native 0.46.0 - Linux development preview
 
 - Settings gained the topic-summary dialog: three tabs for the summary prompt and effort, per-workspace gate switches, and the endpoint registry. Administrators can add, edit and delete summary endpoints with server-side validation; users without permission see the controls as disabled instead of losing the screen.
