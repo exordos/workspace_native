@@ -20,6 +20,13 @@ Popup {
         ? viewer.items[viewer.index] || ({}) : ({})
     readonly property bool gallery: viewer.count > 1
     property real zoom: 1
+    // Issue #730: drag-to-pan state for the zoomed image, in scene pixels.
+    // Raw values are write-clamped to the current bounds and the drawn offset
+    // clamps again at read time (see mediaImage x/y), so bounds recalculate
+    // whenever zoom or the window size changes and an axis whose picture
+    // fits (bound 0) is always centered.
+    property real panX: 0
+    property real panY: 0
     readonly property int selectedSlot: viewer.open ? viewer.index : -1
     // Video controls-bar state (issue #731, docs/NATIVE_DESKTOP_VIDEO_PLAYBACK.md):
     // Chromium convention cloned - controls show while paused or on pointer
@@ -41,6 +48,10 @@ Popup {
     }
     onSelectedSlotChanged: {
         zoom = 1;
+        // #730: pan resets with the zoom whenever the slot changes (the close
+        // -> reopen cycle also passes through -1, so a reopen resets too).
+        panX = 0;
+        panY = 0;
         // Stop-on-switch/close contract (issue #731): audio must never leak
         // from the previous slot while the new one stages or the session is
         // closed. Clearing the source binding is not enough - the explicit
@@ -54,6 +65,17 @@ Popup {
         const delta = wheel.pixelDelta.y || wheel.angleDelta.y;
         zoom = Math.max(0.5, Math.min(3, zoom + 0.001 * delta));
         wheel.accepted = true;
+    }
+    // #730: when the zoom shrinks the bounds (e.g. back to fit), bring the raw
+    // pan values along so a zoom-out centers the picture and a zoom-in starts
+    // centered instead of resurrecting a stale edge pan. Bounds are computed
+    // from the primitives here - mediaImage.panBoundX is bound to zoom and its
+    // re-evaluation order against this handler is not contractual.
+    onZoomChanged: {
+        const boundX = Math.max(0, (mediaImage.paintedWidth * zoom - mediaArea.width) / 2);
+        const boundY = Math.max(0, (mediaImage.paintedHeight * zoom - mediaArea.height) / 2);
+        panX = Math.max(-boundX, Math.min(boundX, panX));
+        panY = Math.max(-boundY, Math.min(boundY, panY));
     }
 
     // Positional model for the strip: a live viewer.items model would rebuild
@@ -109,9 +131,22 @@ Popup {
             id: mediaImage
             objectName: "mediaViewer-image"
             scale: viewerRoot.zoom
-            anchors.centerIn: parent
             width: parent.width
             height: Math.min(parent.height, hostWindow ? Math.max(0, hostWindow.height - 192) : parent.height)
+            // #730: pan bounds measure the scaled PAINTED pixels against the
+            // media area, so an axis whose picture fits has bound 0 and stays
+            // centered, while a zoomed axis pans until either picture edge
+            // reaches the area edge. The read-side clamp recalculates on every
+            // zoom or window-size change, so an out-of-range pan snaps back
+            // without any imperative repair.
+            readonly property real panBoundX:
+                Math.max(0, (paintedWidth * viewerRoot.zoom - mediaArea.width) / 2)
+            readonly property real panBoundY:
+                Math.max(0, (paintedHeight * viewerRoot.zoom - mediaArea.height) / 2)
+            x: (mediaArea.width - width) / 2
+                + Math.max(-panBoundX, Math.min(panBoundX, viewerRoot.panX))
+            y: (mediaArea.height - height) / 2
+                + Math.max(-panBoundY, Math.min(panBoundY, viewerRoot.panY))
             source: viewerRoot.visible && viewerRoot.currentSlot.state === "ready"
                 && String(viewerRoot.currentSlot.kind || "image") !== "video"
                 ? String(viewerRoot.currentSlot.url || "") : ""
@@ -132,7 +167,45 @@ Popup {
             anchors.fill: parent
             onWheel: (wheel) => viewerRoot.zoomByWheel(wheel)
             enabled: mediaImage.visible
+            // #730: drag-to-pan with the primary button. mouse.x/y are
+            // mediaImage-local and the image slides under the cursor while
+            // panning, so local deltas drift (measured with a 60 px drag);
+            // QQuickMouseEvent.sceneX is not exposed here either (NaN in
+            // practice). Each event converts its local point to the scene via
+            // mapToItem(null, ...), which is frame-correct under the live
+            // scale transform, and the pan tracks the scene-space delta.
+            property real pressSceneX: 0
+            property real pressSceneY: 0
+            property real panAtPressX: 0
+            property real panAtPressY: 0
+            property bool draggingPan: false
+            onPressed: (mouse) => {
+                const p = mapToItem(null, mouse.x, mouse.y);
+                pressSceneX = p.x;
+                pressSceneY = p.y;
+                panAtPressX = viewerRoot.panX;
+                panAtPressY = viewerRoot.panY;
+                draggingPan = false;
+            }
+            onPositionChanged: (mouse) => {
+                if (!pressed)
+                    return;
+                const p = mapToItem(null, mouse.x, mouse.y);
+                const dx = p.x - pressSceneX;
+                const dy = p.y - pressSceneY;
+                if (!draggingPan && Math.abs(dx) + Math.abs(dy) < 6)
+                    return;
+                draggingPan = true;
+                viewerRoot.panX = Math.max(-mediaImage.panBoundX,
+                    Math.min(mediaImage.panBoundX, panAtPressX + dx));
+                viewerRoot.panY = Math.max(-mediaImage.panBoundY,
+                    Math.min(mediaImage.panBoundY, panAtPressY + dy));
+            }
             onClicked: (mouse) => {
+                // A drag-pan release is not a click: the viewer must stay open
+                // even when the finger lifted over a letterbox band.
+                if (draggingPan)
+                    return;
                 const insidePainted = mediaImage.status === Image.Ready
                     && Math.abs(mouse.x - mediaImage.width / 2) <= mediaImage.paintedWidth / 2 + 1
                     && Math.abs(mouse.y - mediaImage.height / 2) <= mediaImage.paintedHeight / 2 + 1;
