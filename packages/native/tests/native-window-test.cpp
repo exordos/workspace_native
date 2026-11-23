@@ -21513,6 +21513,53 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(image->scale(), 1.0);
         QTRY_VERIFY(image->isVisible());
         QTRY_VERIFY(near(paintedCenter(), areaCenter));
+        // Stage 5 (exo-review finding on #762): shrinking the window shrinks
+        // the bounds, and the stored pan must shrink with them. Otherwise the
+        // raw pan keeps a hidden excess: the picture sits at the new edge, yet
+        // the reverse drag first chews through the slack and the picture is
+        // stuck at the edge.
+        wheel({}, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 3.0);
+        QTest::qWait(50);
+        const qreal boundBefore = image->property("panBoundX").toReal();
+        QVERIFY2(boundBefore > 60.0, qPrintable(QStringLiteral("bound too small: ")
+            + QString::number(boundBefore)));
+        const QPoint grab2(window->width() / 2, window->height() / 2 - 28);
+        const QPoint edgePin(int(boundBefore) + 200, int(boundBefore) + 200);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab2);
+        QTest::mouseMove(window, grab2 + edgePin / 2);
+        QTest::qWait(20);
+        QTest::mouseMove(window, grab2 + edgePin);
+        QTest::qWait(20);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab2 + edgePin);
+        QVERIFY(viewer->open());
+        auto *viewerPopup = window->findChild<QObject *>("mediaViewer-popup");
+        QVERIFY(viewerPopup);
+        QTRY_VERIFY(([&]{
+            return qAbs(viewerPopup->property("panX").toReal() - boundBefore) < 0.01;
+        })());
+        window->resize(1000, 640);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        // The stored pan may never exceed the bounds the picture is drawn in,
+        // measured after the relayout settled.
+        QTRY_VERIFY(([&]{
+            const qreal boundNow = image->property("panBoundX").toReal();
+            return boundNow > 10.0
+                && qAbs(boundNow - boundBefore) > 40.0
+                && viewerPopup->property("panX").toReal() <= boundNow + 0.5;
+        })());
+        // The visible contract: the first reverse drag after the resize moves
+        // the picture 1:1, it does not vanish into hidden slack.
+        const QPointF beforeReverse = paintedCenter();
+        const QPoint grab3(window->width() / 2, window->height() / 2 - 28);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab3);
+        QTest::mouseMove(window, grab3 + QPoint(-60, 0));
+        QTest::qWait(30);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab3 + QPoint(-60, 0));
+        QVERIFY(viewer->open());
+        QTRY_VERIFY(([&]{
+            return qAbs(paintedCenter().x() - (beforeReverse.x() - 60.0)) < 0.75;
+        })());
         // Escape still closes after all the pointer traffic.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
