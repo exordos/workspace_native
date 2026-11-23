@@ -463,6 +463,52 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("online"), 30000);
     }
 
+    // exo-review finding 1 on PR #721: a catch-up request that the server
+    // holds parks the client in catching_up without any further retry
+    // transition, so the retry-count escalation alone never surfaces the
+    // outage. Escalation must also be time-bounded: a prolonged unstable
+    // phase surfaces the reconnecting banner even with zero retries.
+    void overlayBannerStalledCatchUpEscalatesAfterGrace()
+    {
+        // Handler captures must outlive the Fixture and every deferred send.
+        QVector<std::function<void()>> held;
+        Fixture fixture; RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [&held](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            if (request.target.path().contains("/events/")) {
+                Response hold{QJsonArray{}};
+                hold.defer = [&held](std::function<void()> send) { held.append(std::move(send)); };
+                return hold;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        // Start with a wide window so the "quiet inside the window" half of
+        // the contract is race-free; the seam below re-arms the escalation.
+        fixture.controller.setReconnectEscalationGraceMs(20000);
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        // The epoch walk completes and the catch-up page stays held: the
+        // client parks in catching_up without ever entering a retry.
+        // (catching_up alone is ambiguous - baseline() uses it too - so the
+        // stall is proven by the held catch-up request itself.)
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), QString("catching_up"), 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(static_cast<int>(held.size()), 1, 10000);
+        // Inside the escalation window a still-recovering interface is steady.
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        // Tighten the window: the stall alone, with zero retry transitions,
+        // must raise the banner.
+        fixture.controller.setReconnectEscalationGraceMs(250);
+        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("reconnecting"));
+        QCOMPARE(fixture.controller.connectionSeverity(), QString("warning"));
+        // Releasing the held page completes the catch-up and clears the banner.
+        held.takeFirst()();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), QString("live"), 15000);
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+    }
+
     // exo-review finding 1: a server that never answers must mark the
     // connection offline when the client request timeout fires.
     void overlayBannerRequestTimeoutMarksConnectionOffline()
