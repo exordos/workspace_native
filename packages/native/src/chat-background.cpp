@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPainter>
@@ -296,8 +297,23 @@ ChatBackground::Prepared ChatBackground::prepareImage(const QByteArray &bytes, c
     const auto sniffed = sniffImageMagic(bytes);
     if (!sniffed || QString::fromLatin1(sniffed) != declaredMime)
         return fail("type");
+    // Orientation-aware decode (Bug #678): a JPEG may store its display
+    // rotation in EXIF, so raw pixels must be read through QImageReader with
+    // autoTransform - the same configuration the avatar pipeline uses
+    // (avatar-images.cpp thumbnail()). The corrected pixels are baked into
+    // the canvas below and survive the re-encode (the saved JPEG carries no
+    // orientation metadata, matching the reference canvas contract).
     QImage image;
-    if (!image.loadFromData(bytes) || image.isNull())
+    {
+        QBuffer buffer;
+        buffer.setData(bytes);
+        if (!buffer.open(QIODevice::ReadOnly))
+            return fail("decode");
+        QImageReader reader(&buffer);
+        reader.setAutoTransform(true);
+        image = reader.read();
+    }
+    if (image.isNull())
         return fail("decode");
     const int width = image.width();
     const int height = image.height();
