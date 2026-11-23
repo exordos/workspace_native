@@ -1,3 +1,13 @@
+# Workspace Native 0.45.1 - Linux development preview
+
+- Fixed: custom chat background photos are now rotated by the camera orientation metadata before they are saved, so a photo taken sideways no longer appears turned in the chat wallpaper.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.45.0 to 0.45.1](https://github.com/exordos/workspace_native/compare/0.45.0...0.45.1)
+
+---
+
 # Workspace Native 0.45.0 - Linux development preview
 
 - Server Diagnostics now shows a WebSocket activity summary: realtime state, the credential-free endpoint, per-event-type receive rates and the newest socket failure with its close code. Metadata only - no message payloads and no tokens are recorded.
