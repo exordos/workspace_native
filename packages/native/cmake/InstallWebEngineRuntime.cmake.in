@@ -60,7 +60,8 @@ foreach(soname IN LISTS webengine_sonames)
     list(SORT real_candidates COMPARE NATURAL)
     list(GET real_candidates -1 real_library)
     file(INSTALL "${real_library}" DESTINATION "${package_lib_dir}")
-    file(CREATE_LINK "${soname}" "${package_lib_dir}/${soname}" SYMBOLIC)
+    get_filename_component(real_library_name "${real_library}" NAME)
+    file(CREATE_LINK "${real_library_name}" "${package_lib_dir}/${soname}" SYMBOLIC)
 endforeach()
 
 # 3. QtWebEngineProcess and the Chromium resource trees. Locations are

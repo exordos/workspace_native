@@ -54,6 +54,16 @@ def require_webengine_runtime_files(prefix, qml):
         "Missing bundled WebEngine resource packs (call runtime #728)"
     assert list((prefix/"share/qt-webengine/locales").glob("*.pak")), \
         "Missing bundled WebEngine locale packs (call runtime #728)"
+    # Every WebEngine SONAME the loader searches for must resolve inside the
+    # package. A SONAME symlink that names itself (or otherwise dangles) reads
+    # as present to glob-based checks but cannot be loaded by the call runtime.
+    for soname in ("libQt6WebEngineCore.so.6", "libQt6WebEngineQuick.so.6",
+                   "libQt6WebEngineQuickDelegatesQml.so.6", "libQt6WebChannel.so.6",
+                   "libQt6WebChannelQuick.so.6", "libQt6Positioning.so.6"):
+        found = list(prefix.glob(f"lib/{soname}")) + list(prefix.glob(f"lib/*/{soname}"))
+        assert found, f"Missing WebEngine runtime SONAME link: {soname}"
+        assert any(link.is_file() for link in found), \
+            f"WebEngine SONAME link does not resolve (broken or self-referential): {soname}"
 
 
 def verify(prefix, pid=None):
