@@ -2308,6 +2308,164 @@ private slots:
         QVERIFY2(!c.messages().isEmpty(),
             "a prepared topic must show its own rows on the first visible frame");
     }
+
+    // Issue #718 review round (exo-review findings 1/4): a catalog larger than
+    // the 512-slice budget must still request each topic exactly once. Eviction
+    // from the bounded warm set may not re-arm a topic as a sweep candidate -
+    // the done ledger is tracked independently of the bounded slice cache.
+    void topicPreloadSweepPastSliceBudgetRequestsEachTopicOnce()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const int sweepCount = 520; // the warm-slice budget is 512
+        const auto aMsg = message("A one", "aaaaaaaa-aaaa-4aaa-8aaa-0000000000d1");
+        const auto topicDto = [](const QString &id, const QString &name,
+                                 const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", name}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        const auto hex12 = [](int i) { return QString("%1").arg(i, 12, 16, QLatin1Char('0')); };
+        QHash<QString, QJsonObject> swept; // topic uuid -> its single message row
+        QJsonArray catalog{topicDto(topicId, "Native topic", aMsg.value("uuid").toString(), true)};
+        for (int i = 0; i < sweepCount; ++i) {
+            const auto topicUuid = QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-") + hex12(i);
+            const auto msg = message(QStringLiteral("M%1").arg(i),
+                QStringLiteral("cccccccc-cccc-4ccc-8ccc-") + hex12(i), topicUuid);
+            swept.insert(topicUuid, msg);
+            catalog.append(topicDto(topicUuid, QStringLiteral("T%1").arg(i),
+                msg.value("uuid").toString(), false));
+        }
+        fixture.topics = [&](const Request &) { return Response{catalog}; };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+            for (const auto &value : catalog)
+                if (value.toObject().value("uuid").toString() == id)
+                    return Response{value.toObject()};
+            return Response{topicDto(id, "Topic", QString(), false)};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicId || topic.isEmpty()) return Response{QJsonArray{aMsg}};
+            const auto found = swept.constFind(topic);
+            if (found != swept.constEnd()) return Response{QJsonArray{*found}};
+            return Response{QJsonArray{}};
+        };
+        QVector<QString> sweepGets;
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                if (!topic.isEmpty() && topic != topicId) sweepGets.append(topic);
+            }
+            return original(request);
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(0);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 1);
+        c.selectStream(streamId);
+        for (int i = 0; i < 600 && sweepGets.size() < sweepCount; ++i) QTest::qWait(50);
+        QVERIFY2(sweepGets.size() >= sweepCount,
+            qPrintable(QStringLiteral("sweep stalled at %1 requests").arg(sweepGets.size())));
+        // The sweep must settle: past the budget the done ledger (not the
+        // bounded slice map) decides candidacy, so the request count freezes.
+        QTest::qWait(600);
+        const int total = sweepGets.size();
+        QCOMPARE(total, sweepCount);
+        const QSet<QString> distinct(sweepGets.begin(), sweepGets.end());
+        const int distinctCount = distinct.size();
+        QCOMPARE(distinctCount, sweepCount);
+    }
+
+    // Issue #718 review round (exo-review finding 2): a transient preload
+    // failure skips the topic only until the next verified catalog - the next
+    // catalog commit must retry it, while the failing topic is not hammered.
+    void topicPreloadTransientFailureRetriesOnNextVerifiedCatalog()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString topicF = "ffffffff-ffff-4fff-8fff-00000000000f";
+        const QString topicOther = "9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f";
+        const QString otherStream = "9e9e9e9e-9e9e-4e9e-8e9e-9e9e9e9e9e9e";
+        const auto aMsg = message("A one", "aaaaaaaa-aaaa-4aaa-8aaa-0000000000e1");
+        const auto fMsg = message("F one", "ffffffff-ffff-4fff-8fff-0000000000e1", topicF);
+        const auto streamDto = [](const QString &id) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId},
+                {"name", id == streamId ? QStringLiteral("Main") : QStringLiteral("Other")},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", QJsonValue(QJsonValue::Null)}};
+        };
+        const auto topicDto = [](const QString &stream, const QString &id,
+                                 const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"name", QStringLiteral("Topic")}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{streamDto(streamId), streamDto(otherStream)}};
+        };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto parent = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (parent == otherStream)
+                return Response{QJsonArray{topicDto(otherStream, topicOther, QString(), true)}};
+            return Response{QJsonArray{
+                topicDto(streamId, topicId, aMsg.value("uuid").toString(), true),
+                topicDto(streamId, topicF, fMsg.value("uuid").toString(), false)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId) return Response{streamDto(streamId)};
+            if (id == otherStream) return Response{streamDto(otherStream)};
+            if (id == topicF) return Response{topicDto(streamId, topicF, fMsg.value("uuid").toString(), false)};
+            if (id == topicId) return Response{topicDto(streamId, topicId, aMsg.value("uuid").toString(), true)};
+            return Response{topicDto(otherStream, id, QString(), true)};
+        };
+        int fAttempts = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            const auto topic = query.queryItemValue("topic_uuid");
+            if (topic == topicF) {
+                ++fAttempts;
+                if (fAttempts == 1) return Response{QJsonObject{{"detail", "transient"}}, 500};
+                return Response{QJsonArray{fMsg}};
+            }
+            if (query.queryItemValue("stream_uuid") == otherStream) return Response{QJsonArray{}};
+            return Response{QJsonArray{aMsg}};
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(0);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 2);
+        c.selectStream(streamId);
+        QTRY_VERIFY(!c.busy());
+        QTRY_COMPARE(fAttempts, 1); // attempted once...
+        QTest::qWait(400);
+        QCOMPARE(fAttempts, 1);     // ...skipped, not hammered
+        QVERIFY(!c.hasPreparedTopicSlice(topicF));
+        // The next verified catalog (a re-select across streams) must retry.
+        c.selectStream(otherStream);
+        QTRY_VERIFY(!c.busy());
+        c.selectStream(streamId);
+        QTRY_VERIFY(!c.busy());
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicF));
+        QCOMPARE(fAttempts, 2);
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)

@@ -12646,6 +12646,7 @@ void NativeController::reset()
     m_topicSliceOrder.clear();
     m_topicPreloadSkipped.clear();
     m_topicPreloadInFlight.clear();
+    m_topicPreloadDone.clear();
     m_preparedSwapActive = false;
     if (m_topicPreloadTimer) m_topicPreloadTimer->stop();
     m_rowPreviewInFlight.clear();
@@ -16714,7 +16715,14 @@ void NativeController::loadTopics()
         // revision - must re-publish the row titles there too (#641).
         if (authoritative) emit sidebarTopicsChanged(m_stream);
         // Issue #718 slice 2: a verified catalog is the preload candidate set.
-        if (authoritative) scheduleTopicPreload(0);
+        // A verified commit also re-arms transiently failed topics: the skip
+        // set lives only until the next authoritative catalog, so a later
+        // successful catalog can warm a topic a one-off failure had excluded
+        // (issue #718 review round, exo-review finding 2).
+        if (authoritative) {
+            m_topicPreloadSkipped.clear();
+            scheduleTopicPreload(0);
+        }
         if (authoritative) finishSnapshotPart(4);
         // Issue #134: the profile Message action can park a default-topic
         // open while this page is loading; resolve it against the verified
@@ -18881,7 +18889,11 @@ void NativeController::runTopicPreloadBatch()
     QVector<const Topic *> pending;
     for (const auto &topic : std::as_const(m_topics)) {
         if (topic.uuid == m_topic || topic.done || topic.lastMessage.isEmpty()) continue;
-        if (m_topicSlices.contains(topic.uuid) || m_topicPreloadSkipped.contains(topic.uuid)
+        // The done ledger, not the bounded slice map, marks a topic warmed:
+        // an evicted slice must not re-enter the candidate set, or a catalog
+        // bigger than the budget keeps re-requesting evicted topics forever
+        // (issue #718 review round, exo-review findings 1/4).
+        if (m_topicPreloadDone.contains(topic.uuid) || m_topicPreloadSkipped.contains(topic.uuid)
             || m_topicPreloadInFlight.contains(topic.uuid)) continue;
         pending.append(&topic);
     }
@@ -18923,7 +18935,10 @@ void NativeController::requestTopicPreload(const Topic &topic)
             }
         }
         if (rows.isEmpty()) m_topicPreloadSkipped.insert(uuid);
-        else rememberTopicSlice(uuid, stream, rows, result.nextMarker, rows.size());
+        else {
+            m_topicPreloadDone.insert(uuid);
+            rememberTopicSlice(uuid, stream, rows, result.nextMarker, rows.size());
+        }
         scheduleTopicPreload(0);
     });
 }
@@ -18962,21 +18977,28 @@ void NativeController::dropTopicSlices(const QString &stream, const QString &top
 {
     if (!topic.isEmpty()) {
         if (m_topicSlices.remove(topic) > 0) m_topicSliceOrder.removeAll(topic);
+        // The done ledger lives exactly as long as the cached page it warmed,
+        // so an invalidated topic may be re-warmed by the next sweep.
+        m_topicPreloadDone.remove(topic);
         return;
     }
     if (stream.isEmpty()) {
         m_topicSlices.clear();
         m_topicSliceOrder.clear();
+        m_topicPreloadDone.clear();
         return;
     }
     for (auto it = m_topicSlices.begin(); it != m_topicSlices.end();) {
         if (it->stream == stream) {
             m_topicSliceOrder.removeAll(it.key());
+            m_topicPreloadDone.remove(it.key());
             it = m_topicSlices.erase(it);
         } else {
             ++it;
         }
     }
+    for (const auto &candidate : std::as_const(m_topics))
+        if (candidate.stream == stream) m_topicPreloadDone.remove(candidate.uuid);
 }
 
 bool NativeController::hasPreparedTopicSlice(const QString &topicUuid) const
