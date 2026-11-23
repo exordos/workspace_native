@@ -1,0 +1,115 @@
+# Install the QtWebEngine/QtWebChannel call runtime (#728). The call view is
+# instantiated lazily through a Loader, so qt_generate_deploy_qml_app_script
+# never sees the QtWebEngine/QtWebChannel imports and ships none of it; this
+# script runs right after the deploy script and adds exactly what the embed
+# needs at runtime: the QML modules, the shared libraries they link, the
+# QtWebEngineProcess helper and the Chromium .pak resource trees.
+set(runtime_prefix "$ENV{DESTDIR}@CMAKE_INSTALL_PREFIX@")
+file(REAL_PATH "${runtime_prefix}" runtime_prefix)
+
+# The deploy script generated bin/qt.conf; its QmlImports entry is the single
+# source of truth for where the runtime looks up QML modules.
+file(READ "${runtime_prefix}/@CMAKE_INSTALL_BINDIR@/qt.conf" runtime_qt_conf)
+string(REGEX MATCH "QmlImports[ \t]*=[ \t]*([^\r\n;]+)" qt_conf_match "${runtime_qt_conf}")
+if(NOT qt_conf_match)
+    message(FATAL_ERROR "qt.conf has no QmlImports entry; cannot place the WebEngine QML modules")
+endif()
+string(STRIP "${CMAKE_MATCH_1}" qml_imports_relative)
+string(REPLACE "\\" "/" qml_imports_relative "${qml_imports_relative}")
+cmake_path(ABSOLUTE_PATH qml_imports_relative NORMALIZE
+    BASE_DIRECTORY "${runtime_prefix}/@CMAKE_INSTALL_BINDIR@")
+set(package_lib_dir "${runtime_prefix}/@CMAKE_INSTALL_LIBDIR@")
+
+# 1. QML modules QtWebEngine (incl. ControlsDelegates) and QtWebChannel.
+foreach(module QtWebEngine QtWebChannel)
+    set(module_source "@WORKSPACE_NATIVE_QT_QML_DIR@/${module}")
+    if(NOT IS_DIRECTORY "${module_source}")
+        message(FATAL_ERROR "Qt QML module ${module} not found at ${module_source}")
+    endif()
+    file(INSTALL "${module_source}/" DESTINATION "${qml_imports_relative}/${module}")
+endforeach()
+
+# 2. Shared libraries the QML plugins link that no deployed executable pulls
+# in. Each is copied as its real file plus the SONAME symlink the loader looks
+# for; libraries already deployed by the executable closure are left alone
+# (include-if-missing rule from the design doc).
+set(qt_library_dir "@WORKSPACE_NATIVE_QT_LIBS_DIR@")
+set(webengine_sonames
+    libQt6WebEngineCore.so.6
+    libQt6WebEngineQuick.so.6
+    libQt6WebEngineQuickDelegatesQml.so.6
+    libQt6WebChannel.so.6
+    libQt6WebChannelQuick.so.6
+    libQt6Positioning.so.6)
+foreach(soname IN LISTS webengine_sonames)
+    if(EXISTS "${package_lib_dir}/${soname}")
+        continue()
+    endif()
+    string(REGEX REPLACE "\\.so\\.[0-9]+$" "" stem "${soname}")
+    file(GLOB real_candidates LIST_DIRECTORIES false "${qt_library_dir}/${stem}.so.[0-9]*.[0-9]*")
+    if(NOT real_candidates)
+        message(FATAL_ERROR "WebEngine runtime library ${stem} not found under ${qt_library_dir}")
+    endif()
+    list(SORT real_candidates COMPARE NATURAL)
+    list(GET real_candidates -1 real_library)
+    file(INSTALL "${real_library}" DESTINATION "${package_lib_dir}")
+    file(CREATE_LINK "${soname}" "${package_lib_dir}/${soname}" SYMBOLIC)
+endforeach()
+
+# 3. QtWebEngineProcess and the Chromium resource trees. Locations are
+# published to the application through QTWEBENGINEPROCESS_PATH,
+# QTWEBENGINE_RESOURCES_PATH and QTWEBENGINE_LOCALES_PATH in main() when the
+# bundle marker exists; development trees keep the system Qt locations.
+set(webengine_data_dir "@WORKSPACE_NATIVE_QT_DATA_DIR@")
+set(webengine_package_data "${runtime_prefix}/@CMAKE_INSTALL_DATADIR@/qt-webengine")
+set(webengine_resource_paks
+    "${webengine_data_dir}/resources/qtwebengine_resources.pak"
+    "${webengine_data_dir}/resources/qtwebengine_resources_100p.pak"
+    "${webengine_data_dir}/resources/qtwebengine_resources_200p.pak")
+foreach(resource_pak IN LISTS webengine_resource_paks)
+    if(NOT EXISTS "${resource_pak}")
+        message(FATAL_ERROR "WebEngine resource pack ${resource_pak} is required for the call runtime")
+    endif()
+endforeach()
+file(INSTALL ${webengine_resource_paks} DESTINATION "${webengine_package_data}/resources")
+if(NOT IS_DIRECTORY "${webengine_data_dir}/translations/qtwebengine_locales")
+    message(FATAL_ERROR "WebEngine locale packs not found under ${webengine_data_dir}/translations")
+endif()
+file(INSTALL "${webengine_data_dir}/translations/qtwebengine_locales/"
+    DESTINATION "${webengine_package_data}/locales")
+if(NOT EXISTS "@WORKSPACE_NATIVE_WEBENGINE_PROCESS@")
+    message(FATAL_ERROR "QtWebEngineProcess not found at @WORKSPACE_NATIVE_WEBENGINE_PROCESS@")
+endif()
+file(INSTALL "@WORKSPACE_NATIVE_WEBENGINE_PROCESS@" DESTINATION
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBEXECDIR@" USE_SOURCE_PERMISSIONS)
+
+# 4. Runtime paths. The copied QML plugin trees resolve their Qt dependencies
+# inside the package; the process helper searches the package lib directory
+# next to its own libexec directory. The libraries themselves are covered by
+# FinalizeLinuxRuntime, which runs after this script.
+file(GLOB_RECURSE webengine_qml_plugins "${qml_imports_relative}/QtWebEngine/*.so"
+    "${qml_imports_relative}/QtWebChannel/*.so")
+foreach(plugin IN LISTS webengine_qml_plugins)
+    get_filename_component(plugin_dir "${plugin}" DIRECTORY)
+    file(RELATIVE_PATH plugin_to_lib "${plugin_dir}" "${package_lib_dir}")
+    execute_process(
+        COMMAND "@WORKSPACE_NATIVE_PATCHELF_EXECUTABLE@" --set-rpath "$ORIGIN/${plugin_to_lib}" "${plugin}"
+        RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
+    if(NOT patch_result EQUAL 0)
+        message(FATAL_ERROR "Cannot set WebEngine QML plugin runtime path: ${patch_error}")
+    endif()
+endforeach()
+file(GLOB webengine_process_files
+    "${runtime_prefix}/@CMAKE_INSTALL_LIBEXECDIR@/QtWebEngineProcess")
+list(LENGTH webengine_process_files webengine_process_count)
+if(webengine_process_count LESS 1)
+    message(FATAL_ERROR "QtWebEngineProcess was not installed into ${runtime_prefix}/@CMAKE_INSTALL_LIBEXECDIR@")
+endif()
+execute_process(
+    COMMAND "@WORKSPACE_NATIVE_PATCHELF_EXECUTABLE@" --set-rpath "$ORIGIN/../@CMAKE_INSTALL_LIBDIR@"
+        "${runtime_prefix}/@CMAKE_INSTALL_LIBEXECDIR@/QtWebEngineProcess"
+    RESULT_VARIABLE patch_result ERROR_VARIABLE patch_error)
+if(NOT patch_result EQUAL 0)
+    message(FATAL_ERROR "Cannot set QtWebEngineProcess runtime path: ${patch_error}")
+endif()
+message(STATUS "Installed WebEngine call runtime: QML modules, ${webengine_sonames}, QtWebEngineProcess and resources")

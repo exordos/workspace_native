@@ -87,6 +87,20 @@ int main(int argc, char **argv)
         qWarning("Could not set the Windows application identity.");
 #endif
     QApplication app(argc, argv);
+#ifdef Q_OS_LINUX
+    // Packaged call runtime (#728): the package ships QtWebEngineProcess and
+    // the Chromium .pak trees inside the prefix; point WebEngine at them when
+    // the bundle marker exists. Development trees keep the system Qt paths.
+    {
+        const auto bundleRoot = QFileInfo(QCoreApplication::applicationDirPath() + "/..").canonicalFilePath();
+        const auto webengineData = bundleRoot + "/share/qt-webengine";
+        if (QFile::exists(webengineData + "/resources/qtwebengine_resources.pak")) {
+            qputenv("QTWEBENGINEPROCESS_PATH", (bundleRoot + "/libexec/QtWebEngineProcess").toLocal8Bit());
+            qputenv("QTWEBENGINE_RESOURCES_PATH", (webengineData + "/resources").toLocal8Bit());
+            qputenv("QTWEBENGINE_LOCALES_PATH", (webengineData + "/locales").toLocal8Bit());
+        }
+    }
+#endif
     // Source parity: the last argument that validates as an external deep link
     // wins on cold start, mirroring the Electron startup argv scan.
     QString startupDeepLink;

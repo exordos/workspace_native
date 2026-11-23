@@ -65,11 +65,16 @@ package.
 
 ### 3. Verification
 
-- `tests/verify-installed-runtime.py`: `QtWebEngine` and `QtWebChannel` join
-  the `MODULES` inventory, and a new Linux-only offline probe loads
-  `NativeCallWebEngineView.qml` in a `QQmlEngine` restricted to the bundled
-  import tree and asserts `Ready` (issue evidence recipe), plus presence
-  checks for `QtWebEngineProcess` and the resources tree.
+- `tests/verify-installed-runtime.py`: presence checks for the `QtWebEngine`
+  and `QtWebChannel` module trees, `QtWebEngineProcess` and the resources
+  tree, and a new Linux-only offline probe that compiles a `WebEngineView`
+  in a `QQmlEngine` restricted to the bundled import tree and asserts
+  `Ready` (the file-under-probe is an inline equivalent of
+  `NativeCallWebEngineView.qml`: the real view lives in the executable's
+  qrc, not on the staging tree; the plugin load additionally maps the
+  WebEngine libraries into the probe process, where the existing
+  `/proc/self/maps` prefix assertion proves they resolved inside the
+  package).
 - Window-layer regression: a call shell whose embed source cannot instantiate
   (test seam forcing the loader source to a missing component) leaves
   `Loading` and shows the retry affordance; a stalled load (deferred mock)
