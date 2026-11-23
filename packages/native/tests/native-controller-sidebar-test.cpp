@@ -2215,6 +2215,7 @@ private slots:
         auto &c = fixture.controller;
         c.login(fixture.server.origin().toString(), "user", "password", "");
         QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 1);
         c.selectStream(streamId);
         QTRY_COMPARE(c.messages().size(), 2); QTRY_VERIFY(!c.busy());
         QTRY_VERIFY(c.hasPreparedTopicSlice(topicId));
@@ -2286,12 +2287,8 @@ private slots:
         c.setTopicPreloadIntervalMsForTest(30);
         c.login(fixture.server.origin().toString(), "user", "password", "");
         QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 1);
         c.selectStream(streamId);
-        QTest::qWait(600);
-        qWarning() << "PROBE2 error=" << c.error() << "streams=" << c.streams().size()
-                   << "topics=" << c.topics().size() << "selectedTopic=" << c.selectedTopic()
-                   << "busy=" << c.busy();
-        QTRY_COMPARE(c.messages().size(), 2);
         QTRY_COMPARE(c.messages().size(), 2); // topic A is the open one
         // B and C are never opened, yet the bounded sweep warms them.
         QTRY_VERIFY(c.hasPreparedTopicSlice(topicB));

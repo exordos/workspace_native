@@ -17023,6 +17023,10 @@ void NativeController::selectTopic(const QString &id)
     if (const auto slice = m_topicSlices.constFind(id); slice != m_topicSlices.constEnd() && !slice->rows.isEmpty()) {
         m_messages = noteActivityMerge({}, slice->rows);
         m_before = slice->before;
+        // The slice rows came from a verified history page, so the published
+        // frame is authoritative for mutations: without this the first edit or
+        // delete right after the switch would be dropped by the route guard.
+        m_historyVerified = true;
         preparedShown = !m_messages.isEmpty();
     }
     m_loading = false;
