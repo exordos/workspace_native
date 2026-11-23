@@ -24657,6 +24657,76 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("chatBackgroundPresetBadge-sea"));
     }
 
+    // Issue #733: the wallpaper is bound to the message viewport itself -
+    // scene-aligned with the scroll wrapper and equal in size to it - at the
+    // initial layout AND after a layout change that moves the conversation
+    // origin (the sidebar drag the issue reproduces with). The pre-fix
+    // mapToItem placement kept a stale origin, so the image bled behind the
+    // folder rail and left a plain strip beside the message area.
+    void chatBackgroundTracksMessageViewportAcrossLayoutChanges()
+    {
+        ChannelInfoWindowScene scene;
+        // Tall viewport so the appearance accordion background section stays
+        // inside the ScrollView fold for clicks (same fixture as #637).
+        scene.window->resize(900, 1400);
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountSetting-background"));
+        auto *seaCard = visibleItem("chatBackgroundPreset-sea");
+        QVERIFY(seaCard);
+        QVERIFY2(seaCard->property("enabled").toBool(), "preset card disabled - store unavailable?");
+        click(scene.window, seaCard);
+        QVERIFY(visibleItem("chatBackgroundApplyDialog"));
+        click(scene.window, visibleItem("chatBackgroundApplyAll"));
+        QTRY_VERIFY(!visibleItem("chatBackgroundApplyDialog"));
+        auto *bg = visibleItem("chatBackground");
+        QVERIFY(bg);
+        auto *list = visibleItem("messageList");
+        QVERIFY(list);
+        QVERIFY(bg->property("clip").toBool());
+        auto alignedNow = [&]() {
+            const QPointF listPos = list->mapToScene(QPointF(0, 0));
+            const QPointF bgPos = bg->mapToScene(QPointF(0, 0));
+            return qFuzzyCompare(bgPos.x(), listPos.x())
+                && qFuzzyCompare(bgPos.y(), listPos.y())
+                && qFuzzyCompare(bg->width(), list->width())
+                && qFuzzyCompare(bg->height(), list->height());
+        };
+        const auto describe = [&]() {
+            const QPointF listPos = list->mapToScene(QPointF(0, 0));
+            const QPointF bgPos = bg->mapToScene(QPointF(0, 0));
+            return QStringLiteral("bg scene (%1,%2) size (%3x%4); message viewport scene (%5,%6) size (%7x%8)")
+                .arg(bgPos.x()).arg(bgPos.y()).arg(bg->width()).arg(bg->height())
+                .arg(listPos.x()).arg(listPos.y()).arg(list->width()).arg(list->height());
+        };
+        // Stage 1: initial layout after applying the preset.
+        for (int i = 0; i < 20 && !alignedNow(); ++i)
+            QTest::qWait(50);
+        QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after apply: ") + describe()));
+        // Stage 2: widen the sidebar - the conversation origin moves and the
+        // wallpaper must follow it (this is the stale-origin repro).
+        auto *handle = visibleItem("sidebarResizeHandle");
+        QVERIFY(handle);
+        const auto grab = handle->mapToScene(QPointF(handle->width() / 2, handle->height() / 2)).toPoint();
+        QTest::mousePress(scene.window, Qt::LeftButton, {}, grab);
+        QTest::mouseMove(scene.window, grab + QPoint(64, 0));
+        QTest::mouseRelease(scene.window, Qt::LeftButton, {}, grab + QPoint(64, 0));
+        for (int i = 0; i < 20 && !alignedNow(); ++i)
+            QTest::qWait(50);
+        QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after sidebar drag: ") + describe()));
+        // The reference keeps the wallpaper fixed relative to the viewport:
+        // a reset restores the plain theme surface without moving anything.
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountSetting-background"));
+        click(scene.window, visibleItem("chatBackgroundReset"));
+        QVERIFY(visibleItem("chatBackgroundApplyDialog"));
+        click(scene.window, visibleItem("chatBackgroundApplyAll"));
+        QTRY_VERIFY(!visibleItem("chatBackground"));
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;
