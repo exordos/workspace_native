@@ -25892,6 +25892,41 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(scene.fixture.memberPosts, 0);
     }
 
+    // Issue #723: the remove action sits in a dedicated trailing column
+    // (reference workspace-member-card.ui.tsx:20-31: flex min-w-0 flex-1 text
+    // block + w-6 shrink-0 action behind gap-3), so the name/role line never
+    // reaches under the X. Reveal must also behave like the reference's single
+    // hover group (sm:opacity-0 sm:group-hover/member:opacity-100): the action
+    // stays revealed while the pointer moves from the row onto the button.
+    void windowChannelInfoMemberRemoveClearanceAndReveal()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        const auto target = scene.fixture.bindingId(2);
+        auto *row = visibleItem("channelInfoMember-" + target); QVERIFY(row);
+        auto *role = visibleItem("channelInfoMemberRole-" + target); QVERIFY(role);
+        auto *remove = visibleItem("channelInfoRemove-" + target); QVERIFY(remove);
+        const qreal roleRight = role->mapToScene(QPointF(role->width(), 0)).x();
+        const qreal removeLeft = remove->mapToScene(QPointF(0, 0)).x();
+        QVERIFY2(removeLeft - roleRight >= 6.0, qPrintable(QStringLiteral(
+            "role right %1 reaches remove left %2").arg(roleRight).arg(removeLeft)));
+        // Hover the row, then move onto the button: the X stays revealed across
+        // the move (pre-fix: the raised Button steals hover, cardHover drops
+        // and the 120 ms fade hides the X under the pointer).
+        QTest::mouseMove(scene.window, row->mapToScene(
+            QPointF(row->width() / 2, row->height() / 2)).toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 1000);
+        QTest::mouseMove(scene.window, remove->mapToScene(
+            QPointF(remove->width() / 2, remove->height() / 2)).toPoint());
+        QTRY_VERIFY(remove->property("hovered").toBool());
+        QTest::qWait(300);  // outlives the 120 ms opacity animation
+        QCOMPARE(remove->property("opacity").toDouble(), 1.0);
+        // Reveal is opacity-only: the text does not move when the action shows
+        // (reference toggles opacity alone).
+        auto *name = visibleItem("channelInfoMemberName-" + target); QVERIFY(name);
+        QCOMPARE(name->mapToScene(QPointF(0, 0)).x(), row->mapToScene(QPointF(56, 0)).x());
+    }
+
     // Issue #186 review F1: switching streams during a notification update must
     // not permanently disable the switch. The notifications POST for the first
     // stream is held by a defer gate; selectStream moves to the second stream
