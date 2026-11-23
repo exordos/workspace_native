@@ -533,6 +533,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     activityStarredShortFirstPageAutoLoadsNextMarker
     canonicalUsersHttpNameAppearsInTheActualMainAuthorLabel
     channelTopicSummaryDialogRebasedDraftDoesNotResendSubmittedApiKey
+    compactComposerToggleCentersWithInputRow
     composerHashPopupInsertsReferenceAndPastesKnownLink
     diagnosticsLogViewerModalExportErrorWrapsWithinNarrowModal
     globalTopicUsesTypedHttpForEveryMetadataKind
