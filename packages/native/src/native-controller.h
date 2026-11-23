@@ -1778,6 +1778,11 @@ private:
     // other snapshot collections; failures keep (or install) the synthesized
     // system trio so the rail never renders empty.
     void loadFolders();
+    // Issue #719: a confirmed stream read decays the stored unread counts of the
+    // folders that reference the stream (reference: the folder badge is derived
+    // from the same unread ledger as the sidebar rows, so a read must move the
+    // rail without waiting for the next /folders/ refetch).
+    void decayFolderUnread(const QString &streamId, int cleared);
     // Notification metadata backfill: topics of background streams are not in
     // the active catalog, so mute policy fetches the detail on demand.
     void requestTopicMetadata(const QString &topicUuid);

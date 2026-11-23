@@ -2466,6 +2466,62 @@ private slots:
         QTRY_VERIFY(c.hasPreparedTopicSlice(topicF));
         QCOMPARE(fAttempts, 2);
     }
+
+    void folderRailUnreadFollowsConfirmedReads_data()
+    {
+        QTest::addColumn<QString>("path");
+        QTest::newRow("mark-as-read") << QStringLiteral("command");
+        QTest::newRow("realtime-stream-read") << QStringLiteral("realtime");
+    }
+    void folderRailUnreadFollowsConfirmedReads()
+    {
+        // Issue #719: reading a stream must move every folder badge that
+        // references it in the same tick, without a /folders/ refetch.
+        QFETCH(QString, path);
+        Fixture f; auto stream = creationChannel(streamId, "Alpha");
+        stream["unread_count"] = 2; stream["active_unread_count"] = 2;
+        f.streams = [&](const Request &) { return Response{QJsonArray{stream}}; };
+        const QString workUuid = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        int posts = 0; const auto original = f.server.handler;
+        f.server.handler = [&](const Request &r) -> Response {
+            const auto target = r.target.path();
+            if (target.endsWith("/messenger/folders/"))
+                return Response{QJsonArray{
+                    folderRailFolder(allChatsFolder, QStringLiteral("All"), QStringLiteral("all"), 2, 0x112233,
+                        {folderRailItem(streamId)}),
+                    folderRailFolder(workUuid, QStringLiteral("Work"), QStringLiteral("created"), 2, 0x00ff00,
+                        {folderRailItem(streamId)})}};
+            if (target.endsWith("/actions/read/invoke")) {
+                ++posts; auto result = stream;
+                result["unread_count"] = 0; result["active_unread_count"] = 0;
+                result["updated_at"] = "2026-01-02T10:01:00Z";
+                return {result, 200, 150, {}};
+            }
+            return original(r);
+        };
+        QVERIFY(f.start()); auto &c = f.controller;
+        const auto unreadOf = [&c](const QString &folderId) {
+            for (const auto &row : c.folders())
+                if (row.toMap().value("id").toString() == folderId) return row.toMap().value("unreadCount").toInt();
+            return -1;
+        };
+        QTRY_COMPARE(unreadOf(allChatsFolder), 2);
+        QCOMPARE(unreadOf(workUuid), 2);
+        QSignalSpy railChanged(&c, &NativeController::foldersChanged);
+        auto readDto = stream;
+        readDto["unread_count"] = 0; readDto["active_unread_count"] = 0;
+        readDto["updated_at"] = "2026-01-02T10:01:00Z";
+        if (path == QLatin1String("command")) {
+            c.markChatRead(streamId);
+            QTRY_COMPARE(posts, 1);
+            QTRY_VERIFY(!c.chatActionState(streamId).value("pending").toBool());
+        } else {
+            QVERIFY(c.applyRealtimeEvent(controllerEvent("stream.read", readDto)));
+        }
+        QCOMPARE(unreadOf(allChatsFolder), 0);
+        QCOMPARE(unreadOf(workUuid), 0);
+        QVERIFY2(railChanged.size() >= 1, "the folder rail must re-notify when a confirmed read moves its counts");
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)
