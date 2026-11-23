@@ -463,6 +463,14 @@ Item {
                                 ? page.colors["card-bg-active"] : page.colors["card-bg"]
                             property bool removing:
                                 page.controller.channelInfoRemovingMembers.indexOf(modelData.userUuid) >= 0
+                            // Mirror of NativeChannelInfo (#723): dedicated trailing column for
+                            // the remove action, matching workspace-member-card shrink-0 + gap-3.
+                            property int textRightInset: protectedMemberCard.modelData.canRemove ? 48 : 12
+                            property int roleWidth: protectedMemberRoleMeasure.text.length > 0
+                                ? Math.min(protectedMemberRoleMeasure.implicitWidth,
+                                    Math.max(0, protectedMemberCard.width - 56
+                                        - protectedMemberCard.textRightInset - 66))
+                                : 0
                             MouseArea {
                                 id: protectedMemberHover
                                 anchors.fill: parent
@@ -510,9 +518,8 @@ Item {
                                 objectName: "protectedChatMemberName-" + protectedMemberCard.modelData.bindingUuid
                                 y: 9
                                 x: 56
-                                width: Math.max(0, protectedMemberCard.width - 56 - 24 - 6
-                                    - (protectedMemberRoleMeasure.text.length > 0
-                                        ? protectedMemberRoleMeasure.width + 6 : 0))
+                                width: Math.max(0, protectedMemberCard.width - 56 - protectedMemberCard.textRightInset
+                                    - (protectedMemberCard.roleWidth > 0 ? protectedMemberCard.roleWidth + 6 : 0))
                                 text: protectedMemberCard.modelData.name
                                 textFormat: Text.PlainText
                                 font.pixelSize: 14
@@ -524,8 +531,10 @@ Item {
                                 visible: protectedMemberRoleMeasure.text.length > 0
                                 text: protectedMemberRoleMeasure.text
                                 x: 56 + protectedMemberName.width + 6
+                                width: protectedMemberCard.roleWidth
                                 y: 12
                                 textFormat: Text.PlainText
+                                elide: Text.ElideRight
                                 font.pixelSize: 10
                                 color: page.colors["text-secondary"]
                             }
@@ -533,7 +542,7 @@ Item {
                                 objectName: "protectedChatMemberSecondary-" + protectedMemberCard.modelData.bindingUuid
                                 y: 26
                                 x: 56
-                                width: protectedMemberCard.width - 56 - 12
+                                width: protectedMemberCard.width - 56 - protectedMemberCard.textRightInset
                                 text: page.memberSecondary(protectedMemberCard.modelData.status,
                                     protectedMemberCard.modelData.email)
                                 textFormat: Text.PlainText
@@ -550,7 +559,11 @@ Item {
                                 anchors.rightMargin: 12
                                 anchors.verticalCenter: parent.verticalCenter
                                 enabled: !protectedMemberCard.removing
-                                opacity: enabled ? (protectedMemberHover.containsMouse ? 1.0 : 0.0) : 0.4
+                                // #723 mirror: row-wide reveal (reference group-hover/member)
+                                // must survive moving onto the button and button focus.
+                                opacity: enabled
+                                    ? ((protectedMemberHover.containsMouse || protectedMemberRemove.hovered
+                                        || protectedMemberRemove.activeFocus) ? 1.0 : 0.0) : 0.4
                                 Behavior on opacity { NumberAnimation { duration: 120 } }
                                 display: AbstractButton.IconOnly
                                 padding: 0
