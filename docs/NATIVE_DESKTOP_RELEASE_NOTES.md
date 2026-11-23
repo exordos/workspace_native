@@ -1,3 +1,14 @@
+# Workspace Native 0.48.0 - Linux development preview
+
+- Clicking your name or avatar in the top bar now opens the Account page in the right drawer over the chat, mirroring the desktop client: profile and account controls open in place without leaving the conversation, and requesting Diagnostics from that page closes the account layer and opens diagnostics as before.
+- Account disclosure rows now use the shared chevron icon family, so the account screens match the rest of the sidebar icon set.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.47.1 to 0.48.0](https://github.com/exordos/workspace_native/compare/0.47.1...0.48.0)
+
+---
+
 # Workspace Native 0.47.1 - Linux development preview
 
 - Fixed: unread badges on the folder rail now stay in sync when a chat is read - opening a conversation and reading it folds the unread counts of its folder and of the rail entry, the same read ledger the sidebar list uses.
