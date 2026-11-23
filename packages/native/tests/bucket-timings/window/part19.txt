@@ -16,4 +16,5 @@ pollCreateDialogHiddenWhileEditingMessage=0.824068
 pollManagementAcceptsAnUnchangedDeadlineLaterThisMinute=1.58425
 pollQuoteFrameAndComposerRenderPlainText=5.56122
 prefetchLandsMidGestureKeepingAnchor=3.04868
+windowEdgeOutlineFramesRestoredWindowAndClearsOnMaximize=3.59731
 zeroVisibleWindowAutoAdvances=3.18929

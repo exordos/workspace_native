@@ -462,6 +462,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
     pollManagementAcceptsAnUnchangedDeadlineLaterThisMinute
     pollQuoteFrameAndComposerRenderPlainText
     prefetchLandsMidGestureKeepingAnchor
+    windowEdgeOutlineFramesRestoredWindowAndClearsOnMaximize
     zeroVisibleWindowAutoAdvances
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
