@@ -303,6 +303,9 @@ public:
     bool hasPreparedTopicSlice(const QString &topicUuid) const;
     void setTopicPreloadIntervalMsForTest(int ms);
     void setTopicPreloadEnabledForTest(bool enabled);
+    // Issue #729 phase 2: the warm queue's throttle delay (429/5xx doubling,
+    // bounded; cleared by a verified catalog commit).
+    int topicPreloadBackoffMsForTest() const { return m_topicPreloadBackoffMs; }
     void setRealtimeMode(bool enabled) { m_realtimeMode = enabled; if (enabled) m_poll.stop(); }
     void useRealtime(RealtimeClient *client);
     // Power state (issue #78, docs/NATIVE_DESKTOP_POWER_STATE.md): resume
@@ -2117,6 +2120,7 @@ private:
     void scheduleTopicPreload(int delayMs = 0);
     void runTopicPreloadBatch();
     void requestTopicPreload(const Topic &topic);
+    void rememberRecentRoute(const QString &stream, const QString &topic);
     void rememberTopicSlice(const QString &topicUuid, const QString &stream,
                             const QVector<Message> &window, const QByteArray &before, int keepRows);
     void dropTopicSlices(const QString &stream, const QString &topic);
@@ -2137,6 +2141,13 @@ private:
     bool m_topicPreloadEnabled =
         qEnvironmentVariable("WORKSPACE_NATIVE_TOPIC_PRELOAD", "1") != "0";
     int m_topicPreloadIntervalMs = 1000;
+    // Issue #729 phase 2: cross-route warm queue. The recency list is fed by
+    // selection commits (front = newest, capped); the foreground sequence
+    // fences warm replies that a newer foreground page already superseded;
+    // the throttle delay doubles per 429/5xx and re-arms at the catalog seam.
+    QVector<QPair<QString, QString>> m_recentRoutes;
+    QHash<QString, quint64> m_topicForegroundSeq;
+    int m_topicPreloadBackoffMs = 0;
     // True while the open window shows a swap-on-ready slice: the next
     // verified page of this selection may overwrite that frame.
     bool m_preparedSwapActive = false;

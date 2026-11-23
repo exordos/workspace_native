@@ -9345,6 +9345,10 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
         m_inboxTopics.insert(streamUuid, topics);
         if (authoritative) m_inboxStaleTopics.remove(streamUuid);
         else m_inboxStaleTopics.insert(streamUuid);
+        // Issue #729 phase 2: a newly hydrated unread catalog is a batch of
+        // new tier-2 warm candidates; the completion-paced batcher picks them
+        // up (it would otherwise have settled with nothing pending).
+        if (authoritative) scheduleTopicPreload(0);
         // Stale cache can be shown immediately but its network revalidation
         // remains in flight and continues to occupy the background slot.
         if (authoritative) settle();
@@ -12702,6 +12706,10 @@ void NativeController::reset()
     m_topicPreloadSkipped.clear();
     m_topicPreloadInFlight.clear();
     m_topicPreloadDone.clear();
+    // Issue #729 phase 2: the cross-route warm ledger is session-scoped.
+    m_recentRoutes.clear();
+    m_topicForegroundSeq.clear();
+    m_topicPreloadBackoffMs = 0;
     m_preparedSwapActive = false;
     if (m_topicPreloadTimer) m_topicPreloadTimer->stop();
     m_rowPreviewInFlight.clear();
@@ -16711,6 +16719,15 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
     m_topicsVerified = m_historyVerified = false;
     m_topic = initialTopic ? initialTopic->uuid : QString{};
     rememberConversation();
+    // Issue #729 phase 2: a route commit feeds the cross-route warm queue -
+    // the recency list, and the foreground sequence that retires an in-flight
+    // warm slot for the topic the user just opened. Restarting the sweep
+    // timer from the commit debounces selection churn.
+    if (!m_topic.isEmpty()) {
+        rememberRecentRoute(m_stream, m_topic);
+        m_topicForegroundSeq[m_topic] += 1;
+    }
+    scheduleTopicPreload(m_topicPreloadIntervalMs);
     settleEditRouteChange();
     m_topics = initialTopic ? QVector<Topic>{*initialTopic}
         : verifiedTopics ? *verifiedTopics : QVector<Topic>{};
@@ -16817,6 +16834,9 @@ void NativeController::loadTopics()
         // (issue #718 review round, exo-review finding 2).
         if (authoritative) {
             m_topicPreloadSkipped.clear();
+            // Issue #729: the verified catalog is also the throttle re-arm
+            // seam, mirroring the transient skip-set contract.
+            m_topicPreloadBackoffMs = 0;
             scheduleTopicPreload(0);
         }
         if (authoritative) finishSnapshotPart(4);
@@ -17121,6 +17141,12 @@ void NativeController::selectTopic(const QString &id)
     m_topic = id;
     if (!m_restoringSidebarRoute) collapseSidebarExcept(m_stream);
     rememberConversation();
+    // Issue #729 phase 2: same route-commit wiring as activateStream.
+    if (!id.isEmpty()) {
+        rememberRecentRoute(m_stream, id);
+        m_topicForegroundSeq[id] += 1;
+    }
+    scheduleTopicPreload(m_topicPreloadIntervalMs);
     settleEditRouteChange();
     m_historyVerified = false;
     m_messages.clear();
@@ -18982,26 +19008,70 @@ void NativeController::runTopicPreloadBatch()
 {
     if (!m_topicPreloadEnabled) return;
     if (!authenticated() || m_stream.isEmpty()) return;
-    QVector<const Topic *> pending;
-    for (const auto &topic : std::as_const(m_topics)) {
-        if (topic.uuid == m_topic || topic.done || topic.lastMessage.isEmpty()) continue;
+    // Issue #729 phase 2: the warm queue never preempts user-attributed
+    // work; a busy controller only re-arms the timer and issues nothing.
+    if (busy()) { scheduleTopicPreload(m_topicPreloadIntervalMs); return; }
+    const auto open = [this](const Topic &topic) {
+        if (topic.uuid == m_topic || topic.done || topic.lastMessage.isEmpty()) return false;
         // The done ledger, not the bounded slice map, marks a topic warmed:
         // an evicted slice must not re-enter the candidate set, or a catalog
         // bigger than the budget keeps re-requesting evicted topics forever
         // (issue #718 review round, exo-review findings 1/4).
-        if (m_topicPreloadDone.contains(topic.uuid) || m_topicPreloadSkipped.contains(topic.uuid)
-            || m_topicPreloadInFlight.contains(topic.uuid)) continue;
-        pending.append(&topic);
+        return !m_topicPreloadDone.contains(topic.uuid)
+            && !m_topicPreloadSkipped.contains(topic.uuid)
+            && !m_topicPreloadInFlight.contains(topic.uuid);
+    };
+    QVector<Topic> pending;
+    for (const auto &topic : std::as_const(m_topics))
+        if (open(topic)) pending.append(topic);
+    // Issue #729 phase 2, tier 2: unread chats outside the selected stream,
+    // newest activity first. Candidates come from the already-hydrated inbox
+    // catalogs - the sweep adds page traffic, never catalog traffic. These
+    // rows are never opened in this session, so the #718 lastMessage gate
+    // (a foreground-anchor guard) does not apply: activeUnread is the anchor.
+    QVector<Topic> unread;
+    for (auto it = m_inboxTopics.constBegin(); it != m_inboxTopics.constEnd(); ++it) {
+        if (it.key() == m_stream) continue;
+        for (const auto &topic : it.value())
+            if (topic.activeUnread > 0 && topic.uuid != m_topic && !topic.done
+                && !m_topicPreloadDone.contains(topic.uuid)
+                && !m_topicPreloadSkipped.contains(topic.uuid)
+                && !m_topicPreloadInFlight.contains(topic.uuid))
+                unread.append(topic);
+    }
+    std::stable_sort(unread.begin(), unread.end(),
+        [](const Topic &a, const Topic &b) { return a.updatedMicros > b.updatedMicros; });
+    pending += unread;
+    // tier 3: recently opened chats from the selection-commit recency list.
+    // The entry itself carries the route, so no catalog is required; a
+    // retired or failed entry waits for the next verified catalog like the
+    // transient skip set.
+    for (const auto &route : std::as_const(m_recentRoutes)) {
+        const auto &routeStream = route.first;
+        const auto &routeTopic = route.second;
+        if (routeStream == m_stream || routeStream.isEmpty() || routeTopic.isEmpty()) continue;
+        if (routeTopic == m_topic || m_topicPreloadDone.contains(routeTopic)
+            || m_topicPreloadSkipped.contains(routeTopic)
+            || m_topicPreloadInFlight.contains(routeTopic)) continue;
+        bool duplicate = false;
+        for (const auto &candidate : std::as_const(pending))
+            if (candidate.uuid == routeTopic) { duplicate = true; break; }
+        if (duplicate) continue;
+        Topic candidate;
+        candidate.uuid = routeTopic;
+        candidate.stream = routeStream;
+        pending.append(candidate);
     }
     int budget = 2 - m_topicPreloadInFlight.size();
     int issued = 0;
-    for (const auto *topic : std::as_const(pending)) {
+    for (const auto &topic : std::as_const(pending)) {
         if (budget <= 0) break;
-        requestTopicPreload(*topic);
+        requestTopicPreload(topic);
         --budget; ++issued;
     }
     if (!m_topicPreloadInFlight.isEmpty() || pending.size() > issued)
-        scheduleTopicPreload(m_topicPreloadIntervalMs);
+        scheduleTopicPreload(m_topicPreloadBackoffMs > 0 ? m_topicPreloadBackoffMs
+                                                        : m_topicPreloadIntervalMs);
 }
 
 void NativeController::requestTopicPreload(const Topic &topic)
@@ -19010,6 +19080,7 @@ void NativeController::requestTopicPreload(const Topic &topic)
     const auto project = m_session ? m_session->project() : QString();
     const auto stream = topic.stream;
     const auto generation = m_api->generation();
+    const auto foregroundSeq = m_topicForegroundSeq.value(topic.uuid);
     QUrlQuery query;
     query.addQueryItem("stream_uuid", stream);
     query.addQueryItem("topic_uuid", topic.uuid);
@@ -19017,10 +19088,26 @@ void NativeController::requestTopicPreload(const Topic &topic)
     query.addQueryItem("sort_dir", "desc");
     query.addQueryItem("page_limit", "5");
     request("GET", messenger + "/messages/", QJsonValue{}, query,
-        [this, uuid = topic.uuid, project, stream, generation](const ApiResult &result) {
+        [this, uuid = topic.uuid, project, stream, generation, foregroundSeq](const ApiResult &result) {
         m_topicPreloadInFlight.remove(uuid);
         if (!authenticated() || !m_session || m_session->project() != project
             || generation != m_api->generation()) return;
+        // Issue #729 phase 2 coalescing fence: if the topic gained a
+        // foreground selection after this request was dispatched, a newer
+        // page owns the projection - retire the warm slot and discard the
+        // reply whole (the skip set holds it until the next verified
+        // catalog, so retirement never hammers the endpoint).
+        if (m_topicForegroundSeq.value(uuid) != foregroundSeq) {
+            m_topicPreloadSkipped.insert(uuid);
+            scheduleTopicPreload(0);
+            return;
+        }
+        // Issue #729: bounded doubling of the idle delay per throttled or
+        // failing reply, re-armed at the verified catalog commit seam.
+        if (result.status == 429 || result.status >= 500)
+            m_topicPreloadBackoffMs = m_topicPreloadBackoffMs > 0
+                ? qMin(m_topicPreloadBackoffMs * 2, 32000)
+                : 2 * qMax(m_topicPreloadIntervalMs, 1000);
         QVector<Message> rows;
         if (result.ok() && result.data.isArray()) {
             for (const auto &value : result.data.toArray()) {
@@ -19035,8 +19122,19 @@ void NativeController::requestTopicPreload(const Topic &topic)
             m_topicPreloadDone.insert(uuid);
             rememberTopicSlice(uuid, stream, rows, result.nextMarker, rows.size());
         }
-        scheduleTopicPreload(0);
+        scheduleTopicPreload(m_topicPreloadBackoffMs > 0 ? m_topicPreloadBackoffMs : 0);
     });
+}
+
+// Issue #729 phase 2: the recently-opened ledger feeding warm tier 3.
+// Front = newest selection commit; the cap only bounds the recency horizon.
+void NativeController::rememberRecentRoute(const QString &stream, const QString &topic)
+{
+    if (stream.isEmpty() || topic.isEmpty()) return;
+    const auto route = qMakePair(stream, topic);
+    m_recentRoutes.removeAll(route);
+    m_recentRoutes.prepend(route);
+    while (m_recentRoutes.size() > 64) m_recentRoutes.removeLast();
 }
 
 void NativeController::rememberTopicSlice(const QString &topicUuid, const QString &stream,

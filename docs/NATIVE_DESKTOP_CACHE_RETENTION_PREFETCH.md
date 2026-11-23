@@ -90,8 +90,9 @@ Extend the #718 sweep beyond topics of the selected stream:
 
 - Candidate order: current selection first, then unread chats (newest
   activity), then recently opened chats (recency list fed by selection
-  commits), each contributing at most one first page; the existing done ledger
-  and skip-set semantics carry over unchanged, per-session.
+  commits, bounded at 64 entries), each contributing at most one first page;
+  the existing done ledger and skip-set semantics carry over unchanged,
+  per-session.
 - Coalescing: a warm request for a topic that gains a foreground request while
   in flight is not duplicated; the foreground generation fence retires the
   warm slot (reuse `m_topicPreloadInFlight` keyed by topic uuid).
