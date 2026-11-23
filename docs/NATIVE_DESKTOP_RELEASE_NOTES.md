@@ -1,3 +1,18 @@
+# Workspace Native 0.45.0 - Linux development preview
+
+- Server Diagnostics now shows a WebSocket activity summary: realtime state, the credential-free endpoint, per-event-type receive rates and the newest socket failure with its close code. Metadata only - no message payloads and no tokens are recorded.
+- The client now checks for updates every hour, matching the desktop reference client.
+- Fixed: the create-poll dialog opens centered in the window again instead of clipping past the top edge.
+- Fixed: the media viewer now shuts down in bounded time even when a HEIC decode is stuck.
+- Fixed: a chat background save that exceeds the storage cap no longer changes anything - both the live background and the stored configuration keep the last valid setup.
+- Fixed: a late key-sharing sync merges only its own fields onto a row, so a newer rename or flag that landed while the request was in flight survives it.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.44.0 to 0.45.0](https://github.com/exordos/workspace_native/compare/0.44.0...0.45.0)
+
+---
+
 # Workspace Native 0.44.0 - Linux development preview
 
 - The client confirms an installed update once on the next start, so you can see the new version landed instead of guessing.
