@@ -429,6 +429,10 @@ void NativeExternalProviderAdmin::save()
                 if (!fresh.isEmpty() && parsePolicy(fresh, result.etag)) {
                     if (!had || previous.isEmpty())
                         m_draft = snapshot(m_policy);
+                    else
+                        // Three-way rebase (design: conflict keeps per-field
+                        // local edits, untouched fields adopt the fresh policy).
+                        rebaseDraft(previous, snapshot(m_policy));
                 } else {
                     m_policyStatus = QStringLiteral("error");
                 }
