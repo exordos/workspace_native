@@ -635,9 +635,12 @@ Item {
         objectName: "addMembersDialog"
         parent: Overlay.overlay
         // Issue #727: Popup defaults to the overlay's top-left corner; the
-        // reference centers the modal (right-panel-workspace-info.ui.tsx:102)
-        // and the repo's own dialogs declare the same centering.
-        anchors.centerIn: parent
+        // reference centers the modal (right-panel-workspace-info.ui.tsx:102).
+        // anchors.centerIn is silently ignored by Popup (a window witness
+        // proved the popup stayed at x=0 with it), so center with the same
+        // explicit bindings the cached-search popup (#issue 157 era) uses.
+        x: parent ? Math.round((parent.width - width) / 2) : 0
+        y: parent ? Math.round((parent.height - height) / 2) : 0
         modal: true
         focus: true
         width: Math.min(448, parent ? parent.width - 48 : 448)

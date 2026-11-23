@@ -25888,30 +25888,36 @@ mv -Tf "$root/.current-new" "$root/current"
         // A Popup is not a QQuickItem, so the popup object itself is not a
         // findChild<QQuickItem*> candidate; with padding 0 the background
         // rectangle (addMembersSurface) coincides with the dialog rect.
+        // Its own x/y are popup-relative, so absolute placement is read via
+        // mapToScene (the overlay spans the whole window).
         auto *dialog = visibleItem("addMembersSurface");
         QVERIFY(dialog);
         QVERIFY(dialog->width() > 0 && dialog->height() > 0);
+        const auto centerX = [dialog]{ return dialog->mapToScene(QPointF(dialog->width() / 2.0, 0)).x(); };
+        const auto centerY = [dialog]{ return dialog->mapToScene(QPointF(0, dialog->height() / 2.0)).y(); };
+        const auto topY = [dialog]{ return dialog->mapToScene(QPointF(0, 0)).y(); };
+        const auto bottomY = [dialog]{ return dialog->mapToScene(QPointF(0, dialog->height())).y(); };
         const QString xMsg = QStringLiteral("dialog center x %1 vs window center %2")
-            .arg(dialog->x() + dialog->width() / 2.0)
+            .arg(centerX())
             .arg(scene.window->width() / 2.0);
-        QVERIFY2(qAbs(dialog->x() + dialog->width() / 2.0 - scene.window->width() / 2.0) <= 2.0,
+        QVERIFY2(qAbs(centerX() - scene.window->width() / 2.0) <= 2.0,
             qPrintable(xMsg));
         const QString yMsg = QStringLiteral("dialog center y %1 vs window center %2")
-            .arg(dialog->y() + dialog->height() / 2.0)
+            .arg(centerY())
             .arg(scene.window->height() / 2.0);
-        QVERIFY2(qAbs(dialog->y() + dialog->height() / 2.0 - scene.window->height() / 2.0) <= 2.0,
+        QVERIFY2(qAbs(centerY() - scene.window->height() / 2.0) <= 2.0,
             qPrintable(yMsg));
         // Minimum supported window size: the dialog stays centered and the
         // footer remains fully visible; the member list scrolls, the dialog
         // never grows past the window.
         scene.window->resize(700, 600);
         QTest::qWait(250);
-        const QString minMsg = QStringLiteral("re-centered after resize: x %1 y %2 w %3 h %4 win %5x%6")
-            .arg(dialog->x()).arg(dialog->y()).arg(dialog->width()).arg(dialog->height())
+        const QString minMsg = QStringLiteral("re-centered after resize: cx %1 cy %2 top %3 bottom %4 win %5x%6")
+            .arg(centerX()).arg(centerY()).arg(topY()).arg(bottomY())
             .arg(scene.window->width()).arg(scene.window->height());
-        QVERIFY2(qAbs(dialog->x() + dialog->width() / 2.0 - scene.window->width() / 2.0) <= 2.0,
+        QVERIFY2(qAbs(centerX() - scene.window->width() / 2.0) <= 2.0,
             qPrintable(minMsg));
-        QVERIFY2(dialog->y() >= 0 && dialog->y() + dialog->height() <= scene.window->height(),
+        QVERIFY2(topY() >= 0 && bottomY() <= scene.window->height(),
             qPrintable(minMsg));
         auto *addButton = visibleItem("addMembersAdd");
         QVERIFY(addButton && addButton->isVisible());
