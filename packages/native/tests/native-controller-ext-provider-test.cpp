@@ -593,6 +593,43 @@ private slots:
         QVERIFY(!admin->dirty()); // Adoption keeps the draft clean.
     }
 
+    // Issue #740, review finding 4672617551: a policy GET that FAILS after a
+    // confirmed save must not put the confirmed policy back into the error
+    // state. The generation guard protects every reply of that GET, including
+    // non-authorization failures, not only the successful snapshot.
+    void failedStaleRefreshCannotMarkConfirmedPolicyError()
+    {
+        Server test;
+        std::function<void()> release;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        // The refresh GET is held and its reply fails with a server error.
+        test.getOverride = [&release](const Request&) {
+            Response failed { QJsonObject { { "type", "InternalError" } }, 500, 0, { } };
+            failed.defer = [&release](std::function<void()> send) { release = std::move(send); };
+            return failed;
+        };
+        admin->refreshPolicy(); // Dispatched before the save: stale generation.
+        QTRY_VERIFY(release);
+        test.getOverride = nullptr; // Later requests flow freely.
+        admin->setLimit("max_accounts", 7);
+        QVERIFY(admin->dirty());
+        admin->save();
+        QTRY_COMPARE(test.policyPuts, 1);
+        QTRY_VERIFY(!admin->dirty()); // Confirmed draft at revision 4.
+        release(); // The late failure lands after the confirmed save.
+        QTest::qWait(150);
+        // The late failure predates the confirmed write: status and values
+        // stay untouched - the generation guard discards the whole reply.
+        QCOMPARE(admin->policyStatus(), QString("ready"));
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 7LL);
+        QVERIFY(!admin->dirty());
+        QVERIFY(!admin->conflict());
+    }
+
     void suspendRunsPendingThenFlipsAndResumeReturns()
     {
         Server test;
