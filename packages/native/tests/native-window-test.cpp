@@ -4733,7 +4733,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(visibleItem("ownStatusEmojiDraft")->property("text").toString(),QString("🙂"));
         QVERIFY(!visibleItem("ownStatusAway")->property("checked").toBool());QCOMPARE(fixture.posts,0);
         click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));QCOMPARE(controller.account(),profile);
-        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
+        // #724: Cancel pops back to the account root screen (the reference keeps
+        // the user-menu screen mounted), so the Status row is already visible -
+        // the top-bar button is now a drawer toggle and would close the layer.
+        QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));QTRY_VERIFY(visibleItem("ownStatusText"));
         QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));
         click(window,visibleItem("ownStatusChooseEmoji"));QTRY_VERIFY(visibleItem("ownStatusEmojiPicker"));
         auto *picker=visibleItem("ownStatusEmojiPicker");QVERIFY(picker);
@@ -4810,7 +4813,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!controller.ownStatus().value("pending").toBool());
         auto send=std::move(fixture.release);fixture.release={};send();
         QVERIFY(!visibleItem("ownStatusText"));QVERIFY(!visibleItem("ownStatusErrorText"));QCOMPARE(fixture.posts,1);
-        click(window,visibleItem("accountMenuButton"));QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
+        // #724: the token-generation swap closes the editor but leaves the
+        // account root screen mounted (reference route model), so the Status
+        // row is clicked directly - no top-bar button round-trip.
+        QTRY_VERIFY(visibleItem("ownStatusAction"));click(window,visibleItem("ownStatusAction"));
         QTRY_VERIFY(visibleItem("ownStatusText"));
         QCOMPARE(visibleItem("ownStatusText")->property("text").toString(),QString("Before"));
         click(window,visibleItem("ownStatusCancel"));QTRY_VERIFY(!visibleItem("ownStatusText"));QCOMPARE(fixture.posts,1);
@@ -33697,12 +33703,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
-        const auto visibleCount = [window](const QString &name) {
-            int count = 0;
-            const auto matches = window->contentItem()->findChildren<QQuickItem *>(name);
-            for (auto *item : matches)
-                if (item->isVisible()) ++count;
-            return count;
+        const auto countVisible = [](auto &&self, QQuickItem *root, const QString &name) -> int {
+            int n = (root->objectName() == name && root->isVisible()) ? 1 : 0;
+            for (auto *child : root->childItems())
+                n += self(self, child, name);
+            return n;
+        };
+        const auto visibleCount = [window, &countVisible](const QString &name) {
+            return countVisible(countVisible, window->contentItem(), name);
         };
         QCOMPARE(visibleCount("accountOption-mode-dark"), 0);
         click(window, view("accountMenuButton"));

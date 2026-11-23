@@ -1,3 +1,4 @@
+accountButtonTogglesAccountLayer=1.20057
 avatarComponentKeepsNestedScopeAndReferenceLease=0.75643
 calendarSectionUnavailableCardMatchesReferenceContract=6.15902
 chatHeaderStreamBindingsExclusionOnlyHidesCountedGet=0.001869

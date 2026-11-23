@@ -1,3 +1,4 @@
+accountLayerSurvivesSectionSwitch=1.36157
 callEmbedGrantsCapturePermissionsOnlyToTheMeetingOrigin=1.48486
 composerMentionPopupInsertsDisambiguatedDuplicateNames=1.17733
 crossParagraphBubbleSelectionQuotesWithNewlines=0.877008

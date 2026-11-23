@@ -28,6 +28,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_1
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall
+    accountAppearanceExposesThemeControlsOnce
     accountMenuKeepsSignOutReachableWhileScrolling
     actualUsersAndRealtimePresenceUpdateMainWithoutReloadingPhotos
     alreadyInstalledUpdateOffersExplicitRestart
@@ -133,6 +134,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     windowStreamContextMenuNotificationHover
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
+    accountButtonOpensAccountRootInDrawer
     archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable
     closedTopicPromptPreservesTheDraftThroughRealtimeReopen
     composerFormattingDefaultsPreserveUtf16MultilineAndScroll
@@ -173,6 +175,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_7
     windowProfileEditingWaitsForProfileLoadBeforeFields
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
+    accountNestedBackRestoresRootAndFocus
     activityReactionsDeeplinkRendersUnsupportedState
     archiveKeyboardAndOwnerLifetimeRemainScoped
     archiveUsesExactHistoryAndCanonicalRestore
@@ -196,6 +199,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     profileAndTopbarUseMeasuredThreeLineGeometry
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_9
+    accountLayerSurvivesSectionSwitch
     callEmbedGrantsCapturePermissionsOnlyToTheMeetingOrigin
     composerMentionPopupInsertsDisambiguatedDuplicateNames
     crossParagraphBubbleSelectionQuotesWithNewlines
@@ -372,6 +376,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     windowProfileShareFailureIsScopedToRoute
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
+    accountButtonTogglesAccountLayer
     avatarComponentKeepsNestedScopeAndReferenceLease
     calendarSectionUnavailableCardMatchesReferenceContract
     chatHeaderStreamBindingsExclusionOnlyHidesCountedGet
