@@ -52,6 +52,7 @@ class ControllerExtProviderTest final : public NativeControllerTestHarness {
         QByteArray lastIfMatch;
         QJsonObject lastPutBody;
         std::function<void(std::function<void()>)> deferSuspend;
+        std::function<void(std::function<void()>)> deferPolicyGet;
         // Test override for the PUT reply; when set it wins over the store path.
         std::function<Response(const Request&)> putOverride;
 
@@ -63,7 +64,9 @@ class ControllerExtProviderTest final : public NativeControllerTestHarness {
                     ++policyGets;
                     if (forbid)
                         return Response { QJsonObject { { "type", "ExternalResourceForbiddenError" } }, 403, 0, { } };
-                    return Response { policy, 200, 0, { { "ETag", etag } } };
+                    Response response { policy, 200, 0, { { "ETag", etag } } };
+                    response.defer = deferPolicyGet;
+                    return response;
                 }
                 if (request.method == "PUT") {
                     ++policyPuts;
@@ -306,6 +309,65 @@ private slots:
         QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 11LL);
         QCOMPARE(admin->policy().value("limits").toMap().value("max_selected_chats_per_account").toLongLong(), 77LL);
         QVERIFY(!admin->dirty());
+    }
+
+    void conflictRebaseBaseSurvivesInFlightRefresh()
+    {
+        // exordy medium on #751: a refresh GET that was dispatched BEFORE the
+        // save but replies while the PUT is pending must not swap the rebase
+        // base - the user's local edit would match the refreshed value and be
+        // dropped as "untouched" at the 412. The reply must be discarded while
+        // the mutation is in flight.
+        Server test;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        QCOMPARE(test.policyGets, 1);
+        admin->setLimit("max_accounts", 11); // The only local edit (5 -> 11).
+        // A peer admin meanwhile set the same value server-side (rev 6 carries
+        // accounts 11); the refresh starts and its reply is held.
+        test.policy = policyDto(6, true, false, 11, 50);
+        test.etag = "\"6\"";
+        std::function<void()> releaseGet;
+        test.deferPolicyGet = [&releaseGet](std::function<void()> send) { releaseGet = std::move(send); };
+        admin->refreshPolicy();
+        QTRY_COMPARE(test.policyGets, 2);
+        // The save dispatches while the refresh is still in flight; its 412
+        // reply (held too) carries a newer peer change (accounts 9, chats 77).
+        auto fresh = policyDto(9, true, false, 9, 77);
+        fresh.insert("type", "ExternalPreconditionFailedError");
+        int putAttempt = 0;
+        std::function<void()> releasePut;
+        test.putOverride = [&fresh, &putAttempt, &releasePut](const Request&) {
+            ++putAttempt;
+            if (putAttempt == 1) {
+                Response response { fresh, 412, 0, { { "ETag", "\"9\"" } } };
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            return Response { policyDto(10, true, false, 9, 77), 200, 0, { { "ETag", "\"10\"" } } };
+        };
+        admin->save();
+        QTRY_VERIFY(admin->saveBusy());
+        releaseGet();
+        QTest::qWait(50); // The late refresh reply arrives mid-save.
+        releasePut();
+        QTRY_VERIFY(admin->conflict());
+        // Rebase base was the pre-refresh policy: the local accounts edit is
+        // kept (NOT swallowed by the peer's matching refresh value), the
+        // untouched chats field adopts the 412 snapshot's 77.
+        QTRY_COMPARE(admin->draft().value("max_accounts").toLongLong(), 11LL);
+        QCOMPARE(admin->draft().value("max_selected_chats_per_account").toLongLong(), 77LL);
+        QVERIFY(admin->dirty());
+        QVERIFY(admin->canSave());
+        admin->keepDraft();
+        admin->save();
+        QTRY_COMPARE(putAttempt, 2);
+        QCOMPARE(test.lastIfMatch, QByteArray("\"9\""));
+        const auto retried = test.lastPutBody.value("settings").toObject().value("limits").toObject();
+        QCOMPARE(retried.value("max_accounts").toDouble(), 11.0);
+        QCOMPARE(retried.value("max_selected_chats_per_account").toDouble(), 77.0);
     }
 
     void limitCapsMarkFieldsInvalidAndDisableSave()

@@ -281,6 +281,15 @@ void NativeExternalProviderAdmin::refreshPolicy()
             if (!current(ticket) || slot != m_policySerial)
                 return;
             m_policyRequest = { };
+            if (m_mutationBusy) {
+                // A save/action was dispatched while this refresh was in
+                // flight. Adopting the late reply now would move the rebase
+                // base out from under the pending mutation: a local edit that
+                // matches the refreshed value would then read as "untouched"
+                // at the 412 and be discarded. Drop the reply; the mutation's
+                // own reply (200 echo or 412 snapshot) is authoritative.
+                return;
+            }
             if (!result.ok()) {
                 const auto forbidden = result.status == 401
                     || (result.status == 403 && errorType(result) == "ExternalResourceForbiddenError");
