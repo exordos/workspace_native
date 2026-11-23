@@ -2079,6 +2079,12 @@ private:
     void announceRowPreviewRows(const QString &uuid);
     quint64 bumpRowPreviewFence(const QString &uuid);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
+    // Issue #718 (docs/NATIVE_DESKTOP_PARITY.md): sidebar sort keys are recorded
+    // when a message is first seen, so a row keeps its position when its
+    // last-message pointer's row leaves the active window on a route change.
+    QVector<Message> noteActivityMerge(const QVector<Message> &existing, const QVector<Message> &incoming);
+    void noteActivityTimestamps(const QVector<Message> &rows);
+    QHash<QString, qint64> m_activityTimestamps;
     int streamGroupRank(const Stream &stream) const;
     QVariantMap rowPreviewFields(const QString &lastMessage) const;
     // Bounded cache warm for row previews (docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2):

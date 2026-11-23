@@ -2637,7 +2637,7 @@ bool NativeController::confirmChatKeyResponse(const QJsonObject &raw, const QStr
     observeChatKeyOutcome(*message);
     const bool visible = inConversation(*message);
     if (visible && !findMessage(message->uuid)) {
-        observeMessage(raw); m_messages = mergeMessages(m_messages, {*message}); ++m_messageRevision;
+        observeMessage(raw); m_messages = noteActivityMerge(m_messages, {*message}); ++m_messageRevision;
     }
     // No pending SendIntent/draft is borrowed. Release tombstone bookkeeping
     // before any optional cache call or subscriber can reenter another action.
@@ -12612,6 +12612,8 @@ void NativeController::reset()
     m_poll.stop();
     m_presenceHeartbeat.stop();
     m_streams.clear();
+    // Issue #718: the observed-stamp sort cache is per-owner state too.
+    m_activityTimestamps.clear();
     // Issue #83: the rail is per-owner state too; the next bootstrap re-reads it.
     m_folders.clear();
     m_selectedFolder.clear();
@@ -12873,7 +12875,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
                         ++m_historyTailAppends;
                 }
                 ++m_messageRevision;
-                m_messages = mergeMessages(m_messages, {*message});
+                m_messages = noteActivityMerge(m_messages, {*message});
                 pruneMessageFields();
                 emit messagesChanged();
             }
@@ -15055,8 +15057,11 @@ QVariantList NativeController::topics() const
 
 QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Stream *stream) const
 {
+    // Issue #718: sort keys come from rowActivityMicros (observed-stamp cache
+    // with window/catalog fallbacks), not from the active window alone.
     QHash<QString, qint64> timestamps;
-    for (const auto &message : m_messages) timestamps.insert(message.uuid, message.createdMicros);
+    for (const auto &topic : topics)
+        timestamps.insert(topic.uuid, rowActivityMicros(topic.lastMessage, topic.updatedMicros));
     const auto rank = [stream](const Topic *topic) {
         if (topic->done) return 2;
         return topic->notificationMode == "mute" || (topic->notificationMode == "default"
@@ -15068,14 +15073,14 @@ QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Str
         if (rank(a) != rank(b)) return rank(a) < rank(b);
         if (m_preferences && m_preferences->sidebarSortMode() == "unread_first" && rank(a) == 0
             && (a->activeUnread > 0) != (b->activeUnread > 0)) return a->activeUnread > 0;
-        return timestamps.value(a->lastMessage, a->updatedMicros) > timestamps.value(b->lastMessage, b->updatedMicros);
+        return timestamps.value(a->uuid) > timestamps.value(b->uuid);
     });
     QVariantList result;
     for (const auto *topic : sorted) {
         auto row = QVariantMap{{"id", topic->uuid}, {"name", topic->name.trimmed()},
             {"unread", topic->unread}, {"activeUnread", topic->activeUnread}, {"passiveUnread", topic->passiveUnread},
             {"lastMessage", topic->lastMessage}, {"done", topic->done},
-            {"activityMicros", timestamps.value(topic->lastMessage, topic->updatedMicros)}};
+            {"activityMicros", timestamps.value(topic->uuid)}};
         // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the raw topic
         // mode drives the indicator glyph (mute/unmute/follow render, default not);
         // effectivelyMuted is isWorkspaceTopicEffectivelyMuted - the same predicate
@@ -16060,7 +16065,7 @@ bool NativeController::confirmEncryptedSend(const QJsonObject &raw, const QStrin
     const bool show = visible();
     if (!deleted && show && !findMessage(saved->uuid)) {
         if (m_confirmedReadIds.contains(saved->uuid)) saved->read = true;
-        observeMessage(raw); m_messages = mergeMessages(m_messages, {*saved}); ++m_messageRevision;
+        observeMessage(raw); m_messages = noteActivityMerge(m_messages, {*saved}); ++m_messageRevision;
     }
     // Release the held field/tombstone counter before optional cache work or
     // any publication can reenter, navigate or admit another conversation.
@@ -17320,7 +17325,7 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                 if (fresh) {
                     for (const auto &raw : entry->rows) observeMessage(raw.toObject());
                     rememberChatOutcomeOrder(rows);
-                    m_messages = mergeMessages(older ? m_messages : QVector<Message>{}, rows);
+                    m_messages = noteActivityMerge(older ? m_messages : QVector<Message>{}, rows);
                     pruneMessageFields();
                     m_before = entry->nextMarker;
                     if (!older) m_after.clear();
@@ -17338,7 +17343,7 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     for (const auto &raw : entry->rows) observeMessage(raw.toObject());
                     m_cacheHydrated = true;
                     rememberChatOutcomeOrder(rows);
-                    m_messages = mergeMessages({}, rows);
+                    m_messages = noteActivityMerge({}, rows);
                     pruneMessageFields();
                     m_before.clear();
                     m_after.clear();
@@ -17458,9 +17463,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         }
         rememberChatOutcomeOrder(accumulated);
         if (older) {
-            m_messages = mergeMessages(m_messages, accumulated);
+            m_messages = noteActivityMerge(m_messages, accumulated);
         } else {
-            m_messages = mergeMessages({}, accumulated);
+            m_messages = noteActivityMerge({}, accumulated);
         }
         pruneMessageFields();
         m_historyTimingGeneration = m_api->generation();
@@ -17718,7 +17723,7 @@ void NativeController::confirmOrdinarySend(const QJsonObject &raw, const QString
             ++m_messageRevision;
             if (!findMessage(saved->uuid)) {
                 observeMessage(raw);
-                m_messages = mergeMessages(m_messages, {*saved});
+                m_messages = noteActivityMerge(m_messages, {*saved});
             }
         }
         finishMessageIntent(intent.publicId);
@@ -18537,7 +18542,7 @@ void NativeController::loadAroundAnchor()
             reanchorFromWindow();
             return;
         }
-        m_messages = mergeMessages({}, rows);
+        m_messages = noteActivityMerge({}, rows);
         pruneMessageFields();
         m_before = state->beforeMarker;
         m_after = state->afterMarker;
@@ -18627,7 +18632,7 @@ void NativeController::loadNewerPage(const QByteArray &marker)
             if (findMessage(parsed->uuid) || m_messageFields.contains(parsed->uuid))
                 observeMessage(value.toObject());
         }
-        m_messages = mergeMessages(m_messages, rows);
+        m_messages = noteActivityMerge(m_messages, rows);
         pruneMessageFields();
         m_after = result.nextMarker;
         m_loading = false;
@@ -18762,9 +18767,46 @@ std::optional<NativeController::RowPreview> NativeController::rowPreview(const Q
 qint64 NativeController::rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const
 {
     if (!lastMessage.isEmpty())
+    {
+        // Issue #718: prefer the stamp recorded when the row's last message was
+        // observed over the live window scan, so a route change cannot rewind
+        // the sort key when the window no longer contains that message.
+        const auto known = m_activityTimestamps.constFind(lastMessage);
+        if (known != m_activityTimestamps.constEnd()) return known.value();
         for (const auto &message : m_messages)
             if (message.uuid == lastMessage) return message.createdMicros;
+    }
     return updatedMicros;
+}
+
+// Issue #718: single choke point for messages entering the active window. The
+// observed creation stamps feed the sidebar sort keys; keeping them in sync
+// with every merge keeps rowActivityMicros independent of the window itself.
+QVector<Message> NativeController::noteActivityMerge(const QVector<Message> &existing,
+                                                     const QVector<Message> &incoming)
+{
+    noteActivityTimestamps(existing);
+    noteActivityTimestamps(incoming);
+    return mergeMessages(existing, incoming);
+}
+
+void NativeController::noteActivityTimestamps(const QVector<Message> &rows)
+{
+    for (const auto &message : rows)
+        if (!message.uuid.isEmpty()) m_activityTimestamps.insert(message.uuid, message.createdMicros);
+    // Bounded cache budget: past the cap, keep only the entries the current
+    // rows still point at plus the freshly observed ones.
+    if (m_activityTimestamps.size() <= 65536) return;
+    QHash<QString, qint64> kept;
+    const auto keep = [this, &kept](const QString &uuid) {
+        const auto known = m_activityTimestamps.constFind(uuid);
+        if (known != m_activityTimestamps.constEnd()) kept.insert(uuid, known.value());
+    };
+    for (const auto &stream : m_streams) keep(stream.lastMessage);
+    for (const auto &topic : m_topics) keep(topic.lastMessage);
+    for (const auto &message : rows)
+        if (!message.uuid.isEmpty()) kept.insert(message.uuid, message.createdMicros);
+    m_activityTimestamps.swap(kept);
 }
 
 // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): a port of
@@ -19823,7 +19865,7 @@ void NativeController::verifyMutation(const QString &id, quint64 selection, Nati
                 ++m_messageRevision;
                 staleConversation(message->stream, message->topic, field == NativeCache::Projection::Payload);
                 projectCanonical(result.data.toObject(), field, context);
-                m_messages = mergeMessages(m_messages, {updated});
+                m_messages = noteActivityMerge(m_messages, {updated});
                 finishMessageIntent(id);
                 // An inline edit session closes only once the server body is confirmed here.
                 if (settled) settled(true);
@@ -20532,7 +20574,7 @@ bool NativeController::confirmForward(const QJsonObject &raw, quint64 ticket)
     const auto visible = m_stream == intent.stream && m_topic == intent.topic;
     if (visible && !findMessage(saved->uuid)) {
         observeMessage(raw);
-        m_messages = mergeMessages(m_messages, {*saved});
+        m_messages = noteActivityMerge(m_messages, {*saved});
         ++m_messageRevision;
     }
     clearForwardIntent();
@@ -20899,7 +20941,7 @@ void NativeController::sendPoll(const QVariantList &questions, bool multipleAnsw
         // but publish rows only if they belong to the currently selected view.
         if (inConversation(*parsed)) {
             observeMessage(raw);
-            m_messages = mergeMessages(m_messages, {*parsed});
+            m_messages = noteActivityMerge(m_messages, {*parsed});
             ++m_messageRevision;
             pruneMessageFields();
             emit messagesChanged();
