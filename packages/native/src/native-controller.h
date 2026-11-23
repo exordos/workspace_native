@@ -2111,6 +2111,11 @@ private:
     QVector<QString> m_topicSliceOrder;
     QSet<QString> m_topicPreloadSkipped;
     QSet<QString> m_topicPreloadInFlight;
+    // Independent of the bounded slice cache: once a topic's page has been
+    // fetched successfully this session it is done, even if its slice was
+    // evicted from the warm map - eviction must not re-arm the sweep
+    // (issue #718 review round, exo-review findings 1/4).
+    QSet<QString> m_topicPreloadDone;
     QTimer *m_topicPreloadTimer = nullptr;
     // Product default is ON; window-shaped test groups and debugging disable
     // the sweep with WORKSPACE_NATIVE_TOPIC_PRELOAD=0 (ctest ENVIRONMENT),
