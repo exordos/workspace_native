@@ -41,8 +41,9 @@ Each new version section is ordered:
    ```
 
    - heading level 2 (never level 1; level 1 belongs to the version heading);
-   - exactly one illustration per block (image line stands alone in its
-     paragraph), with a descriptive alt text;
+   - exactly one illustration per block (the image line stands alone in its
+     paragraph: the neighbouring lines are blank or block-level boundaries
+     such as headings), with a descriptive alt text;
    - the three probes `What changed / Where / How it works` as short prose;
      `Where` names the real menu/button path in the current UI;
    - a block may use a short animation (`.gif`) instead of a still when the

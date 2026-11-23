@@ -18,20 +18,28 @@ def audit_illustrations(section, version, repo_root):
     """Return illustration contract violations in one release-notes section.
 
     Per docs/NATIVE_DESKTOP_ILLUSTRATED_RELEASE_NOTES.md every image must stand
-    alone on its line, carry descriptive alt text, use an absolute raw URL
+    alone on its line, separated from surrounding prose by blank lines (a
+    heading line is a block boundary and clears the side it sits on), carry
+    descriptive alt text, use an absolute raw URL
     under docs/images/releases/<version>/ with a lowercase-hyphen slug, be
     committed in the repository tree, and respect the per-release count and the
     per-file size budget.
     """
     problems = []
     images = 0
-    for index, line in enumerate(section.splitlines(), start=1):
+    lines = section.splitlines()
+    for index, line in enumerate(lines, start=1):
         if '![' not in line:
             continue
         stripped = line.strip()
         if not (match := IMAGE_LINE.fullmatch(stripped)):
             problems.append(f'line {index}: an illustration must stand alone in its paragraph')
             continue
+        before_clear = index == 1 or not lines[index - 2].strip() or lines[index - 2].lstrip().startswith('#')
+        after_clear = index == len(lines) or not lines[index].strip() or lines[index].lstrip().startswith('#')
+        if not (before_clear and after_clear):
+            problems.append(f'line {index}: the illustration shares a paragraph with adjacent '
+                            'prose - blank lines are required around it')
         images += 1
         alt, url = match.group(1), match.group(2)
         if not alt.strip():
@@ -125,10 +133,22 @@ class ReleaseNotesTest(unittest.TestCase):
             '---\n'
             '\n')
         section = self.extract(illustrated + AGGREGATE, '0.3.0')
-        self.assertIn('## Chat backgrounds', section)
-        self.assertIn('![Chat background picker over a topic](https://raw.githubusercontent.com/'
-            'exordos/workspace_native/master/docs/images/releases/0.3.0/chat-backgrounds.png)', section)
-        self.assertIn('Full changelog', section)
+        expected = (
+            '# Workspace Native 0.3.0 - Linux development preview\n'
+            '\n'
+            'In this release\n'
+            '\n'
+            '- Chat backgrounds arrived.\n'
+            '\n'
+            '## Chat backgrounds\n'
+            '\n'
+            '![Chat background picker over a topic](https://raw.githubusercontent.com/'
+            'exordos/workspace_native/master/docs/images/releases/0.3.0/chat-backgrounds.png)\n'
+            '\n'
+            'What changed: pick a preset or your own image as the background of one chat.\n'
+            '\n'
+            '[Full changelog from 0.2.0 to 0.3.0](https://example.invalid/compare/0.2.0...0.3.0)\n')
+        self.assertEqual(section, expected, 'the illustrated section must survive extraction verbatim')
         self.assertNotIn('Drafts now survive restart.', section)
 
     def test_a_shorter_version_never_matches_a_longer_one(self):
@@ -221,6 +241,25 @@ class ReleaseNotesTest(unittest.TestCase):
             for problem in problems:
                 self.assertIn('byte budget', problem)
 
+    def test_the_audit_flags_images_glued_to_adjacent_prose(self):
+        with tempfile.TemporaryDirectory(prefix='cassi-release-audit-') as temporary:
+            root = Path(temporary)
+            assets = root/'docs/images/releases/0.3.0'
+            assets.mkdir(parents=True)
+            (assets/'picker.png').write_bytes(b'png')
+            image = '![picker](' + RAWMARK + '0.3.0/picker.png)'
+            prose_before = audit_illustrations('Pick a preset.\n' + image + '\n\n', '0.3.0', root)
+            self.assertEqual(len(prose_before), 1, prose_before)
+            self.assertIn('blank lines are required', prose_before[0])
+            prose_after = audit_illustrations('\n' + image + '\nMore prose follows.\n', '0.3.0', root)
+            self.assertEqual(len(prose_after), 1, prose_after)
+            self.assertIn('line 2', prose_after[0])
+            glued_both = audit_illustrations('Intro.\n' + image + '\nOutro.\n', '0.3.0', root)
+            self.assertEqual(len(glued_both), 1, glued_both)
+            heading_boundaries = audit_illustrations(
+                '# Workspace Native 0.3.0\n' + image + '\n## Chat backgrounds\n', '0.3.0', root)
+            self.assertEqual(heading_boundaries, [], 'a heading is a block boundary; the image stands alone')
+
     def test_the_audit_flags_a_seventh_illustration(self):
         with tempfile.TemporaryDirectory(prefix='cassi-release-audit-') as temporary:
             root = Path(temporary)
@@ -230,8 +269,8 @@ class ReleaseNotesTest(unittest.TestCase):
             for number in range(MAX_IMAGES_PER_SECTION + 1):
                 (assets/f'shot-{number}.png').write_bytes(b'png')
                 lines.append(f'![shot {number}](' + RAWMARK + f'0.3.0/shot-{number}.png)')
-            problems = audit_illustrations('\n'.join(lines) + '\n', '0.3.0', root)
-            self.assertEqual(problems, [f'line {MAX_IMAGES_PER_SECTION + 1}: '
+            problems = audit_illustrations('\n\n'.join(lines) + '\n', '0.3.0', root)
+            self.assertEqual(problems, [f'line {2 * MAX_IMAGES_PER_SECTION + 1}: '
                 f'a release carries at most {MAX_IMAGES_PER_SECTION} illustrations'])
 
 
