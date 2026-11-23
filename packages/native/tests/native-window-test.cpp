@@ -24680,6 +24680,137 @@ mv -Tf "$root/.current-new" "$root/current"
             QStringLiteral("200"));
     }
 
+    void channelTopicSummaryDialogCreateEditDuringPendingSavesAsUpdate()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QString createdUuid = QStringLiteral("7c1f2d3e-8b4a-4c5d-9e6f-0a1b2c3d4e5f");
+        int posts = 0;
+        int puts = 0;
+        QString putPath;
+        std::function<void()> releasePost;
+        const QJsonObject createdRow{
+            {"uuid", createdUuid}, {"name", QStringLiteral("Fresh GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")}, {"enabled", true},
+            {"supports_vision", false}, {"supports_reasoning", false},
+            {"credential_present", false}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints"))
+                return Response{QJsonArray{}};
+            if (request.method == "POST" && path.contains("/topic_summary_endpoints")) {
+                ++posts;
+                Response response{createdRow};
+                response.defer = [&releasePost](std::function<void()> send) { releasePost = std::move(send); };
+                return response;
+            }
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                putPath = path;
+                return Response{createdRow};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointAdd"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        visibleItem("channelTopicSummaryField-name")->setProperty("text", QStringLiteral("Fresh GPT"));
+        visibleItem("channelTopicSummaryField-model")->setProperty("text", QStringLiteral("gpt-synthetic"));
+        visibleItem("channelTopicSummaryField-base_url")->setProperty("text", QStringLiteral("https://llm.invalid/v1"));
+        visibleItem("channelTopicSummaryField-api_key")->setProperty("text", QStringLiteral("sk-synthetic-test"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(posts, 1);
+        // The user keeps editing while the CREATE is still in flight.
+        visibleItem("channelTopicSummaryField-priority")->setProperty("text", QStringLiteral("300"));
+        QTest::qWait(50);
+        auto send = std::move(releasePost);
+        QVERIFY(send);
+        send();
+        auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        // The preserved draft must now target the CREATED endpoint: saving again
+        // dispatches an UPDATE to the created uuid, never a second CREATE.
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        QCOMPARE(posts, 1);
+        QVERIFY2(putPath.contains(createdUuid), qPrintable(putPath));
+    }
+
+    void channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int puts = 0;
+        QJsonObject lastPutBody;
+        std::function<void()> releasePut;
+        auto updated = endpointDto;
+        updated["priority"] = 150;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                ++puts;
+                lastPutBody = request.body;
+                if (puts == 1) {
+                    Response response{updated};
+                    response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                    return response;
+                }
+                return Response{updated};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *priority = visibleItem("channelTopicSummaryField-priority");
+        QVERIFY(priority);
+        priority->setProperty("text", QStringLiteral("150"));
+        QTest::qWait(50);
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 1);
+        // While the update to 150 is in flight the user reverts the field to 100.
+        priority->setProperty("text", QStringLiteral("100"));
+        QTest::qWait(50);
+        auto send = std::move(releasePut);
+        QVERIFY(send);
+        send();
+        auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        // The server now holds 150, so the reverted 100 IS a pending change: the
+        // baseline must rebase to the SUBMITTED values, keeping the draft savable.
+        QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(puts, 2);
+        QCOMPARE(lastPutBody.value("priority").toDouble(), 100.0);
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
