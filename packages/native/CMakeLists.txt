@@ -832,7 +832,7 @@ if(BUILD_TESTING)
         # Run only against staging through verify-installed-runtime.py --probe.
         # This helper is not installed into the delivered application.
         add_executable(native-runtime-probe tests/native-runtime-probe.cpp)
-        target_link_libraries(native-runtime-probe PRIVATE workspace-native-core OpenSSL::SSL)
+        target_link_libraries(native-runtime-probe PRIVATE workspace-native-core OpenSSL::SSL Qt6::Qml)
     endif()
     option(WORKSPACE_NATIVE_PLATFORM_TESTS "Enable checks that access the real OS secure store" OFF)
     if(WORKSPACE_NATIVE_PLATFORM_TESTS)
