@@ -26193,6 +26193,64 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(visibleItem("channelInfoMember-83000000-0000-4000-8000-000000000005"));
     }
 
+    // Issue #727: the Add members modal opened at the top-left corner of the
+    // overlay because the dialog never declared a placement. The reference
+    // centers it (right-panel-workspace-info.ui.tsx:102, top-1/2
+    // -translate-y-1/2 max-w-md max-h-[70vh]) and native's own cached-search
+    // popup centers the same way. Pin the center on both axes, keep the footer
+    // inside the window at the minimum supported size, and keep Escape closing.
+    void windowChannelInfoAddMembersDialogIsCentered()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        // A Popup is not a QQuickItem, so the popup object itself is not a
+        // findChild<QQuickItem*> candidate; with padding 0 the background
+        // rectangle (addMembersSurface) coincides with the dialog rect.
+        // Its own x/y are popup-relative, so absolute placement is read via
+        // mapToScene (the overlay spans the whole window).
+        auto *dialog = visibleItem("addMembersSurface");
+        QVERIFY(dialog);
+        QVERIFY(dialog->width() > 0 && dialog->height() > 0);
+        const auto centerX = [dialog]{ return dialog->mapToScene(QPointF(dialog->width() / 2.0, 0)).x(); };
+        const auto centerY = [dialog]{ return dialog->mapToScene(QPointF(0, dialog->height() / 2.0)).y(); };
+        const auto topY = [dialog]{ return dialog->mapToScene(QPointF(0, 0)).y(); };
+        const auto bottomY = [dialog]{ return dialog->mapToScene(QPointF(0, dialog->height())).y(); };
+        const QString xMsg = QStringLiteral("dialog center x %1 vs window center %2")
+            .arg(centerX())
+            .arg(scene.window->width() / 2.0);
+        QVERIFY2(qAbs(centerX() - scene.window->width() / 2.0) <= 2.0,
+            qPrintable(xMsg));
+        const QString yMsg = QStringLiteral("dialog center y %1 vs window center %2")
+            .arg(centerY())
+            .arg(scene.window->height() / 2.0);
+        QVERIFY2(qAbs(centerY() - scene.window->height() / 2.0) <= 2.0,
+            qPrintable(yMsg));
+        // Minimum supported window size: the dialog stays centered and the
+        // footer remains fully visible; the member list scrolls, the dialog
+        // never grows past the window.
+        scene.window->resize(700, 600);
+        QTest::qWait(250);
+        const QString minMsg = QStringLiteral("re-centered after resize: cx %1 cy %2 top %3 bottom %4 win %5x%6")
+            .arg(centerX()).arg(centerY()).arg(topY()).arg(bottomY())
+            .arg(scene.window->width()).arg(scene.window->height());
+        QVERIFY2(qAbs(centerX() - scene.window->width() / 2.0) <= 2.0,
+            qPrintable(minMsg));
+        QVERIFY2(topY() >= 0 && bottomY() <= scene.window->height(),
+            qPrintable(minMsg));
+        auto *addButton = visibleItem("addMembersAdd");
+        QVERIFY(addButton && addButton->isVisible());
+        const QPointF footerBottom = addButton->mapToItem(nullptr, QPointF(0, addButton->height()));
+        QVERIFY2(footerBottom.y() <= scene.window->height() + 1.0,
+            qPrintable(QStringLiteral("footer bottom %1 exceeds window %2")
+                .arg(footerBottom.y()).arg(scene.window->height())));
+        // Escape still dismisses the modal (closePolicy untouched).
+        QTest::keyClick(scene.window.data(), Qt::Key_Escape);
+        QTRY_VERIFY(!scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+    }
+
     // Issue #132: non-owner gating: no Add affordance and no removal controls
     // on foreign rows; the controller also refuses remove/add mutations for a
     // stream whose role is not owner (server gate mirrored client-side).

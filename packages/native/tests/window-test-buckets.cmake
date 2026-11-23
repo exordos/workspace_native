@@ -486,6 +486,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks
     topicContextMenuMarkReadVisibilityAndAction
     upToEditLastAndSaveUseTheComposerEditMode
+    windowChannelInfoAddMembersDialogIsCentered
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_21
     activityPanelExpandedListTogglesRoutesAndDisabledFavorites
