@@ -25885,7 +25885,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
         click(scene.window, visibleItem("channelInfoAddButton"));
         QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
-        auto *dialog = visibleItem("addMembersDialog");
+        // A Popup is not a QQuickItem, so the popup object itself is not a
+        // findChild<QQuickItem*> candidate; with padding 0 the background
+        // rectangle (addMembersSurface) coincides with the dialog rect.
+        auto *dialog = visibleItem("addMembersSurface");
         QVERIFY(dialog);
         QVERIFY(dialog->width() > 0 && dialog->height() > 0);
         const QString xMsg = QStringLiteral("dialog center x %1 vs window center %2")
