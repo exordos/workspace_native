@@ -24628,18 +24628,26 @@ mv -Tf "$root/.current-new" "$root/current"
         scene.window->resize(919, 716);
         QVERIFY(QTest::qWaitForWindowExposed(scene.window));
         QTRY_VERIFY(scene.controller.hasConversation());
-        const auto rectOf = [&](const QString &name) {
+        const auto rectOf = [&](const QString &name, QRectF *out) -> bool {
             auto *item = visibleItem(name);
-            QVERIFY2(item, qPrintable(name));
+            if (!item)
+                return false;
             const auto origin = item->mapToScene(QPointF(0, 0));
-            return QRectF(origin, QSizeF(item->width(), item->height()));
+            *out = QRectF(origin, QSizeF(item->width(), item->height()));
+            return true;
+        };
+        const auto describe = [](const QRectF &r) {
+            return QStringLiteral("[%1 %2 %3x%4]")
+                .arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
         };
         const auto disjoint = [&](const QString &a, const QString &b) {
-            const QRectF ra = rectOf(a);
-            const QRectF rb = rectOf(b);
+            QRectF ra;
+            QRectF rb;
+            QVERIFY2(rectOf(a, &ra), qPrintable(QStringLiteral("missing ") + a));
+            QVERIFY2(rectOf(b, &rb), qPrintable(QStringLiteral("missing ") + b));
             QVERIFY2(!ra.intersects(rb), qPrintable(
-                a + QStringLiteral(" ") + ra.toString() + QStringLiteral(" intersects ")
-                + b + QStringLiteral(" ") + rb.toString()));
+                a + QStringLiteral(" ") + describe(ra) + QStringLiteral(" intersects ")
+                + b + QStringLiteral(" ") + describe(rb)));
         };
         const auto assertClustersDisjoint = [&]() {
             disjoint("sectionMailButton", "globalUserSearchButton");
@@ -24697,7 +24705,7 @@ mv -Tf "$root/.current-new" "$root/current"
             };
             walk(root);
             QVERIFY2(elided.isEmpty(), qPrintable(
-                seam + QStringLiteral(" elides: " + elided.join("; "))));
+                seam + QStringLiteral(" elides: ") + elided.join(QStringLiteral("; "))));
         };
         assertNoElidedText("accountSetting-sidebarSortMode");
         assertNoElidedText("accountSetting-theme");
