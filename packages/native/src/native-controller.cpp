@@ -10479,6 +10479,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // interrupted outcomes and reconcile the catalog so the topic menu and
         // rename form become usable again under the renewed session.
         interruptTopicActions();
+        // Issue #736: the same bump retires an in-flight topic-summary settings
+        // operation; the wrapper skips its callback forever, so the shared busy
+        // flag would lock both dialog tabs until restart. Settle every retired
+        // op as a retryable interrupted outcome; a late reply of the retired
+        // generation still finds no ticket and cannot settle or apply values.
+        interruptTopicSummaryOps();
         if (!lookupGuard) return;
         // Issue #50 review 4611502344: the same bump retires an in-flight
         // Diagnostics transport ping; its wrapper callback can never settle,
@@ -21710,6 +21716,22 @@ bool NativeController::finishTopicSummaryOp(const QString &key, quint64 token)
     m_topicSummarySettingsBusy = !m_topicSummaryOps.isEmpty();
     emit topicSummaryStateChanged();
     return current;
+}
+
+// Issue #736: a session change retires the transport generation, so the wrapper
+// skips the callbacks of every in-flight summary op forever and nothing else
+// releases the shared busy flag - both dialog tabs stayed locked until restart
+// and any retry was ignored (begin returns 0 for a key already busy). Settle
+// the retired ledger once with a retryable interrupted outcome. The unverified
+// gates flag keeps the fields locked until a fresh load proves the values;
+// token fencing in each callback still fences the late replies, which now find
+// no ticket and can neither settle a newer op nor apply another owner's data.
+void NativeController::interruptTopicSummaryOps()
+{
+    if (m_topicSummaryOps.isEmpty()) return;
+    m_topicSummaryOps.clear();
+    m_topicSummarySettingsBusy = false;
+    setTopicSummaryStatus(QStringLiteral("error"), QStringLiteral("interrupted"));
 }
 
 void NativeController::setTopicSummaryStatus(const QString &status, const QString &error)
