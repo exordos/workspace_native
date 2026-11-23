@@ -506,6 +506,14 @@ Item {
                             radius: 8
                             color: cardHover.containsMouse ? page.colors["card-bg-active"] : page.colors["card-bg"]
                             property bool removing: controller.channelInfoRemovingMembers.indexOf(modelData.userUuid) >= 0
+                            // Reference workspace-member-card.ui.tsx:20-31: the text block is
+                            // min-w-0 flex-1 and the remove button is w-6 shrink-0 with gap-3,
+                            // so text reserves 12 + 24 + 12 = 48 px whenever the action exists.
+                            property int textRightInset: memberCard.modelData.canRemove ? 48 : 12
+                            property int roleWidth: memberRole.text.length > 0
+                                ? Math.min(memberRole.implicitWidth,
+                                    Math.max(0, memberCard.width - 56 - memberCard.textRightInset - 66))
+                                : 0
                             MouseArea {
                                 id: cardHover
                                 anchors.fill: parent
@@ -555,8 +563,8 @@ Item {
                                 objectName: "channelInfoMemberName-" + memberCard.modelData.bindingUuid
                                 y: 9
                                 x: 56
-                                width: Math.max(0, memberCard.width - 56 - 24 - 6
-                                    - (memberRole.text.length > 0 ? memberRole.width + 6 : 0))
+                                width: Math.max(0, memberCard.width - 56 - memberCard.textRightInset
+                                    - (memberCard.roleWidth > 0 ? memberCard.roleWidth + 6 : 0))
                                 text: memberCard.modelData.name
                                 textFormat: Text.PlainText
                                 font.pixelSize: 14
@@ -568,8 +576,10 @@ Item {
                                 visible: memberRole.text.length > 0
                                 text: memberRole.text
                                 x: 56 + memberName.width + 6
+                                width: memberCard.roleWidth
                                 y: 12
                                 textFormat: Text.PlainText
+                                elide: Text.ElideRight
                                 font.pixelSize: 10
                                 color: page.colors["text-secondary"]
                             }
@@ -577,7 +587,7 @@ Item {
                                 objectName: "channelInfoMemberSecondary-" + memberCard.modelData.bindingUuid
                                 y: 26
                                 x: 56
-                                width: memberCard.width - 56 - 12
+                                width: memberCard.width - 56 - memberCard.textRightInset
                                 text: page.memberSecondary(memberCard.modelData.status, memberCard.modelData.email)
                                 textFormat: Text.PlainText
                                 font.pixelSize: 11
@@ -593,7 +603,12 @@ Item {
                                 anchors.rightMargin: 12
                                 anchors.verticalCenter: parent.verticalCenter
                                 enabled: !memberCard.removing
-                                opacity: enabled ? (cardHover.containsMouse ? 1.0 : 0.0) : 0.4
+                                // Reference: sm:opacity-0 sm:group-hover/member:opacity-100 - the
+                                // whole row is one hover group, so the action stays revealed on
+                                // the button itself and while it holds keyboard focus.
+                                opacity: enabled
+                                    ? ((cardHover.containsMouse || removeButton.hovered
+                                        || removeButton.activeFocus) ? 1.0 : 0.0) : 0.4
                                 Behavior on opacity { NumberAnimation { duration: 120 } }
                                 display: AbstractButton.IconOnly
                                 padding: 0

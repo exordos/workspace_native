@@ -396,6 +396,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker
     wheelAngleStepAtAnEdgeIsNotConsumedWhenTheListCannotMove
     windowChannelInfoHeaderSummary
+    windowChannelInfoMemberRemoveClearanceAndReveal
     windowProfileAvatarResetCommittedOnSave
     windowProfileShareFailurePresentation
 )
