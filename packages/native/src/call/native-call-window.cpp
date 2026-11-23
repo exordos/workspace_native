@@ -45,6 +45,12 @@ JitsiCallWindowController::JitsiCallWindowController(QObject *parent) : QObject(
     // the injected count provider exactly like a manual pollNow.
     m_pollTimer.setTimerType(Qt::CoarseTimer);
     connect(&m_pollTimer, &QTimer::timeout, this, &JitsiCallWindowController::pollNow);
+    // Issue #728: a call that opens but never reports an api load outcome
+    // (e.g. the embed component failed to instantiate at all) must leave
+    // Loading on a finite deadline so the shell can surface its retry state.
+    m_embedDeadlineTimer.setSingleShot(true);
+    connect(&m_embedDeadlineTimer, &QTimer::timeout,
+            this, &JitsiCallWindowController::embedDeadlineElapsed);
 }
 
 QRect JitsiCallWindowController::expandedBounds(const QSize &viewport)
@@ -133,6 +139,10 @@ void JitsiCallWindowController::open(const QVariantMap &activeCall)
     m_participantCount = -1;
     m_embedState = m_roomName.isEmpty() ? InvalidUrl : Loading;
     m_pollTimer.stop();
+    if (m_embedState == Loading)
+        m_embedDeadlineTimer.start(m_embedDeadlineMs);
+    else
+        m_embedDeadlineTimer.stop();
     m_mode = Expanded;
     emit modeChanged();
     emit boundsChanged();
@@ -152,6 +162,7 @@ void JitsiCallWindowController::close()
     m_participantCount = -1;
     m_fullscreen = false;
     m_pollTimer.stop();
+    m_embedDeadlineTimer.stop();
     emit modeChanged();
     emit boundsChanged();
     emit embedStateChanged();
@@ -208,6 +219,7 @@ void JitsiCallWindowController::apiLoadSucceeded()
 {
     if (m_mode == Closed || m_embedState != Loading)
         return;
+    m_embedDeadlineTimer.stop();
     m_embedState = Ready;
     emit embedStateChanged();
     ensureEmbed();
@@ -222,10 +234,17 @@ void JitsiCallWindowController::apiLoadFailed()
 {
     if (m_embedState != Loading)
         return;
+    m_embedDeadlineTimer.stop();
     m_embedState = LoadFailed;
     m_pollTimer.stop();
     emit embedStateChanged();
     emit textsChanged();
+}
+
+// Issue #728: the finite settle for a load that reported nothing at all.
+void JitsiCallWindowController::embedDeadlineElapsed()
+{
+    apiLoadFailed();
 }
 
 void JitsiCallWindowController::retry()
@@ -233,6 +252,7 @@ void JitsiCallWindowController::retry()
     if (m_embedState != LoadFailed)
         return;
     m_embedState = Loading;
+    m_embedDeadlineTimer.start(m_embedDeadlineMs);
     emit embedStateChanged();
     emit textsChanged();
 }

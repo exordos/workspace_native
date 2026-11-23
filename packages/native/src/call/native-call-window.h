@@ -125,6 +125,10 @@ public:
     Q_INVOKABLE void apiLoadSucceeded(); // -> Ready, creates the embed exactly once
     Q_INVOKABLE void apiLoadFailed();    // -> LoadFailed
     Q_INVOKABLE void retry();
+    // Issue #728: a load that never reports success or failure must settle
+    // within a finite deadline (a stalled embed used to sit on Loading
+    // forever). Production deadline; the seam compresses it for tests.
+    void setEmbedDeadlineMsForTest(int ms) { m_embedDeadlineMs = qMax(1, ms); }
 
     // Capture-permission allowlist: true only when the requesting origin is
     // exactly the meeting origin (scheme, host and port), never by feature
@@ -189,6 +193,8 @@ signals:
 private:
     void ensureEmbed();
     void syncParticipantCount();
+    // Issue #728: fires when a call has been on Loading for m_embedDeadlineMs.
+    void embedDeadlineElapsed();
 
     Mode m_mode = Closed;
     EmbedState m_embedState = Idle;
@@ -201,6 +207,8 @@ private:
     bool m_focused = true;
     bool m_pipBoundsFromUser = false;
     QTimer m_pollTimer;
+    QTimer m_embedDeadlineTimer;
+    int m_embedDeadlineMs = 30000;
     int m_pollIntervalOverrideMs = 0;
     QVariantMap m_call;
     QString m_domain;
