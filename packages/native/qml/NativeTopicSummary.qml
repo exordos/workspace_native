@@ -104,10 +104,20 @@ Column {
         topicId: panel.settingsTopic
         topicName: panel.topic && panel.topic.name ? String(panel.topic.name) : ""
         streamName: panel.permissions.name ? String(panel.permissions.name) : ""
-        onTopicConfigRequested: (topic, enabled, prompt, promptIsDefault, effort) => {
+        onTopicConfigRequested: (topic, enabled, prompt, promptIsDefault, effort,
+                                 editEnabled, editPrompt, editEffort) => {
             panel.saving = true
-            // Controller seam for prompt/reasoning edits (this round's controller extension).
-            if (typeof panel.controller.saveTopicSummaryTopic === "function")
+            // Controller seam for prompt/reasoning edits (this round's controller
+            // extension). Issue #739: the patch carries ONLY the keys the user
+            // actually edited - an absent key is never sent, so a peer admin's
+            // newer write to an untouched field survives.
+            if (typeof panel.controller.saveTopicSummaryTopicPatch === "function") {
+                const patch = {}
+                if (editEnabled) patch["enabled"] = enabled
+                if (editPrompt) patch["prompt"] = promptIsDefault ? null : prompt
+                if (editEffort) patch["effort"] = effort === "" ? null : effort
+                panel.controller.saveTopicSummaryTopicPatch(topic, patch)
+            } else if (typeof panel.controller.saveTopicSummaryTopic === "function")
                 panel.controller.saveTopicSummaryTopic(topic, enabled, promptIsDefault ? "" : prompt, effort)
             else
                 panel.controller.applyChannelTopicAction(topic, "summary", String(enabled))

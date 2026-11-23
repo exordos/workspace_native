@@ -185,6 +185,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     callWindowEmbedReadyEchoStaysBoundedForForeignReadyId
     channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
     channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
+    channelTopicSummaryDialogSendsOnlyUserEditedPromptAfterRemoteEffortUpdate
     chatHeaderCountersSingularAndHiddenForDirectChats
     corruptHeicFallsBackToFileCardAndDisplayErrorSlotWithDownload
     directChatRosterUsesSourceGeometrySearchAndVirtualRows
@@ -351,6 +352,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     aggregateStreamUsesSourceGroupsAndTopicChoices
     channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
+    channelTopicSummaryDialogSendsOnlyUserEditedEffortAfterRemotePromptUpdate
     deactivatedDirectPartnerShowsBlockBadge
     directHeaderPartnerBlockOpensPeerProfile
     existingEncryptedDirectFromNewChatOpensWithoutChangingThePair
@@ -464,6 +466,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     callWindowEmbedLoaderErrorSettlesShellToLoadFailed
     channelTopicMenuAndSummarySaveUseTheSelectedTopic
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable
+    channelTopicSummaryDialogStaysCleanAfterRemoteUpdate
     codeCopyButtonIsKeyboardOperableAndAccessible
     composerEmojiAppendsUnicodeAndSendsFromTheActualMain
     durableComposerRestoresActualInputAcrossWindowAndControllerLifetimes

@@ -492,6 +492,11 @@ public:
     // as null), empty effort = provider default.
     Q_INVOKABLE void saveTopicSummaryTopic(const QString &topic, bool enabled,
         const QString &prompt, const QString &effort);
+    // Issue #739: field-wise variant - a key present in the map is a candidate
+    // edit by the current user (values: enabled bool, prompt/effort string or
+    // null for the default); an absent key is never sent, so a newer remote
+    // change to an untouched field survives the save.
+    Q_INVOKABLE void saveTopicSummaryTopicPatch(const QString &topic, const QVariantMap &fields);
     // Issue #636 (docs/NATIVE_DESKTOP_TOPIC_CONTEXT_ACTIONS.md): topic context
     // menu actions, reference runWorkspaceTopicNotificationUpdate /
     // runWorkspaceTopicRead / runWorkspaceTopicRenameRequest /
