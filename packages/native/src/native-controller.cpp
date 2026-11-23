@@ -13115,7 +13115,11 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         const auto found = std::find_if(m_streams.begin(), m_streams.end(),
             [&id](const Stream &item) { return item.uuid == id; });
         if (found != m_streams.end()) {
+            // Issue #719: a realtime event that lowers the stream's unread
+            // (including the realtime stream.read) moves the folder rail with it.
+            const int cleared = found->unread - stream->unread;
             *found = *stream;
+            decayFolderUnread(stream->uuid, cleared);
         } else {
             m_streams.append(*stream);
         }
@@ -14094,11 +14098,14 @@ void NativeController::mutateChat(const QString &id, const QString &name, bool r
         const auto owned = [&] { return guard && streamOperationContext(id, operation); };
         // The command owns only these fields. Newer server events win.
         if (canonical->updatedMicros >= current->updatedMicros) {
+            const int unreadBefore = current->unread;
             if (read) {
                 current->unread = canonical->unread; current->activeUnread = canonical->activeUnread;
                 current->passiveUnread = canonical->passiveUnread;
             } else current->name = canonical->name;
             current->updatedMicros = canonical->updatedMicros;
+            // Issue #719: the confirmed read decays the stored folder counts.
+            if (read) decayFolderUnread(id, unreadBefore - current->unread);
         }
         const bool allRead = current->unread == 0;
         ++m_streamRevision;
@@ -14469,6 +14476,25 @@ void NativeController::loadFolders()
     };
     QUrlQuery query; query.addQueryItem("page_limit", "200");
     walk(walk, QJsonArray{}, query, {});
+}
+
+void NativeController::decayFolderUnread(const QString &streamId, int cleared)
+{
+    // Issue #719: a stream read lowers every folder that references the stream.
+    // A folder references it through the DTO-enumerated items; an All row that
+    // carries no items covers every stream (the reference counts the All
+    // folder over the whole unread ledger then). A decay only happens for a
+    // real decrease and only rows that actually changed re-notify.
+    if (cleared <= 0 || m_folders.isEmpty()) return;
+    bool changed = false;
+    for (auto &row : m_folders) {
+        const bool contains = row.streamIds.contains(streamId)
+            || (row.systemType == QStringLiteral("all") && row.streamIds.isEmpty());
+        if (!contains || row.unread <= 0) continue;
+        row.unread = qMax(0, row.unread - cleared);
+        changed = true;
+    }
+    if (changed) emit foldersChanged();
 }
 
 QVariantList NativeController::folders() const
@@ -20006,8 +20032,11 @@ void NativeController::refreshReadStreamCounter(const Message &boundary)
         }
         for (auto &stream : m_streams)
             if (stream.uuid == boundary.stream) {
+                const int cleared = stream.unread - snapshot->unread;
                 stream.unread = snapshot->unread; stream.activeUnread = snapshot->activeUnread;
                 stream.passiveUnread = snapshot->passiveUnread; stream.lastMessage = snapshot->lastMessage;
+                // Issue #719: the automatic read refresh moves the folder rail too.
+                decayFolderUnread(boundary.stream, cleared);
             }
         ++m_streamRevision;
         emit streamsChanged();
