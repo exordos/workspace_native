@@ -12087,7 +12087,10 @@ component NativeMentionChip: Item {
                                     rowSpacing: 4
                                     columnSpacing: 0
                                     visible: !messageComposerShell.preview && !root.preferences.composerToolbarExpanded
-                                    Layout.alignment: Qt.AlignBottom
+                                    // #722: the one-line compact row centers its controls on
+                                    // the placeholder line (message-composer.ui.tsx compactInline);
+                                    // only the tall editor keeps the bottom-pinned rail.
+                                    Layout.alignment: messageComposerShell.tallControls ? Qt.AlignBottom : Qt.AlignVCenter
                                     NativeIconButton {
                                         id: composerToolbarExpand
                                         objectName: "composerToolbarExpand"
@@ -12435,7 +12438,9 @@ component NativeMentionChip: Item {
                                 columns: 2
                                 rowSpacing: 0
                                 columnSpacing: 0
-                                Layout.alignment: Qt.AlignBottom
+                                // #722: attach/emoji center with the field in one-line mode,
+                                // bottom-pinned only when the tall editor is open.
+                                Layout.alignment: messageComposerShell.tallControls ? Qt.AlignBottom : Qt.AlignVCenter
                                 NativeIconButton {
                                     parent: root.preferences.composerToolbarExpanded ? composerToolbarActions
                                         : messageComposerShell.compactRail ? composerLeadingControls : composerCompactActions
