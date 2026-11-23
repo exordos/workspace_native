@@ -7185,6 +7185,10 @@ void NativeController::invalidateCache(NativeCache::Kind kind, const QString &st
 {
     ++m_cacheRevision;
     if (m_cache) m_cache->invalidate(m_cacheLease, kind, stream, topic);
+    // Issue #718 slice 2: a prepared slice is a cached history page too - the
+    // same invalidation must drop it, or reopening a topic after a confirmed
+    // change publishes the stale slice frame (deleted rows resurrect).
+    if (kind == NativeCache::Kind::History) dropTopicSlices(stream, topic);
 }
 
 void NativeController::invalidateConversation(const QString &stream, const QString &topic, bool counters)
@@ -7200,6 +7204,9 @@ void NativeController::staleCache(NativeCache::Kind kind, const QString &stream,
 {
     ++m_cacheRevision;
     if (m_cache) m_cache->markStale(m_cacheLease, kind, stream, topic);
+    // Issue #718 slice 2: same rule as invalidateCache - a stale saved page
+    // makes the topic's prepared slice untrustworthy as well.
+    if (kind == NativeCache::Kind::History) dropTopicSlices(stream, topic);
 }
 
 void NativeController::staleConversation(const QString &stream, const QString &topic, bool counters)
@@ -12639,6 +12646,7 @@ void NativeController::reset()
     m_topicSliceOrder.clear();
     m_topicPreloadSkipped.clear();
     m_topicPreloadInFlight.clear();
+    m_preparedSwapActive = false;
     if (m_topicPreloadTimer) m_topicPreloadTimer->stop();
     m_rowPreviewInFlight.clear();
     m_rowPreviewFence.clear();
@@ -17017,18 +17025,22 @@ void NativeController::selectTopic(const QString &id)
     m_after.clear();
     // Issue #718 slice 2: swap-on-ready. When the target topic has a prepared
     // slice, its own rows are the first published frame instead of the empty
-    // window; the latest-page reload below refreshes/expands the slice in
-    // place and every late write stays fenced by m_selection.
+    // window; the reload below refreshes/expands the window in place (still
+    // through the saved-page shortcut, so warm navigation keeps its zero-extra-
+    // HTTP contract) and every late write stays fenced by m_selection.
     bool preparedShown = false;
     if (const auto slice = m_topicSlices.constFind(id); slice != m_topicSlices.constEnd() && !slice->rows.isEmpty()) {
         m_messages = noteActivityMerge({}, slice->rows);
         m_before = slice->before;
-        // The slice rows came from a verified history page, so the published
-        // frame is authoritative for mutations: without this the first edit or
-        // delete right after the switch would be dropped by the route guard.
-        m_historyVerified = true;
+        // The swap frame is a preview only: it does NOT claim m_historyVerified,
+        // so cache-protected mutations and the stale-cache verdict keep waiting
+        // for the verified page of THIS selection (expired saved pages must
+        // still mark the conversation stale, #718 fix round).
         preparedShown = !m_messages.isEmpty();
     }
+    // The window currently shows the swap slice, so the first verified page of
+    // this selection may overwrite it (loadMessages' fresh gate).
+    m_preparedSwapActive = preparedShown;
     m_loading = false;
     m_recoveringMarker = m_resumeOlder = false;
     const auto selection = m_selection;
@@ -17039,10 +17051,7 @@ void NativeController::selectTopic(const QString &id)
     emit draftChanged();
     // A regular topic switch shares its channel's in-flight catalog request.
     if (guard && selection == m_selection && m_topicSeedUnverified) loadTopics();
-    // With a prepared slice on screen the reload must be a boundary-free latest
-    // page (Issue #718 slice 2): the boundary walk would page the whole gap
-    // between now and the slice's first row down before publishing.
-    if (guard && selection == m_selection && hasConversation()) loadMessages(false, preparedShown);
+    if (guard && selection == m_selection && hasConversation()) loadMessages();
     // Issue #164: topic selection changes the viewed conversation identity.
     if (guard && selection == m_selection) {
         syncCallBridge();
@@ -17346,7 +17355,8 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     rows.append(*message);
                 }
                 const bool fresh = valid && entry->fresh && !savedOnly && !m_snapshotActive && !m_syncBlocked
-                    && m_catalogVerified && m_topicsVerified && (older || m_messages.isEmpty());
+                    && m_catalogVerified && m_topicsVerified
+                    && (older || m_messages.isEmpty() || m_preparedSwapActive);
                 if (fresh) {
                     for (const auto &raw : entry->rows) observeMessage(raw.toObject());
                     rememberChatOutcomeOrder(rows);
@@ -17357,9 +17367,10 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     if (!older) m_olderPrefetchArmed = true;
                     m_historyVerified = true;
                     // Issue #718 slice 2: a verified window is also the slice
-                    // source for a later swap. The marker is window-scoped, so
-                    // the swap always re-loads latest before trusting Older.
-                    if (!older) rememberTopicSlice(m_topic, m_messages, QByteArray{}, 8);
+                    // source for a later swap; the real older-page marker rides
+                    // along whenever the slice keeps the whole window.
+                    if (!older) rememberTopicSlice(m_topic, m_stream, m_messages, m_before, 8);
+                    m_preparedSwapActive = false;
                     m_loading = false;
                     ++m_historyCommitRevision;
                     emit messagesChanged();
@@ -17368,7 +17379,7 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     if (guard) emit stateChanged();
                     return;
                 }
-                if (valid && !older && m_messages.isEmpty()) {
+                if (valid && !older && (m_messages.isEmpty() || m_preparedSwapActive)) {
                     for (const auto &raw : entry->rows) observeMessage(raw.toObject());
                     m_cacheHydrated = true;
                     rememberChatOutcomeOrder(rows);
@@ -17378,7 +17389,8 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     m_after.clear();
                     // Issue #718 slice 2: even a cached hydration counts as
                     // having seen these rows - the slice survives the next switch.
-                    rememberTopicSlice(m_topic, m_messages, QByteArray{}, 8);
+                    rememberTopicSlice(m_topic, m_stream, m_messages, QByteArray{}, 8);
+                    m_preparedSwapActive = false;
                     ++m_historyCommitRevision;
                     emit messagesChanged();
                     if (!guard) return;
@@ -17510,8 +17522,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         m_loading = false;
         m_historyVerified = true;
         // Issue #718 slice 2: the freshly reconciled window warms the swap
-        // slice for this topic (window-scoped marker -> swap re-loads latest).
-        if (!older) rememberTopicSlice(m_topic, m_messages, QByteArray{}, 8);
+        // slice for this topic; the marker rule lives in rememberTopicSlice.
+        if (!older) rememberTopicSlice(m_topic, m_stream, m_messages, result.nextMarker, 8);
+        if (!older) m_preparedSwapActive = false;
         const bool resumeOlder = m_resumeOlder && !m_before.isEmpty();
         m_resumeOlder = false;
         if (!resumeOlder)
@@ -18852,6 +18865,7 @@ void NativeController::noteActivityTimestamps(const QVector<Message> &rows)
 // reply re-arms the timer so completion, not polling, paces the batches.
 void NativeController::scheduleTopicPreload(int delayMs)
 {
+    if (!m_topicPreloadEnabled) return;
     if (!m_topicPreloadTimer) {
         m_topicPreloadTimer = new QTimer(this);
         m_topicPreloadTimer->setSingleShot(true);
@@ -18862,6 +18876,7 @@ void NativeController::scheduleTopicPreload(int delayMs)
 
 void NativeController::runTopicPreloadBatch()
 {
+    if (!m_topicPreloadEnabled) return;
     if (!authenticated() || m_stream.isEmpty()) return;
     QVector<const Topic *> pending;
     for (const auto &topic : std::as_const(m_topics)) {
@@ -18908,12 +18923,13 @@ void NativeController::requestTopicPreload(const Topic &topic)
             }
         }
         if (rows.isEmpty()) m_topicPreloadSkipped.insert(uuid);
-        else rememberTopicSlice(uuid, rows, result.nextMarker, rows.size());
+        else rememberTopicSlice(uuid, stream, rows, result.nextMarker, rows.size());
         scheduleTopicPreload(0);
     });
 }
 
-void NativeController::rememberTopicSlice(const QString &topicUuid, const QVector<Message> &window,
+void NativeController::rememberTopicSlice(const QString &topicUuid, const QString &stream,
+                                          const QVector<Message> &window,
                                           const QByteArray &before, int keepRows)
 {
     if (topicUuid.isEmpty() || window.isEmpty()) return;
@@ -18925,13 +18941,42 @@ void NativeController::rememberTopicSlice(const QString &topicUuid, const QVecto
     TopicSlice slice;
     const int keep = qBound(1, keepRows, sorted.size());
     slice.rows = sorted.mid(sorted.size() - keep);
-    slice.before = before;
+    // The older-page marker describes what lies beyond the FULL window, so it
+    // may only be carried while the slice keeps every row; a trimmed slice with
+    // that marker would let an Older read silently skip the dropped rows.
+    slice.before = keep >= sorted.size() ? before : QByteArray{};
+    slice.stream = stream;
     if (!m_topicSlices.contains(topicUuid)) m_topicSliceOrder.append(topicUuid);
     while (m_topicSliceOrder.size() > 512) {
         const auto oldest = m_topicSliceOrder.takeFirst();
         m_topicSlices.remove(oldest);
     }
     m_topicSlices.insert(topicUuid, slice);
+}
+
+// Issue #718 slice 2: drop prepared slices for one topic (topic set), one
+// stream's topics (stream set), or everything (both empty). Mirrors the
+// (kind, stream, topic) scoping of invalidateCache/staleCache so slice
+// lifetime equals saved-page lifetime - never longer.
+void NativeController::dropTopicSlices(const QString &stream, const QString &topic)
+{
+    if (!topic.isEmpty()) {
+        if (m_topicSlices.remove(topic) > 0) m_topicSliceOrder.removeAll(topic);
+        return;
+    }
+    if (stream.isEmpty()) {
+        m_topicSlices.clear();
+        m_topicSliceOrder.clear();
+        return;
+    }
+    for (auto it = m_topicSlices.begin(); it != m_topicSlices.end();) {
+        if (it->stream == stream) {
+            m_topicSliceOrder.removeAll(it.key());
+            it = m_topicSlices.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 bool NativeController::hasPreparedTopicSlice(const QString &topicUuid) const
@@ -18943,6 +18988,12 @@ bool NativeController::hasPreparedTopicSlice(const QString &topicUuid) const
 void NativeController::setTopicPreloadIntervalMsForTest(int ms)
 {
     m_topicPreloadIntervalMs = qMax(0, ms);
+}
+
+void NativeController::setTopicPreloadEnabledForTest(bool enabled)
+{
+    m_topicPreloadEnabled = enabled;
+    if (!enabled && m_topicPreloadTimer) m_topicPreloadTimer->stop();
 }
 
 // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): a port of

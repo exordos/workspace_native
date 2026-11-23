@@ -1530,7 +1530,11 @@ private slots:
         fixture.controller.selectTopic(topicId); QTRY_VERIFY(!fixture.controller.busy()); QCOMPARE(history, 2);
         now += 120001; fail = true;
         fixture.controller.selectTopic(secondTopicId);
-        QTRY_COMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(), secondTopicId);
+        // The swap-on-ready frame can show the stale rows before the verified
+        // revalidation lands, so wait on the stale verdict itself (the expired
+        // cache read marks it), not on row visibility.
+        QTRY_VERIFY(fixture.controller.cacheStale());
+        QCOMPARE(modelMessage(fixture.controller, returnedId).value("content").toString(), secondTopicId);
         fixture.controller.setDraft("wait for verification"); QVERIFY(fixture.controller.cacheStale()); QVERIFY(!fixture.controller.canSend());
         QTRY_VERIFY(!fixture.controller.busy()); QCOMPARE(history, 3); QVERIFY(!fixture.controller.error().isEmpty());
         QVERIFY(!fixture.controller.canSend()); QVERIFY(!modelMessage(fixture.controller, returnedId).value("canReact").toBool());
@@ -2891,15 +2895,23 @@ private slots:
         c.selectTopic(secondTopicId); QTRY_VERIFY(c.property("messageHistoryReady").toBool());
         QVERIFY(flushCache(cache));
         const auto gets = f.topicHistoryGets;
-        c.selectTopic(topicId); QTRY_VERIFY(c.property("messageHistoryReady").toBool());
-        QCOMPARE(c.property("historyCommitRevision").toULongLong(), first + 2);
+        c.selectTopic(topicId);
+        // The swap-on-ready frame can satisfy the ready flag before the verified
+        // warm page commits, so await the commit itself: both warm publications
+        // (topic B, topic A) must count.
+        QTRY_COMPARE(c.property("historyCommitRevision").toULongLong(), first + 2);
+        QVERIFY(c.property("messageHistoryReady").toBool());
         QCOMPARE(f.topicHistoryGets, gets); // Actual fresh-cache publication.
         now += 120001; fail = true;
         const auto warm = c.property("historyCommitRevision").toULongLong();
         c.selectTopic(secondTopicId);
-        QTRY_COMPARE(modelMessage(c, returnedId).value("content").toString(), secondTopicId);
-        QCOMPARE(c.property("historyCommitRevision").toULongLong(), warm + 1);
-        QVERIFY(!c.property("messageHistoryReady").toBool());
+        // Wait on the stale-hydration commit itself: the swap frame can show
+        // the rows before the expired cache read has published them.
+        QTRY_COMPARE(c.property("historyCommitRevision").toULongLong(), warm + 1);
+        QCOMPARE(modelMessage(c, returnedId).value("content").toString(), secondTopicId);
+        // The 503 is delayed in the mock; await its un-verifying effect instead
+        // of reading the flag while the swap frame is still nominally verified.
+        QTRY_VERIFY(!c.property("messageHistoryReady").toBool());
         QTRY_VERIFY(!c.error().isEmpty());
         QVERIFY(!c.property("messageHistoryReady").toBool());
         QCOMPARE(c.property("historyCommitRevision").toULongLong(), warm + 1);

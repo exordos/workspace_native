@@ -15656,6 +15656,10 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        // Issue #718 slice 2: the background preload sweep would interleave
+        // marker-less page GETs into this case's exact paging/pin budget;
+        // sweep behaviour is covered by the sidebar cases.
+        controller.setTopicPreloadEnabledForTest(false);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -15939,6 +15943,10 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        // Issue #718 slice 2: the background preload sweep would interleave
+        // marker-less page GETs into this case's exact paging/pin budget;
+        // sweep behaviour is covered by the sidebar cases.
+        controller.setTopicPreloadEnabledForTest(false);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -16098,6 +16106,10 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        // Issue #718 slice 2: the background preload sweep would interleave
+        // marker-less page GETs into this case's exact paging/pin budget;
+        // sweep behaviour is covered by the sidebar cases.
+        controller.setTopicPreloadEnabledForTest(false);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -16256,6 +16268,10 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        // Issue #718 slice 2: the background preload sweep would interleave
+        // marker-less page GETs into this case's exact paging/pin budget;
+        // sweep behaviour is covered by the sidebar cases.
+        controller.setTopicPreloadEnabledForTest(false);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
@@ -27325,6 +27341,10 @@ private:
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        // Issue #718 slice 2: the background preload sweep would interleave
+        // marker-less page GETs into this case's exact paging/pin budget;
+        // sweep behaviour is covered by the sidebar cases.
+        controller.setTopicPreloadEnabledForTest(false);
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));

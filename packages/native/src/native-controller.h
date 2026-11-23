@@ -296,8 +296,13 @@ public:
     // hasPreparedTopicSlice reports whether the bounded preload has warmed a
     // small renderable slice for the topic (swap-on-ready source), and the
     // interval seam compresses the sweep pacing for deterministic waits.
+    // The enable seam defaults ON (product behaviour); traffic-pinning test
+    // fixtures turn the background sweep off so their request budgets stay
+    // deterministic (swap-on-ready itself is unaffected - slices remembered
+    // from real navigation keep working).
     bool hasPreparedTopicSlice(const QString &topicUuid) const;
     void setTopicPreloadIntervalMsForTest(int ms);
+    void setTopicPreloadEnabledForTest(bool enabled);
     void setRealtimeMode(bool enabled) { m_realtimeMode = enabled; if (enabled) m_poll.stop(); }
     void useRealtime(RealtimeClient *client);
     // Power state (issue #78, docs/NATIVE_DESKTOP_POWER_STATE.md): resume
@@ -2095,18 +2100,23 @@ private:
     // slice per populated topic + swap-on-ready projection in selectTopic.
     // Encrypted (e2ee) rows never become slices - the e2ee runtime owns those
     // windows end to end - and NativeCache/history budgets are untouched.
-    struct TopicSlice { QVector<Message> rows; QByteArray before; };
+    struct TopicSlice { QString stream; QVector<Message> rows; QByteArray before; };
     void scheduleTopicPreload(int delayMs = 0);
     void runTopicPreloadBatch();
     void requestTopicPreload(const Topic &topic);
-    void rememberTopicSlice(const QString &topicUuid, const QVector<Message> &window,
-                            const QByteArray &before, int keepRows);
+    void rememberTopicSlice(const QString &topicUuid, const QString &stream,
+                            const QVector<Message> &window, const QByteArray &before, int keepRows);
+    void dropTopicSlices(const QString &stream, const QString &topic);
     QHash<QString, TopicSlice> m_topicSlices;
     QVector<QString> m_topicSliceOrder;
     QSet<QString> m_topicPreloadSkipped;
     QSet<QString> m_topicPreloadInFlight;
     QTimer *m_topicPreloadTimer = nullptr;
+    bool m_topicPreloadEnabled = true;
     int m_topicPreloadIntervalMs = 1000;
+    // True while the open window shows a swap-on-ready slice: the next
+    // verified page of this selection may overwrite that frame.
+    bool m_preparedSwapActive = false;
     int streamGroupRank(const Stream &stream) const;
     QVariantMap rowPreviewFields(const QString &lastMessage) const;
     // Bounded cache warm for row previews (docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2):

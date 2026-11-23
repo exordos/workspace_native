@@ -247,6 +247,12 @@ public:
 
     Fixture()
     {
+        // Issue #718 slice 2: the background topic-preload sweep would add
+        // unbounded GET /messages/ traffic to the exact-request pins that
+        // every controller fixture relies on. Product default is ON; the
+        // harness keeps fixtures deterministic, and the two sidebar sweep
+        // cases opt back in explicitly via setTopicPreloadEnabledForTest.
+        controller.setTopicPreloadEnabledForTest(false);
         server.handler = [this](const Request &request) {
             const auto path = request.target.path();
             if (path.contains("/message_reactions/") && reactions)
