@@ -12634,6 +12634,12 @@ void NativeController::reset()
     m_rowPreviews.clear();
     m_rowPreviewOrder.clear();
     m_rowPreviewPending.clear();
+    // Issue #718 slice 2: prepared topic slices belong to the owner catalog.
+    m_topicSlices.clear();
+    m_topicSliceOrder.clear();
+    m_topicPreloadSkipped.clear();
+    m_topicPreloadInFlight.clear();
+    if (m_topicPreloadTimer) m_topicPreloadTimer->stop();
     m_rowPreviewInFlight.clear();
     m_rowPreviewFence.clear();
     m_nextRowPreviewFence = 0;
@@ -16699,6 +16705,8 @@ void NativeController::loadTopics()
         // verified reconcile - e.g. the rename-by-read after an uncertain
         // revision - must re-publish the row titles there too (#641).
         if (authoritative) emit sidebarTopicsChanged(m_stream);
+        // Issue #718 slice 2: a verified catalog is the preload candidate set.
+        if (authoritative) scheduleTopicPreload(0);
         if (authoritative) finishSnapshotPart(4);
         // Issue #134: the profile Message action can park a default-topic
         // open while this page is loading; resolve it against the verified
@@ -17007,6 +17015,16 @@ void NativeController::selectTopic(const QString &id)
     pruneMessageFields();
     m_before.clear();
     m_after.clear();
+    // Issue #718 slice 2: swap-on-ready. When the target topic has a prepared
+    // slice, its own rows are the first published frame instead of the empty
+    // window; the latest-page reload below refreshes/expands the slice in
+    // place and every late write stays fenced by m_selection.
+    bool preparedShown = false;
+    if (const auto slice = m_topicSlices.constFind(id); slice != m_topicSlices.constEnd() && !slice->rows.isEmpty()) {
+        m_messages = noteActivityMerge({}, slice->rows);
+        m_before = slice->before;
+        preparedShown = !m_messages.isEmpty();
+    }
     m_loading = false;
     m_recoveringMarker = m_resumeOlder = false;
     const auto selection = m_selection;
@@ -17017,7 +17035,10 @@ void NativeController::selectTopic(const QString &id)
     emit draftChanged();
     // A regular topic switch shares its channel's in-flight catalog request.
     if (guard && selection == m_selection && m_topicSeedUnverified) loadTopics();
-    if (guard && selection == m_selection && hasConversation()) loadMessages();
+    // With a prepared slice on screen the reload must be a boundary-free latest
+    // page (Issue #718 slice 2): the boundary walk would page the whole gap
+    // between now and the slice's first row down before publishing.
+    if (guard && selection == m_selection && hasConversation()) loadMessages(false, preparedShown);
     // Issue #164: topic selection changes the viewed conversation identity.
     if (guard && selection == m_selection) {
         syncCallBridge();
@@ -17331,6 +17352,10 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     if (!older) m_after.clear();
                     if (!older) m_olderPrefetchArmed = true;
                     m_historyVerified = true;
+                    // Issue #718 slice 2: a verified window is also the slice
+                    // source for a later swap. The marker is window-scoped, so
+                    // the swap always re-loads latest before trusting Older.
+                    if (!older) rememberTopicSlice(m_topic, m_messages, QByteArray{}, 8);
                     m_loading = false;
                     ++m_historyCommitRevision;
                     emit messagesChanged();
@@ -17347,6 +17372,9 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
                     pruneMessageFields();
                     m_before.clear();
                     m_after.clear();
+                    // Issue #718 slice 2: even a cached hydration counts as
+                    // having seen these rows - the slice survives the next switch.
+                    rememberTopicSlice(m_topic, m_messages, QByteArray{}, 8);
                     ++m_historyCommitRevision;
                     emit messagesChanged();
                     if (!guard) return;
@@ -17477,6 +17505,9 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
         if (!older) m_olderPrefetchArmed = true;
         m_loading = false;
         m_historyVerified = true;
+        // Issue #718 slice 2: the freshly reconciled window warms the swap
+        // slice for this topic (window-scoped marker -> swap re-loads latest).
+        if (!older) rememberTopicSlice(m_topic, m_messages, QByteArray{}, 8);
         const bool resumeOlder = m_resumeOlder && !m_before.isEmpty();
         m_resumeOlder = false;
         if (!resumeOlder)
@@ -18807,6 +18838,107 @@ void NativeController::noteActivityTimestamps(const QVector<Message> &rows)
     for (const auto &message : rows)
         if (!message.uuid.isEmpty()) kept.insert(message.uuid, message.createdMicros);
     m_activityTimestamps.swap(kept);
+}
+
+// Issue #718 slice 2 (docs/NATIVE_DESKTOP_PARITY.md): bounded background
+// preload + swap-on-ready. The warm set holds a small message-count slice per
+// populated topic (never freshness-selected, so a months-old topic stays warm);
+// concurrency 2, page size 5 rows, map budget 512 topics. The sweep is driven
+// from the verified catalog commit only - never from stateChanged - and each
+// reply re-arms the timer so completion, not polling, paces the batches.
+void NativeController::scheduleTopicPreload(int delayMs)
+{
+    if (!m_topicPreloadTimer) {
+        m_topicPreloadTimer = new QTimer(this);
+        m_topicPreloadTimer->setSingleShot(true);
+        connect(m_topicPreloadTimer, &QTimer::timeout, this, &NativeController::runTopicPreloadBatch);
+    }
+    m_topicPreloadTimer->start(qMax(0, delayMs));
+}
+
+void NativeController::runTopicPreloadBatch()
+{
+    if (!authenticated() || m_stream.isEmpty()) return;
+    QVector<const Topic *> pending;
+    for (const auto &topic : std::as_const(m_topics)) {
+        if (topic.uuid == m_topic || topic.done || topic.lastMessage.isEmpty()) continue;
+        if (m_topicSlices.contains(topic.uuid) || m_topicPreloadSkipped.contains(topic.uuid)
+            || m_topicPreloadInFlight.contains(topic.uuid)) continue;
+        pending.append(&topic);
+    }
+    int budget = 2 - m_topicPreloadInFlight.size();
+    int issued = 0;
+    for (const auto *topic : std::as_const(pending)) {
+        if (budget <= 0) break;
+        requestTopicPreload(*topic);
+        --budget; ++issued;
+    }
+    if (!m_topicPreloadInFlight.isEmpty() || pending.size() > issued)
+        scheduleTopicPreload(m_topicPreloadIntervalMs);
+}
+
+void NativeController::requestTopicPreload(const Topic &topic)
+{
+    m_topicPreloadInFlight.insert(topic.uuid);
+    const auto project = m_session ? m_session->project() : QString();
+    const auto stream = topic.stream;
+    const auto generation = m_api->generation();
+    QUrlQuery query;
+    query.addQueryItem("stream_uuid", stream);
+    query.addQueryItem("topic_uuid", topic.uuid);
+    query.addQueryItem("sort_key", "created_at");
+    query.addQueryItem("sort_dir", "desc");
+    query.addQueryItem("page_limit", "5");
+    request("GET", messenger + "/messages/", QJsonValue{}, query,
+        [this, uuid = topic.uuid, project, stream, generation](const ApiResult &result) {
+        m_topicPreloadInFlight.remove(uuid);
+        if (!authenticated() || !m_session || m_session->project() != project
+            || generation != m_api->generation()) return;
+        QVector<Message> rows;
+        if (result.ok() && result.data.isArray()) {
+            for (const auto &value : result.data.toArray()) {
+                const auto message = parseMessage(value.toObject(), project);
+                if (!message || message->crypto || message->stream != stream
+                    || message->topic != uuid) { rows.clear(); break; }
+                rows.append(*message);
+            }
+        }
+        if (rows.isEmpty()) m_topicPreloadSkipped.insert(uuid);
+        else rememberTopicSlice(uuid, rows, result.nextMarker, rows.size());
+        scheduleTopicPreload(0);
+    });
+}
+
+void NativeController::rememberTopicSlice(const QString &topicUuid, const QVector<Message> &window,
+                                          const QByteArray &before, int keepRows)
+{
+    if (topicUuid.isEmpty() || window.isEmpty()) return;
+    // An e2ee row is renderable only through the crypto runtime; such windows
+    // never become swap slices (the preload would paint undecryptable rows).
+    for (const auto &message : window)
+        if (message.crypto) return;
+    const auto sorted = noteActivityMerge(QVector<Message>{}, window);
+    TopicSlice slice;
+    const int keep = qBound(1, keepRows, sorted.size());
+    slice.rows = sorted.mid(sorted.size() - keep);
+    slice.before = before;
+    if (!m_topicSlices.contains(topicUuid)) m_topicSliceOrder.append(topicUuid);
+    while (m_topicSliceOrder.size() > 512) {
+        const auto oldest = m_topicSliceOrder.takeFirst();
+        m_topicSlices.remove(oldest);
+    }
+    m_topicSlices.insert(topicUuid, slice);
+}
+
+bool NativeController::hasPreparedTopicSlice(const QString &topicUuid) const
+{
+    const auto slice = m_topicSlices.constFind(topicUuid);
+    return slice != m_topicSlices.constEnd() && !slice->rows.isEmpty();
+}
+
+void NativeController::setTopicPreloadIntervalMsForTest(int ms)
+{
+    m_topicPreloadIntervalMs = qMax(0, ms);
 }
 
 // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): a port of

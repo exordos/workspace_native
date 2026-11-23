@@ -2161,6 +2161,151 @@ private slots:
         QTRY_COMPARE(c.messages().size(), 1); QTRY_VERIFY(!c.busy());
         QCOMPARE(position(streamId), 0);
     }
+
+    // Issue #718 slice 2: switching back to a warmed topic must paint the
+    // topic's own rows on the first published frame instead of the empty
+    // window, and the bounded background preload must warm unopened populated
+    // topics exactly once each without hammering a failing one.
+    void topicHistorySwapShowsPreparedRowsDuringDelayedReload()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString topicB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        const QString a1 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000b1";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000b2";
+        const auto msgA1 = message("A one", a1, topicId);
+        const auto msgA2 = message("A two", a2, topicId);
+        const auto msgB = message("B one", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000b1", topicB);
+        const auto topicDto = [](const QString &id, const QString &name, const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", name}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.topics = [&](const Request &) {
+            return Response{QJsonArray{topicDto(topicId, "Native topic", a2, true),
+                topicDto(topicB, "Second topic", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000b1", false)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+            return Response{topicDto(id, "Topic", QString(), id == topicId)};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicB) return Response{QJsonArray{msgB}};
+            return Response{QJsonArray{msgA2, msgA1}};
+        };
+        QVector<std::function<void()>> held;
+        bool armDefer = false;
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (armDefer && request.method == "GET" && request.target.path().endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("topic_uuid") == topicId) {
+                Response response{QJsonArray{msgA2, msgA1}};
+                response.defer = [&](std::function<void()> send) { held.append(std::move(send)); };
+                return response;
+            }
+            return original(request);
+        };
+        auto &c = fixture.controller;
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        c.selectStream(streamId);
+        QTRY_COMPARE(c.messages().size(), 2); QTRY_VERIFY(!c.busy());
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicId));
+        c.selectTopic(topicB);
+        QTRY_COMPARE(c.messages().size(), 1); QTRY_VERIFY(!c.busy());
+        armDefer = true;
+        c.selectTopic(topicId);
+        // Swap-on-ready: A's rows are the first published frame, not the empty
+        // window, while the deferred reload is still in flight.
+        QVERIFY2(!c.messages().isEmpty(),
+            qPrintable(QStringLiteral("blank frame on swap back: %1 rows published").arg(c.messages().size())));
+        QTRY_COMPARE(held.size(), 1);
+        QCOMPARE(c.messages().size(), 2); // the held reload has not landed yet
+        held.first()();
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.messages().size(), 2);
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicId));
+    }
+
+    void topicPreloadWarmsUnopenedTopicsWithBoundedTraffic()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString topicB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        const QString topicC = "cccccccc-cccc-4ccc-8ccc-00000000000c";
+        const QString topicD = "dddddddd-dddd-4ddd-8ddd-00000000000d";
+        const QString a1 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c1";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c2";
+        const auto topicDto = [](const QString &id, const QString &name, const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", name}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.topics = [&](const Request &) {
+            return Response{QJsonArray{topicDto(topicId, "Native topic", a2, true),
+                topicDto(topicB, "B", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000c1", false),
+                topicDto(topicC, "C", "cccccccc-cccc-4ccc-8ccc-0000000000c1", false),
+                topicDto(topicD, "D", "dddddddd-dddd-4ddd-8ddd-0000000000d1", false)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {""
+                    "name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+            return Response{topicDto(id, "Topic", QString(), id == topicId)};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicD) return Response{QJsonObject{}, 500};
+            if (topic == topicB)
+                return Response{QJsonArray{message("B two", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000c2", topicB),
+                    message("B one", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000c1", topicB)}};
+            if (topic == topicC)
+                return Response{QJsonArray{message("C one", "cccccccc-cccc-4ccc-8ccc-0000000000c1", topicC)}};
+            return Response{QJsonArray{message("A two", a2, topicId), message("A one", a1, topicId)}};
+        };
+        QVector<QString> topicGets;
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                topicGets.append(QUrlQuery(request.target).queryItemValue("topic_uuid"));
+            return original(request);
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        c.selectStream(streamId);
+        QTest::qWait(600);
+        qWarning() << "PROBE2 error=" << c.error() << "streams=" << c.streams().size()
+                   << "topics=" << c.topics().size() << "selectedTopic=" << c.selectedTopic()
+                   << "busy=" << c.busy();
+        QTRY_COMPARE(c.messages().size(), 2);
+        QTRY_COMPARE(c.messages().size(), 2); // topic A is the open one
+        // B and C are never opened, yet the bounded sweep warms them.
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicB));
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicC));
+        QTRY_VERIFY(!c.hasPreparedTopicSlice(topicD));
+        QTest::qWait(400);
+        QCOMPARE(topicGets.count(topicB), 1); // one page per topic, no re-requests
+        QCOMPARE(topicGets.count(topicC), 1);
+        QCOMPARE(topicGets.count(topicD), 1); // failing topic is skipped, not hammered
+        // The prepared topic paints on the first frame of the route change.
+        c.selectTopic(topicB);
+        QVERIFY2(!c.messages().isEmpty(),
+            "a prepared topic must show its own rows on the first visible frame");
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)

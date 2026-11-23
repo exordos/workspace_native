@@ -292,6 +292,12 @@ public:
     // decodeStarts counts jobs that reached the decode stage at all.
     static void setUploadPreviewBarrierForTest(std::function<void()> barrier);
     static int uploadPreviewDecodeStartsForTest();
+    // Issue #718 slice 2 seams (used by native-controller-sidebar-test):
+    // hasPreparedTopicSlice reports whether the bounded preload has warmed a
+    // small renderable slice for the topic (swap-on-ready source), and the
+    // interval seam compresses the sweep pacing for deterministic waits.
+    bool hasPreparedTopicSlice(const QString &topicUuid) const;
+    void setTopicPreloadIntervalMsForTest(int ms);
     void setRealtimeMode(bool enabled) { m_realtimeMode = enabled; if (enabled) m_poll.stop(); }
     void useRealtime(RealtimeClient *client);
     // Power state (issue #78, docs/NATIVE_DESKTOP_POWER_STATE.md): resume
@@ -2085,6 +2091,22 @@ private:
     QVector<Message> noteActivityMerge(const QVector<Message> &existing, const QVector<Message> &incoming);
     void noteActivityTimestamps(const QVector<Message> &rows);
     QHash<QString, qint64> m_activityTimestamps;
+    // Issue #718 slice 2: bounded background preload of a small message-count
+    // slice per populated topic + swap-on-ready projection in selectTopic.
+    // Encrypted (e2ee) rows never become slices - the e2ee runtime owns those
+    // windows end to end - and NativeCache/history budgets are untouched.
+    struct TopicSlice { QVector<Message> rows; QByteArray before; };
+    void scheduleTopicPreload(int delayMs = 0);
+    void runTopicPreloadBatch();
+    void requestTopicPreload(const Topic &topic);
+    void rememberTopicSlice(const QString &topicUuid, const QVector<Message> &window,
+                            const QByteArray &before, int keepRows);
+    QHash<QString, TopicSlice> m_topicSlices;
+    QVector<QString> m_topicSliceOrder;
+    QSet<QString> m_topicPreloadSkipped;
+    QSet<QString> m_topicPreloadInFlight;
+    QTimer *m_topicPreloadTimer = nullptr;
+    int m_topicPreloadIntervalMs = 1000;
     int streamGroupRank(const Stream &stream) const;
     QVariantMap rowPreviewFields(const QString &lastMessage) const;
     // Bounded cache warm for row previews (docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2):
