@@ -99,8 +99,12 @@ passing it to `gh release create --notes-file`; image lines pass through the
 extractor untouched. Guard: `packages/native/tests/release-notes-test.py` gains
 a case proving a section containing an image paragraph extracts intact (and a
 `## ` subheading does not split the section); the extractor itself needs no
-change. This test file is tooling-side (not registered in CTest) per the release
-tooling rule.
+change. The same file additionally audits every image in the aggregate document
+against this contract - standalone image line, descriptive alt text, absolute
+raw URL in the section's own version folder, committed asset, and the count and
+size budgets - so a non-conforming illustration fails the CI tooling check
+instead of only a human review. This test file is tooling-side (not registered
+in CTest) per the release tooling rule.
 
 ## Acceptance
 
@@ -112,4 +116,6 @@ tooling rule.
 - The live release body on GitHub renders the images (checked like the existing
   single-heading audit after publish).
 - No illustration contains real user data; file sizes and the per-release count
-  respect the budget (review-stage check, named in the bump PR).
+  respect the budget - the count, size, URL and committed-asset rules are
+  machine-guarded by the audit case in `release-notes-test.py`; the privacy
+  rule stays a review-stage check named in the bump PR.
