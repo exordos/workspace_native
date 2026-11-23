@@ -39,6 +39,32 @@ private:
         image.loadFromData(QByteArray::fromBase64(payload.toLatin1()), "JPEG");
         return image;
     }
+    // Bug #678 fixture: stored raster 80x40 with a 20x10 red block at the
+    // raw top-left and EXIF Orientation 6 (rotate 90 degrees clockwise for
+    // display, so the intended view is 40x80 with the block at the TOP-RIGHT).
+    // q95, 4:4:4, sha256 cac2a140dada9a578099c9e95d406f8fc4e451e2f2faeb5f8d771e548df1c893.
+    static QByteArray exifOrient6Jpeg()
+    {
+        return QByteArray::fromBase64(
+            "/9j/4AAQSkZJRgABAQAAAQABAAD/4QAiRXhpZgAATU0AKgAAAAgAAQESAAMAAAABAAYAAAAAAAD/"
+            "2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoK"
+            "BggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoK"
+            "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAAoAFADAREAAhEBAxEB/8QAHwAAAQUBAQEBAQEA"
+            "AAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJx"
+            "FDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNk"
+            "ZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJ"
+            "ytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQF"
+            "BgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMz"
+            "UvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3"
+            "eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna"
+            "4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD4vr+Uz/fwKAP1S/4Nmv8Amtn/AHLf/uUr"
+            "9W8Mf+Yv/uH/AO3n8A/Tm/5p/wD7m/8A3WP1Sr9WP4BCgAoAKACgAoAKAPlb/hyd/wAEx/8Ao2f/"
+            "AMvPWv8A5Mr5T/Ujhf8A6B//ACef/wAkfv8A/wATR+Ov/Q3/APLfC/8AykP+HJ3/AATH/wCjZ/8A"
+            "y89a/wDkyj/Ujhf/AKB//J5//JB/xNH46/8AQ3/8t8L/APKT1X9mb9ib9mP9jv8Atv8A4Zx+Gf8A"
+            "wjv/AAkX2b+2f+Jze3n2j7P5vk/8fU0mzb58v3cZ3c5wMerlmR5Xk3P9Tp8nPa+sne17bt93sfAc"
+            "deKPHfiV9X/1jxft/Yc/s/3dKHLz8vP/AA4Qvfkj8V7W0td39Ur1j8/CgAoAKACgAoAKACgAoAKA"
+            "CgAoAKACgAoAKACgAoAKACgAoAKACgAoAKACgAoAKACgAoAKACgAoAKACgAoAKAP/9k=");
+    }
 
 private slots:
     void parsePreferencesContract()
@@ -215,6 +241,30 @@ private slots:
         const auto result = ChatBackground::prepareImage(bytes, QStringLiteral("image/png"));
         QVERIFY(!result.ok);
         QCOMPARE(result.error, QStringLiteral("size"));
+    }
+
+    void prepareImageHonorsExifOrientation()
+    {
+        // Bug #678: an orientation-aware reader returns 40x80 for this JPEG
+        // (80x40 raster + Orientation 6), while the pre-fix pipeline returned
+        // a JPEG with the unrotated 80x40 raster. The corrected pixels must
+        // be BAKED into the saved output, so the plain (non-transforming)
+        // decodeDataUrl below already shows the intended display orientation.
+        const QByteArray fixture = exifOrient6Jpeg();
+        const auto result = ChatBackground::prepareImage(fixture, QStringLiteral("image/jpeg"));
+        QVERIFY2(result.ok, qPrintable(result.error));
+        const QImage out = decodeDataUrl(result.dataUrl);
+        QCOMPARE(out.width(), 40);
+        QCOMPARE(out.height(), 80);
+        const auto isRed = [](QRgb p) {
+            return qRed(p) > 150 && qGreen(p) < 100 && qBlue(p) < 100;
+        };
+        // Rotating the raster 90 degrees clockwise moves the raw top-left
+        // block (x in [0,20), y in [0,10)) to x' in [30,40), y' in [0,20).
+        QVERIFY2(isRed(out.pixel(35, 10)), QByteArray::number(out.pixel(35, 10)));
+        QVERIFY2(!isRed(out.pixel(2, 2)), QByteArray::number(out.pixel(2, 2)));
+        QVERIFY2(!isRed(out.pixel(5, 75)), QByteArray::number(out.pixel(5, 75)));
+        QVERIFY2(!isRed(out.pixel(37, 70)), QByteArray::number(out.pixel(37, 70)));
     }
 
     void qmlFacingApplyResolveAndFilePipeline()
