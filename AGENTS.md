@@ -12,7 +12,9 @@
   Explain the base release and bump level in any PR that changes the version.
 - Keep tests and application runtime independent of local developer paths.
 - Keep upstream assets/fixtures and their license/provenance intact.
-- Document changes under `docs`; do not change or add README without approval.
+- Document changes under `docs`. The README must stay accurate and current, but
+  edit it only when there is a real need: it is a polished description of the
+  project for readers, with no technical or implementation details.
 - Use `gh` for GitHub operations. Preserve unrelated changes and add regression
   coverage for confirmed defects. Report local, live and platform checks separately.
 - Apply the [architecture](docs/standards/architecture.md),
