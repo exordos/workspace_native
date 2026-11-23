@@ -57,6 +57,32 @@ class ReleaseNotesTest(unittest.TestCase):
             '# Workspace Native 0.1.3 - Linux development preview')
         self.assertNotIn('0.1.6', section)
 
+    def test_an_illustrated_section_survives_extraction(self):
+        illustrated = (
+            '# Workspace Native 0.3.0 - Linux development preview\n'
+            '\n'
+            'In this release\n'
+            '\n'
+            '- Chat backgrounds arrived.\n'
+            '\n'
+            '## Chat backgrounds\n'
+            '\n'
+            '![Chat background picker over a topic](https://raw.githubusercontent.com/'
+            'exordos/workspace_native/master/docs/images/releases/0.3.0/chat-backgrounds.png)\n'
+            '\n'
+            'What changed: pick a preset or your own image as the background of one chat.\n'
+            '\n'
+            '[Full changelog from 0.2.0 to 0.3.0](https://example.invalid/compare/0.2.0...0.3.0)\n'
+            '\n'
+            '---\n'
+            '\n')
+        section = self.extract(illustrated + AGGREGATE, '0.3.0')
+        self.assertIn('## Chat backgrounds', section)
+        self.assertIn('![Chat background picker over a topic](https://raw.githubusercontent.com/'
+            'exordos/workspace_native/master/docs/images/releases/0.3.0/chat-backgrounds.png)', section)
+        self.assertIn('Full changelog', section)
+        self.assertNotIn('Drafts now survive restart.', section)
+
     def test_a_shorter_version_never_matches_a_longer_one(self):
         self.assertNotIn('0.1.30', self.extract(AGGREGATE + '\n---\n\n'
             '# Workspace Native 0.1.30 - Linux development preview\n\nLater work.\n', '0.1.3'))
