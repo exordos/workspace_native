@@ -12609,8 +12609,16 @@ mv -Tf "$root/.current-new" "$root/current"
                 + delegate->mapToScene(QPointF(0, 0)).y() - list->mapToScene(QPointF(0, 0)).y());
             QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamUuid), 2000);
             auto *row = visibleItem(window->contentItem(), "stream-" + streamUuid); QVERIFY(row);
-            QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
-            QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "expandTopics-" + streamUuid), 3000);
+            // The expandTopics handle exists only while the pointer hovers the
+            // header row, and a deferred relayout (#660 singleShot(0) notify)
+            // can move the row after a one-shot motion event landed, leaving
+            // containsMouse false for the rest of the poll window (#714).
+            // Re-target the pointer to the row's CURRENT scene position on
+            // every attempt so the hover state must eventually stick.
+            QTRY_VERIFY_WITH_TIMEOUT(([&]{
+                QTest::mouseMove(window, row->mapToScene(QPointF(row->width() - 20, 15)).toPoint());
+                return visibleItem(window->contentItem(), "expandTopics-" + streamUuid) != nullptr;
+            })(), 5000);
             click(window, visibleItem(window->contentItem(), "expandTopics-" + streamUuid));
         };
         // Order is the sidebar projection order; walking scene items would
