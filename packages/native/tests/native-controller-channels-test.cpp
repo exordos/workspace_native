@@ -1239,6 +1239,80 @@ private slots:
         }
     }
 
+    // Issue #739: the field-wise patch seam the dialog uses. A key present in
+    // the map is a candidate edit from the current user; an absent key is never
+    // sent even when the row moved underneath (a peer admin's newer change to
+    // an untouched field survives). Present-but-matching values are still
+    // filtered by the row diff.
+    void topicSummaryTopicPatchSendsOnlyPresentFields()
+    {
+        {
+            TopicSummaryScene scene;
+            scene.topicSummaryConfig = QJsonObject{{"summary_system_prompt", "New remote prompt"},
+                {"summary_reasoning_effort", "low"}};
+            scene.serveTopicRows(scene.fixture);
+            QVERIFY(scene.fixture.start());
+            auto &controller = scene.fixture.controller;
+            QList<QJsonObject> bodies;
+            const auto base = scene.fixture.server.handler;
+            scene.fixture.server.handler = [&](const Request &request) -> Response {
+                const auto path = request.target.path();
+                if (request.method == "POST" && path.endsWith("/actions/set_summary_prompt/invoke")) {
+                    bodies.append(request.body);
+                    auto dto = scene.topicRow(topicId);
+                    for (const auto key : request.body.keys()) dto.insert(key, request.body.value(key));
+                    return Response{dto};
+                }
+                return base(request);
+            };
+            QSignalSpy finished(&controller, &NativeController::channelTopicActionFinished);
+            // Effort alone was edited: the row's newer prompt has no key, so
+            // nothing about the prompt rides the request.
+            controller.saveTopicSummaryTopicPatch(topicId,
+                QVariantMap{{QStringLiteral("effort"), QStringLiteral("high")}});
+            QTRY_COMPARE(finished.count(), 1);
+            QCOMPARE(finished.takeFirst().at(2).toBool(), true);
+            const QList<QJsonObject> expected{QJsonObject{{"summary_reasoning_effort", "high"}}};
+            QCOMPARE(bodies, expected);
+            // A present-but-unchanged field is dropped by the defensive diff.
+            controller.saveTopicSummaryTopicPatch(topicId,
+                QVariantMap{{QStringLiteral("prompt"), QStringLiteral("New remote prompt")}});
+            QTRY_COMPARE(finished.count(), 1);
+            QCOMPARE(finished.takeFirst().at(2).toBool(), true);
+            QCOMPARE(bodies.size(), 1);
+            // An empty patch dispatches nothing and reports success.
+            controller.saveTopicSummaryTopicPatch(topicId, QVariantMap{});
+            QTRY_COMPARE(finished.count(), 1);
+            QCOMPARE(finished.takeFirst().at(2).toBool(), true);
+            QCOMPARE(bodies.size(), 1);
+        }
+        {
+            // A present null means "set the field to its default" and rides
+            // the request as explicit null.
+            TopicSummaryScene scene;
+            scene.topicSummaryConfig = QJsonObject{{"summary_system_prompt", "Stale local draft"}};
+            scene.serveTopicRows(scene.fixture);
+            QVERIFY(scene.fixture.start());
+            auto &controller = scene.fixture.controller;
+            QList<QJsonObject> bodies;
+            const auto base = scene.fixture.server.handler;
+            scene.fixture.server.handler = [&](const Request &request) -> Response {
+                if (request.method == "POST" && request.target.path().endsWith("/actions/set_summary_prompt/invoke")) {
+                    bodies.append(request.body);
+                    return Response{scene.topicRow(topicId)};
+                }
+                return base(request);
+            };
+            QSignalSpy finished(&controller, &NativeController::channelTopicActionFinished);
+            controller.saveTopicSummaryTopicPatch(topicId,
+                QVariantMap{{QStringLiteral("prompt"), QVariant()}});
+            QTRY_COMPARE(finished.count(), 1);
+            const QList<QJsonObject> expected{
+                QJsonObject{{"summary_system_prompt", QJsonValue::Null}}};
+            QCOMPARE(bodies, expected);
+        }
+    }
+
     void topicSummaryTopicSaveRejectsInvalidInputAndMembers()
     {
         {

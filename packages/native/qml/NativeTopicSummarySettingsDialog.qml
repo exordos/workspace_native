@@ -16,8 +16,11 @@ Dialog {
     property string topicName: ""
     property string streamName: ""
     // Emitted when the topic tab carries prompt/reasoning edits; the owning panel
-    // routes them to the controller summary-config seam.
-    signal topicConfigRequested(string topic, bool enabled, string prompt, bool promptIsDefault, string effort)
+    // routes them to the controller summary-config seam. The trailing flags are
+    // the per-field edit mask of issue #739: only an edited field may ride the
+    // request, so a peer admin's newer write to an untouched field survives.
+    signal topicConfigRequested(string topic, bool enabled, string prompt, bool promptIsDefault, string effort,
+        bool editEnabled, bool editPrompt, bool editEffort)
     // Which section dispatched the in-flight op; only ITS OWN success may reset
     // that draft - a shared "saved" reset discarded unsaved edits in the other
     // section (review finding 5). Save buttons gate on !busy, so one op is in flight.
@@ -149,6 +152,16 @@ Dialog {
                 property string promptDraft: ""
                 property bool promptIsDefault: true
                 property string effortDraft: ""      // "" = provider default
+                // Issue #739: the per-field baseline (the base leg of the three-way
+                // rebase of docs/topic-summary-settings.md). Drafts are seeded on
+                // open; every incoming topic-row update rebases them so an untouched
+                // field follows the server instead of looking dirty, and the save
+                // request carries ONLY the fields the current user actually edited
+                // (a peer admin's newer change to another field survives).
+                property bool enabledBase: false
+                property string promptBase: ""
+                property bool promptIsDefaultBase: true
+                property string effortBase: ""
                 property bool saving: false
                 property bool failed: false
                 function reset() {
@@ -157,14 +170,35 @@ Dialog {
                     promptDraft = t && t.summarySystemPrompt ? String(t.summarySystemPrompt) : ""
                     promptIsDefault = !t || !t.summarySystemPrompt
                     effortDraft = t && t.summaryReasoningEffort ? String(t.summaryReasoningEffort) : ""
+                    enabledBase = enabledDraft; promptBase = promptDraft
+                    promptIsDefaultBase = promptIsDefault; effortBase = effortDraft
                     saving = false; failed = false
                 }
+                function rebaseOntoRow() {
+                    const t = topicFind()
+                    const rowEnabled = !t || t.summaryEnabled !== false
+                    const rowPrompt = t && t.summarySystemPrompt ? String(t.summarySystemPrompt) : ""
+                    const rowDefault = !t || !t.summarySystemPrompt
+                    const rowEffort = t && t.summaryReasoningEffort ? String(t.summaryReasoningEffort) : ""
+                    if (enabledDraft === enabledBase) enabledDraft = rowEnabled
+                    if (promptDraft === promptBase) promptDraft = rowPrompt
+                    if (effortDraft === effortBase) effortDraft = rowEffort
+                    promptIsDefault = promptDraft.length === 0 || rowDefault
+                    enabledBase = rowEnabled; promptBase = rowPrompt
+                    promptIsDefaultBase = rowDefault; effortBase = rowEffort
+                }
                 readonly property bool topicEditable: Boolean(dlg.controller.channelInfoStream.canEditTopicSummary) && !saving
-                readonly property bool dirty: enabledDraft !== (topicFind().summaryEnabled !== false)
-                    || promptDraft !== (String(topicFind().summarySystemPrompt || ""))
-                    || (promptDraft.length === 0) !== promptIsDefault
-                    || effortDraft !== String(topicFind().summaryReasoningEffort || "")
+                readonly property bool dirty: enabledDraft !== enabledBase
+                    || promptDraft !== promptBase
+                    || (promptDraft.length === 0) !== promptIsDefaultBase
+                    || effortDraft !== effortBase
                 function topicFind() { return controller.channelInfoTopics.find(row => row.id === dlg.topicId) || {} }
+                Connections {
+                    target: controller
+                    // Remote writes (realtime topic.updated, catalog refresh) land
+                    // through this NOTIFY: rebase the local draft, never fetch.
+                    function onChannelInfoTopicsChanged() { if (dlg.visible) topicTab.rebaseOntoRow() }
+                }
                 contentHeight: topicCol.implicitHeight
                 ScrollBar.vertical: ScrollBar {}
                 ColumnLayout {
@@ -214,7 +248,7 @@ Dialog {
                             model: [qsTr("Provider default"), "off", "minimal", "low", "medium", "high"]
                             property var values: ["", "off", "minimal", "low", "medium", "high"]
                             currentIndex: Math.max(0, values.indexOf(topicTab.effortDraft))
-                            onActivated: topicTab.effortDraft = values[index]
+                            onActivated: index => topicTab.effortDraft = values[index]
                         }
                         Item { Layout.fillWidth: true }
                     }
@@ -702,13 +736,18 @@ Dialog {
                                && !controller.topicSummarySettingsBusy))
                     onClicked: {
                         if (dlg.activeTab === "topic") {
-                            const t = topicTab.topicFind()
-                            const enabledOnly = topicTab.promptDraft === String(t.summarySystemPrompt || "")
-                                && topicTab.effortDraft === String(t.summaryReasoningEffort || "")
+                            // Issue #739: patch from the per-field edit mask (draft vs
+                            // baseline), never from "differs from the live row" - the
+                            // live row may already carry a peer admin's newer write.
+                            const editEnabled = topicTab.enabledDraft !== topicTab.enabledBase
+                            const editPrompt = topicTab.promptDraft !== topicTab.promptBase
+                                || (topicTab.promptDraft.length === 0) !== topicTab.promptIsDefaultBase
+                            const editEffort = topicTab.effortDraft !== topicTab.effortBase
                             topicTab.saving = true; topicTab.failed = false
-                            if (enabledOnly) controller.applyChannelTopicAction(dlg.topicId, "summary", String(topicTab.enabledDraft))
+                            if (editEnabled && !editPrompt && !editEffort) controller.applyChannelTopicAction(dlg.topicId, "summary", String(topicTab.enabledDraft))
                             else dlg.topicConfigRequested(dlg.topicId, topicTab.enabledDraft, topicTab.promptDraft,
-                                topicTab.promptDraft.length === 0, topicTab.effortDraft)
+                                topicTab.promptDraft.length === 0, topicTab.effortDraft,
+                                editEnabled, editPrompt, editEffort)
                         } else if (dlg.activeTab === "gates") {
                             dlg.pendingOp = "gates"
                             controller.saveTopicSummaryGates(gatesTab.globalDraft, gatesTab.projectDraft)

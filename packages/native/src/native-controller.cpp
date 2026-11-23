@@ -4654,6 +4654,26 @@ void NativeController::dispatchTopicAction(const QString &stream, const QString 
 void NativeController::saveTopicSummaryTopic(const QString &topic, bool enabled,
     const QString &prompt, const QString &effort)
 {
+    // Full-draft call: every field arrives as a candidate edit (the pre-#739
+    // shape) and the row diff inside the patch seam filters what never changed.
+    // The settings dialog now routes through saveTopicSummaryTopicPatch with
+    // exactly the fields the user edited.
+    QVariantMap fields;
+    fields.insert(QStringLiteral("enabled"), enabled);
+    fields.insert(QStringLiteral("prompt"),
+        prompt.isEmpty() ? QVariant() : QVariant(prompt));
+    fields.insert(QStringLiteral("effort"),
+        effort.isEmpty() ? QVariant() : QVariant(effort));
+    saveTopicSummaryTopicPatch(topic, fields);
+}
+
+// Issue #739: keys present in `fields` are the current user's candidate edits
+// (enabled: bool, prompt/effort: string or null for the default). An absent key
+// is never sent, so a peer admin's newer write to an untouched field survives.
+// Present values still face the row diff (defensive: an edit that no longer
+// differs from the server is dropped and dispatches nothing).
+void NativeController::saveTopicSummaryTopicPatch(const QString &topic, const QVariantMap &fields)
+{
     const auto report = [this, &topic](bool ok) {
         emit channelTopicActionFinished(topic, QStringLiteral("summary"), ok);
         emit topicActionFinished(m_stream, topic, QStringLiteral("summary"), ok);
@@ -4670,22 +4690,31 @@ void NativeController::saveTopicSummaryTopic(const QString &topic, bool enabled,
     // a whitespace-only custom draft is an error, never a silent clear to null.
     static const QStringList efforts{QStringLiteral("off"), QStringLiteral("minimal"),
         QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high")};
-    const auto trimmedPrompt = prompt.trimmed();
-    if (!effort.isEmpty() && !efforts.contains(effort)) { report(false); return; }
-    if (!prompt.isEmpty() && trimmedPrompt.isEmpty()) { report(false); return; }
-    if (trimmedPrompt.size() > 16384) { report(false); return; }
-    const std::optional<QString> nextPrompt =
-        trimmedPrompt.isEmpty() ? std::optional<QString>{} : std::optional<QString>(trimmedPrompt);
-    const std::optional<QString> nextEffort =
-        effort.isEmpty() ? std::optional<QString>{} : std::optional<QString>(effort);
     QJsonObject body;
-    if (enabled != row->summaryEnabled) body.insert("summary_enabled", enabled);
-    if (nextPrompt != row->summarySystemPrompt)
-        body.insert("summary_system_prompt",
-            nextPrompt ? QJsonValue(*nextPrompt) : QJsonValue(QJsonValue::Null));
-    if (nextEffort != row->summaryReasoningEffort)
-        body.insert("summary_reasoning_effort",
-            nextEffort ? QJsonValue(*nextEffort) : QJsonValue(QJsonValue::Null));
+    if (fields.contains(QStringLiteral("enabled"))) {
+        const bool enabled = fields.value(QStringLiteral("enabled")).toBool();
+        if (enabled != row->summaryEnabled) body.insert("summary_enabled", enabled);
+    }
+    if (fields.contains(QStringLiteral("prompt"))) {
+        const auto prompt = fields.value(QStringLiteral("prompt")).toString();
+        const auto trimmedPrompt = prompt.trimmed();
+        if (!prompt.isEmpty() && trimmedPrompt.isEmpty()) { report(false); return; }
+        if (trimmedPrompt.size() > 16384) { report(false); return; }
+        const std::optional<QString> nextPrompt =
+            trimmedPrompt.isEmpty() ? std::optional<QString>{} : std::optional<QString>(trimmedPrompt);
+        if (nextPrompt != row->summarySystemPrompt)
+            body.insert("summary_system_prompt",
+                nextPrompt ? QJsonValue(*nextPrompt) : QJsonValue(QJsonValue::Null));
+    }
+    if (fields.contains(QStringLiteral("effort"))) {
+        const auto effort = fields.value(QStringLiteral("effort")).toString();
+        if (!effort.isEmpty() && !efforts.contains(effort)) { report(false); return; }
+        const std::optional<QString> nextEffort =
+            effort.isEmpty() ? std::optional<QString>{} : std::optional<QString>(effort);
+        if (nextEffort != row->summaryReasoningEffort)
+            body.insert("summary_reasoning_effort",
+                nextEffort ? QJsonValue(*nextEffort) : QJsonValue(QJsonValue::Null));
+    }
     if (body.isEmpty()) { report(true); return; } // nothing dirty: nothing to patch
     dispatchTopicAction(m_stream, topic, QStringLiteral("summary"), true, QByteArrayLiteral("POST"),
         messenger + "/stream_topics/" + topic + "/actions/set_summary_prompt/invoke", body);

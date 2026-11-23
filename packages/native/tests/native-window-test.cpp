@@ -24804,6 +24804,154 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
 
+    // ===== Issue #739: field-wise draft rebase in the topic-summary dialog =====
+
+    // A remote admin's newer change to an untouched field must survive: the
+    // dialog rebases its drafts onto incoming topic rows and the save request
+    // carries only the fields the current user actually edited
+    // (docs/topic-summary-settings.md three-way rebase contract).
+    void channelTopicSummaryDialogSendsOnlyUserEditedEffortAfterRemotePromptUpdate()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        int eventNumber = 0;
+        const auto seedTopic = [&](const QString &prompt, const QString &effort) {
+            auto item = windowChannelTopic(topicId, streamId, "General");
+            item["kind"] = QStringLiteral("topic.updated");
+            item["summary_enabled"] = true;
+            item["summary_system_prompt"] = prompt;
+            item["summary_reasoning_effort"] = effort;
+            QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+                {"uuid", QStringLiteral("8b7c0000-0000-4000-8000-%1")
+                    .arg(++eventNumber, 12, 10, QLatin1Char('0'))},
+                {"project_id", projectId}, {"user_uuid", userId}, {"payload", item}}));
+        };
+        seedTopic(QStringLiteral("Original prompt"), QStringLiteral("low"));
+        QList<QJsonObject> saveBodies;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/set_summary_prompt/invoke")) {
+                saveBodies.append(request.body);
+                return {QJsonObject{{"ok", true}}, 200};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        // User edit: reasoning effort low -> high (the combo's activated signal
+        // is the user seam: it writes effortDraft like a real pick would).
+        auto *effort = visibleItem("channelTopicSummaryReasoning");
+        QVERIFY(effort);
+        QMetaObject::invokeMethod(effort, "activated", Q_ARG(int, 5));
+        // While the dialog stays open a peer admin changes ONLY the prompt.
+        seedTopic(QStringLiteral("New remote prompt"), QStringLiteral("low"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save && save->property("enabled").toBool());
+        click(scene.window, save);
+        QTRY_COMPARE(saveBodies.size(), 1);
+        // The request carries the edited effort alone - the stale "Original
+        // prompt" draft never overwrites the newer remote prompt.
+        const QJsonObject expected{{"summary_reasoning_effort", QStringLiteral("high")}};
+        QCOMPARE(saveBodies.at(0), expected);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // The prompt field mirrors the contract in either order: editing the prompt
+    // while the remote admin moves only the effort sends the prompt alone.
+    void channelTopicSummaryDialogSendsOnlyUserEditedPromptAfterRemoteEffortUpdate()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        int eventNumber = 0;
+        const auto seedTopic = [&](const QString &prompt, const QString &effort) {
+            auto item = windowChannelTopic(topicId, streamId, "General");
+            item["kind"] = QStringLiteral("topic.updated");
+            item["summary_enabled"] = true;
+            item["summary_system_prompt"] = prompt;
+            item["summary_reasoning_effort"] = effort;
+            QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+                {"uuid", QStringLiteral("8b7c0000-0000-4000-8000-%1")
+                    .arg(++eventNumber, 12, 10, QLatin1Char('0'))},
+                {"project_id", projectId}, {"user_uuid", userId}, {"payload", item}}));
+        };
+        seedTopic(QStringLiteral("Original prompt"), QStringLiteral("low"));
+        QList<QJsonObject> saveBodies;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/set_summary_prompt/invoke")) {
+                saveBodies.append(request.body);
+                return {QJsonObject{{"ok", true}}, 200};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *area = visibleItem("channelTopicSummaryPrompt");
+        QVERIFY(area);
+        area->setProperty("text", QStringLiteral("Local prompt edit"));
+        seedTopic(QStringLiteral("Original prompt"), QStringLiteral("high"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save && save->property("enabled").toBool());
+        click(scene.window, save);
+        QTRY_COMPARE(saveBodies.size(), 1);
+        const QJsonObject expected{{"summary_system_prompt", QStringLiteral("Local prompt edit")}};
+        QCOMPARE(saveBodies.at(0), expected);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // An untouched draft stays clean after a server update (Save never arms
+    // from a remote write alone), and a following generation-switch flip sends
+    // the enabled flag alone.
+    void channelTopicSummaryDialogStaysCleanAfterRemoteUpdate()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        int eventNumber = 0;
+        const auto seedTopic = [&](const QString &prompt, const QString &effort) {
+            auto item = windowChannelTopic(topicId, streamId, "General");
+            item["kind"] = QStringLiteral("topic.updated");
+            item["summary_enabled"] = true;
+            item["summary_system_prompt"] = prompt;
+            item["summary_reasoning_effort"] = effort;
+            QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+                {"uuid", QStringLiteral("8b7c0000-0000-4000-8000-%1")
+                    .arg(++eventNumber, 12, 10, QLatin1Char('0'))},
+                {"project_id", projectId}, {"user_uuid", userId}, {"payload", item}}));
+        };
+        seedTopic(QStringLiteral("Original prompt"), QStringLiteral("low"));
+        QList<QJsonObject> saveBodies;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/set_summary_prompt/invoke")) {
+                saveBodies.append(request.body);
+                return {QJsonObject{{"ok", true}}, 200};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save && !save->property("enabled").toBool());
+        // A remote admin moves both prompt and effort: the untouched draft
+        // rebases and Save must stay disabled.
+        seedTopic(QStringLiteral("New remote prompt"), QStringLiteral("medium"));
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySave")->property("enabled").toBool());
+        // The generation switch is the only local edit: its save is enabled-only.
+        click(scene.window, visibleItem("channelTopicSummaryEnabled"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySave")->property("enabled").toBool());
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(saveBodies.size(), 1);
+        const QJsonObject expected{{"summary_enabled", false}};
+        QCOMPARE(saveBodies.at(0), expected);
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
     // ===== Issue #635 review fix round (exo-review, PR #708 head a08c1b7) =====
 
     // Finding 1 [high]: the StackLayout pages fixed children by the FILTERED tab
