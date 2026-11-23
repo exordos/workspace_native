@@ -14593,7 +14593,11 @@ mv -Tf "$root/.current-new" "$root/current"
                 QVERIFY(QMetaObject::invokeMethod(window, "pickReaction", Q_ARG(QVariant, QString("thumbs_up"))));
                 controller.selectTopic(topicId);
                 QTRY_COMPARE(controller.messages().size(), 1);
-                bubble = item(content, "message-" + messageId);
+                // Issue #718 slice 2: the swap-on-ready frame can satisfy the
+                // size oracle one layout pass before the delegate is
+                // incubated; keep re-looking-up until the row itself exists.
+                bubble = nullptr;
+                QTRY_VERIFY(([&]{ bubble = item(content, "message-" + messageId); return bubble != nullptr; })());
                 QTest::mouseMove(window, bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
                 QTRY_VERIFY(item(content, "add-reaction-" + messageId)->isVisible());
                 openFullReactionPicker(window, bubble);

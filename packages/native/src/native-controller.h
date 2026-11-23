@@ -2112,7 +2112,12 @@ private:
     QSet<QString> m_topicPreloadSkipped;
     QSet<QString> m_topicPreloadInFlight;
     QTimer *m_topicPreloadTimer = nullptr;
-    bool m_topicPreloadEnabled = true;
+    // Product default is ON; window-shaped test groups and debugging disable
+    // the sweep with WORKSPACE_NATIVE_TOPIC_PRELOAD=0 (ctest ENVIRONMENT),
+    // because fixtures that pin exact /messages/ traffic or delegate geometry
+    // must not observe a background page landing mid-case.
+    bool m_topicPreloadEnabled =
+        qEnvironmentVariable("WORKSPACE_NATIVE_TOPIC_PRELOAD", "1") != "0";
     int m_topicPreloadIntervalMs = 1000;
     // True while the open window shows a swap-on-ready slice: the next
     // verified page of this selection may overwrite that frame.
