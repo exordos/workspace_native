@@ -25882,6 +25882,7 @@ mv -Tf "$root/.current-new" "$root/current"
     {
         ChannelInfoWindowScene scene;
         scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
         click(scene.window, visibleItem("channelInfoAddButton"));
         QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
         auto *dialog = visibleItem("addMembersDialog");
