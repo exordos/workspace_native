@@ -579,10 +579,18 @@ private slots:
         QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 7LL);
         QVERIFY(!admin->dirty());
         QVERIFY(!admin->conflict());
-        // A refresh started after the mutation still applies the server state.
+        // A refresh started after the mutation must ADOPT a newer server
+        // snapshot, not merely reach the server: advance the server past the
+        // confirmed revision first and wait for the client to adopt the rev-5
+        // values and ETag (#740 review finding).
+        test.policy = policyDto(5, true, false, 9, 50, 10 * 1048576);
+        test.etag = "\"5\"";
         admin->refreshPolicy();
         QTRY_COMPARE(test.policyGets, 3);
-        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        QTRY_COMPARE(admin->policy().value("revision").toInt(), 5);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 9LL);
+        QCOMPARE(admin->policyEtag(), QStringLiteral("\"5\""));
+        QVERIFY(!admin->dirty()); // Adoption keeps the draft clean.
     }
 
     void suspendRunsPendingThenFlipsAndResumeReturns()
