@@ -8,6 +8,10 @@
 
 #include <QBuffer>
 #include <QImageReader>
+#include <QQmlComponent>
+#include <QQmlEngine>
+#include <QSettings>
+#include <QUrl>
 #include <cstdlib>
 
 #include <QCoreApplication>
@@ -25,6 +29,10 @@ using Crypto = workspace::NativeChatCrypto;
 
 int main(int argc, char **argv)
 {
+    // The probe must run headless (the CI packaging step has no display);
+    // the WebEngine QML import below only compiles types, it never shows a
+    // window, so offscreen QPA is sufficient.
+    qputenv("QT_QPA_PLATFORM", "offscreen");
     QCoreApplication app(argc, argv);
     if (OPENSSL_init_ssl(0, nullptr) != 1) return 10;
     const auto prefix = QFileInfo(QCoreApplication::applicationDirPath() + "/..").canonicalFilePath() + '/';
@@ -91,6 +99,32 @@ int main(int argc, char **argv)
             && solid.blue() == 0xb4 && solid.alpha() == 255;
     }
     const bool tls = QSslSocket::supportsSsl();
+    // Call runtime (#728): compile a WebEngineView against the bundled QML
+    // import tree only. Plugin loading pulls libQt6WebEngineCore/Quick and
+    // libQt6WebChannel* into this process, so the /proc/self/maps scan below
+    // additionally proves the closure resolved inside the package. The call
+    // view is lazily loaded in the app, which is why the QML import scanner
+    // misses these modules and the packaging installs them by hand.
+    bool webEngineImport = false;
+    QString webEngineError;
+    {
+        QSettings qtConf(QCoreApplication::applicationDirPath() + "/qt.conf", QSettings::IniFormat);
+        const auto qmlImports = qtConf.value("Paths/QmlImports").toString();
+        const auto qmlDir = qmlImports.isEmpty()
+            ? QString{} : QFileInfo(QCoreApplication::applicationDirPath() + "/" + qmlImports).canonicalFilePath();
+        if (qmlDir.isEmpty()) {
+            webEngineError = QStringLiteral("qt.conf has no usable QmlImports path");
+        } else {
+            QQmlEngine engine;
+            engine.setImportPathList(QStringList{qmlDir});
+            QQmlComponent component(&engine);
+            component.setData("import QtWebEngine\nimport QtWebChannel\nWebEngineView {}\n",
+                QUrl("qrc:/workspace/call-runtime-probe.qml"));
+            webEngineImport = component.status() == QQmlComponent::Ready;
+            if (!webEngineImport)
+                webEngineError = component.errorString();
+        }
+    }
     QFile maps("/proc/self/maps");
     if (!maps.open(QIODevice::ReadOnly)) return 7;
     bool allInside = true, cryptoMapped = false, sslMapped = false;
@@ -115,11 +149,12 @@ int main(int argc, char **argv)
         {"imageRoundTrips", imageRoundTrips}, {"imagesDecoded", imagesDecoded},
         {"svgDecodeError", svgDecoded ? QString{} : svgReader.errorString()},
         {"heifDecode", heifOkay}, {"heifDecodeError", heifOkay ? QString{} : heifError},
+        {"webEngineImport", webEngineImport}, {"webEngineError", webEngineError},
         {"runtimePaths", runtimePaths}, {"messageRoundTrip", true}, {"grantRoundTrip", true},
         {"tlsSupported", tls}, {"tlsBackend", QSslSocket::activeBackend()}, {"tlsVersion", QSslSocket::sslLibraryVersionString()},
         {"runtimePathsInsidePrefix", allInside}, {"cryptoMapped", cryptoMapped}, {"sslMapped", sslMapped},
         {"relevantLibraries", paths.size()}};
     const auto json = QJsonDocument(output).toJson(QJsonDocument::Compact);
     if (std::fwrite(json.constData(), 1, size_t(json.size()), stdout) != size_t(json.size())) return 9;
-    return tls && allInside && cryptoMapped && sslMapped && imagesDecoded && heifOkay ? 0 : 8;
+    return tls && allInside && cryptoMapped && sslMapped && imagesDecoded && heifOkay && webEngineImport ? 0 : 8;
 }

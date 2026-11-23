@@ -93,6 +93,7 @@ jobs:
             dbus-daemon \
             libqt6sql6-sqlite libmd4c-dev libssl-dev \
             libheif-dev libheif1 libheif-plugin-libde265 libde265-0 \
+            qt6-webengine-dev libqt6webenginecore6-bin libqt6webengine6-data \
             qml6-module-qtquick qml6-module-qtquick-dialogs \
             qml6-module-qtmultimedia \
             qml6-module-qt-labs-folderlistmodel qml6-module-qtquick-controls \

@@ -707,6 +707,52 @@ private slots:
             QStringLiteral("http://meet.example.com/room")));
     }
 
+    // Issue #728: an embed load that reports nothing at all (e.g. the call
+    // view component failed to instantiate because the WebEngine runtime is
+    // missing) must still settle: the embed deadline drives Loading ->
+    // LoadFailed, and retry re-arms it.
+    void callWindowEmbedDeadlineSettlesAStalledLoad()
+    {
+        workspace::JitsiCallWindowController shell;
+        shell.setEmbedDeadlineMsForTest(60);
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.example.com/workspace-728-room"));
+        call.insert(QStringLiteral("meetUrl"), QStringLiteral("https://meet.example.com"));
+        shell.open(call);
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Loading));
+        QTRY_COMPARE_WITH_TIMEOUT(shell.embedState(),
+            int(workspace::JitsiCallWindowController::LoadFailed), 3000);
+        shell.retry();
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Loading));
+        QTRY_COMPARE_WITH_TIMEOUT(shell.embedState(),
+            int(workspace::JitsiCallWindowController::LoadFailed), 3000);
+    }
+
+    // Issue #728: a load that settles in time must not be re-failed by the
+    // deadline, and closing must disarm it entirely.
+    void callWindowEmbedDeadlineStopsWhenTheLoadSettles()
+    {
+        workspace::JitsiCallWindowController shell;
+        shell.setEmbedDeadlineMsForTest(80);
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://meet.example.com/workspace-728-room"));
+        call.insert(QStringLiteral("meetUrl"), QStringLiteral("https://meet.example.com"));
+        shell.open(call);
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Ready));
+        QTest::qWait(160);
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::Ready));
+        // Re-open after a close: the closed shell keeps no armed deadline and
+        // an invalid room never arms one at all.
+        shell.close();
+        shell.open(QVariantMap{});
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::InvalidUrl));
+        QTest::qWait(160);
+        QCOMPARE(shell.embedState(), int(workspace::JitsiCallWindowController::InvalidUrl));
+    }
+
     void shareSourcePickerFallsBackToTheQtScreenModelWithoutPortal()
     {
         workspace::ScreenShareSourcePicker picker;

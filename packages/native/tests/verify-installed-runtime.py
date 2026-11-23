@@ -41,6 +41,31 @@ def require_heif_codec_files(prefix, elf_package):
         assert list(prefix.rglob(pattern)), f"Missing bundled {what} (HEIC previews #638)"
 
 
+def require_webengine_runtime_files(prefix, qml):
+    # Call WebEngine runtime (#728): the embed is loaded lazily, so the Qt
+    # deploy tooling ships none of it; the packaging installs the QML modules,
+    # helper process and .pak trees by hand and every part must be present.
+    process = list(prefix.glob("libexec/QtWebEngineProcess")) + list(prefix.rglob("QtWebEngineProcess"))
+    assert process, "Missing bundled QtWebEngineProcess (call runtime #728)"
+    assert os.access(process[0], os.X_OK), "Bundled QtWebEngineProcess is not executable"
+    for module in ("QtWebEngine", "QtWebChannel"):
+        assert (qml/module/"qmldir").is_file(), f"Missing bundled WebEngine QML module: {module}"
+    assert list((prefix/"share/qt-webengine/resources").glob("qtwebengine_resources*.pak")), \
+        "Missing bundled WebEngine resource packs (call runtime #728)"
+    assert list((prefix/"share/qt-webengine/locales").glob("*.pak")), \
+        "Missing bundled WebEngine locale packs (call runtime #728)"
+    # Every WebEngine SONAME the loader searches for must resolve inside the
+    # package. A SONAME symlink that names itself (or otherwise dangles) reads
+    # as present to glob-based checks but cannot be loaded by the call runtime.
+    for soname in ("libQt6WebEngineCore.so.6", "libQt6WebEngineQuick.so.6",
+                   "libQt6WebEngineQuickDelegatesQml.so.6", "libQt6WebChannel.so.6",
+                   "libQt6WebChannelQuick.so.6", "libQt6Positioning.so.6"):
+        found = list(prefix.glob(f"lib/{soname}")) + list(prefix.glob(f"lib/*/{soname}"))
+        assert found, f"Missing WebEngine runtime SONAME link: {soname}"
+        assert any(link.is_file() for link in found), \
+            f"WebEngine SONAME link does not resolve (broken or self-referential): {soname}"
+
+
 def verify(prefix, pid=None):
     prefix = prefix.resolve(strict=True)
     bundles = list(prefix.glob("*.app/Contents"))
@@ -92,6 +117,7 @@ def verify(prefix, pid=None):
             executable_magic = executable.read(4)
     require_heif_codec_files(prefix, not bundles and executable_magic == b"\x7fELF")
     if executable_magic == b"\x7fELF":
+        require_webengine_runtime_files(prefix, qml)
         translations = runtime_prefix/paths.get("Translations", "translations")
         assert translations.resolve().is_relative_to(prefix), "Translations path escapes package"
         assert (translations/"qt_ru.qm").is_file(), "Missing deployed Qt Russian catalog at configured runtime path"
@@ -154,8 +180,9 @@ def probe_runtime(prefix, executable):
         subprocess.run(["patchelf", "--set-rpath", "$ORIGIN/../lib", str(temporary)], check=True,
                        capture_output=True, text=True)
         result = subprocess.run([str(temporary)], capture_output=True, text=True, timeout=15)
-        assert result.returncode == 0, f"Installed crypto/TLS runtime probe failed ({result.returncode})"
+        assert result.returncode == 0, f"Installed crypto/TLS runtime probe failed ({result.returncode}) {result.stdout[:500]}"
         report = json.loads(result.stdout)
+        assert report.get("webEngineImport"), f"WebEngine QML import failed in installed runtime: {report.get('webEngineError')}"
         notices = prefix / "share/doc/workspace-native-preview/third-party"
         packages = json.loads((notices / "bundled-libraries.json").read_text())["packages"]
         rows = report.pop("displayedLicenses")

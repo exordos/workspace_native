@@ -16107,6 +16107,12 @@ component NativeMentionChip: Item {
                 || root.controller.callWindow.embedState === 2 // Ready
                 || root.controller.callWindow.embedState === 3) // LoadFailed
         source: "NativeCallWebEngineView.qml"
+        // Issue #728: a missing QtWebEngine/QtWebChannel runtime fails the
+        // import, never reaches onLoaded, and would strand the shell on
+        // Loading. Forward instantiation failure into the state machine so
+        // the existing LoadFailed overlay (retry affordance, #263) renders.
+        onStatusChanged: if (status === Loader.Error)
+            root.controller.callWindow.apiLoadFailed()
         onLoaded: if (item) {
             item.controller = root.controller.callWindow
             // The live handshake's C++ counterpart (finding 5, round 4).
