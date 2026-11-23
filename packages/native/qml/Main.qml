@@ -159,6 +159,11 @@ ApplicationWindow {
             onAppearanceRequested: root.openPreferencePanel("appearance")
             onAboutRequested: root.openAbout(true)
             onDiagnosticsRequested: {
+                // The reference user menu closes on navigation (route change
+                // closes the menu). Diagnostics is a main-section page, so the
+                // account layer must close before the section swap, otherwise
+                // the mounted drawer overlays the page and eats its clicks.
+                rightDrawer.closeCurrent()
                 root.controller.showSection("diagnostics")
             }
             onClearCacheRequested: {
