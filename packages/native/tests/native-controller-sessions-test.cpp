@@ -399,7 +399,11 @@ private slots:
         QTRY_COMPARE(fixture.controller.streams().size(), 1);
     }
 
-    void overlayBannerRealtimeDropShowsReconnectingAndReconnectClears()
+    // Issue #717: a socket drop that the realtime client repairs with its
+    // first reconnect retry is a self-recovering transition - the visible
+    // interface must stay steady across it (reference: silent automatic
+    // recovery, requestReconnect({showReconnecting:false})).
+    void overlayBannerTransientRealtimeDropStaysHiddenThroughSelfRecovery()
     {
         Fixture fixture; RealtimeGateway gateway(fixture.server.serverPort());
         fixture.realtime = [](const Request &request) {
@@ -414,9 +418,49 @@ private slots:
         QTRY_COMPARE(fixture.controller.syncState(), QString("live"));
         QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
         gateway.sockets.first()->close();
-        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("reconnecting"));
-        // The gateway accepts the reconnect again and the banner clears itself.
-        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("online"), 15000);
+        QTRY_VERIFY(fixture.controller.syncState() != QLatin1String("live"));
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        // Sample the phase across every transition of the outage: the phase
+        // must never leave online while the drop self-recovers.
+        QStringList flashed;
+        QElapsedTimer clock; clock.start();
+        while (clock.elapsed() < 15000 && fixture.controller.syncState() != QLatin1String("live")) {
+            if (fixture.controller.connectionPhase() != QLatin1String("online"))
+                flashed.append(fixture.controller.syncState() + "/" + fixture.controller.connectionPhase());
+            QTest::qWait(25);
+        }
+        QVERIFY2(flashed.isEmpty(), qPrintable(flashed.join(" ")));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.syncState(), QString("live"), 15000);
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+    }
+
+    // Issue #717: a sustained outage - one whose first reconnect retry also
+    // fails - must still raise the reconnecting banner and clear it on recovery.
+    void overlayBannerSustainedRealtimeOutageSurfacesReconnectingUntilRecovery()
+    {
+        Fixture fixture; RealtimeGateway gateway(fixture.server.serverPort());
+        fixture.realtime = [](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        fixture.controller.useRealtime(&realtime);
+        QTRY_COMPARE(fixture.controller.syncState(), QString("live"));
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
+        // Take the whole gateway down: the first reconnect attempt is refused,
+        // the outage escalates, and the banner surfaces for as long as it lasts.
+        const auto gatewayPort = gateway.serverPort();
+        for (const auto &socket : std::as_const(gateway.sockets))
+            if (socket) socket->close();
+        gateway.websocket.close();
+        gateway.close();
+        QTRY_VERIFY(fixture.controller.syncState() != QLatin1String("live"));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("reconnecting"), 8000);
+        QVERIFY(gateway.listen(QHostAddress::LocalHost, static_cast<quint16>(gatewayPort)));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.connectionPhase(), QString("online"), 30000);
     }
 
     // exo-review finding 1: a server that never answers must mark the
@@ -506,7 +550,10 @@ private slots:
         // before the transport outage below has been observed by the client.
         *holdNextCatchUp = true;
         gateway.sockets.first()->close();
-        QTRY_COMPARE(fixture.controller.connectionPhase(), QString("reconnecting"));
+        QTRY_VERIFY(fixture.controller.syncState() != QLatin1String("live"));
+        // Issue #717: a stalled-but-self-recovering reconnect must not surface
+        // the banner; only the transport outage below raises a visible state.
+        QCOMPARE(fixture.controller.connectionPhase(), QString("online"));
         QTRY_VERIFY(!heldCatchUps.isEmpty());
         // A controller request that dies at the transport level marks the
         // connection offline while realtime is still down.

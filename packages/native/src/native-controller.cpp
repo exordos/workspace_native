@@ -11701,6 +11701,15 @@ void NativeController::useRealtime(RealtimeClient *client)
         // diagnostics Connection card (connection.reconnectAttempt).
         if (state == QLatin1String("retrying"))
             ++m_realtimeReconnectAttempts;
+        // Issue #717: automatic recovery is silent in the reference
+        // (connection-health requestReconnect with showReconnecting:false),
+        // so the visible reconnecting phase is gated on escalation: a second
+        // retrying phase between two live links means the first reconnect
+        // retry also failed and the outage is sustained, not self-recovering.
+        if (state == QLatin1String("live"))
+            m_reconnectRetriesSinceLive = 0;
+        else if (state == QLatin1String("retrying"))
+            ++m_reconnectRetriesSinceLive;
         // Issue #51: real connection-health transitions feed the session log
         // (reference scope "connection-health", connection-health logger).
         if (state == QLatin1String("live"))
@@ -16364,7 +16373,10 @@ QString NativeController::connectionPhase() const
         return QStringLiteral("rate_limited");
     if (m_syncState == QLatin1String("connecting") || m_syncState == QLatin1String("catching_up")
         || m_syncState == QLatin1String("retrying") || m_syncState == QLatin1String("waiting_for_session"))
-        return QStringLiteral("reconnecting");
+        // Issue #717: a drop that self-recovers (first reconnect retry lands)
+        // leaves the interface steady; only an escalated outage surfaces.
+        return m_reconnectRetriesSinceLive >= 2 ? QStringLiteral("reconnecting")
+                                                : QStringLiteral("online");
     if (m_syncState == QLatin1String("invalid_data") || m_syncState == QLatin1String("snapshot_required"))
         return QStringLiteral("degraded");
     return QStringLiteral("online");

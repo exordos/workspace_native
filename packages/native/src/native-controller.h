@@ -2504,6 +2504,10 @@ private:
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;
     int m_realtimeReconnectAttempts = 0;
+    // Issue #717: backoff retries seen since the last live link. The
+    // reconnecting banner stays quiet while a drop is self-recovering and
+    // surfaces only once the first reconnect retry has also failed.
+    int m_reconnectRetriesSinceLive = 0;
     qsizetype m_supportLatencyCount = 0;
     QList<QPair<QString, qint64>> m_apiLatencySamples; // bounded to 200, insertion order
     bool m_pingInFlight = false;
