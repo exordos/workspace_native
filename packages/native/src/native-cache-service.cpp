@@ -17,7 +17,7 @@ namespace workspace
 namespace
 {
 std::atomic<quint64> ServiceGeneration{0};
-enum class Op { Open, Resize, Close, Search, Get, GetBody, Put, Project, Invalidate, OmitBody, Stale, Read, Forget, Flush, Stop };
+enum class Op { Open, Resize, Close, Search, Get, GetBody, Put, PutBlob, GetBlob, Project, Invalidate, OmitBody, Stale, Read, Forget, Flush, Stop };
 struct Identity {
     QUrl server;
     QString project, user, owner;
@@ -64,6 +64,7 @@ struct Result {
     std::optional<QJsonArray> matches;
     std::optional<NativeCache::Entry> entry;
     std::optional<NativeCache::MessageBody> body;
+    std::optional<QByteArray> blob;
     NativeCache::Stats stats;
     qint64 usage = 0, applied = 0;
 };
@@ -82,6 +83,7 @@ struct Job {
     NativeCacheService::SearchCallback search;
     NativeCacheService::ReadCallback read;
     NativeCacheService::BodyReadCallback readBody;
+    NativeCacheService::BlobReadCallback readBlob;
     qint64 bytes() const
     {
         return input.payload.size() + input.next.size() + input.key.marker.size() +
@@ -172,7 +174,7 @@ class CacheWorker final : public QObject
             } else if (input.op == Op::Flush)
                 result.okay = true;
             else {
-                if ((input.op == Op::Put || input.op == Op::Project) &&
+                if ((input.op == Op::Put || input.op == Op::Project || input.op == Op::PutBlob) &&
                     (!store || !store->available() || current.owner != input.identity.owner)) {
                     store.reset();
                     store = std::make_unique<NativeCache>(directory, policy, loopback, clock);
@@ -201,6 +203,13 @@ class CacheWorker final : public QObject
                         result.body = store->getMessageBody(store->lease(), QString::fromUtf8(input.key.marker));
                         result.okay = bool(result.body);
                     }
+                    if (input.op == Op::GetBlob) {
+                        result.blob = store->getMediaBlob(store->lease(), QString::fromUtf8(input.key.marker));
+                        result.okay = result.blob.has_value();
+                    }
+                    if (input.op == Op::PutBlob)
+                        result.okay = store->putMediaBlob(store->lease(),
+                            QString::fromUtf8(input.key.marker), input.payload);
                     if (input.op == Op::Put) {
                         const auto document = QJsonDocument::fromJson(input.payload);
                         result.okay = document.isArray() &&
@@ -313,7 +322,7 @@ struct NativeCacheService::Private {
         return job;
     }
     void notify(Job job, bool okay, std::optional<Entry> entry = {}, std::optional<MessageBody> body = {},
-                std::optional<QJsonArray> matches = {})
+                std::optional<QJsonArray> matches = {}, std::optional<QByteArray> blob = {})
     {
         if (!job.receiver || destroying)
             return;
@@ -323,7 +332,7 @@ struct NativeCacheService::Private {
         const auto receiver = job.receiver;
         QMetaObject::invokeMethod(
             q,
-            [guard, receiver, job = std::move(job), okay, entry = std::move(entry), body = std::move(body), matches = std::move(matches), generation, rev,
+            [guard, receiver, job = std::move(job), okay, entry = std::move(entry), body = std::move(body), matches = std::move(matches), blob = std::move(blob), generation, rev,
              required]() mutable {
                 if (!guard || !receiver || guard->d->destroying || receiver->thread() != guard->thread())
                     return;
@@ -345,6 +354,8 @@ struct NativeCacheService::Private {
                     job.read(valid ? std::move(entry) : std::optional<Entry>{});
                 if (job.readBody)
                     job.readBody(valid ? std::move(body) : std::optional<MessageBody>{});
+                if (job.readBlob)
+                    job.readBlob(valid ? std::move(blob) : std::optional<QByteArray>{});
                 if (job.done)
                     job.done(okay && valid);
             },
@@ -539,7 +550,8 @@ struct NativeCacheService::Private {
         }
         const bool stop = job.input.op == Op::Stop;
         const bool okay = (valid || job.required) && result.okay;
-        notify(std::move(job), okay, std::move(result.entry), std::move(result.body), std::move(result.matches));
+        notify(std::move(job), okay, std::move(result.entry), std::move(result.body), std::move(result.matches),
+               std::move(result.blob));
         if (!stop)
             pump();
     }
@@ -732,6 +744,31 @@ void NativeCacheService::getMessageBody(const Lease &lease, const QString &uuid,
         d->notify(std::move(job), false); return;
     }
     d->enqueue(std::move(job));
+}
+
+void NativeCacheService::getMediaBlob(const Lease &lease, const QString &uuid, QObject *receiver, BlobReadCallback done)
+{
+    auto job = d->make(Op::GetBlob, receiver);
+    job.input.key = {Kind::MediaBlob, {}, {}, uuid.toLower().toUtf8()};
+    job.readBlob = std::move(done);
+    if (!isUuid(uuid) || !available() || !d->accepts(lease)) {
+        d->notify(std::move(job), false); return;
+    }
+    d->enqueue(std::move(job));
+}
+
+bool NativeCacheService::putMediaBlob(const Lease &lease, const QString &uuid, const QByteArray &bytes,
+                                      QObject *receiver, Completion done)
+{
+    auto job = d->make(Op::PutBlob, receiver, std::move(done));
+    job.input.key = {Kind::MediaBlob, {}, {}, uuid.toLower().toUtf8()};
+    job.input.payload = bytes;
+    // A full or oversized queue drops the derived copy: the visible pipeline
+    // already holds the bytes, persistence is best effort only (#729).
+    if (!d->accepts(lease) || !isUuid(uuid) || bytes.isEmpty() || bytes.size() > MaximumPageBytes) {
+        d->notify(std::move(job), false); return false;
+    }
+    return d->enqueue(std::move(job));
 }
 
 bool NativeCacheService::putMessageBody(const Lease &lease, const QJsonObject &canonical,

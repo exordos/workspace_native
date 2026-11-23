@@ -27,6 +27,7 @@ class NativeCacheService final : public QObject
     using ReadCallback = std::function<void(std::optional<Entry>)>;
     using SearchCallback = std::function<void(std::optional<QJsonArray>)>;
     using BodyReadCallback = std::function<void(std::optional<MessageBody>)>;
+    using BlobReadCallback = std::function<void(std::optional<QByteArray>)>;
     static constexpr int MaximumQueuedJobs = 8;
     static constexpr qint64 MaximumQueuedBytes = 32 * 1024 * 1024;
     static constexpr qint64 MaximumPageBytes = 8 * 1024 * 1024;
@@ -56,6 +57,11 @@ class NativeCacheService final : public QObject
     void cancelMessageSearch();
     void get(const Lease &lease, const Key &key, QObject *receiver, ReadCallback done);
     void getMessageBody(const Lease &lease, const QString &uuid, QObject *receiver, BodyReadCallback done);
+    // Derived media blobs (#729 Phase 1). Reads never fail closed: a miss is a
+    // plain miss and the caller falls back to the network path.
+    void getMediaBlob(const Lease &lease, const QString &uuid, QObject *receiver, BlobReadCallback done);
+    bool putMediaBlob(const Lease &lease, const QString &uuid, const QByteArray &bytes,
+                      QObject *receiver = nullptr, Completion done = {});
     bool putMessageBody(const Lease &lease, const QJsonObject &canonical,
                         QObject *receiver = nullptr, Completion done = {});
     // Captured-owner required erasure, not an optional write. Accepted means

@@ -21,7 +21,10 @@ public:
     static constexpr qint64 MinimumDiskLimitBytes = 1024 * 1024;
     static constexpr qint64 MaximumDiskLimitBytes = 1000000000000LL;
     static constexpr int MaximumFreshPages = 4096;
-    enum class Kind { Streams = 1, Users, Topics, History, MessageBody };
+    // MediaBlob is derived data (an encoded attachment image): regenerable,
+    // evicted before any authoritative page under pressure, never a permission
+    // or existence proof (#729 Phase 1).
+    enum class Kind { Streams = 1, Users, Topics, History, MessageBody, MediaBlob };
     enum class Removal { Omission, Deletion };
     enum class Projection { Insert = 1, Payload = 2, Star = 4, Reactions = 8 };
     Q_DECLARE_FLAGS(ProjectionFields, Projection)
@@ -88,6 +91,11 @@ public:
     // after the exact Body key. Legacy pages without viewer identity cannot
     // supply an owned body. No payload scan or body reservoir is used.
     std::optional<MessageBody> getMessageBody(const Lease &lease, const QString &uuid);
+    // Owner+attachment-UUID addressed derived blobs. The raw encoded bytes are
+    // stored verbatim (no JSON envelope); reads never validate freshness - a
+    // blob is a cache accelerator and a miss is always survivable.
+    std::optional<QByteArray> getMediaBlob(const Lease &lease, const QString &uuid);
+    bool putMediaBlob(const Lease &lease, const QString &uuid, const QByteArray &bytes);
     bool putMessageBody(const Lease &lease, const QJsonObject &canonical);
     // Authoritative successful omission/deletion only, not HTTP/transport error.
     // Erases the Body and all indexed History copies for this exact owner+UUID.

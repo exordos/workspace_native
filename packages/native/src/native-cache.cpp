@@ -284,12 +284,20 @@ bool NativeCache::accepts(const Lease &lease) const
 QByteArray NativeCache::keyHash(const Key &key) const
 {
     const auto kind = static_cast<int>(key.kind);
-    if (kind < 1 || kind > 5 || !validMarker(key.marker)) return {};
+    if (kind < 1 || kind > 6 || !validMarker(key.marker)) return {};
     if (key.kind == Kind::MessageBody) {
         const auto uuid = QString::fromUtf8(key.marker);
         if (!isUuid(uuid) || (!key.stream.isEmpty() && !isUuid(key.stream))
             || (!key.topic.isEmpty() && !isUuid(key.topic))) return {};
         // Actual placement remains route metadata, not part of body identity.
+        return QCryptographicHash::hash(QJsonDocument(QJsonArray{kind, uuid.toLower()})
+            .toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+    }
+    if (key.kind == Kind::MediaBlob) {
+        // Derived blobs are owner+attachment-UUID addressed with no route
+        // metadata at all (#729 Phase 1).
+        const auto uuid = QString::fromUtf8(key.marker);
+        if (!isUuid(uuid) || !key.stream.isEmpty() || !key.topic.isEmpty()) return {};
         return QCryptographicHash::hash(QJsonDocument(QJsonArray{kind, uuid.toLower()})
             .toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
     }
@@ -390,7 +398,7 @@ std::optional<NativeCache::Entry> NativeCache::get(const Lease &lease, const Key
 {
     if (shouldCancel()) { fail(); return {}; }
     const auto hash = keyHash(key);
-    if (!accepts(lease) || hash.isEmpty()) { ++m_stats.misses; return {}; }
+    if (!accepts(lease) || hash.isEmpty() || key.kind == Kind::MediaBlob) { ++m_stats.misses; return {}; }
     if (!refreshTotals()) { fail(); return {}; }
     Entry result;
     bool found = false, okay = true;
@@ -447,6 +455,7 @@ bool NativeCache::put(const Lease &lease, const Key &key, const QJsonArray &rows
     const auto hash = keyHash(key);
     if (shouldCancel()) return fail();
     if (!accepts(lease) || hash.isEmpty() || !validMarker(nextMarker)
+        || key.kind == Kind::MediaBlob
         || (key.kind == Kind::MessageBody && !nextMarker.isEmpty())) return false;
     const auto sanitized = sanitize(key, rows);
     if (!sanitized) return false;
@@ -606,6 +615,82 @@ bool NativeCache::putMessageBody(const Lease &lease, const QJsonObject &canonica
         canonical.value("topic_uuid").toString(), canonical.value("uuid").toString().toLower().toUtf8()}, {canonical});
 }
 
+std::optional<QByteArray> NativeCache::getMediaBlob(const Lease &lease, const QString &uuid)
+{
+    if (shouldCancel()) { fail(); return {}; }
+    const auto key = Key{Kind::MediaBlob, {}, {}, uuid.toLower().toUtf8()};
+    const auto hash = keyHash(key);
+    if (!accepts(lease) || hash.isEmpty()) { ++m_stats.misses; return {}; }
+    if (!refreshTotals()) { fail(); return {}; }
+    bool found = false, okay = true;
+    QByteArray blob;
+    {
+        QSqlQuery query(m_database);
+        // Bound the driver result before copying an untrusted local BLOB.
+        query.prepare("SELECT CASE WHEN LENGTH(payload)<=? THEN payload END FROM entries"
+            " WHERE owner=? AND key=? AND kind=?");
+        query.addBindValue(m_policy.maxEntryBytes);
+        query.addBindValue(m_owner); query.addBindValue(hash); query.addBindValue(int(Kind::MediaBlob));
+        okay = query.exec();
+        if (okay && query.next()) { blob = query.value(0).toByteArray(); found = !blob.isEmpty(); }
+    }
+    if (!okay) { fail(); return {}; }
+    if (!found) { ++m_stats.misses; return {}; }
+    {
+        QSqlQuery query(m_database);
+        query.prepare("UPDATE entries SET last_used=? WHERE owner=? AND key=?");
+        query.addBindValue(++m_accessSequence); query.addBindValue(m_owner); query.addBindValue(hash);
+        okay = query.exec();
+    }
+    if (!okay) { fail(); return {}; }
+    ++m_stats.hits;
+    return blob;
+}
+
+bool NativeCache::putMediaBlob(const Lease &lease, const QString &uuid, const QByteArray &bytes)
+{
+    const auto key = Key{Kind::MediaBlob, {}, {}, uuid.toLower().toUtf8()};
+    const auto hash = keyHash(key);
+    if (shouldCancel()) return fail();
+    if (!accepts(lease) || hash.isEmpty() || bytes.isEmpty()) return false;
+    const auto size = qint64(bytes.size()) + key.marker.size() + 256;
+    // Oversized originals simply skip persistence: the visible pipeline already
+    // holds the bytes and a miss is always survivable.
+    if (size > entryLimitBytes() || size > m_policy.maxBytes) return false;
+    const auto now = m_clock();
+    if (now < 0 || now > std::numeric_limits<qint64>::max() - m_policy.ttlMs) return false;
+    if (!trim(size)) return fail();
+    bool existed = false; qint64 previousSize = 0;
+    {
+        QSqlQuery query(m_database); query.prepare("SELECT " + EntryBytesSql + " FROM entries WHERE owner=? AND key=?");
+        query.addBindValue(m_owner); query.addBindValue(hash);
+        if (!query.exec()) return false;
+        if (query.next()) { existed = true; previousSize = query.value(0).toLongLong(); }
+    }
+    bool okay = m_database.transaction();
+    if (okay) {
+        QSqlQuery query(m_database);
+        // Empty stream/topic/marker bind as '' deliberately: a default-
+        // constructed QString()/QByteArray() is QVariant-null and would hit the
+        // NOT NULL constraint, so the empty values are explicit literals.
+        query.prepare("INSERT OR REPLACE INTO entries"
+            "(owner,key,kind,stream,topic,marker,payload,next_marker,saved_at,expires_at,last_used,size)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)");
+        for (const auto &value : QVariantList{m_owner, hash, int(Kind::MediaBlob),
+                QStringLiteral(""), QStringLiteral(""),
+                key.marker, bytes, QByteArray(""), now, now + m_policy.ttlMs, ++m_accessSequence, size})
+            query.addBindValue(value);
+        okay = query.exec();
+    }
+    if (okay) { m_totalEntries += existed ? 0 : 1; m_totalBytes += size - previousSize; }
+    if (okay) okay = trim();
+    if (okay) okay = !shouldCancel() && m_database.commit();
+    if (!okay) { m_database.rollback(); return fail(); }
+    // No m_fresh registration: a blob is never a warm authoritative page.
+    if (!checkpoint()) return fail();
+    return true;
+}
+
 bool NativeCache::removeDeletedHistoryRow(const QByteArray &hash, const QString &id)
 {
     if (!m_database.transaction()) return false;
@@ -729,11 +814,20 @@ bool NativeCache::trim(qint64 incomingBytes)
     if (used < 0) return false;
     while ((m_policy.maxEntries > 0 && count > m_policy.maxEntries) || bytes > logicalLimit || used + reservePages > pageLimit) {
         if (shouldCancel()) return false;
-        if (!query.exec("SELECT owner,key," + EntryBytesSql + " FROM entries ORDER BY last_used ASC LIMIT 64")) return false;
         struct Removal { QString owner; QByteArray key; qint64 size; };
         QList<Removal> removals;
-        while (query.next()) removals.append({query.value(0).toString(), query.value(1).toByteArray(), query.value(2).toLongLong()});
-        query.finish();
+        auto collect = [&](const QString &where) {
+            if (!query.exec("SELECT owner,key," + EntryBytesSql + " FROM entries " + where
+                    + " ORDER BY last_used ASC LIMIT 64")) return false;
+            while (query.next()) removals.append({query.value(0).toString(), query.value(1).toByteArray(),
+                query.value(2).toLongLong()});
+            query.finish();
+            return true;
+        };
+        // Derived blobs go first regardless of recency (#729 design decision 3);
+        // authoritative pages only join once no blob remains to reclaim.
+        if (!collect("WHERE kind=6")) return false;
+        if (removals.isEmpty() && !collect("WHERE kind<>6")) return false;
         if (removals.isEmpty()) return false;
         for (const auto &item : removals) {
             if (shouldCancel()) return false;

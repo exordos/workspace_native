@@ -1,5 +1,7 @@
 #include "message-images.h"
 #include "api-client.h"
+#include "native-cache.h"
+#include "native-cache-service.h"
 #include "support/heif-test-fixtures.h"
 #include "file-client.h"
 #include "session.h"
@@ -17,6 +19,7 @@
 #include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
 
@@ -202,6 +205,7 @@ private slots:
     void projectAndRetiredDecodeFence();
     void reentrantRetryAndWorkerTeardown_data();
     void reentrantRetryAndWorkerTeardown();
+    void warmPreviewServesFromDiskWithoutTransfer();
 };
 
 void MessageImagesTest::pureReadsAndFullImageReferences()
@@ -534,6 +538,39 @@ void MessageImagesTest::retiredScopeWatchdogExpiryNeverStrandsFiredTimer()
     QCOMPARE(f.images.stats().pipelineJobs, 0);
     QCOMPARE(f.images.stats().decodeJobs, 0);
     f.images.release(lease);
+}
+
+// #729 Phase 1: the encoded original persists as derived cache data, so a
+// fresh manager over the same store re-renders the preview with zero network
+// work. Metadata and binary counters are the transfer oracle: the warm reopen
+// may not touch either endpoint at all.
+void MessageImagesTest::warmPreviewServesFromDiskWithoutTransfer()
+{
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    Fixture f; QVERIFY(f.start());
+    NativeCacheService cache(directory.path(), NativeCache::Policy{}, true);
+    QVERIFY(cache.open(f.server.origin(), projectId, f.viewer));
+    QTRY_VERIFY(cache.available());
+    f.images.setCacheService(&cache);
+    const auto first = f.images.acquire(urn()); QVERIFY(first);
+    QTRY_VERIFY(!f.images.imageUrl(urn()).isEmpty());
+    QCOMPARE(f.metadataGets, 1); QCOMPARE(f.binaryGets, 1); // cold path still goes through the network
+    std::optional<QByteArray> stored;
+    for (int i = 0; i < 100 && !stored.has_value(); ++i) {
+        cache.getMediaBlob(cache.lease(), fileId(), &f.images,
+            [&stored](std::optional<QByteArray> bytes) { if (bytes && !stored.has_value()) stored = bytes; });
+        QTest::qWait(50);
+    }
+    QCOMPARE(stored.value_or(QByteArray()), f.bytes); // verbatim encoded original, no re-encoding
+    {
+        MessageImages reopened(&f.api, &f.session, &f.files);
+        reopened.setCacheService(&cache);
+        const auto token = reopened.acquire(urn()); QVERIFY(token);
+        QTRY_VERIFY(!reopened.imageUrl(urn()).isEmpty());
+        QCOMPARE(f.metadataGets, 1); QCOMPARE(f.binaryGets, 1);
+        reopened.release(token);
+    }
+    f.images.release(first);
 }
 
 QTEST_GUILESS_MAIN(MessageImagesTest)

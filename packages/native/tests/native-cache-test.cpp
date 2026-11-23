@@ -413,6 +413,49 @@ private slots:
         QCOMPARE(cache.getMessageBody(cache.lease(), id)->row, original);
     }
 
+    void mediaBlobRoundTripReopenOwnerIsolationAndLogoutErasure()
+    {
+        QTemporaryDir directory; NativeCache cache(directory.path());
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QByteArray blob(4096, 'i');
+        QVERIFY(!cache.getMediaBlob(lease, id).has_value());
+        QVERIFY(!cache.putMediaBlob(lease, id, QByteArray())); // empty is not a preview
+        QVERIFY(!cache.putMediaBlob(lease, "not-a-uuid", blob));
+        QVERIFY2(cache.putMediaBlob(lease, id, blob), qPrintable(cache.error()));
+        QCOMPARE(cache.getMediaBlob(lease, id).value_or(QByteArray()), blob);
+        QCOMPARE(cache.getMediaBlob(lease, id.toUpper()).value_or(QByteArray()), blob); // lowercased identity
+        const auto warm = cache.stats(); QVERIFY(warm.entries >= 1); QVERIFY(warm.bytes >= blob.size());
+        // The generic page API must never read or write the derived kind.
+        const NativeCache::Key blobKey{NativeCache::Kind::MediaBlob, {}, {}, id.toUtf8()};
+        QVERIFY(!cache.put(lease, blobKey, {QJsonObject{{"uuid", id}}}));
+        QVERIFY(!cache.get(lease, blobKey).has_value());
+        cache.close();
+        QVERIFY(cache.open(Server, Project, User));
+        QCOMPARE(cache.getMediaBlob(cache.lease(), id).value_or(QByteArray()), blob); // survives reopen
+        QVERIFY(!cache.getMediaBlob(lease, id).has_value()); // pre-reopen lease is invalid
+        QVERIFY(cache.open(Server, Project, UserB)); QVERIFY(!cache.getMediaBlob(cache.lease(), id).has_value());
+        QVERIFY(cache.open(Server, Project, User));
+        QVERIFY(cache.clearOwner(cache.lease())); // logout erases derived rows (access invalidation)
+        QVERIFY(!cache.getMediaBlob(cache.lease(), id).has_value());
+    }
+
+    void mediaBlobsAreEvictedBeforeAuthoritativePages()
+    {
+        QTemporaryDir directory;
+        NativeCache::Policy policy; policy.maxBytes = 6000;
+        NativeCache cache(directory.path(), policy, false);
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        QVERIFY(cache.put(lease, History, {message()})); // page written first (oldest by recency too)
+        const QString oldBlob = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString newBlob = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(cache.putMediaBlob(lease, oldBlob, QByteArray(4096, 'a')));
+        QVERIFY(cache.putMediaBlob(lease, newBlob, QByteArray(4096, 'b'))); // crosses the 6000-byte budget
+        QVERIFY(!cache.getMediaBlob(lease, oldBlob).has_value()); // derived goes first despite newer page
+        QVERIFY(cache.getMediaBlob(lease, newBlob).has_value());
+        QVERIFY(cache.get(lease, History).has_value()); // the authoritative page survives
+    }
+
     void messageBodyFallbackRequiresViewerIdentityAndNeverManufacturesHistory()
     {
         QTemporaryDir directory; NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
