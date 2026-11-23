@@ -28457,6 +28457,49 @@ private:
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
     }
 
+    void callWindowEmbedLoaderErrorSettlesShellToLoadFailed()
+    {
+        // Issue #728: a package without the QtWebEngine/QtWebChannel runtime
+        // fails the embed Loader before onLoaded ever fires. The Loader's own
+        // status change (Main.qml callWindowEmbedLoader onStatusChanged) must
+        // drive the state machine - no C++ or QML poke - so the shell leaves
+        // Loading and the LoadFailed overlay with its retry affordance (#263)
+        // renders instead of stranding the user on a spinner.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call embed loader error teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        clickCallCard(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000))
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        // The seam: replace the embed source with a file that cannot exist,
+        // exactly the instantiation failure a runtime-less package produces.
+        loader->setProperty("source",
+            QUrl(QStringLiteral("qrc:/workspace/qml/cassi-missing-runtime.qml")));
+        // Only the Loader's own onStatusChanged can make this transition.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::LoadFailed), 2000);
+        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowLoadingState")));
+        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
+
     // Finding 5 (round 4), hardened for #252: the live participant count and
     // the shared roster must arrive through the production external-API
     // handshake, driven by the embed page itself. The fixture page now emits
