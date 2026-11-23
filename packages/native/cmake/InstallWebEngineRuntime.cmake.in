@@ -4,7 +4,14 @@
 # script runs right after the deploy script and adds exactly what the embed
 # needs at runtime: the QML modules, the shared libraries they link, the
 # QtWebEngineProcess helper and the Chromium .pak resource trees.
-set(runtime_prefix "$ENV{DESTDIR}@CMAKE_INSTALL_PREFIX@")
+# The prefix at INSTALL time: cmake --install sets CMAKE_INSTALL_PREFIX to the
+# effective --prefix inside install(SCRIPT) scope; the configure-time value is
+# only a fallback for running this script standalone.
+if(CMAKE_INSTALL_PREFIX)
+    set(runtime_prefix "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+else()
+    set(runtime_prefix "$ENV{DESTDIR}@CMAKE_INSTALL_PREFIX@")
+endif()
 file(REAL_PATH "${runtime_prefix}" runtime_prefix)
 
 # The deploy script generated bin/qt.conf; its QmlImports entry is the single
