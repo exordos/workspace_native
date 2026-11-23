@@ -24708,14 +24708,33 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *handle = visibleItem("sidebarResizeHandle");
         QVERIFY(handle);
         const auto grab = handle->mapToScene(QPointF(handle->width() / 2, handle->height() / 2)).toPoint();
+        const qreal viewportOriginBefore = list->mapToScene(QPointF(0, 0)).x();
         QTest::mousePress(scene.window, Qt::LeftButton, {}, grab);
         QTest::mouseMove(scene.window, grab + QPoint(64, 0));
         QTest::mouseRelease(scene.window, Qt::LeftButton, {}, grab + QPoint(64, 0));
+        // Gate on the layout change actually taking effect: the drag must move the
+        // viewport origin right (the requested 64 px can be clamped at
+        // sidebarMaximum, so the check demands a real shift, not the exact delta);
+        // otherwise the alignment check below could pass vacuously without a move.
+        for (int i = 0; i < 40 && list->mapToScene(QPointF(0, 0)).x() < viewportOriginBefore + 30.0; ++i)
+            QTest::qWait(50);
+        QVERIFY2(list->mapToScene(QPointF(0, 0)).x() >= viewportOriginBefore + 30.0,
+            qPrintable(QStringLiteral("sidebar drag did not move the viewport: origin x ")
+                + QString::number(list->mapToScene(QPointF(0, 0)).x())
+                + QStringLiteral(", was ") + QString::number(viewportOriginBefore)));
         for (int i = 0; i < 20 && !alignedNow(); ++i)
             QTest::qWait(50);
         QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after sidebar drag: ") + describe()));
         // Stage 3: a window resize keeps the wallpaper viewport-aligned.
         scene.window->resize(1200, 1000);
+        // Same gate as stage 2: wait until the resize target is actually reached,
+        // so the alignment check cannot pass on the pre-resize geometry.
+        for (int i = 0; i < 40 && (scene.window->width() != 1200 || scene.window->height() != 1000); ++i)
+            QTest::qWait(50);
+        QVERIFY2(scene.window->width() == 1200 && scene.window->height() == 1000,
+            qPrintable(QStringLiteral("window did not reach resize target: ")
+                + QString::number(scene.window->width()) + QStringLiteral("x")
+                + QString::number(scene.window->height())));
         for (int i = 0; i < 20 && !alignedNow(); ++i)
             QTest::qWait(50);
         QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after resize: ") + describe()));
