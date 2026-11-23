@@ -503,6 +503,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_21
     windowStreamContextMenuNotificationSwitch
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
+    appearanceSectionCaptionsWrapInsteadOfEliding
     archiveMatchesPinnedGeometryAndVirtualSearch
     captionAndPickedImageSendThenPaintOwnInlinePixels
     chatBackgroundSectionAppliesPresetAndRepaintsConversation
@@ -566,6 +567,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_24
     f11FromMaximizedReturnsToMaximizedAndKeepsSavedNormalBounds
     lastConversationRestoresInANewActualMainAfterSettingsReopen
     maskedSecretFragmentNeverAppearsInAccessibleMessageName
+    narrowWindowKeepsClustersDisjoint
     optionalPickerPreviewMatchesSourceDefaultsAndRealHover
     ownStatusClearKeepsItsRenderedInkWhileSaveIsPending
     pollBubbleInlineAddOptionFlow

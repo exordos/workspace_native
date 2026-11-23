@@ -24666,6 +24666,8 @@ mv -Tf "$root/.current-new" "$root/current"
         click(scene.window, visibleItem("conversationInfoAction"));
         QTRY_VERIFY(visibleItem("channelInfoLayer"));
         assertClustersDisjoint();
+        // Narrow-width contract: the drawer overlays the chat (no reserved
+        // dock), so message list and composer keep a writable strip.
         auto *composer = visibleItem("messageComposer"); QVERIFY(composer);
         QVERIFY2(composer->width() >= 60,
             qPrintable(QStringLiteral("composer width %1").arg(composer->width())));
@@ -24691,28 +24693,42 @@ mv -Tf "$root/.current-new" "$root/current"
         click(scene.window, visibleItem("accountMenuButton"));
         QTRY_VERIFY(visibleItem("accountAppearanceAction"));
         click(scene.window, visibleItem("accountAppearanceAction"));
-        const auto assertNoElidedText = [&](const QString &seam) {
+        // Labels default to elide=ElideMiddle in this Qt build, so an elide
+        // flag probe is meaningless; assert the true visual contract instead:
+        // no visible caption is clipped. Either it renders on one line that
+        // fits (implicitWidth <= width) or it wraps and the row grew to fit
+        // the wrapped height (implicitHeight <= height).
+        const auto assertNoClippedCaption = [&](const QString &seam) {
             auto *root = visibleItem(seam); QVERIFY2(root, qPrintable(seam));
-            QStringList elided;
+            QStringList clipped;
             std::function<void(QQuickItem *)> walk = [&](QQuickItem *item) {
                 for (auto *child : item->childItems()) {
                     if (child->inherits("QQuickText") && child->isVisible()
-                        && !child->property("text").toString().isEmpty()
-                        && child->property("elide").toInt() != 0)
-                        elided << child->property("text").toString();
+                        && !child->property("text").toString().isEmpty()) {
+                        const QString text = child->property("text").toString();
+                        const int wrap = child->property("wrapMode").toInt();
+                        const qreal implicitWidth = child->property("implicitWidth").toReal();
+                        const qreal implicitHeight = child->property("implicitHeight").toReal();
+                        if (wrap == 0 && implicitWidth > child->width() + 1.0)
+                            clipped << QStringLiteral("\"%1\" unwrapped %2>%3")
+                                           .arg(text).arg(implicitWidth).arg(child->width());
+                        else if (wrap != 0 && implicitHeight > child->height() + 1.0)
+                            clipped << QStringLiteral("\"%1\" wrapped %2>%3")
+                                           .arg(text).arg(implicitHeight).arg(child->height());
+                    }
                     walk(child);
                 }
             };
             walk(root);
-            QVERIFY2(elided.isEmpty(), qPrintable(
-                seam + QStringLiteral(" elides: ") + elided.join(QStringLiteral("; "))));
+            QVERIFY2(clipped.isEmpty(), qPrintable(
+                seam + QStringLiteral(" clips: ") + clipped.join(QStringLiteral("; "))));
         };
-        assertNoElidedText("accountSetting-sidebarSortMode");
-        assertNoElidedText("accountSetting-theme");
+        assertNoClippedCaption("accountSetting-sidebarSortMode");
+        assertNoClippedCaption("accountSetting-theme");
         // The theme grid options must also fit without eliding.
         click(scene.window, visibleItem("accountSetting-theme"));
         QTRY_VERIFY(visibleItem("accountOption-mode-system"));
-        assertNoElidedText("accountOption-mode-system");
+        assertNoClippedCaption("accountOption-mode-system");
     }
 
     // Issue #637 (docs/NATIVE_DESKTOP_CHAT_BACKGROUNDS.md section 5): the

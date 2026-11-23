@@ -128,7 +128,16 @@ ApplicationWindow {
         // The objectName stays the established nativeRightDrawer seam - 48 test
         // handles (window + e2ee-read suites) collect it by that name.
         objectName: "nativeRightDrawer"
-        visible: drawerOpen && (root.controller.section === "chat" || topLayerKind === "account")
+        // #726: visibility is synced IMPERATIVELY (syncRouteVisibility) instead
+        // of a declarative binding. Any binding on this property whose
+        // evaluation lands in a layout-relayout wave (chat reflow when the
+        // drawer docks) trips Qt's binding-loop detector with a phantom
+        // self-loop on `visible`; imperative writes have no binding to flag,
+        // and every input (drawerOpen, section, topLayerKind) has a sync
+        // handler below so the value can never go stale.
+        onDrawerOpenChanged: root.syncRightDrawerRouteVisibility()
+        onTopLayerKindChanged: root.syncRightDrawerRouteVisibility()
+        Component.onCompleted: root.syncRightDrawerRouteVisibility()
         anchors.right: parent.right
         anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
         anchors.topMargin: root.controller.authenticated ? 4 : 8
@@ -178,6 +187,15 @@ ApplicationWindow {
                 root.controller.closeDrafts();
                 root.controller.logout();
             }
+        }
+
+        // Post-#724 adaptation of #726: this lane was cut before the floating
+        // accountPopup was replaced by the inline account layer, so only the
+        // section-change route-visibility sync survives; the account-root
+        // re-open is now handled natively by accountRootVisible.
+        Connections {
+            target: root.controller
+            function onSectionChanged() { root.syncRightDrawerRouteVisibility() }
         }
         Loader {
             anchors.fill: parent
@@ -322,6 +340,32 @@ ApplicationWindow {
     readonly property real sidebarMaximum: Math.max(240, Math.min(720, Math.round(width * 0.4)))
     readonly property real sidebarMinimum: Math.min(sidebarMaximum, Math.max(240, Math.round(width * 0.12)))
     readonly property real sidebarWidth: Math.max(sidebarMinimum, Math.min(sidebarMaximum, preferredSidebarWidth))
+        // Issue #726: at narrow widths docking the 315 px drawer left a 22 px
+    // chat strip at 702 px - the issue names this squeeze as the UX defect and
+    // asks to "adapt side-panel layout at narrow sizes so the user can still
+    // read and write in the conversation". Reference contract: the DOM
+    // right-drawer is FIXED-positioned - it FLOATS over the chat and the chat
+    // never reflows for it (workspace_ui right-drawer.ui.tsx), so the native
+    // drawer overlays instead of reserving space whenever docking would
+    // starve the chat below narrowChatFloor (see conversationPanel's
+    // Layout.rightMargin). Width-only arithmetic: no layout output feeds the
+    // condition back, and nothing changes sidebar geometry while the drawer
+    // is visible (that re-enters the drawer's visible-binding pass and trips
+    // Qt's binding-loop detector).
+    readonly property real narrowChatFloor: 260
+    // Imperative drawer route-visibility sync (see rightDrawer's note):
+    // assigning `visible` from code leaves no binding for the loop detector
+    // to flag when a chat relayout lands in the same polish pass.
+    function syncRightDrawerRouteVisibility() {
+        rightDrawer.visible = rightDrawer.drawerOpen
+            && (root.controller.section === "chat" || rightDrawer.topLayerKind === "account")
+    }
+    readonly property bool narrowDrawerOverlay: root.controller.authenticated
+        && root.width - 80
+            - ((root.controller.section === "chat" && root.shortcutSidebarVisible)
+                ? root.sidebarWidth : 0)
+            - 323 < root.narrowChatFloor
+
     function selectedStreamIsEncrypted(source) {
         const selected = source.selectedStream;
         if (!selected)
@@ -6787,7 +6831,8 @@ component NativeMentionChip: Item {
                 && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.rightMargin: rightDrawer.visible ? rightDrawer.width + 4 : 0
+            Layout.rightMargin: rightDrawer.visible && !root.narrowDrawerOverlay
+                ? rightDrawer.width + 4 : 0
             spacing: 0
             Rectangle {
                 id: chatHeaderRoot
