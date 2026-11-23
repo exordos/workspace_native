@@ -2,6 +2,7 @@
 #include "api-client.h"
 #include "support/support-report.h"
 #include <QFile>
+#include <QFileInfo>
 #ifdef Q_OS_LINUX
 #include "live-acceptance-trace.h"
 #include <QQuickWindow>
