@@ -25902,6 +25902,7 @@ mv -Tf "$root/.current-new" "$root/current"
     {
         ChannelInfoWindowScene scene;
         scene.openChannelInfo();
+        QTRY_COMPARE(scene.text("channelInfoSubline"), QStringLiteral("4 members, 2 online"));
         const auto target = scene.fixture.bindingId(2);
         auto *row = visibleItem("channelInfoMember-" + target); QVERIFY(row);
         auto *role = visibleItem("channelInfoMemberRole-" + target); QVERIFY(role);
