@@ -5764,4 +5764,103 @@
     <message><source>Leave blank to keep the current write-only credential.</source><translation>Оставьте поле пустым, чтобы сохранить текущий секретный ключ.</translation></message>
     <message><source>Required. The key is encrypted and never shown again.</source><translation>Обязательное поле. Ключ будет зашифрован и больше не отобразится.</translation></message>
 </context>
+    <context>
+        <name>NativeAccountMenu</name>
+        <message>
+            <source>App version</source>
+            <translation>Версия приложения</translation>
+        </message>
+        <message>
+            <source>Appearance</source>
+            <translation>Оформление</translation>
+        </message>
+        <message>
+            <source>Clear cache</source>
+            <translation>Очистить кэш</translation>
+        </message>
+        <message>
+            <source>Current server</source>
+            <translation>Текущий сервер</translation>
+        </message>
+        <message>
+            <source>Description</source>
+            <translation>Описание</translation>
+        </message>
+        <message>
+            <source>Diagnostics</source>
+            <translation>Диагностика</translation>
+        </message>
+        <message>
+            <source>Disk cache (GB)</source>
+            <translation>Кэш на диске (ГБ)</translation>
+        </message>
+        <message>
+            <source>Disk cache is unavailable.</source>
+            <translation>Дисковый кэш недоступен.</translation>
+        </message>
+        <message>
+            <source>Disk cache limit in GB</source>
+            <translation>Лимит кэша на диске в ГБ</translation>
+        </message>
+        <message>
+            <source>English</source>
+            <translation>English</translation>
+        </message>
+        <message>
+            <source>Language</source>
+            <translation>Язык</translation>
+        </message>
+        <message>
+            <source>Message cache, local settings, then reload</source>
+            <translation>Кэш сообщений, локальные настройки, перезагрузка</translation>
+        </message>
+        <message>
+            <source>Notification sound, Language, Auto sign-out</source>
+            <translation>Звуки уведомлений, Язык, Автовыход</translation>
+        </message>
+        <message>
+            <source>Personal info</source>
+            <translation>Личная информация</translation>
+        </message>
+        <message>
+            <source>Refresh</source>
+            <translation>Обновить</translation>
+        </message>
+        <message>
+            <source>Requested: %1 GB · Applied: %2 GB</source>
+            <translation>Задано: %1 ГБ · Применено: %2 ГБ</translation>
+        </message>
+        <message>
+            <source>Requested: %1 GB</source>
+            <translation>Задано: %1 ГБ</translation>
+        </message>
+        <message>
+            <source>Settings</source>
+            <translation>Настройки</translation>
+        </message>
+        <message>
+            <source>Sign out</source>
+            <translation>Выйти</translation>
+        </message>
+        <message>
+            <source>Status</source>
+            <translation>Статус</translation>
+        </message>
+        <message>
+            <source>Theme settings</source>
+            <translation>Настройки темы</translation>
+        </message>
+        <message>
+            <source>Updating disk cache…</source>
+            <translation>Обновление дискового кэша…</translation>
+        </message>
+        <message>
+            <source>Used: %1</source>
+            <translation>Занято: %1</translation>
+        </message>
+        <message>
+            <source>Русский</source>
+            <translation>Русский</translation>
+        </message>
+    </context>
 </TS>
