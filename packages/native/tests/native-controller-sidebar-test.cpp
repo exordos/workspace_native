@@ -2213,6 +2213,10 @@ private slots:
             return original(request);
         };
         auto &c = fixture.controller;
+        // The swap source here is the sweep-warmed slice of the DEFAULT topic
+        // (in the aggregate view no topic is open, so the sweep treats it like
+        // any unopened populated topic) - opt this case into the sweep.
+        c.setTopicPreloadEnabledForTest(true);
         c.login(fixture.server.origin().toString(), "user", "password", "");
         QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
         QTRY_COMPARE(c.streams().size(), 1);
@@ -2284,6 +2288,7 @@ private slots:
             return original(request);
         };
         auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
         c.setTopicPreloadIntervalMsForTest(30);
         c.login(fixture.server.origin().toString(), "user", "password", "");
         QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
