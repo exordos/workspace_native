@@ -41,11 +41,15 @@ Column {
         onClicked: block.expanded = !block.expanded
         contentItem: RowLayout {
             Text { Layout.fillWidth: true; text: toggle.text; color: block.colors["text-primary"]; font.pixelSize: 14; font.weight: Font.Medium }
+            // Issue #725 (workspace_ui e0194ff, right-panel-topic-list.ui.tsx:147): the
+            // header button is text-text-primary and the Icon inherits it, so the
+            // chevron tints with the row color, not text-muted.
             Image {
+                objectName: "channelTopicsChevron"
                 source: block.expanded ? "qrc:/workspace/icons/chevron-up.svg" : "qrc:/workspace/icons/chevron-down.svg"
                 sourceSize: Qt.size(16,16)
                 layer.enabled: true
-                layer.effect: MultiEffect { colorization: 1; colorizationColor: block.colors["text-muted"] }
+                layer.effect: MultiEffect { colorization: 1; colorizationColor: block.colors["text-primary"] }
             }
         }
         background: Rectangle { radius: 6; color: toggle.hovered || toggle.visualFocus ? block.colors["card-bg-active"] : "transparent" }
