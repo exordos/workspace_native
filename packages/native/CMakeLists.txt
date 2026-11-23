@@ -294,7 +294,11 @@ set(native_icons chat_bubble calendar mail files folders folder folder_open prof
     pin
     # Sidebar topic notification-mode indicator glyph (issue #97,
     # docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md).
-    topic_follow)
+    topic_follow
+    # Video controls bar of the media viewer (issue #731,
+    # docs/NATIVE_DESKTOP_VIDEO_PLAYBACK.md). The reference ships browser-native
+    # controls, so these Chromium-convention glyphs are new native assets.
+    play_arrow pause volume_up volume_off)
 set(native_icon_files)
 foreach(icon IN LISTS native_icons)
     list(APPEND native_icon_files "../web/src/shared/assets/icons/${icon}.svg")

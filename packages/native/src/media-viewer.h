@@ -75,6 +75,12 @@ public:
     // Red test stub (issue #203): body intentionally empty until the
     // reference replace contract is implemented.
     Q_INVOKABLE void markSlotDisplayError(int index);
+    // Issue #731: actionable retry for a failed attachment fetch (the bar the
+    // reference gives its users through the browser's own reload affordance).
+    // Only a load-error slot (bytes that never arrived) resets to loading and
+    // re-dispatches the download; a display-error slot keeps the reference's
+    // replace-item behaviour (the file stays download-only).
+    Q_INVOKABLE void retrySlot(int index);
 
 signals:
     void mediaViewerChanged();
