@@ -295,7 +295,27 @@ Dialog {
                 property int formRevision: 0
                 property int dispatchRevision: -1
                 property string dispatchUuid: ""
+                // The values that the in-flight request submits, and the endpoint
+                // uuids visible when a CREATE was dispatched: a late "saved" that
+                // finds newer edits must rebase the draft onto THESE (review
+                // findings 1/2), never onto the pre-save baseline or a fresh create.
+                property var dispatchValues: ({})
+                property var dispatchSeenUuids: []
                 function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false; formRevision += 1 }
+                function rebaseAfterSave() {
+                    if (editingUuid === "new") {
+                        // The create succeeded: the preserved draft must become an
+                        // UPDATE for the created row, never a second create.
+                        let created = ""
+                        for (const row of (controller.topicSummaryEndpoints || [])) {
+                            if (!dispatchSeenUuids.includes(String(row.uuid))) { created = String(row.uuid); break }
+                        }
+                        if (created.length) editingUuid = created
+                    }
+                    editBaseline = JSON.parse(JSON.stringify(dispatchValues))
+                    dispatchRevision = -1
+                    dispatchUuid = ""
+                }
                 readonly property bool endpointsAllowed: dlg.perm("endpoints") === "allowed"
                 readonly property bool editing: editingUuid.length > 0
                 readonly property bool dirty: editing
@@ -410,6 +430,12 @@ Dialog {
                     const payload = buildDispatchPayload(isCreate)
                     dispatchRevision = formRevision
                     dispatchUuid = editingUuid
+                    dispatchValues = Object.assign({}, editBaseline, payload)
+                    if (isCreate) {
+                        const seen = []
+                        for (const row of (controller.topicSummaryEndpoints || [])) seen.push(String(row.uuid))
+                        dispatchSeenUuids = seen
+                    }
                     dlg.pendingOp = "endpoint"
                     if (isCreate) controller.createTopicSummaryEndpoint(payload)
                     else controller.updateTopicSummaryEndpoint(editingUuid, payload)
@@ -756,6 +782,8 @@ Dialog {
                 else if (dlg.pendingOp === "endpoint"
                          && endpointsTab.formRevision === endpointsTab.dispatchRevision
                          && endpointsTab.editingUuid === endpointsTab.dispatchUuid) endpointsTab.reset()
+                else if (dlg.pendingOp === "endpoint"
+                         && endpointsTab.formRevision !== endpointsTab.dispatchRevision) endpointsTab.rebaseAfterSave()
                 dlg.pendingOp = ""
             }
             else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }
