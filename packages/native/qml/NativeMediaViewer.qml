@@ -143,6 +143,19 @@ Popup {
                 Math.max(0, (paintedWidth * viewerRoot.zoom - mediaArea.width) / 2)
             readonly property real panBoundY:
                 Math.max(0, (paintedHeight * viewerRoot.zoom - mediaArea.height) / 2)
+            // #762 review round: a window resize shrinks the bounds through
+            // mediaArea/the painted box rather than through zoom, so clamp the
+            // raw pan here too. Without this the stored value keeps a hidden
+            // excess after a shrink: the drawn offset clamps at read time, so
+            // the picture LOOKS pinned at the new edge, but the next press
+            // captures the raw value and the reverse drag must consume the
+            // slack before the picture moves. The bound-change clamp keeps the
+            // stored state in range at all times (onZoomChanged is the same
+            // recipe for the zoom seam).
+            onPanBoundXChanged: viewerRoot.panX =
+                Math.max(-panBoundX, Math.min(panBoundX, viewerRoot.panX))
+            onPanBoundYChanged: viewerRoot.panY =
+                Math.max(-panBoundY, Math.min(panBoundY, viewerRoot.panY))
             x: (mediaArea.width - width) / 2
                 + Math.max(-panBoundX, Math.min(panBoundX, viewerRoot.panX))
             y: (mediaArea.height - height) / 2
