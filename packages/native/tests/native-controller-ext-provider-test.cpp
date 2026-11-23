@@ -53,6 +53,9 @@ class ControllerExtProviderTest final : public NativeControllerTestHarness {
         QJsonObject lastPutBody;
         std::function<void(std::function<void()>)> deferSuspend;
         std::function<void(std::function<void()>)> deferPolicyGet;
+        // Test override for the policy GET reply; when set it wins over the
+        // store path (used to hold a late FORBIDDEN reply, #735 review).
+        std::function<Response(const Request&)> getOverride;
         // Test override for the PUT reply; when set it wins over the store path.
         std::function<Response(const Request&)> putOverride;
 
@@ -62,6 +65,8 @@ class ControllerExtProviderTest final : public NativeControllerTestHarness {
             if (path == policyRoute || path.startsWith(policyRoute + "/actions/")) {
                 if (request.method == "GET") {
                     ++policyGets;
+                    if (getOverride)
+                        return getOverride(request);
                     if (forbid)
                         return Response { QJsonObject { { "type", "ExternalResourceForbiddenError" } }, 403, 0, { } };
                     Response response { policy, 200, 0, { { "ETag", etag } } };
@@ -368,6 +373,88 @@ private slots:
         const auto retried = test.lastPutBody.value("settings").toObject().value("limits").toObject();
         QCOMPARE(retried.value("max_accounts").toDouble(), 11.0);
         QCOMPARE(retried.value("max_selected_chats_per_account").toDouble(), 77.0);
+    }
+
+    void failedMutationReissuesRefreshDroppedInFlight()
+    {
+        // exordy medium on #751 (finding 4670132621): the guard that drops a
+        // refresh reply landing during a mutation must not lose the requested
+        // refresh when that mutation later FAILS - the failure paths keep the
+        // old policy, so the refresh must be reissued afterwards.
+        Server test;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        QCOMPARE(test.policyGets, 1);
+        std::function<void()> releaseGet;
+        test.deferPolicyGet = [&releaseGet](std::function<void()> send) { releaseGet = std::move(send); };
+        admin->refreshPolicy(); // GET #2 held with the rev-3 snapshot.
+        QTRY_VERIFY(releaseGet);
+        test.deferPolicyGet = nullptr;
+        // The server moves on while the reply is held.
+        test.policy = policyDto(5, true, false, 9, 50);
+        test.etag = "\"5\"";
+        admin->setLimit("max_accounts", 8); // Local edit 5 -> 8.
+        QVERIFY(admin->dirty());
+        std::function<void()> releasePut;
+        test.putOverride = [&releasePut](const Request&) {
+            Response response { QJsonObject { { "type", "InternalError" } }, 500, 0, { } };
+            response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+            return response;
+        };
+        admin->save();
+        QTRY_VERIFY(admin->saveBusy());
+        releaseGet(); // The rev-3 refresh lands while the PUT is pending: dropped.
+        QTest::qWait(50);
+        releasePut(); // The mutation fails.
+        QTRY_VERIFY(admin->saveFailed());
+        // The dropped refresh is reissued after the failure and adopts the
+        // newer server snapshot (rev 5, ETag "5").
+        QTRY_COMPARE(test.policyGets, 3);
+        QTRY_COMPARE(admin->policy().value("revision").toInt(), 5);
+        QCOMPARE(admin->policyEtag(), QStringLiteral("\"5\""));
+        // The user's edit and the failure notice survive the re-adoption.
+        QVERIFY(admin->dirty());
+        QCOMPARE(admin->draft().value("max_accounts").toLongLong(), 8LL);
+    }
+
+    void forbiddenRefreshDuringPendingMutationStillRevokesAccess()
+    {
+        // exordy medium on #751 (finding 4670132627): a refresh answering 401
+        // or forbidden-403 while a mutation is in flight must not be dropped by
+        // the stale-reply guard - if the mutation then also fails, access would
+        // be left granted although the server already revoked it.
+        Server test;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        std::function<void()> releaseGet;
+        test.getOverride = [&releaseGet](const Request&) {
+            Response response { QJsonObject { { "type", "ExternalResourceForbiddenError" } }, 403, 0, { } };
+            response.defer = [&releaseGet](std::function<void()> send) { releaseGet = std::move(send); };
+            return response;
+        };
+        admin->refreshPolicy(); // Forbidden reply held in flight.
+        QTRY_VERIFY(releaseGet);
+        test.getOverride = nullptr;
+        admin->setLimit("max_accounts", 8);
+        QVERIFY(admin->dirty());
+        std::function<void()> releasePut;
+        test.putOverride = [&releasePut](const Request&) {
+            Response response { QJsonObject { { "type", "InternalError" } }, 500, 0, { } };
+            response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+            return response;
+        };
+        admin->save();
+        QTRY_VERIFY(admin->saveBusy());
+        releaseGet(); // The revocation reply lands while the PUT is pending.
+        QTRY_COMPARE(admin->accessStatus(), QString("denied"));
+        releasePut(); // The mutation also fails: access must stay revoked.
+        QTRY_VERIFY(admin->saveFailed());
+        QCOMPARE(admin->accessStatus(), QString("denied"));
+        QCOMPARE(admin->policyStatus(), QString("idle"));
     }
 
     void limitCapsMarkFieldsInvalidAndDisableSave()

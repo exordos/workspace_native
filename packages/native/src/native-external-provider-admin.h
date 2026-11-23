@@ -77,6 +77,9 @@ private:
     void cancelAll();
     void reset();
     bool parsePolicy(const QJsonObject& dto, const QByteArray& etag);
+    // Reissues a refresh that the in-flight-mutation guard dropped, when the
+    // mutation failed without adopting a fresh policy (#735 review round).
+    void adoptDeferredRefresh();
     QVariantMap snapshot(const QVariantMap& policy) const;
     void rebaseDraft(const QVariantMap& previousBase, const QVariantMap& incomingBase);
     void loadHealth(bool initial);
@@ -90,6 +93,9 @@ private:
     quint64 m_generation = 0, m_ticket = 0;
     bool m_dialogOpen = false, m_conflict = false, m_saveBusy = false, m_saveFailed = false;
     bool m_actionFailed = false, m_mutationBusy = false;
+    // A policy refresh reply that was dropped because a mutation was in
+    // flight; reissued if that mutation fails without adopting a policy.
+    bool m_refreshDeferred = false;
     quint64 m_policySerial = 0, m_healthSerial = 0, m_saveSerial = 0, m_actionSerial = 0;
     ApiClient::RequestId m_policyRequest, m_healthRequest, m_saveRequest, m_actionRequest;
 };
