@@ -24684,7 +24684,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(bg);
         auto *list = visibleItem("messageList");
         QVERIFY(list);
-        QVERIFY(bg->property("clip").toBool());
         auto alignedNow = [&]() {
             const QPointF listPos = list->mapToScene(QPointF(0, 0));
             const QPointF bgPos = bg->mapToScene(QPointF(0, 0));
@@ -24715,16 +24714,13 @@ mv -Tf "$root/.current-new" "$root/current"
         for (int i = 0; i < 20 && !alignedNow(); ++i)
             QTest::qWait(50);
         QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after sidebar drag: ") + describe()));
-        // The reference keeps the wallpaper fixed relative to the viewport:
-        // a reset restores the plain theme surface without moving anything.
-        click(scene.window, visibleItem("accountMenuButton"));
-        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
-        click(scene.window, visibleItem("accountAppearanceAction"));
-        click(scene.window, visibleItem("accountSetting-background"));
-        click(scene.window, visibleItem("chatBackgroundReset"));
-        QVERIFY(visibleItem("chatBackgroundApplyDialog"));
-        click(scene.window, visibleItem("chatBackgroundApplyAll"));
-        QTRY_VERIFY(!visibleItem("chatBackground"));
+        // Stage 3: a window resize keeps the wallpaper viewport-aligned.
+        scene.window->resize(1200, 1000);
+        for (int i = 0; i < 20 && !alignedNow(); ++i)
+            QTest::qWait(50);
+        QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after resize: ") + describe()));
+        // PreserveAspectCrop only stays inside the viewport when clipped.
+        QVERIFY(bg->property("clip").toBool());
     }
 
     void windowChannelInfoHeaderSummary()
