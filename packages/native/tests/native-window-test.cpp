@@ -22883,6 +22883,62 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(sends, 0);
     }
 
+    // #722: the one-line compact composer must keep the formatting toggle
+    // vertically centered with its neighbours. The toggle grid
+    // (composerLeadingControls) and the attach/emoji grid (composerCompactActions)
+    // sit inside the field viewport (composerFieldViewport); bottom-pinning them
+    // drops the toggle below the placeholder line. The reference centers the
+    // compact row controls (message-composer.ui.tsx compactInline).
+    void compactComposerToggleCentersWithInputRow()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("toggle-align.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Toggle alignment teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *content = window->contentItem();
+        auto *toggle = visibleItem(content, "composerToolbarExpand"); QVERIFY(toggle);
+        auto *attach = visibleItem(content, "attachButton"); QVERIFY(attach);
+        auto *emoji = visibleItem(content, "composerEmojiButton"); QVERIFY(emoji);
+        auto *viewport = visibleItem(content, "composerFieldViewport"); QVERIFY(viewport);
+        const auto centerY = [](QQuickItem *target) {
+            return target->mapRectToScene(QRectF(QPointF{}, target->size())).center().y();
+        };
+        // Empty and short drafts must keep the one-line geometry (shell 57 px).
+        auto *shell = item(content, "messageComposerShell"); QVERIFY(shell);
+        QTRY_COMPARE(shell->height(), 57.0);
+        controller.setDraft(QStringLiteral("word"));
+        QTRY_COMPARE(shell->height(), 57.0);
+        const double viewCenter = centerY(viewport);
+        const double toggleCenter = centerY(toggle);
+        const double attachCenter = centerY(attach);
+        const double emojiCenter = centerY(emoji);
+        qInfo() << "cassi-722 centers" << "viewport" << viewCenter
+                << "toggle" << toggleCenter << "attach" << attachCenter << "emoji" << emojiCenter;
+        QStringList deviations;
+        const auto check = [&deviations](const char *name, double delta, double limit) {
+            if (!(qAbs(delta) <= limit))
+                deviations << QStringLiteral("%1 delta %2 > %3")
+                    .arg(QLatin1String(name)).arg(delta, 0, 'f', 2).arg(limit);
+        };
+        check("toggle-attach", toggleCenter - attachCenter, 2.0);
+        check("toggle-emoji", toggleCenter - emojiCenter, 2.0);
+        check("toggle-viewport", toggleCenter - viewCenter, 3.0);
+        check("attach-viewport", attachCenter - viewCenter, 3.0);
+        QCOMPARE(deviations, QStringList());
+    }
+
     void composerFormattingToolbarExpansionPersistsAcrossRecreation()
     {
         WindowChannelFixture fixture; fixture.sourceScene = true;
