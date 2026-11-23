@@ -13623,14 +13623,22 @@ component NativeMentionChip: Item {
     // paints on the message VIEWPORT, like the reference CSS background on
     // the scroll wrapper, and does not scroll with the rows. The default
     // value paints nothing - the theme surface stays untouched.
+    // Issue #733: the placement composes the notify-emitting parent chain
+    // (workspace -> conversation -> messageList) instead of a mapToItem()
+    // call: QML cannot re-evaluate an imperative mapToItem when the layout
+    // later moves the conversation (sidebar resize, top-bar height), so the
+    // stale origin let the wallpaper bleed behind the folder rail and leave
+    // a plain strip beside it. The image now tracks the actual message
+    // viewport and is clipped to it (PreserveAspectCrop overflows its bounds
+    // unless clipped).
     Image {
         objectName: "chatBackground"
         z: -1
-        readonly property point panelOrigin: conversation.mapToItem(root.contentItem, 0, 0)
-        x: panelOrigin.x
-        y: panelOrigin.y
-        width: conversation.width
-        height: conversation.height
+        x: workspace.x + conversation.x + messageList.x
+        y: workspace.y + conversation.y + messageList.y
+        width: messageList.width
+        height: messageList.height
+        clip: true
         visible: source.toString().length > 0
         source: root.chatBackgroundUrl
         fillMode: Image.PreserveAspectCrop
