@@ -419,6 +419,55 @@ private slots:
         QCOMPARE(admin->draft().value("max_accounts").toLongLong(), 8LL);
     }
 
+    void malformedConflictReissuedRefreshKeepsUserDraft()
+    {
+        // exordy medium on #751 (finding 4670483902): a 412 whose snapshot
+        // fails to parse moves the policy to error; the deferred refresh
+        // reissued from that failure path must keep the previously parsed
+        // policy as its rebase base. Without a base the retry lands with no
+        // rebase reference and replaces the user's draft wholesale with the
+        // server snapshot.
+        Server test;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        QCOMPARE(test.policyGets, 1);
+        std::function<void()> releaseGet;
+        test.deferPolicyGet = [&releaseGet](std::function<void()> send) { releaseGet = std::move(send); };
+        admin->refreshPolicy(); // GET #2 held in flight.
+        QTRY_VERIFY(releaseGet);
+        test.deferPolicyGet = nullptr;
+        // The server moves on while the reply is held (rev 5, accounts 9).
+        test.policy = policyDto(5, true, false, 9, 50);
+        test.etag = "\"5\"";
+        admin->setLimit("max_accounts", 8); // The only local edit (5 -> 8).
+        QVERIFY(admin->dirty());
+        std::function<void()> releasePut;
+        test.putOverride = [&releasePut](const Request&) {
+            // Precondition failed but WITHOUT a parseable policy snapshot:
+            // the failure keeps the old policy and marks the policy error.
+            const QJsonObject malformed { { "type", "ExternalPreconditionFailedError" } };
+            Response response { malformed, 412, 0, { { "ETag", "\"9\"" } } };
+            response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+            return response;
+        };
+        admin->save();
+        QTRY_VERIFY(admin->saveBusy());
+        releaseGet(); // The held refresh lands mid-save: dropped (deferred).
+        QTest::qWait(50);
+        releasePut(); // The malformed 412: policy error, refresh reissued.
+        QTRY_COMPARE(test.policyGets, 3);
+        QTRY_COMPARE(admin->policy().value("revision").toInt(), 5);
+        QCOMPARE(admin->policyStatus(), QString("ready"));
+        // The rebase base survived the error hop: the local edit stays and the
+        // untouched fields adopt the newer snapshot (rev 5 keeps chats 50).
+        QCOMPARE(admin->draft().value("max_accounts").toLongLong(), 8LL);
+        QCOMPARE(admin->draft().value("max_selected_chats_per_account").toLongLong(), 50LL);
+        QVERIFY(admin->dirty());
+        QVERIFY(admin->canSave());
+    }
+
     void forbiddenRefreshDuringPendingMutationStillRevokesAccess()
     {
         // exordy medium on #751 (finding 4670132627): a refresh answering 401

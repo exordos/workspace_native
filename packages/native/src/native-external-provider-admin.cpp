@@ -284,7 +284,13 @@ void NativeExternalProviderAdmin::refreshPolicy()
     if (m_owner.isEmpty() || m_mutationBusy)
         return;
     const auto ticket = m_ticket;
-    const auto previous = m_policyStatus == QStringLiteral("ready") ? snapshot(m_policy) : QVariantMap { };
+    // The last parsed policy stays the rebase base even when policyStatus has
+    // moved to error (a malformed 412 marks the error without adopting a
+    // snapshot, then reissues the dropped refresh from that path): the retry
+    // must rebase the user's draft, not replace it wholesale
+    // (#735 finding 4670483902). Presence of a parsed policy, not its status,
+    // decides whether a draft exists to protect.
+    const auto previous = m_policy.isEmpty() ? QVariantMap { } : snapshot(m_policy);
     const auto slot = ++m_policySerial;
     m_policyRequest = m_api->request("GET", policyUrl(), { }, { },
         [this, ticket, slot, previous](const ApiResult& result) {
@@ -321,13 +327,12 @@ void NativeExternalProviderAdmin::refreshPolicy()
                 return;
             }
             m_accessStatus = QStringLiteral("granted");
-            const auto hadPolicy = m_policyStatus == QStringLiteral("ready");
             if (!parsePolicy(result.data.toObject(), result.etag)) {
                 m_policyStatus = QStringLiteral("error");
                 emit changed();
                 return;
             }
-            if (!hadPolicy || previous.isEmpty())
+            if (previous.isEmpty())
                 m_draft = snapshot(m_policy);
             else
                 rebaseDraft(previous, snapshot(m_policy));
