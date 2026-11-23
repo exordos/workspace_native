@@ -1564,6 +1564,45 @@ private slots:
         QVERIFY(history >= 4); QCOMPARE(markers, 2); QCOMPARE(fixture.controller.messages().size(), 69);
     }
 
+    void preparedReopenKeepsSavedPagesWhenRefreshUnavailable()
+    {
+        // Issue #741: reopening a topic that holds a prepared swap slice must
+        // overwrite the preview frame with the saved multi-page history and
+        // keep its continuation, even when the server is unavailable for this
+        // topic. The preview frame may render first, but the saved page (not
+        // the failing network) is what the window must end on.
+        QTemporaryDir directory; NativeCacheService cache(directory.path(), {}, true);
+        Fixture fixture; fixture.extraTopic = true; fixture.controller.useCache(&cache);
+        fixture.controller.setTopicPreloadEnabledForTest(false); // pinned request budget
+        QMap<int, QJsonObject> rows; for (int i = 1; i <= 70; ++i) rows.insert(i, historyMessage(i));
+        bool outage = false; int topicOneGets = 0;
+        fixture.messages = [&](const Request &request) {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == secondTopicId) return Response{QJsonArray{}};
+            ++topicOneGets;
+            if (outage) return Response{QJsonObject{}, 503};
+            return historyResponse(rows, request);
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.loadOlder();
+        QTRY_COMPARE(fixture.controller.messages().size(), 70);
+        QCOMPARE(topicOneGets, 2); // first page + one older page
+        QVERIFY(flushCache(cache)); // both pages are saved on disk
+
+        // The outage covers everything the reopen would otherwise fetch.
+        outage = true;
+        fixture.controller.selectTopic(secondTopicId); QTRY_VERIFY(!fixture.controller.busy());
+        fixture.controller.selectTopic(topicId); QTRY_VERIFY(!fixture.controller.busy());
+        // The prepared slice may flash its preview frame, but the fresh saved
+        // page overwrites it (loadMessages' fresh gate) with no new GET.
+        QTRY_COMPARE(fixture.controller.messages().size(), 50);
+        QVERIFY(fixture.controller.canLoadOlder()); // saved continuation retained
+        // The already-saved older rows are readable without any network round.
+        fixture.controller.loadOlder();
+        QTRY_COMPARE(fixture.controller.messages().size(), 70);
+        QCOMPARE(topicOneGets, 2); // a verified warm cache hit costs zero history requests
+    }
+
     void cacheDestructionAndReplacementFenceDelayedWrites()
     {
         QTemporaryDir firstDirectory, secondDirectory;
