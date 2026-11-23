@@ -1,5 +1,10 @@
 #include "support/native-test-harness.h"
 
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlEngine>
+#include <QRegularExpression>
+
 namespace
 {
     const QString providerUuid = QStringLiteral("77777777-7777-4777-8777-000000000007");
@@ -504,6 +509,74 @@ private slots:
         QTRY_VERIFY(admin->saveFailed());
         QCOMPARE(admin->accessStatus(), QString("denied"));
         QCOMPARE(admin->policyStatus(), QString("idle"));
+    }
+
+    void dialogProjectsSuspensionTimestampsAndHealthCounts()
+    {
+        // Issue #737 binding contract: the dialog QML must read the
+        // controller-published camelCase keys, so a suspended policy, the
+        // policy/health timestamps and the health counters all project.
+        Server test;
+        test.policy = policyDto(3, true, true); // Already suspended.
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        admin->openDialog();
+        QVERIFY(admin->dialogOpen());
+        QTRY_COMPARE(admin->healthStatus(), QString("ready"));
+
+        QQmlEngine engine;
+        QQmlContext context(&engine);
+        context.setContextProperty("testAdmin", QVariant::fromValue(admin));
+        const QVariantMap colors { { "bg-elevated", "#ffffff" }, { "border-subtle", "#dddddd" },
+            { "call-green", "#22c55e" }, { "danger", "#ef4444" }, { "text-field-bg", "#f5f5f5" },
+            { "text-muted", "#9ca3af" }, { "text-primary", "#111827" }, { "text-secondary", "#6b7280" },
+            { "accent", "#3b82f6" }, { "on-accent", "#ffffff" }, { "card-bg", "#ffffff" },
+            { "card-bg-active", "#eef2ff" } };
+        context.setContextProperty("testColors", colors);
+        const auto source = QUrl::fromLocalFile(
+            QString::fromUtf8(WORKSPACE_NATIVE_EXT_PROVIDER_DIALOG_QML));
+        QQmlComponent component(&engine);
+        const QString inlineWindow = QStringLiteral(
+            "import QtQuick\nimport QtQuick.Controls\nimport \".\"\n"
+            "Window { width: 900; height: 700\n"
+            "    NativeExternalProviderDialog { objectName: \"epDialogUnderTest\"; admin: testAdmin; colors: testColors }\n"
+            "}\n");
+        component.setData(inlineWindow.toUtf8(), source.adjusted(QUrl::RemoveFilename));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create(&context));
+        QVERIFY(window);
+        const auto lookup = [windowData = window.data()](const QString& name) {
+            return windowData->findChild<QObject*>(name);
+        };
+        QObject* emergency = nullptr;
+        QTRY_VERIFY(([&] { emergency = lookup("extProviderEmergencyRow"); return emergency != nullptr; })());
+        QCOMPARE(emergency->property("text").toString(), QString("Integration suspended"));
+        QObject* suspend = nullptr;
+        QObject* resume = nullptr;
+        QTRY_VERIFY(([&] { suspend = lookup("extProviderSuspend"); resume = lookup("extProviderResume");
+            return suspend != nullptr && resume != nullptr; })());
+        QVERIFY(!suspend->property("visible").toBool());
+        QVERIFY(resume->property("visible").toBool());
+        const QRegularExpression datePattern(QStringLiteral("\\d{4}-\\d{2}-\\d{2}"));
+        QObject* policyUpdated = lookup("extProviderPolicyUpdated");
+        QVERIFY(policyUpdated);
+        QVERIFY(datePattern.match(policyUpdated->property("text").toString()).hasMatch());
+        QObject* healthUpdated = lookup("extProviderHealthUpdated");
+        QVERIFY(healthUpdated);
+        QVERIFY(datePattern.match(healthUpdated->property("text").toString()).hasMatch());
+        QObject* grid = lookup("extProviderHealthGrid");
+        QVERIFY(grid);
+        QVERIFY(grid->property("visible").toBool());
+        int emptyBlocks = 0;
+        const auto blocks = grid->findChildren<QObject*>();
+        for (auto* child : blocks) {
+            if (child->property("text").toString() == QStringLiteral("No data")
+                && child->property("visible").toBool())
+                ++emptyBlocks;
+        }
+        QCOMPARE(emptyBlocks, 0); // Every health group renders its returned counts.
     }
 
     void limitCapsMarkFieldsInvalidAndDisableSave()
