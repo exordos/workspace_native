@@ -1,3 +1,13 @@
+# Workspace Native 0.47.1 - Linux development preview
+
+- Fixed: unread badges on the folder rail now stay in sync when a chat is read - opening a conversation and reading it folds the unread counts of its folder and of the rail entry, the same read ledger the sidebar list uses.
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.47.0 to 0.47.1](https://github.com/exordos/workspace_native/compare/0.47.0...0.47.1)
+
+---
+
 # Workspace Native 0.47.0 - Linux development preview
 
 - Videos in the media viewer now play like in the desktop client: a controls bar with play/pause, a draggable seek slider with elapsed and total time, mute and volume, and stop when you switch to another media item or close the viewer. If a video download fails, the viewer now offers a retry instead of an empty frame.
