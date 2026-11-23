@@ -20,4 +20,4 @@ sidebarExpansionPersistsAndRevealsTopics=7.50242
 topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks=3.33918
 topicContextMenuMarkReadVisibilityAndAction=0.728344
 upToEditLastAndSaveUseTheComposerEditMode=1.13586
-windowChannelInfoAddMembersDialogIsCentered=3.60799
+windowChannelInfoAddMembersDialogIsCentered=4.36994
