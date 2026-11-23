@@ -3790,6 +3790,34 @@
             <translation>Не удалось воспроизвести видео</translation>
         </message>
         <message>
+            <source>Play</source>
+            <translation>Воспроизвести</translation>
+        </message>
+        <message>
+            <source>Pause</source>
+            <translation>Пауза</translation>
+        </message>
+        <message>
+            <source>Mute</source>
+            <translation>Выключить звук</translation>
+        </message>
+        <message>
+            <source>Unmute</source>
+            <translation>Включить звук</translation>
+        </message>
+        <message>
+            <source>Volume</source>
+            <translation>Громкость</translation>
+        </message>
+        <message>
+            <source>Seek</source>
+            <translation>Перемотка</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
             <source>This media cannot be displayed. You can download the file instead.</source>
             <translation>Не удалось показать медиа. Файл можно скачать.</translation>
         </message>

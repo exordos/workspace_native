@@ -120,6 +120,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     loginProjectStepDropdownMatchesTheReference
     loginRealmPreviewUsesOnlyAdvertisedBranding
     loginRegistrationEntryFollowsServerSettings
+    mediaViewerLoadErrorOffersRetry
     mediaViewerSingleImageHidesNavigationAndStrip
     mentionChipsReachedByTabWithoutPointer
     pollBubbleSingleModeWithoutRevoteLocksAfterFirstAnswer
@@ -324,6 +325,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
     folderRenameAfterCatalogReload
     forwardModalSendsSelectedBatchOnceAndClearsSelection
     measuredQuoteHeightIncludesNestedTextBeforeViewportRestore
+    mediaViewerSwitchStopsAudio
     mentionInlineImagePartsGainChipTargets
     pollBubbleOtherQuestionsAddFailureKeepsInFlightVoteLock
     pollBubbleTwoQuestionsSummaryWaitsForBothAnswers
@@ -354,7 +356,9 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     incomingCallCompactInviteMatchesReferenceGeometry
     loginCardRealmBlurStartsDiscovery
     longCodeTraceAndUnbrokenTokenStayInsideTheBubble
+    mediaViewerVideoControlsVisibleAndSeekRoundTrip
     mediaViewerVideoSlotPlaysAndTogglesInlineWithPlayBadge
+    mediaViewerVolumeAndMuteBinding
     pollBubbleCardGeometryAndStructure
     quotedMediaPreviewsReacquireAfterTokenRenewal
     rememberedAccountResumesAndRemovesThroughVisibleQuickControls

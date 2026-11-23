@@ -21,8 +21,32 @@ Popup {
     readonly property bool gallery: viewer.count > 1
     property real zoom: 1
     readonly property int selectedSlot: viewer.open ? viewer.index : -1
+    // Video controls-bar state (issue #731, docs/NATIVE_DESKTOP_VIDEO_PLAYBACK.md):
+    // Chromium convention cloned - controls show while paused or on pointer
+    // activity and auto-hide 2.5 s into playback. The timer itself lives with
+    // the media area; pokeControls() is the single seam that (re)arms it.
+    property bool controlsShown: true
+    function pokeControls() {
+        viewerRoot.controlsShown = true;
+        controlsHideTimer.restart();
+    }
+    // m:ss for the time label; a not-yet-known duration (0/negative) renders
+    // the --:-- placeholder, exactly what the label contract expects.
+    function formatTime(ms) {
+        if (!(ms > 0))
+            return "--:--";
+        const total = Math.floor(ms / 1000);
+        const secs = total % 60;
+        return Math.floor(total / 60) + (secs < 10 ? ":0" : ":") + secs;
+    }
     onSelectedSlotChanged: {
         zoom = 1;
+        // Stop-on-switch/close contract (issue #731): audio must never leak
+        // from the previous slot while the new one stages or the session is
+        // closed. Clearing the source binding is not enough - the explicit
+        // stop settles the pipeline on the spot.
+        videoPlayer.stop();
+        viewerRoot.controlsShown = true;
         Qt.callLater(statusLabel.announceStatus);
     }
 
@@ -130,6 +154,18 @@ Popup {
             // (exo-review finding A). On this Qt the binding direction is
             // MediaPlayer.audioOutput; the sink names the active slot.
             audioOutput: videoAudio
+            // A bar interaction always counts as pointer activity (the buttons
+            // call pokeControls() themselves); playback state changes own the
+            // bar: start arms the auto-hide countdown, anything but active
+            // playback pins it open (the browser behaves the same: a paused or
+            // ended video always shows its controls, so a short clip can never
+            // end and hide the bar before the user can act on it).
+            onPlaybackStateChanged: {
+                if (playbackState === MediaPlayer.PlayingState)
+                    viewerRoot.pokeControls();
+                else
+                    viewerRoot.controlsShown = true;
+            }
             source: viewerRoot.visible && viewerRoot.currentSlot.state === "ready"
                 && String(viewerRoot.currentSlot.kind || "") === "video"
                 ? String(viewerRoot.currentSlot.url || "") : ""
@@ -190,6 +226,186 @@ Popup {
                     videoPlayer.play();
             }
         }
+        // Auto-hide countdown for the controls bar (issue #731): expires only
+        // mid-playback and only while the pointer is not on the picture
+        // (hovering pins the bar open like the browser); a paused or ended
+        // clip always shows the bar, so a short clip can never end and hide
+        // the controls before the user can act.
+        Timer {
+            id: controlsHideTimer
+            interval: 2500
+            onTriggered: if (videoPlayer.playbackState === MediaPlayer.PlayingState
+                    && !videoHover.pointing)
+                viewerRoot.controlsShown = false
+        }
+        // Any pointer movement over the video re-shows the bar and re-arms
+        // the countdown (Chromium's seek-on-move convention).
+        HoverHandler {
+            id: videoHover
+            parent: mediaVideo
+            onPointChanged: viewerRoot.pokeControls()
+        }
+        // Video controls bar (issue #731, docs/NATIVE_DESKTOP_VIDEO_PLAYBACK.md):
+        // the reference renders browser-native <video controls>, so no custom
+        // geometry exists to clone (design doc gap section) - this is NEW
+        // functionality modeled on the Chromium bar: play/pause, time, seek,
+        // mute and volume overlaid on the bottom 56 px of the video element
+        // box (a 60%-opacity gradient, controls row 40 px, 12 px side padding,
+        // 20 px glyphs, 13 px #B3FFFFFF text). It is a media-area sibling that
+        // anchors onto the video box (the strip pattern), declared after the
+        // video so its controls stack above the picture's click targets.
+        Rectangle {
+            id: videoControls
+            objectName: "mediaViewer-controls"
+            anchors.left: mediaVideo.left
+            anchors.right: mediaVideo.right
+            anchors.bottom: mediaVideo.bottom
+            height: 56
+            visible: viewerRoot.controlsShown
+                && viewerRoot.currentSlot.state === "ready"
+                && String(viewerRoot.currentSlot.kind || "") === "video"
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: "#00000000" }
+                GradientStop { position: 1.0; color: "#99000000" }
+            }
+            // The bar consumes its own clicks: a press on the overlay must
+            // neither toggle playback (that is the picture click) nor reach
+            // the letterbox fallthrough that closes the viewer.
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {}
+            }
+            ViewerGlyph {
+                id: playGlyph
+                objectName: "mediaViewer-play"
+                anchors.left: parent.left
+                anchors.leftMargin: 12
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 8
+                readonly property bool playing: videoPlayer.playbackState === MediaPlayer.PlayingState
+                asset: playing ? "pause.svg" : "play_arrow.svg"
+                Accessible.name: playing ? qsTr("Pause") : qsTr("Play")
+                onClicked: {
+                    viewerRoot.pokeControls();
+                    if (videoPlayer.playbackState === MediaPlayer.PlayingState)
+                        videoPlayer.pause();
+                    else
+                        videoPlayer.play();
+                }
+            }
+            Text {
+                id: timeLabel
+                objectName: "mediaViewer-time"
+                anchors.left: playGlyph.right
+                anchors.leftMargin: 8
+                anchors.verticalCenter: playGlyph.verticalCenter
+                color: "#B3FFFFFF"
+                font.pixelSize: 13
+                text: videoPlayer.duration > 0
+                    ? viewerRoot.formatTime(videoPlayer.position) + " / " + viewerRoot.formatTime(videoPlayer.duration)
+                    : "--:-- / --:--"
+            }
+            Slider {
+                id: volumeBar
+                objectName: "mediaViewer-volume"
+                width: 80
+                implicitHeight: 20
+                padding: 0
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: playGlyph.verticalCenter
+                from: 0
+                to: 1
+                enabled: !videoAudio.muted
+                Accessible.name: qsTr("Volume")
+                onMoved: {
+                    viewerRoot.pokeControls();
+                    // Qt 6 keeps volume/muted on the AudioOutput, not the
+                    // MediaPlayer (assignments to videoPlayer.volume throw
+                    // "Cannot assign to non-existent property").
+                    videoAudio.volume = value;
+                }
+                background: Rectangle {
+                    x: volumeBar.leftPadding
+                    y: volumeBar.topPadding + volumeBar.availableHeight / 2 - height / 2
+                    width: volumeBar.availableWidth
+                    height: 3
+                    radius: 1
+                    color: "#4DFFFFFF"
+                    Rectangle {
+                        width: volumeBar.position * parent.width
+                        height: 3
+                        radius: 1
+                        color: "white"
+                    }
+                }
+                // value must follow the live volume without the drag-write
+                // killing the binding (the Qt video sample's Binding-when
+                // pattern), so release re-syncs and a programmatic volume
+                // change still moves the handle.
+                Binding {
+                    target: volumeBar
+                    property: "value"
+                    value: videoAudio.volume
+                    when: !volumeBar.pressed
+                    restoreMode: Binding.RestoreBindingOrValue
+                }
+            }
+            ViewerGlyph {
+                id: muteGlyph
+                objectName: "mediaViewer-mute"
+                anchors.right: volumeBar.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: playGlyph.verticalCenter
+                asset: videoAudio.muted ? "volume_off.svg" : "volume_up.svg"
+                Accessible.name: videoAudio.muted ? qsTr("Unmute") : qsTr("Mute")
+                onClicked: {
+                    viewerRoot.pokeControls();
+                    videoAudio.muted = !videoAudio.muted;
+                }
+            }
+            Slider {
+                id: seekBar
+                objectName: "mediaViewer-seek"
+                implicitHeight: 20
+                padding: 0
+                anchors.left: timeLabel.right
+                anchors.leftMargin: 12
+                anchors.right: muteGlyph.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: playGlyph.verticalCenter
+                from: 0
+                to: Math.max(1, videoPlayer.duration)
+                Accessible.name: qsTr("Seek")
+                onMoved: {
+                    viewerRoot.pokeControls();
+                    // Qt 6's QML MediaPlayer has no seek() - the writable
+                    // position property is the seek call (WRITE setPosition).
+                    videoPlayer.position = value;
+                }
+                background: Rectangle {
+                    x: seekBar.leftPadding
+                    y: seekBar.topPadding + seekBar.availableHeight / 2 - height / 2
+                    width: seekBar.availableWidth
+                    height: 3
+                    radius: 1
+                    color: "#4DFFFFFF"
+                    Rectangle {
+                        width: seekBar.position * parent.width
+                        height: 3
+                        radius: 1
+                        color: "white"
+                    }
+                }
+                Binding {
+                    target: seekBar
+                    property: "value"
+                    value: Math.min(seekBar.to, videoPlayer.position)
+                    when: !seekBar.pressed
+                    restoreMode: Binding.RestoreBindingOrValue
+                }
+            }
+        }
         Text {
             id: statusLabel
             objectName: "mediaViewer-status"
@@ -227,6 +443,63 @@ Popup {
                     ? qsTr("This media cannot be displayed. You can download the file instead.")
                     : qsTr("Loading media…"))
             visible: viewerRoot.visible && viewerRoot.currentSlot.state !== "ready"
+        }
+        // Actionable retry for a failed attachment fetch (issue #731): the
+        // reference user's equivalent is the browser's own reload affordance;
+        // this re-dispatches the slot download through the model (retrySlot
+        // is a no-op for anything but a load-error slot).
+        AbstractButton {
+            id: retryButton
+            objectName: "mediaViewer-retry"
+            anchors.horizontalCenter: statusLabel.horizontalCenter
+            anchors.top: statusLabel.bottom
+            anchors.topMargin: 10
+            visible: viewerRoot.visible && viewerRoot.currentSlot.state === "load-error"
+            hoverEnabled: true
+            implicitWidth: Math.max(72, retryLabel.implicitWidth + 24)
+            implicitHeight: 30
+            Accessible.name: text
+            text: qsTr("Retry")
+            contentItem: Text {
+                id: retryLabel
+                text: retryButton.text
+                color: "#B3FFFFFF"
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            background: Rectangle {
+                radius: 6
+                color: retryButton.hovered ? "#33FFFFFF" : "#1AFFFFFF"
+                border.width: 1
+                border.color: "#4DFFFFFF"
+            }
+            onClicked: viewerRoot.viewer.retrySlot(viewerRoot.viewer.index)
+        }
+    }
+
+    // Flat tinted-glyph button of the video controls bar (issue #731):
+    // 24x24 hit area, 20 px white glyph, no background fill (Chromium's
+    // transparent media-button chrome).
+    component ViewerGlyph: AbstractButton {
+        id: glyph
+        required property string asset
+        implicitWidth: 24
+        implicitHeight: 24
+        padding: 0
+        onClicked: viewerRoot.pokeControls()
+        background: Rectangle { color: "transparent" }
+        Image {
+            anchors.centerIn: parent
+            source: "qrc:/workspace/icons/" + glyph.asset
+            sourceSize.width: 20
+            sourceSize.height: 20
+            asynchronous: false
+            layer.enabled: true
+            layer.effect: MultiEffect {
+                colorizationColor: "white"
+                colorization: 1.0
+            }
         }
     }
 

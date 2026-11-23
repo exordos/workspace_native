@@ -21772,6 +21772,459 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!viewer->open());
     }
 
+    // Issue #731 acceptance: the video controls bar (docs/
+    // NATIVE_DESKTOP_VIDEO_PLAYBACK.md). The play glyph pauses and resumes,
+    // dragging the seek handle lands the player position within +-60 ms of
+    // the value the slider released, and the time label always mirrors the
+    // player's own position/duration (never a hardcoded literal).
+    void mediaViewerVideoControlsVisibleAndSeekRoundTrip()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-controls.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer controls window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 8000);
+        auto *player = window->findChild<QObject *>("mediaViewer-player"); QVERIFY(player);
+        const auto playerState = [&] { return player->property("playbackState").toInt(); };
+        const auto playerPos = [&] { return player->property("position").toLongLong(); };
+        const auto formatTime = [](qint64 ms) {
+            if (ms <= 0) return QStringLiteral("--:--");
+            const qint64 total = ms / 1000;
+            return QString::number(total / 60) + (total % 60 < 10
+                ? QStringLiteral(":0") : QStringLiteral(":")) + QString::number(total % 60);
+        };
+        // autoPlay reaches Playing and the position clock advances.
+        QTRY_VERIFY_WITH_TIMEOUT(playerState() == 1, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(playerPos() > 0, 5000);
+        // Pointer activity over the video shows the bar (Chromium
+        // auto-convention cloned by the design doc); the sweep both proves the
+        // HoverHandler wiring and pins the bar open for the assertions below.
+        auto *video = visibleItem(content, "mediaViewer-video"); QVERIFY(video);
+        QTest::mouseMove(window, video->mapToScene(
+            QPointF(video->width() / 2, video->height() / 2)).toPoint());
+        // The bar exists over the ready video slot with its objectNames
+        // (design doc Tests section).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *b = visibleItem(content, "mediaViewer-controls");
+            return b && b->isVisible(); })(), 5000);
+        QVERIFY(visibleItem(content, "mediaViewer-play"));
+        QVERIFY(visibleItem(content, "mediaViewer-seek"));
+        QVERIFY(visibleItem(content, "mediaViewer-time"));
+        // The time label mirrors the player's own derived mm:ss pair.
+        const qint64 duration = player->property("duration").toLongLong();
+        QVERIFY2(duration > 0, "the committed fixture clip must report a duration");
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-time");
+            if (!t) return false;
+            const QString expect = formatTime(playerPos()) + " / " + formatTime(duration);
+            return t->property("text").toString() == expect; })(), 5000);
+        // Pin the media to Paused with a non-zero position through the bar's
+        // own play/pause glyph. Paced: one flip per iteration with dwell so
+        // the position clock can advance; a clip that already ended is
+        // restarted and paused on the following iteration.
+        for (int i = 0; i < 40 && !(playerState() == 2 && playerPos() > 0); ++i) {
+            click(window, visibleItem(content, "mediaViewer-play"));
+            QTest::qWait(playerState() == 1 ? 80 : 150);
+        }
+        QVERIFY2(playerState() == 2 && playerPos() > 0,
+            "the play glyph must be able to pause mid-clip with a non-zero position");
+        // Press-drag the seek handle to mid-clip; the released slider value
+        // must be what the player lands on, within frame rounding. The
+        // 6.10 Basic template handle is the plain 28x28 Rectangle child of
+        // the slider (the groove is the thin background bar), located here
+        // geometrically.
+        auto *seek = visibleItem(content, "mediaViewer-seek"); QVERIFY(seek);
+        QQuickItem *handle = nullptr;
+        for (auto *child : seek->children()) {
+            auto *item = qobject_cast<QQuickItem *>(child);
+            if (item && item->width() >= 20 && item->height() >= 20)
+                handle = item;
+        }
+        QVERIFY2(handle, "the seek slider must expose its style handle");
+        const qint64 preSeek = playerPos();
+        const QPointF handleCenter = handle->mapToScene(QPointF(handle->width() / 2, handle->height() / 2));
+        const QPointF midTrack = seek->mapToScene(QPointF(seek->width() * 0.5, seek->height() / 2));
+        QVERIFY2(qAbs(midTrack.x() - handleCenter.x()) > 5.0,
+            "the drag must actually move the handle along the track");
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, handleCenter.toPoint());
+        for (const double f : {0.4, 0.7, 1.0}) {
+            QTest::mouseMove(window, (handleCenter + (midTrack - handleCenter) * f).toPoint());
+            QTest::qWait(30);
+        }
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, midTrack.toPoint());
+        const double seekTarget = seek->property("value").toDouble();
+        QVERIFY2(seekTarget > 0.0, "dragging to mid-track must move the value");
+        qint64 landed = -1;
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ landed = playerPos();
+            return landed >= qint64(seekTarget) - 90 && landed > preSeek; })(), 5000);
+        // The play glyph resumes from the seeked position.
+        click(window, visibleItem(content, "mediaViewer-play"));
+        QTRY_VERIFY_WITH_TIMEOUT(playerState() == 1, 5000);
+        QVERIFY(playerPos() > 0);
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #731: the volume slider writes the player volume, the mute glyph
+    // writes muted, and muting disables the volume slider (design doc Tests).
+    void mediaViewerVolumeAndMuteBinding()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-volume.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer volume window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 8000);
+        auto *player = window->findChild<QObject *>("mediaViewer-player"); QVERIFY(player);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *b = visibleItem(content, "mediaViewer-controls");
+            return b && b->isVisible(); })(), 5000);
+        // Qt 6 keeps volume and muted on the AudioOutput the player feeds
+        // (the MediaPlayer QML type has no volume/muted property at all);
+        // the output is the per-slot "mediaViewer-audio-<index>" object.
+        auto *audio = window->findChild<QObject *>("mediaViewer-audio-1"); QVERIFY(audio);
+        // Drag the volume handle down to a quarter: the released value is
+        // what the AudioOutput-fed player ends up with. The style handle is
+        // located geometrically (the 6.10 Basic template handle is a plain
+        // 28x28 Rectangle child; the groove background is a 3 px bar) and
+        // the interaction is driven exactly as a user drives it, because a
+        // direct C++ property write on the player stays invisible to the
+        // QML bindings (they refresh only on the player's own NOTIFY).
+        auto *volume = visibleItem(content, "mediaViewer-volume"); QVERIFY(volume);
+        QQuickItem *volumeHandle = nullptr;
+        for (auto *child : volume->children()) {
+            auto *item = qobject_cast<QQuickItem *>(child);
+            if (item && item->width() >= 20 && item->height() >= 20)
+                volumeHandle = item;
+        }
+        QVERIFY2(volumeHandle, "the volume slider must expose its style handle");
+        const QPointF vStart = volumeHandle->mapToScene(QPointF(volumeHandle->width() / 2, volumeHandle->height() / 2));
+        const QPointF vTarget = volume->mapToScene(QPointF(volume->width() * 0.25, volume->height() / 2));
+        QVERIFY2(qAbs(vTarget.x() - vStart.x()) > 5.0, "the volume drag must move the handle");
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, vStart.toPoint());
+        for (const double f : {0.4, 0.7, 1.0}) {
+            QTest::mouseMove(window, (vStart + (vTarget - vStart) * f).toPoint());
+            QTest::qWait(30);
+        }
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, vTarget.toPoint());
+        // The when-gated Binding re-applies on the next polish pass.
+        QTest::qWait(150);
+        const double written = volume->property("value").toDouble();
+        QVERIFY2(written < 0.5, qPrintable(QStringLiteral(
+            "dragging to a quarter must move the value, got %1").arg(written)));
+        QCOMPARE(audio->property("volume").toDouble(), written);
+        // Mute writes the audio output flag and disables the volume slider.
+        QVERIFY(!audio->property("muted").toBool());
+        click(window, visibleItem(content, "mediaViewer-mute"));
+        QTRY_VERIFY(audio->property("muted").toBool());
+        QTRY_VERIFY(!visibleItem(content, "mediaViewer-volume")->property("enabled").toBool());
+        // A second press unmutes and the slider becomes usable again.
+        click(window, visibleItem(content, "mediaViewer-mute"));
+        QTRY_VERIFY(!audio->property("muted").toBool());
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-volume")->property("enabled").toBool());
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #731 stop-on-switch contract: navigating away from the video slot
+    // and closing the viewer both settle the player into StoppedState, so no
+    // audio can leak from media the user no longer watches.
+    void mediaViewerSwitchStopsAudio()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-stop-switch.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer stop-on-switch window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 8000);
+        auto *player = window->findChild<QObject *>("mediaViewer-player"); QVERIFY(player);
+        // Stop-on-switch: navigating back to the image slot settles the
+        // player into StoppedState (unconditional switch, then wait).
+        click(window, visibleItem(content, "mediaViewer-prev"));
+        QCOMPARE(viewer->index(), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(player->property("playbackState").toInt() == 0, 5000);
+        QVERIFY(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return !v || !v->isVisible(); })());
+        // Stop-on-close: the fresh replay stops when the viewer closes.
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QTRY_VERIFY_WITH_TIMEOUT(player->property("playbackState").toInt() == 1, 15000);
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+        QCOMPARE(player->property("playbackState").toInt(), 0);
+    }
+
+    // Issue #731 actionable error: a failed attachment download offers a Retry
+    // that re-dispatches exactly one fetch; a succeeding retry lands the slot
+    // ready with its controls bar.
+    void mediaViewerLoadErrorOffersRetry()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        int videoDownloads = 0;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    ++videoDownloads;
+                    Response result;
+                    if (videoDownloads == 1) { result = Response{QJsonObject{}, 500}; }
+                    else {
+                        result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    }
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-retry.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer retry window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *t = visibleItem(content, "mediaViewer-status");
+            return t && t->property("text").toString() == QString("Failed to load video"); })(), 8000);
+        QVERIFY(videoDownloads >= 1);
+        auto *retry = visibleItem(content, "mediaViewer-retry"); QVERIFY(retry);
+        QVERIFY(retry->isVisible());
+        const int before = videoDownloads;
+        click(window, retry);
+        // Exactly one re-dispatch, and the retry lands the slot ready.
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return videoDownloads == before + 1; })(), 5000);
+        QCOMPARE(videoDownloads, before + 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return viewer->items().at(1).toMap()
+            .value("state").toString() == QString("ready"); })(), 8000);
+        QVERIFY(!visibleItem(content, "mediaViewer-retry"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *b = visibleItem(content, "mediaViewer-controls");
+            return b && b->isVisible(); })(), 5000);
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
     // Undecodable staged bytes drive the player error path onto the
     // display-error state with the videoDisplayFailed text
     // (media-viewer-overlay.ui.tsx:75-90,143-151).

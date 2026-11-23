@@ -427,6 +427,21 @@ void MediaViewerModel::markSlotDisplayError(int index)
     emit mediaViewerChanged();
 }
 
+void MediaViewerModel::retrySlot(int index)
+{
+    if (!m_open || index < 0 || index >= m_slots.size())
+        return;
+    auto &target = m_slots[index];
+    if (target.state != QLatin1String("load-error"))
+        return;
+    // The failed attempt never committed its QSaveFile, so the same
+    // destination is clean for the re-dispatch.
+    target.state = QStringLiteral("loading");
+    target.started = false;
+    emit mediaViewerChanged();
+    startSlot(index);
+}
+
 void MediaViewerModel::closeSession()
 {
     if (!m_open && m_slots.isEmpty())
