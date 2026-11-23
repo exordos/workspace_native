@@ -57,7 +57,9 @@ ScrollView {
         Accessible.name: choice[1]
         onClicked: panel.setChoice(key, choice[0])
         padding: 6
-        implicitHeight: choice.length > 2 ? 50 : 36
+        // Issue #726: option captions (theme/palette names) wrap instead of
+        // eliding at the drawer width; the row grows to fit them.
+        implicitHeight: Math.max(choice.length > 2 ? 50 : 36, implicitContentHeight + padding * 2)
         contentItem: RowLayout {
             spacing: 4
             Rectangle {
@@ -74,7 +76,7 @@ ScrollView {
             }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 1
-                Label { Layout.fillWidth: true; text: option.choice[1]; font.pixelSize: 13; font.weight: option.checked ? Font.Medium : Font.Normal; elide: Text.ElideRight; color: panel.colors["text-primary"] }
+                Label { Layout.fillWidth: true; text: option.choice[1]; font.pixelSize: 13; font.weight: option.checked ? Font.Medium : Font.Normal; wrapMode: Text.WordWrap; color: panel.colors["text-primary"] }
                 Label { Layout.fillWidth: true; visible: text.length > 0; text: option.choice[2] || ""; font.pixelSize: 10; wrapMode: Text.Wrap; color: panel.colors["text-secondary"] }
             }
             Label { visible: option.checked; text: "✓"; color: panel.colors.accent; font.pixelSize: 16; Accessible.ignored: true }
@@ -93,7 +95,13 @@ ScrollView {
                 Button {
                     id: toggle
                     objectName: "accountSetting-" + section.modelData.key
-                    width: section.width; height: section.modelData.hint ? 54 : 42
+                    // Issue #726: localized titles (e.g. the stream/topic order
+                    // label) were elided at the drawer's width although vertical
+                    // space was free - let the title wrap and let the row grow
+                    // instead of clipping the text.
+                    width: section.width
+                    height: Math.max(section.modelData.hint ? 54 : 42,
+                        implicitContentHeight + padding * 2)
                     padding: 8
                     Accessible.name: section.modelData.title
                     Accessible.checkable: true; Accessible.checked: section.expanded
@@ -102,7 +110,7 @@ ScrollView {
                         spacing: 5
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 1
-                            Label { Layout.fillWidth: true; text: section.modelData.title; font.pixelSize: 14; elide: Text.ElideRight; color: panel.colors["text-primary"] }
+                            Label { Layout.fillWidth: true; text: section.modelData.title; font.pixelSize: 14; wrapMode: Text.WordWrap; color: panel.colors["text-primary"] }
                             Label { Layout.fillWidth: true; visible: text.length > 0; text: section.modelData.hint || ""; font.pixelSize: 11; wrapMode: Text.Wrap; color: panel.colors["text-muted"] }
                         }
                         Label {

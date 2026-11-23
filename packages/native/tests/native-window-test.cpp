@@ -24614,6 +24614,123 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(topicsChevron->property("source").toUrl().path().endsWith("chevron-down.svg"));
     }
 
+    // Issue #726: at the narrow widths the bug was filed for (~702 and ~919 px)
+    // the window-centred section cluster overlapped the search/profile cluster
+    // and the chat header title ran under the call/info controls. The layout
+    // contract: every top-bar cluster and the header title keep disjoint,
+    // clickable bounds at every supported width, the conversation stays
+    // writable at minimumWidth with the right drawer open, and the localized
+    // Appearance rows present their captions wrapped instead of elided.
+    void narrowWindowKeepsClustersDisjoint()
+    {
+        ChannelInfoWindowScene scene;
+        QVERIFY(scene.window);
+        scene.window->resize(919, 716);
+        QVERIFY(QTest::qWaitForWindowExposed(scene.window));
+        QTRY_VERIFY(scene.controller.hasConversation());
+        const auto rectOf = [&](const QString &name, QRectF *out) -> bool {
+            auto *item = visibleItem(name);
+            if (!item)
+                return false;
+            const auto origin = item->mapToScene(QPointF(0, 0));
+            *out = QRectF(origin, QSizeF(item->width(), item->height()));
+            return true;
+        };
+        const auto describe = [](const QRectF &r) {
+            return QStringLiteral("[%1 %2 %3x%4]")
+                .arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+        };
+        const auto disjoint = [&](const QString &a, const QString &b) {
+            QRectF ra;
+            QRectF rb;
+            QVERIFY2(rectOf(a, &ra), qPrintable(QStringLiteral("missing ") + a));
+            QVERIFY2(rectOf(b, &rb), qPrintable(QStringLiteral("missing ") + b));
+            QVERIFY2(!ra.intersects(rb), qPrintable(
+                a + QStringLiteral(" ") + describe(ra) + QStringLiteral(" intersects ")
+                + b + QStringLiteral(" ") + describe(rb)));
+        };
+        const auto assertClustersDisjoint = [&]() {
+            disjoint("sectionMailButton", "globalUserSearchButton");
+            disjoint("accountMenuButton", "globalUserSearchButton");
+            disjoint("channelHeaderTitleRow", "conversationInfoAction");
+            if (visibleItem("headerCallButton"))
+                disjoint("channelHeaderTitleRow", "headerCallButton");
+        };
+        assertClustersDisjoint();
+        // The reported minimum: 702 x 716 with the peer/channel info drawer
+        // open (the fixed sidebar plus the fixed drawer squeeze the pane).
+        scene.window->resize(702, 716);
+        QTRY_COMPARE_WITH_TIMEOUT(scene.window->width(), 702, 4000);
+        QTRY_VERIFY(visibleItem("conversationInfoAction"));
+        assertClustersDisjoint();
+        click(scene.window, visibleItem("conversationInfoAction"));
+        QTRY_VERIFY(visibleItem("channelInfoLayer"));
+        assertClustersDisjoint();
+        // Narrow-width contract: the drawer overlays the chat (no reserved
+        // dock), so message list and composer keep a writable strip.
+        auto *composer = visibleItem("messageComposer"); QVERIFY(composer);
+        QVERIFY2(composer->width() >= 60,
+            qPrintable(QStringLiteral("composer width %1").arg(composer->width())));
+        auto *list = visibleItem("messageList"); QVERIFY(list);
+        QVERIFY2(list->width() >= 60,
+            qPrintable(QStringLiteral("message list width %1").arg(list->width())));
+        // Reachability: the compact clusters still switch sections on click.
+        click(scene.window, visibleItem("sectionMailButton"));
+        QTRY_COMPARE(scene.controller.section(), QString("mail"));
+        click(scene.window, visibleItem("sectionChatButton"));
+        QTRY_COMPARE(scene.controller.section(), QString("chat"));
+        QTRY_VERIFY(visibleItem("messageComposer"));
+    }
+
+    // Issue #726 companion: the Appearance accordion renders every caption
+    // fully - no elided Text survives inside a section header or an option
+    // row, so localized (ru) titles and theme/palette names stay readable at
+    // the drawer's fixed width instead of collapsing to an ellipsis.
+    void appearanceSectionCaptionsWrapInsteadOfEliding()
+    {
+        ChannelInfoWindowScene scene;
+        scene.preferences.setLocale("ru");
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountAppearanceAction"));
+        // Labels default to elide=ElideMiddle in this Qt build, so an elide
+        // flag probe is meaningless; assert the true visual contract instead:
+        // no visible caption is clipped. Either it renders on one line that
+        // fits (implicitWidth <= width) or it wraps and the row grew to fit
+        // the wrapped height (implicitHeight <= height).
+        const auto assertNoClippedCaption = [&](const QString &seam) {
+            auto *root = visibleItem(seam); QVERIFY2(root, qPrintable(seam));
+            QStringList clipped;
+            std::function<void(QQuickItem *)> walk = [&](QQuickItem *item) {
+                for (auto *child : item->childItems()) {
+                    if (child->inherits("QQuickText") && child->isVisible()
+                        && !child->property("text").toString().isEmpty()) {
+                        const QString text = child->property("text").toString();
+                        const int wrap = child->property("wrapMode").toInt();
+                        const qreal implicitWidth = child->property("implicitWidth").toReal();
+                        const qreal implicitHeight = child->property("implicitHeight").toReal();
+                        if (wrap == 0 && implicitWidth > child->width() + 1.0)
+                            clipped << QStringLiteral("\"%1\" unwrapped %2>%3")
+                                           .arg(text).arg(implicitWidth).arg(child->width());
+                        else if (wrap != 0 && implicitHeight > child->height() + 1.0)
+                            clipped << QStringLiteral("\"%1\" wrapped %2>%3")
+                                           .arg(text).arg(implicitHeight).arg(child->height());
+                    }
+                    walk(child);
+                }
+            };
+            walk(root);
+            QVERIFY2(clipped.isEmpty(), qPrintable(
+                seam + QStringLiteral(" clips: ") + clipped.join(QStringLiteral("; "))));
+        };
+        assertNoClippedCaption("accountSetting-sidebarSortMode");
+        assertNoClippedCaption("accountSetting-theme");
+        // The theme grid options must also fit without eliding.
+        click(scene.window, visibleItem("accountSetting-theme"));
+        QTRY_VERIFY(visibleItem("accountOption-mode-system"));
+        assertNoClippedCaption("accountOption-mode-system");
+    }
+
     // Issue #637 (docs/NATIVE_DESKTOP_CHAT_BACKGROUNDS.md section 5): the
     // appearance "background" section end-to-end - preset card opens the apply
     // dialog, applying paints the resolved image on the conversation surface

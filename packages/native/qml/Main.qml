@@ -128,7 +128,16 @@ ApplicationWindow {
         // The objectName stays the established nativeRightDrawer seam - 48 test
         // handles (window + e2ee-read suites) collect it by that name.
         objectName: "nativeRightDrawer"
-        visible: drawerOpen && (root.controller.section === "chat" || topLayerKind === "account")
+        // #726: visibility is synced IMPERATIVELY (syncRouteVisibility) instead
+        // of a declarative binding. Any binding on this property whose
+        // evaluation lands in a layout-relayout wave (chat reflow when the
+        // drawer docks) trips Qt's binding-loop detector with a phantom
+        // self-loop on `visible`; imperative writes have no binding to flag,
+        // and every input (drawerOpen, section, topLayerKind) has a sync
+        // handler below so the value can never go stale.
+        onDrawerOpenChanged: root.syncRightDrawerRouteVisibility()
+        onTopLayerKindChanged: root.syncRightDrawerRouteVisibility()
+        Component.onCompleted: root.syncRightDrawerRouteVisibility()
         anchors.right: parent.right
         anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
         anchors.topMargin: root.controller.authenticated ? 4 : 8
@@ -178,6 +187,15 @@ ApplicationWindow {
                 root.controller.closeDrafts();
                 root.controller.logout();
             }
+        }
+
+        // Post-#724 adaptation of #726: this lane was cut before the floating
+        // accountPopup was replaced by the inline account layer, so only the
+        // section-change route-visibility sync survives; the account-root
+        // re-open is now handled natively by accountRootVisible.
+        Connections {
+            target: root.controller
+            function onSectionChanged() { root.syncRightDrawerRouteVisibility() }
         }
         Loader {
             anchors.fill: parent
@@ -322,6 +340,32 @@ ApplicationWindow {
     readonly property real sidebarMaximum: Math.max(240, Math.min(720, Math.round(width * 0.4)))
     readonly property real sidebarMinimum: Math.min(sidebarMaximum, Math.max(240, Math.round(width * 0.12)))
     readonly property real sidebarWidth: Math.max(sidebarMinimum, Math.min(sidebarMaximum, preferredSidebarWidth))
+        // Issue #726: at narrow widths docking the 315 px drawer left a 22 px
+    // chat strip at 702 px - the issue names this squeeze as the UX defect and
+    // asks to "adapt side-panel layout at narrow sizes so the user can still
+    // read and write in the conversation". Reference contract: the DOM
+    // right-drawer is FIXED-positioned - it FLOATS over the chat and the chat
+    // never reflows for it (workspace_ui right-drawer.ui.tsx), so the native
+    // drawer overlays instead of reserving space whenever docking would
+    // starve the chat below narrowChatFloor (see conversationPanel's
+    // Layout.rightMargin). Width-only arithmetic: no layout output feeds the
+    // condition back, and nothing changes sidebar geometry while the drawer
+    // is visible (that re-enters the drawer's visible-binding pass and trips
+    // Qt's binding-loop detector).
+    readonly property real narrowChatFloor: 260
+    // Imperative drawer route-visibility sync (see rightDrawer's note):
+    // assigning `visible` from code leaves no binding for the loop detector
+    // to flag when a chat relayout lands in the same polish pass.
+    function syncRightDrawerRouteVisibility() {
+        rightDrawer.visible = rightDrawer.drawerOpen
+            && (root.controller.section === "chat" || rightDrawer.topLayerKind === "account")
+    }
+    readonly property bool narrowDrawerOverlay: root.controller.authenticated
+        && root.width - 80
+            - ((root.controller.section === "chat" && root.shortcutSidebarVisible)
+                ? root.sidebarWidth : 0)
+            - 323 < root.narrowChatFloor
+
     function selectedStreamIsEncrypted(source) {
         const selected = source.selectedStream;
         if (!selected)
@@ -2890,6 +2934,7 @@ component NativeMentionChip: Item {
         }
 
         Row {
+            id: topBarLeftRow
             x: 28
             anchors.verticalCenter: sectionButtons.verticalCenter
             SessionSwitcher {
@@ -2900,7 +2945,15 @@ component NativeMentionChip: Item {
         }
         Row {
             id: sectionButtons
-            anchors.horizontalCenter: parent.horizontalCenter
+            // Issue #726: Source centers this nav inside the free space
+            // between the clusters; anchoring to the window center made the
+            // fixed-width cluster overlap the mail/search buttons at narrow
+            // widths (observed at ~702 and ~919). Center while it fits, clamp
+            // into the free band otherwise so all three clusters keep
+            // disjoint, reachable bounds at every supported width.
+            x: Math.max(topBarLeftRow.x + topBarLeftRow.width + 12,
+                        Math.min((topBar.width - width) / 2,
+                                 topBarRightRow.x - 12 - width))
             y: topBar.titleStripHeight + (topBar.toolbarHeight - height) / 2
             spacing: 12
             NativeIconButton {
@@ -2962,6 +3015,7 @@ component NativeMentionChip: Item {
             }
         }
         Row {
+            id: topBarRightRow
             anchors.right: parent.right
             anchors.rightMargin: 8
             anchors.verticalCenter: sectionButtons.verticalCenter
@@ -3048,9 +3102,15 @@ component NativeMentionChip: Item {
                 readonly property string presence: root.controller.authenticated ? String(root.controller.account.presence || "") : ""
                 readonly property string statusLabel: root.controller.authenticated
                     ? String(root.controller.account.statusLabel || "") || root.presenceLabel(presence) : ""
-                implicitWidth: Math.min(320, 36 + 8 + Math.max(profileNameText.implicitWidth,
+                // Issue #726: below 1000 px the trigger collapses to the avatar
+                // alone (Source hides the text column below its sm: breakpoint,
+                // top-bar-profile-trigger.ui.tsx:125) so the search/profile
+                // clusters stop running into the centered section nav.
+                readonly property bool compactTrigger: topBar.width < 1000
+                implicitWidth: Math.min(320, 36 + 8 + (compactTrigger ? 0
+                    : Math.max(profileNameText.implicitWidth,
                     profileEmailText.visible ? profileEmailText.implicitWidth : 0,
-                    profileStatusText.visible ? Math.min(profileStatusText.implicitWidth, profileStatusMetrics.advanceWidth("0") * 32) : 0) + 8 + 16 + 12)
+                    profileStatusText.visible ? Math.min(profileStatusText.implicitWidth, profileStatusMetrics.advanceWidth("0") * 32) : 0) + 8 + 16 + 12))
                 width: Math.min(implicitWidth, Math.max(96, root.width * 0.3))
                 height: Math.max(48, profileTextColumn.implicitHeight + topPadding + bottomPadding)
                 padding: 6
@@ -3104,7 +3164,8 @@ component NativeMentionChip: Item {
                     }
                     Column {
                         id: profileTextColumn
-                        width: Math.max(0, profileControl.availableWidth - 36 - 16 - 2 * 8)
+                        visible: !profileControl.compactTrigger
+                        width: visible ? Math.max(0, profileControl.availableWidth - 36 - 16 - 2 * 8) : 0
                         height: implicitHeight
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.alignWhenCentered: false
@@ -6770,7 +6831,8 @@ component NativeMentionChip: Item {
                 && root.controller.section === "chat"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.rightMargin: rightDrawer.visible ? rightDrawer.width + 4 : 0
+            Layout.rightMargin: rightDrawer.visible && !root.narrowDrawerOverlay
+                ? rightDrawer.width + 4 : 0
             spacing: 0
             Rectangle {
                 id: chatHeaderRoot
@@ -6827,12 +6889,17 @@ component NativeMentionChip: Item {
                 }
                 RowLayout {
                     id: channelHeaderTitleRow
+                    objectName: "channelHeaderTitleRow"
                     visible: !root.controller.isDirectConversation && !root.encryptedConversation
                         && !root.controller.favoritesVisible
                     x: 20
                     y: 8
                     height: 20
-                    width: parent.width - 100
+                    // Issue #726: keep the title clear of the call/info cluster
+                    // (the fixed -100 inset was not enough at 700-920 px, so the
+                    // title text ran under the call control).
+                    width: Math.max(80, Math.min(parent.width - 100,
+                        chatHeaderActionsRow.x - 30))
                     spacing: 0
                     Text {
                         Layout.maximumWidth: streamTitle.visible ? parent.width * 0.65 : parent.width
@@ -6878,7 +6945,8 @@ component NativeMentionChip: Item {
                         && !root.controller.favoritesVisible && root.controller.chatHeaderMemberCount > 0
                     x: 20
                     y: 30
-                    width: parent.width - 100
+                    width: Math.max(80, Math.min(parent.width - 100,
+                        chatHeaderActionsRow.x - 30))
                     text: root.chatHeaderCountersText()
                     Accessible.role: Accessible.StaticText
                     Accessible.name: text
@@ -7225,6 +7293,7 @@ component NativeMentionChip: Item {
                     }
                 }
                 Row {
+                    id: chatHeaderActionsRow
                     // The favorites header carries no actions (ChatHeaderShell renders
                     // the empty ChatHeaderActions for ChatFavoritesHeader, issue #70).
                     visible: !root.controller.favoritesVisible
@@ -7236,6 +7305,10 @@ component NativeMentionChip: Item {
                         objectName: "callError"
                         visible: root.controller.callError.length > 0
                         text: root.controller.callError
+                        // Issue #726: a long error must not stretch the cluster
+                        // over the title at narrow widths.
+                        width: Math.min(implicitWidth, chatHeaderRoot.width * 0.4)
+                        elide: Text.ElideRight
                         textFormat: Text.PlainText
                         color: root.colors.danger
                         font.pixelSize: 13

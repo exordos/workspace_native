@@ -1,3 +1,4 @@
+appearanceSectionCaptionsWrapInsteadOfEliding=0.965945
 archiveMatchesPinnedGeometryAndVirtualSearch=9.46883
 captionAndPickedImageSendThenPaintOwnInlinePixels=1.47117
 chatBackgroundSectionAppliesPresetAndRepaintsConversation=1.11604
