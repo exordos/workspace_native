@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TestCase name="NativeWindowTest">
+  <Environment>
+    <QtVersion>6.10.2</QtVersion>
+    <QtBuild>Qt 6.10.2 (x86_64&#x002D;little_endian&#x002D;lp64 shared (dynamic) release build; by GCC 15.2.0)</QtBuild>
+    <QTestVersion>6.10.2</QTestVersion>
+  </Environment>
+  <TestFunction name="initTestCase">
+    <Incident type="pass" file="" line="0" />
+    <Duration msecs="0.01164"/>
+  </TestFunction>
+  <TestFunction name="mediaViewerControlsStayVisibleWhileBarControlFocused">
+  <Message type="qinfo" file="" line="0">
+    <DataTag><![CDATA[seek]]></DataTag>
+    <Description><![CDATA[qt.multimedia.ffmpeg: Using Qt multimedia with FFmpeg version 8.0.1-3ubuntu2 GPL version 2 or later]]></Description>
+  </Message>
+    <Incident type="pass" file="" line="0">
+      <DataTag><![CDATA[seek]]></DataTag>
+    </Incident>
+    <Incident type="pass" file="" line="0">
+      <DataTag><![CDATA[play]]></DataTag>
+    </Incident>
+    <Incident type="pass" file="" line="0">
+      <DataTag><![CDATA[mute]]></DataTag>
+    </Incident>
+    <Incident type="pass" file="" line="0">
+      <DataTag><![CDATA[volume]]></DataTag>
+    </Incident>
+    <Duration msecs="32192.5"/>
+  </TestFunction>
+  <TestFunction name="mediaViewerTabReachesVideoControlsAfterAutoHide">
+    <Incident type="pass" file="" line="0" />
+    <Duration msecs="8026.39"/>
+  </TestFunction>
+  <TestFunction name="cleanupTestCase">
+    <Incident type="pass" file="" line="0" />
+    <Duration msecs="0.00325"/>
+  </TestFunction>
+  <Duration msecs="40219.3"/>
+</TestCase>

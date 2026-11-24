@@ -50,6 +50,11 @@ Popup {
     // Focusing in re-pins the bar; moving focus out restarts the countdown,
     // so "moving focus elsewhere allows normal auto-hide" (#784 acceptance).
     onControlsFocusWithinChanged: viewerRoot.pokeControls()
+    // Shared gate for the reveal Shortcuts: armed only while a ready video
+    // slot sits auto-hidden with focus outside the bar.
+    readonly property bool controlsRevealArmed: currentSlot.state === "ready"
+        && String(currentSlot.kind || "") === "video"
+        && !controlsShown && !controlsFocusWithin
     function pokeControls() {
         viewerRoot.controlsShown = true;
         controlsHideTimer.restart();
@@ -121,16 +126,21 @@ Popup {
         Accessible.name: qsTr("Media viewer")
     }
     // Issue #784: Qt's tab chain skips invisible items, so once the bar has
-    // auto-hidden the keyboard cannot reach it anymore. The first Tab press
-    // (enabled only while a ready video slot sits hidden with focus outside
-    // the bar) reveals the bar; the press is consumed as a reveal gesture
-    // only in that state, and the next Tab walks the focus chain normally
-    // onto the controls, where controlsFocusWithin keeps the bar open.
+    // auto-hidden the keyboard cannot reach it anymore. The first Tab or
+    // Shift+Tab press (enabled only while a ready video slot sits hidden with
+    // focus outside the bar) reveals the bar; the press is consumed as a
+    // reveal gesture only in that state, and the next Tab / Shift+Tab walks
+    // the focus chain normally onto the controls, where controlsFocusWithin
+    // keeps the bar open. Both directions need the gesture: the reverse chain
+    // skips invisible items exactly like the forward one (review round).
     Shortcut {
-        enabled: viewerRoot.currentSlot.state === "ready"
-            && String(viewerRoot.currentSlot.kind || "") === "video"
-            && !viewerRoot.controlsShown && !viewerRoot.controlsFocusWithin
+        enabled: viewerRoot.controlsRevealArmed
         sequence: "Tab"
+        onActivated: viewerRoot.pokeControls()
+    }
+    Shortcut {
+        enabled: viewerRoot.controlsRevealArmed
+        sequence: "Shift+Tab"
         onActivated: viewerRoot.pokeControls()
     }
 

@@ -22671,6 +22671,106 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!viewer->open());
     }
 
+    // Issue #784 (review round): reverse tab navigation must also reveal the
+    // bar after an auto-hide - the reverse chain skips invisible items just
+    // like the forward one, so Shift+Tab has to carry the same reveal gesture.
+    void mediaViewerBacktabReachesVideoControlsAfterAutoHide()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytesLong();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-backtab-reach.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer backtab reach window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 8000);
+        auto *player = window->findChild<QObject *>("mediaViewer-player"); QVERIFY(player);
+        const auto playerState = [&] { return player->property("playbackState").toInt(); };
+        const auto playerPos = [&] { return player->property("position").toLongLong(); };
+        // autoPlay reaches Playing and the position clock advances.
+        QTRY_VERIFY_WITH_TIMEOUT(playerState() == 1, 15000);
+        QTRY_VERIFY_WITH_TIMEOUT(playerPos() > 0, 5000);
+        QTest::mouseMove(window, QPoint(5, 5));
+        auto *bar = visibleItem(content, "mediaViewer-controls"); QVERIFY(bar);
+        // Nothing is focused, so the auto-hide fires normally in this phase.
+        QTRY_VERIFY_WITH_TIMEOUT(!bar->isVisible(), 6000);
+        QQuickItem *inBar = nullptr;
+        for (int i = 0; i < 8 && !inBar; ++i) {
+            QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+            QTest::qWait(80);
+            auto *focused = window->activeFocusItem();
+            if (focused && bar->isAncestorOf(focused))
+                inBar = focused;
+        }
+        QVERIFY2(inBar, "Shift+Tab must reach a video controls-bar control after an auto-hide");
+        QVERIFY(bar->isVisible());
+        // The reached control keeps the bar open past the next timeout.
+        QTest::qWait(4000);
+        QVERIFY2(playerState() == 1, "the long clip must still be playing at the witness");
+        QVERIFY2(bar->isVisible(),
+            "the bar control Shift+Tab reached must keep the bar visible past auto-hide");
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
     // Issue #731: the volume slider writes the player volume, the mute glyph
     // writes muted, and muting disables the volume slider (design doc Tests).
     void mediaViewerVolumeAndMuteBinding()
