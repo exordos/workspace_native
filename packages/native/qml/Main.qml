@@ -864,13 +864,23 @@ ApplicationWindow {
     // topic click consumes at most one resume and hands the caret back to the
     // writable destination, so typing lands without an extra click (the UX
     // problem named in the issue: the switch cost a click and silently dropped
-    // the typed start). Consuming per click and never reacting on focus loss
-    // keeps keyboard traversal, filtered search and explicit caret moves at
-    // their current behavior; a read-only destination keeps the row focused.
-    // Sidebar focus-on-press steals focus before the click is emitted, so the
-    // session is read in the click handler, not at press (probed on Qt 6.10).
+    // the typed start). Sidebar focus-on-press steals focus before the click is
+    // emitted, so the session is read in the click handler, not at press (probed
+    // on Qt 6.10). Exo-review round (finding 4678658088): the session survives
+    // only a focus move straight onto a sidebar topic row - the switch's own
+    // grab; any other focus target is an explicit caret move that ends the
+    // session, so a later switch never drags the caret back after the user
+    // relocated it.
     property bool composerWritingSession: false
     function noteComposerWriting() { root.composerWritingSession = true; }
+    function noteComposerWritingInterrupted() {
+        if (!root.composerWritingSession)
+            return
+        const target = root.activeFocusItem
+        if (target && String(target.objectName || "").indexOf("topic-") === 0)
+            return
+        root.composerWritingSession = false
+    }
     function resumeComposerWritingAfterSwitch() {
         const resume = root.composerWritingSession;
         root.composerWritingSession = false;
@@ -12308,7 +12318,7 @@ component NativeMentionChip: Item {
                                     readOnly: root.controller.mediaViewer.open
                                     enabled: root.composerAvailable && !Boolean(root.encryptedPendingSend.busy)
                                     text: root.controller.draft
-                                    onActiveFocusChanged: if (activeFocus) root.noteComposerWriting()
+                                    onActiveFocusChanged: if (activeFocus) root.noteComposerWriting(); else root.noteComposerWritingInterrupted()
                                     onTextChanged: {
                                         if (root.composerAvailable && root.controller.draft !== text)
                                             root.controller.draft = text;

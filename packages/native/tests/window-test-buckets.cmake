@@ -134,6 +134,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     readRequestPulseOverlayPaintsAboveBubbleFill
     replyMenuQuotesTheDraggedBubbleFragment
     sidebarChatActionsCompleteFromMenu
+    sidebarTopicSwitchDropsWritingSessionAfterExplicitFocusMove
     updaterActualMainShowsAndExecutesTheDownloadAndInstallActions
     widenedPickerKeepsEveryEmojiBelowTheCategoryHeading
     windowStreamContextMenuNotificationHover

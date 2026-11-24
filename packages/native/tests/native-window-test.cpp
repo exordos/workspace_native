@@ -46037,6 +46037,55 @@ private slots:
         QCOMPARE(controller.draft(), QString());
         QCOMPARE(controller.selectedTopic(), closedTopic);
     }
+
+    // Issue #780 fix round (exo-review finding cid 4678658088): an explicit
+    // caret move away from the composer ends the writing session, so a LATER
+    // pointer switch to another topic must not drag the caret back into the
+    // composer. Only a switch that directly follows composer focus resumes.
+    void sidebarTopicSwitchDropsWritingSessionAfterExplicitFocusMove()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Explicit focus move teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-focus", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); // General Topic, Planning, closed Releases
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        auto focusedComposer = [window]() {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName() == QLatin1String("messageComposer");
+        };
+        auto *composer = visibleItem(window->contentItem(), QStringLiteral("messageComposer")); QVERIFY(composer);
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        // QtTest key helpers are QWidget-only; type to the focus object.
+        for (const auto &character : QStringLiteral("move away")) {
+            QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(character));
+            QKeyEvent release(QEvent::KeyRelease, 0, Qt::NoModifier, QString(character));
+            QCoreApplication::sendEvent(window->focusObject(), &press);
+            QCoreApplication::sendEvent(window->focusObject(), &release);
+        }
+        // The user explicitly moves the caret to another input (sidebar search).
+        auto *search = visibleItem(window->contentItem(), QStringLiteral("sidebarSearch")); QVERIFY(search);
+        click(window, search);
+        QTRY_VERIFY(search->hasActiveFocus());
+        QVERIFY(!focusedComposer());
+        // A later pointer switch must NOT pull the caret back into the composer.
+        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+        QTest::qWait(100);
+        QVERIFY2(!focusedComposer(), "explicit focus move must end the composer writing session");
+    }
 };
 
 
