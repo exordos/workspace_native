@@ -2163,6 +2163,11 @@ private:
     // the throttle delay doubles per 429/5xx and re-arms at the catalog seam.
     QVector<QPair<QString, QString>> m_recentRoutes;
     QHash<QString, quint64> m_topicForegroundSeq;
+    // Issue #777: per-topic history invalidation counter. A warm page is a
+    // dispatch-time snapshot, so a reply may only be remembered when the
+    // topic's saved history was not invalidated while the request was in
+    // flight; the counter is raised with every slice drop.
+    QHash<QString, quint64> m_topicHistoryInvalidations;
     int m_topicPreloadBackoffMs = 0;
     // True while the open window shows a swap-on-ready slice: the next
     // verified page of this selection may overwrite that frame.

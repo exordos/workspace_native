@@ -12880,6 +12880,8 @@ void NativeController::reset()
     m_topicPreloadSkipped.clear();
     m_topicPreloadInFlight.clear();
     m_topicPreloadDone.clear();
+    // Issue #777: the warm invalidation fence is session-scoped like the ledgers.
+    m_topicHistoryInvalidations.clear();
     // Issue #729 phase 2: the cross-route warm ledger is session-scoped.
     m_recentRoutes.clear();
     m_topicForegroundSeq.clear();
@@ -19255,6 +19257,12 @@ void NativeController::requestTopicPreload(const Topic &topic)
     const auto stream = topic.stream;
     const auto generation = m_api->generation();
     const auto foregroundSeq = m_topicForegroundSeq.value(topic.uuid);
+    // Issue #777: remember the topic's invalidation counter at dispatch; the
+    // reply is only trustworthy while that counter stands (entry exists so a
+    // later stream-wide drop can raise it too).
+    if (!m_topicHistoryInvalidations.contains(topic.uuid))
+        m_topicHistoryInvalidations.insert(topic.uuid, 0);
+    const auto historyInvalidation = m_topicHistoryInvalidations.value(topic.uuid);
     QUrlQuery query;
     query.addQueryItem("stream_uuid", stream);
     query.addQueryItem("topic_uuid", topic.uuid);
@@ -19262,10 +19270,20 @@ void NativeController::requestTopicPreload(const Topic &topic)
     query.addQueryItem("sort_dir", "desc");
     query.addQueryItem("page_limit", "5");
     request("GET", messenger + "/messages/", QJsonValue{}, query,
-        [this, uuid = topic.uuid, project, stream, generation, foregroundSeq](const ApiResult &result) {
+        [this, uuid = topic.uuid, project, stream, generation, foregroundSeq,
+         historyInvalidation](const ApiResult &result) {
         m_topicPreloadInFlight.remove(uuid);
         if (!authenticated() || !m_session || m_session->project() != project
             || generation != m_api->generation()) return;
+        // Issue #777: the topic's saved history was invalidated while this
+        // request was in flight (e.g. a confirmed realtime deletion landed
+        // mid-request). The reply is an older snapshot: discard it whole and
+        // keep the topic a warm candidate, so the next sweep re-prepares the
+        // remaining history instead of restoring the deleted row.
+        if (m_topicHistoryInvalidations.value(uuid) != historyInvalidation) {
+            scheduleTopicPreload(0);
+            return;
+        }
         // Issue #729 phase 2 coalescing fence: if the topic gained a
         // foreground selection after this request was dispatched, a newer
         // page owns the projection - retire the warm slot and discard the
@@ -19343,6 +19361,14 @@ void NativeController::rememberTopicSlice(const QString &topicUuid, const QStrin
 // lifetime equals saved-page lifetime - never longer.
 void NativeController::dropTopicSlices(const QString &stream, const QString &topic)
 {
+    // Issue #777: every drop invalidates the topic's saved history, which is
+    // the warm reply's fence. A stream-wide or global drop cannot enumerate
+    // the dispatched topics it covers, so it conservatively raises every
+    // tracked counter - over-fencing only costs one wasted warm re-request,
+    // under-fencing would restore deleted rows.
+    if (!topic.isEmpty()) ++m_topicHistoryInvalidations[topic];
+    else for (auto it = m_topicHistoryInvalidations.begin();
+              it != m_topicHistoryInvalidations.end(); ++it) ++it.value();
     if (!topic.isEmpty()) {
         if (m_topicSlices.remove(topic) > 0) m_topicSliceOrder.removeAll(topic);
         // The done ledger lives exactly as long as the cached page it warmed,
