@@ -27123,6 +27123,131 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(lastPutBody, expected);
     }
 
+    // ===== Issue #795: transient footer status and per-op error bands =====
+
+    // After a successful gates save the shared controller status stays "saved"
+    // until the next op, so it must not outrank a freshly dirtied draft: the
+    // first edit after the settle downgrades the footer to "unsaved" at once.
+    void channelTopicSummarySavedFooterYieldsToNewEdits()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        int saves = 0;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            if (request.method == "PUT" && path.contains("/topic_summary_settings/")) {
+                ++saves;
+                return Response{QJsonObject{{"project_id", projectId},
+                    {"global_enabled", request.body.value("global_enabled")},
+                    {"project_enabled", request.body.value("project_enabled")}}};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog && dialog->property("visible").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool());
+        QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        click(scene.window, visibleItem("channelTopicSummaryGatesProject"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesProject")->property("checked").toBool());
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(saves, 1);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        // A new edit over the settled draft must demote the stale "Saved"
+        // marker immediately (#795).
+        click(scene.window, visibleItem("channelTopicSummaryGatesProject"));
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryGatesProject")->property("checked").toBool());
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // The error band renders the SHARED controller status, and a late reply
+    // can land while another tab is on screen: a gates failure must not render
+    // as an endpoint error until the next GET re-runs. The controller records
+    // which op family produced the failure and each band gates on its own.
+    void channelTopicSummaryGatesErrorStaysOutOfEndpointsBand()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        int gatesPuts = 0;
+        std::function<void()> releaseLatePut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            if (request.method == "PUT" && path.contains("/topic_summary_settings/")) {
+                ++gatesPuts;
+                if (gatesPuts == 1)
+                    return {QJsonObject{{"error", QStringLiteral("boom")}}, 500};
+                Response response{QJsonObject{{"error", QStringLiteral("boom")}}, 500};
+                response.defer = [&releaseLatePut](std::function<void()> send) {
+                    releaseLatePut = std::move(send);
+                };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog && dialog->property("visible").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryGatesProject"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesProject")->property("checked").toBool());
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        // The failed gates save shows ITS OWN band...
+        QTRY_VERIFY(visibleItem("channelTopicSummaryGatesError"));
+        // ...and the still-dirty draft reads as unsaved, not as the stale
+        // error status (#795's transient-status requirement).
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        // Retry, but hold this reply. Switch to the endpoints tab while the
+        // request is in flight and let its GET complete.
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_COMPARE(gatesPuts, 2);
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QVERIFY(releaseLatePut);
+        releaseLatePut();
+        // The late gates failure has now definitely landed: it belongs to the
+        // gates op and must NOT leak into the endpoints band (#795).
+        QTRY_VERIFY(scene.controller.property("topicSummarySettingsStatus").toString()
+                       == QStringLiteral("error")
+                   && scene.controller.property("topicSummarySettingsError").toString()
+                       == QStringLiteral("server"));
+        QVERIFY(!visibleItem("channelTopicSummaryEndpointsError"));
+        QCOMPARE(scene.controller.property("topicSummarySettingsErrorOp").toString(),
+                 QStringLiteral("gates"));
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
