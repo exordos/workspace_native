@@ -1586,6 +1586,9 @@ private:
     // Issue #789: opens the cache for the vault-resolved startup identity
     // before the session refresh chain completes; see startupCacheMode.
     void openCacheForStartupIdentity();
+    // Issue #789: projects the saved channel list once that startup cache is
+    // ready, so the first paint never waits on the token/introspect chain.
+    void loadStartupCacheStreams();
     void closeCache();
     void markCacheStale();
     void observeTransport(const ApiResult &result);

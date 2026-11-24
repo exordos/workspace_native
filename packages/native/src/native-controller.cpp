@@ -7069,6 +7069,10 @@ void NativeController::notifyTrustChanged()
 
 bool NativeController::cacheStale() const
 {
+    // Issue #789: while the startup identity paints from the saved cache the
+    // network view is by definition not yet verified - the stale pill labels
+    // the painted content from the moment rows appear.
+    if (m_startupCacheMode && !m_streams.isEmpty()) return true;
     return m_cacheProtection && ((m_syncBlocked && (!m_streams.isEmpty() || !m_messages.isEmpty()))
         || (m_cacheHydrated && ((!m_catalogVerified && !m_streams.isEmpty())
             || (!m_usersVerified && !m_names.isEmpty()) || (!m_topicsVerified && !m_topics.isEmpty())
@@ -7238,6 +7242,38 @@ void NativeController::openCacheForStartupIdentity()
     if (m_cache->open(m_api->server(), m_session->project(), m_session->user()) && guard)
         m_cacheLease = m_cache->lease();
     if (guard) emit stateChanged();
+}
+
+void NativeController::loadStartupCacheStreams()
+{
+    // Issue #789: the first paint of a saved account comes from the local
+    // cache, not from the token/introspect chain. Project the saved channel
+    // list exactly like the stale-cache network fallback would, but under the
+    // startup guards: the authoritative refresh replaces these rows later.
+    if (!m_startupCacheMode || !m_cache || authenticated()) return;
+    const auto lease = m_cacheLease;
+    const auto revision = m_cacheRevision;
+    const auto identity = m_startupIdentity;
+    const QPointer<NativeController> guard(this);
+    m_cache->get(lease, {NativeCache::Kind::Streams, {}, {}, {}}, this,
+        [this, guard, lease, revision, identity](std::optional<NativeCacheService::Entry> entry) {
+        if (!guard || !guard->m_startupCacheMode || guard->m_startupIdentity != identity) return;
+        if (!entry || guard->m_cacheRevision != revision) return;
+        if (guard->m_cacheLease.owner != lease.owner || guard->m_cacheLease.generation != lease.generation) return;
+        if (guard->authenticated() || !guard->m_streams.isEmpty()) return;
+        QVector<Stream> streams;
+        QSet<QString> ids;
+        for (const auto &value : entry->rows) {
+            const auto parsed = parseStream(value.toObject(), guard->m_session->project());
+            if (!parsed || ids.contains(parsed->uuid)) continue;
+            ids.insert(parsed->uuid);
+            streams.append(*parsed);
+        }
+        if (streams.isEmpty()) return;
+        guard->m_streams = streams;
+        emit guard->streamsChanged();
+        emit guard->stateChanged();
+    });
 }
 
 void NativeController::markCacheStale()
@@ -9779,6 +9815,9 @@ void NativeController::useCache(NativeCacheService *cache)
         if (changed) emit cachedSearchAvailabilityChanged();
         if (!availabilityGuard) return;
         if (!becameReady) return;
+        // Issue #789: the startup identity's first paint waits on this cache,
+        // not on the network; project the saved channel list as soon as ready.
+        if (m_startupCacheMode) loadStartupCacheStreams();
         hydrateChatRequestLookups();
         auto pending = std::move(m_cacheHydrations);
         m_cacheHydrations.clear();
@@ -10579,7 +10618,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // both active operations and queued paths before resetting their UI state.
         resetReadState();
         resetReactions(true);
-        closeCache();
+        // Issue #789: a token rotation inside the resume chain must not tear
+        // down the cache-first projection. The saved identity stands until the
+        // late introspect re-confirms it; openCache hands the lease over then.
+        if (!m_startupCacheMode) closeCache();
         if (!guard) return;
         m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
         cancelFileTransfers(tr("Attachment transfer interrupted by a session change. Choose the file again."));
