@@ -120,6 +120,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     diagnosticsLogViewerModalNarrowWidthKeepsFilterControlsReachable
     f11TogglesFullScreenAndRestoresThePreviousNormalGeometry
     focusedTextWindowEngineDestructionReleasesFocusBeforeSurface
+    lateTeardownRequestDoesNotReenterDeadCaseLocals
     loginProjectStepDropdownMatchesTheReference
     loginRealmPreviewUsesOnlyAdvertisedBranding
     loginRegistrationEntryFollowsServerSettings
