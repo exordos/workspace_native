@@ -16,6 +16,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_1
     readyImageCanBeDraggedIntoComposerText
     realQuickWindowSignsInNavigatesAndSends
     resolvedTopicReopensThroughTheVisibleMenu
+    restoredFrameFitsTheAvailableScreen
     selectionReplyAppendsWholeMessages
     servicesPlaceholderHubMatchesReferenceContract
     sidebarChannelOffersTopicCreationWithoutChangingSelection
@@ -323,6 +324,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     rightClickStandaloneImageBodyLinkOffersCopyLink
     savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions
     servicesPlaceholderGridColumnsFollowWindowWidth
+    shortWindowKeepsTopicPromptAboveBottom
     sidebarSearchHighlightsVisibleTopicInsteadOfCollapsedStream
     topicContextMenuActionFailureSurfacesErrorNotice
     topicContextMenuRenameInterruptedByRenewalLeavesTheFormUsable
@@ -401,6 +403,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     nativeSelectPopupStaysScrollableWhenRowsGrow
     pollVoterCountOpensAfterAnUnavailablePreview
     rightDrawerEscapeClosesTopLayerThenHidesDrawer
+    shortWindowKeepsComposerAboveBottom
     topicContextMenuStreamMenuSiblingKeepsItsPins
     visibleGenericAuthorUsesSourceUnknownFallback
     visibleReactionsUseVerifiedOwnershipAndScopedVirtualPicker

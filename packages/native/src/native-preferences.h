@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QRect>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QDate>
 #include <QJsonObject>
 #include <QVariantList>
@@ -68,6 +69,9 @@ public:
     // Test seam for the portal probe (like setNowProvider for the clock): pins
     // the exposed flag to the given value as a portal announcing that key would.
     void setPrefersReducedMotionOverride(bool reduced);
+    // Test seam (#805 review finding 2): reports whether the one-shot
+    // startup frame-fit poll armed by attachWindow is still running.
+    bool frameFitPendingForTest() const { return m_frameFitTimer.isActive(); }
     qreal sidebarPreferredWidth() const { return m_sidebarWidth; }
     bool composerToolbarExpanded() const { return m_composerToolbarExpanded; }
     QString error() const { return m_error; }
@@ -237,6 +241,9 @@ private:
     QPointer<QWindow> m_window;
     QTimer m_windowSaveTimer;
     QTimer m_conversationSaveTimer;
+    QTimer m_frameFitTimer;
+    QElapsedTimer m_frameFitDeadline;
+    void fitFrameToAvailableGeometry();
     QString m_pendingConversationOwner;
     QStringList m_pendingConversation;
     QStringList m_organizationHistory;

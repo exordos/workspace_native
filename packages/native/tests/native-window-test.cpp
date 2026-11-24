@@ -45713,6 +45713,183 @@ private slots:
         QCOMPARE(controller.replyMessageId(), messageId);
         QCOMPARE(posts, 0);
     }
+
+    // Issue #805: at laptop-class restored window heights the chat pane's
+    // bottom surface must stay fully inside the client area. The message
+    // list is the compressing surface; neither the composer stack (topic
+    // conversation) nor the "Select topic:" prompt (stream view) may drop
+    // below the window bottom edge.
+    void shortWindowKeepsComposerAboveBottom()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Short composer window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "cassi-native-height", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); // General Topic, Planning, closed Releases
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        window->resize(1024, 768);
+        QTRY_VERIFY(!controller.busy());
+        auto *shell = visibleItem(window->contentItem(), QStringLiteral("messageComposerShell")); QVERIFY(shell);
+        QTRY_VERIFY(shell->isVisible());
+        const auto shellBottom = shell->mapToScene(QPointF(0, shell->height())).y();
+        QVERIFY2(shellBottom <= window->height() + 0.5,
+            qPrintable(QString("composer bottom %1 exceeds client height %2")
+                .arg(shellBottom).arg(window->height())));
+    }
+
+    void shortWindowKeepsTopicPromptAboveBottom()
+    {
+        QTest::failOnWarning();
+        WindowDirectFixture fixture; fixture.seed();
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Short prompt window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "cassi-native-height", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(windowDirectId());
+        QTRY_VERIFY(controller.selectedStream() == windowDirectId());
+        QVERIFY(controller.selectedTopic().isEmpty());
+        window->resize(1024, 768);
+        QTRY_VERIFY(!controller.busy());
+        auto *prompt = visibleItem(window->contentItem(), QStringLiteral("streamTopicPrompt")); QVERIFY(prompt);
+        QTRY_VERIFY(prompt->isVisible());
+        const auto promptBottom = prompt->mapToScene(QPointF(0, prompt->height())).y();
+        QVERIFY2(promptBottom <= window->height() + 0.5,
+            qPrintable(QString("topic prompt bottom %1 exceeds client height %2")
+                .arg(promptBottom).arg(window->height())));
+    }
+
+    // #805: Qt measures width/height as the client area while the reference
+    // stores frame bounds (main.ts getBounds/getNormalBounds of the pinned
+    // revision). A default or restored size that fills the work area therefore
+    // sits the title bar below the screen bottom under a decorating WM, hiding
+    // the composer row. Once the WM reports frame extents the restored client
+    // must be fitted so the whole frame stays inside the available geometry.
+    void restoredFrameFitsTheAvailableScreen()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        {   // A saved state that fills the whole work area (the reference-era
+            // frame-inclusive 900 px on a 900 px screen reproduces exactly).
+            QSettings settings(path, QSettings::IniFormat);
+            settings.setValue("window/x", available.x());
+            settings.setValue("window/y", available.y());
+            settings.setValue("window/width", available.width());
+            settings.setValue("window/height", available.height());
+            settings.setValue("window/maximized", false);
+            settings.sync();
+        }
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        // Review #811 finding 3: a display without decorations legitimately
+        // reports zero frame margins and has nothing to fit, so the wait may
+        // not demand nonzero margins. Review #811 round 2 finding 1: the
+        // containment contract must not be evaluated before the WM's
+        // decoration verdict - with unreported margins the saved rect equals
+        // the frame and the contract holds trivially, hiding a later escape.
+        // Verdict: nonzero margins (WM reported extents) or the one-shot fit
+        // retiring at its deadline (undecorated display, nothing to fit).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return !window.frameMargins().isNull() || !preferences.frameFitPendingForTest();
+        })(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const QRect frame = window.frameGeometry();
+            return frame.top() >= available.top() && frame.bottom() <= available.bottom()
+                && frame.left() >= available.left() && frame.right() <= available.right();
+        })(), 5000);
+        const QRect frame = window.frameGeometry();
+        QVERIFY2(frame.top() >= available.top() && frame.bottom() <= available.bottom(),
+            qPrintable(QString("frame %1..%2 escapes available %3..%4 vertically")
+                .arg(frame.top()).arg(frame.bottom())
+                .append(QString(" vs %1..%2").arg(available.top()).arg(available.bottom()))));
+        QVERIFY2(frame.left() >= available.left() && frame.right() <= available.right(),
+            qPrintable(QString("frame %1..%2 escapes available %3..%4 horizontally")
+                .arg(frame.left()).arg(frame.right()).arg(available.left()).arg(available.right())));
+        // The fitted client keeps the reference minimums (700x600 client).
+        QVERIFY(window.height() >= 600 || available.height() < 627);
+        QVERIFY(window.width() >= 700 || available.width() < 702);
+
+        // Review #811 round 1: the same contract must hold on the paths the
+        // plain startup cannot hit by itself. Both findings are collected
+        // (not short-circuited) so one run witnesses each of them.
+        QStringList fitIssues;
+        preferences.attachWindow(nullptr); // persists what the fit captured
+        if (window.frameMargins() != QMargins()) {
+            // Finding 1: simulate a legacy frame-inclusive save, then
+            // re-attach while the WM extents are already known: the fit
+            // runs immediately, before any geometry handler is connected,
+            // so it must capture the fitted client into the saved state.
+            {
+                QSettings settings(path, QSettings::IniFormat);
+                settings.setValue("window/x", available.x());
+                settings.setValue("window/y", available.y());
+                settings.setValue("window/width", available.width());
+                settings.setValue("window/height", available.height());
+                settings.sync();
+            }
+            preferences.attachWindow(&window);
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                const QRect frame = window.frameGeometry();
+                return frame.top() >= available.top() && frame.bottom() <= available.bottom()
+                    && frame.left() >= available.left() && frame.right() <= available.right();
+            })(), 5000);
+            const QRect reattached = window.geometry();
+            preferences.attachWindow(nullptr);
+            const QSettings saved(path, QSettings::IniFormat);
+            if (saved.value("window/x").toInt() != reattached.x()
+                || saved.value("window/y").toInt() != reattached.y()
+                || saved.value("window/width").toInt() != reattached.width()
+                || saved.value("window/height").toInt() != reattached.height())
+                fitIssues << QStringLiteral(
+                    "reattach fit not persisted: saved %1,%2 %3x%4 vs fitted %5,%6 %7x%8")
+                    .arg(saved.value("window/x").toInt()).arg(saved.value("window/y").toInt())
+                    .arg(saved.value("window/width").toInt()).arg(saved.value("window/height").toInt())
+                    .arg(reattached.x()).arg(reattached.y())
+                    .arg(reattached.width()).arg(reattached.height());
+        }
+        {   // Finding 2: a startup window that minimizes before the fit
+            // verdict must still retire the one-shot poll at its deadline
+            // instead of polling forever and fitting after a late restore.
+            QWindow probe;
+            preferences.attachWindow(&probe);
+            probe.showMinimized();
+            QTest::qWait(4600); // past the 4 s frame-fit deadline
+            if (preferences.frameFitPendingForTest())
+                fitIssues << QStringLiteral("frame-fit poll outlived its deadline while minimized");
+            preferences.attachWindow(nullptr);
+            probe.close();
+        }
+        QVERIFY2(fitIssues.isEmpty(), qPrintable(fitIssues.join(QLatin1Char(';'))));
+    }
+
     // Issue #789: with a saved cache and a stalled session refresh the client
     // must paint the cached chats immediately (#157 cache-first contract). The
     // refresh reply is held open indefinitely (mock defer), so every assertion
