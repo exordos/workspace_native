@@ -535,13 +535,13 @@ private slots:
         QVERIFY2(headroom > 720 * 1024 && headroom < 790 * 1024,
             qPrintable(QStringLiteral("fixture headroom %1 KiB outside the [720,790] KiB band; retune fill")
                 .arg(headroom / 1024)));
-        const qint64 entriesBefore = cache.stats().entries;
         // Two small previews occupy the only derived entries the reservation
         // could reclaim; together they free far less than the shortfall.
         const QString small1 = QUuid::createUuid().toString(QUuid::WithoutBraces);
         const QString small2 = QUuid::createUuid().toString(QUuid::WithoutBraces);
         QVERIFY2(cache.putMediaBlob(lease, small1, QByteArray(1024, 'x')), qPrintable(cache.error()));
         QVERIFY2(cache.putMediaBlob(lease, small2, QByteArray(2048, 'y')), qPrintable(cache.error()));
+        const qint64 entriesBefore = cache.stats().entries; // includes both previews
         QCOMPARE(cache.getMediaBlob(lease, small1).value_or(QByteArray()), QByteArray(1024, 'x'));
         QCOMPARE(cache.getMediaBlob(lease, small2).value_or(QByteArray()), QByteArray(2048, 'y'));
         // The 96 KiB preview is within the per-file limit but cannot fit after
