@@ -3,6 +3,7 @@
 #include "heif-preview.h"
 #include "workspace-reference.h"
 #include "file-client.h"
+#include "native-cache-service.h"
 #include "native-image-input.h"
 #include "session.h"
 
@@ -190,11 +191,12 @@ void MessageImages::refreshScope()
     // Only our exact transfers are cancelled; FileClient may have other consumers.
     const auto jobs = m_jobs;
     const QPointer<MessageImages> guard(this);
-    for (auto it = jobs.cbegin(); it != jobs.cend(); ++it) if (it->phase == JobPhase::Network) {
-        m_jobs.remove(it.key());
-        if (it->transfer && m_files) m_files->cancel(it->transfer);
-        if (!guard || scope != m_scope) return;
-    }
+    for (auto it = jobs.cbegin(); it != jobs.cend(); ++it)
+        if (it->phase == JobPhase::Network || it->phase == JobPhase::Probe) {
+            m_jobs.remove(it.key());
+            if (it->phase == JobPhase::Network && it->transfer && m_files) m_files->cancel(it->transfer);
+            if (!guard || scope != m_scope) return;
+        }
     notifyRevision(); if (!guard || scope != m_scope) return;
     emit scopeChanged(); if (!guard || scope != m_scope) return;
     drain();
@@ -314,15 +316,79 @@ void MessageImages::drain()
         if (m_nextJob == std::numeric_limits<quint64>::max()) { next->phase = Phase::Failed; continue; }
         const auto job = ++m_nextJob; const auto scope = m_scope, uuid = next.key();
         next->phase = Phase::Network; next->job = job;
-        m_jobs.insert(job, Job{scope, uuid, 0, JobPhase::Network});
-        const auto transfer = m_files->downloadBytes(uuid, [guard, scope, job](const FileResult &result) {
-            if (guard) guard->downloaded(scope, job, result);
-        });
+        m_jobs.insert(job, Job{scope, uuid, 0, JobPhase::Probe});
+        auto *cache = m_cache.data();
+        if (cache && cache->available()) {
+            // Disk probe first (#729 Phase 1): a hit feeds the persisted encoded
+            // bytes into the same decode path with zero transfer. The service
+            // notifies asynchronously (queued), so this slot never blocks;
+            // a queue-full or unaccepted lease notifies a miss.
+            cache->getMediaBlob(cache->lease(), uuid, this, [guard, scope, job](std::optional<QByteArray> bytes) {
+                if (guard) guard->blobRead(scope, job, bytes);
+            });
+        } else {
+            m_jobs.find(job)->phase = JobPhase::Network;
+            startTransfer(job, scope, uuid);
+        }
         if (!guard) return;
-        auto active = m_jobs.find(job);
-        if (active != m_jobs.end() && active->phase == JobPhase::Network) active->transfer = transfer;
     }
     m_draining = false;
+}
+void MessageImages::startTransfer(quint64 job, const QString &scope, const QString &uuid)
+{
+    const QPointer<MessageImages> guard(this);
+    // The caller has already flipped the ticket to Network: FileClient may
+    // deliver synchronously and downloaded() only accepts Network tickets.
+    const auto transfer = m_files->downloadBytes(uuid, [guard, scope, job](const FileResult &result) {
+        if (guard) guard->downloaded(scope, job, result);
+    });
+    if (!guard) return;
+    auto active = m_jobs.find(job);
+    if (active != m_jobs.end() && active->phase == JobPhase::Network) active->transfer = transfer;
+}
+void MessageImages::blobRead(const QString &scope, quint64 job, const std::optional<QByteArray> &bytes)
+{
+    if (m_stopping) return;
+    // Same fence order as downloaded(): a retired scope refreshes first,
+    // refreshScope() has already retired the probe ticket.
+    if (!scopeCurrent()) { refreshScope(); return; }
+    auto ticket = m_jobs.find(job);
+    if (ticket == m_jobs.end() || ticket->phase != JobPhase::Probe) return;
+    const auto uuid = ticket->uuid;
+    auto entry = m_entries.find(uuid);
+    if (scope != m_scope || entry == m_entries.end() || entry->job != job || !entry->consumers) {
+        m_jobs.erase(ticket); drain(); return;
+    }
+    if (bytes && !bytes->isEmpty()) { beginDecode(scope, job, *bytes); return; }
+    // Disk miss: take the exact download path drain() would have taken.
+    ticket = m_jobs.find(job); ticket->phase = JobPhase::Network;
+    startTransfer(job, scope, uuid);
+}
+void MessageImages::beginDecode(const QString &scope, quint64 job, const QByteArray &bytes)
+{
+    auto ticket = m_jobs.find(job);
+    if (ticket == m_jobs.end()) return;
+    ticket->phase = JobPhase::Decode; ticket->transfer = 0;
+    auto entry = m_entries.find(ticket->uuid);
+    if (entry != m_entries.end()) entry->phase = Phase::Decode;
+    // Issue #638 sec 3: HEIC previews get the reference's 15 s decode timeout
+    // (heic-preview.lib.ts). The reference kills its WASM worker; the shared
+    // serial decode thread here must survive one stuck codec call, so a
+    // single-shot watchdog settles the job Failed at the timeout and the late
+    // worker result is discarded by decoded()'s ticket check. Non-HEIC decodes
+    // keep their pre-existing unbounded behaviour (reference scope).
+    if (m_decodeTimeoutMs > 0 && heifSniffFtyp(bytes.left(kHeifFtypHeaderLimit))) {
+        auto *watchdog = new QTimer(this);
+        watchdog->setSingleShot(true);
+        connect(watchdog, &QTimer::timeout, this, [this, watchdog, scope, job] {
+            watchdog->deleteLater();
+            decodeWatchdogExpired(scope, job);
+        });
+        watchdog->start(m_decodeTimeoutMs);
+        ticket->watchdog = watchdog;
+    }
+    emit decodeRequested(scope, job, bytes);
+    notifyRevision();
 }
 void MessageImages::downloaded(const QString &scope, quint64 job, const FileResult &result)
 {
@@ -340,25 +406,11 @@ void MessageImages::downloaded(const QString &scope, quint64 job, const FileResu
         if (guard) drain();
         return;
     }
-    ticket->phase = JobPhase::Decode; ticket->transfer = 0; entry->phase = Phase::Decode;
-    // Issue #638 sec 3: HEIC previews get the reference's 15 s decode timeout
-    // (heic-preview.lib.ts). The reference kills its WASM worker; the shared
-    // serial decode thread here must survive one stuck codec call, so a
-    // single-shot watchdog settles the job Failed at the timeout and the late
-    // worker result is discarded by decoded()'s ticket check. Non-HEIC decodes
-    // keep their pre-existing unbounded behaviour (reference scope).
-    if (m_decodeTimeoutMs > 0 && heifSniffFtyp(result.bytes.left(kHeifFtypHeaderLimit))) {
-        auto *watchdog = new QTimer(this);
-        watchdog->setSingleShot(true);
-        connect(watchdog, &QTimer::timeout, this, [this, watchdog, scope, job] {
-            watchdog->deleteLater();
-            decodeWatchdogExpired(scope, job);
-        });
-        watchdog->start(m_decodeTimeoutMs);
-        ticket->watchdog = watchdog;
-    }
-    emit decodeRequested(scope, job, result.bytes);
-    notifyRevision();
+    // Persist the encoded original as derived data for later previews
+    // (#729 Phase 1). Fire and forget: a queue-full rejection or a storage
+    // failure never disturbs the visible pipeline that already holds the bytes.
+    if (m_cache && m_cache->available()) m_cache->putMediaBlob(m_cache->lease(), uuid, result.bytes);
+    beginDecode(scope, job, result.bytes);
 }
 void MessageImages::decoded(const QString &scope, quint64 job, const QImage &image, const QSize &naturalSize)
 {

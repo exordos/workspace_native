@@ -2467,6 +2467,384 @@ private slots:
         QCOMPARE(fAttempts, 2);
     }
 
+    // Issue #729 phase 2: the cross-route warm queue. Candidates extend beyond
+    // the selected stream in a fixed order - current stream first, then unread
+    // chats newest-activity first, then recently opened chats (the recency
+    // list fed by selection commits). A read chat that was never opened on
+    // another stream is not a candidate at all; every chat contributes at
+    // most one first page.
+    void crossRouteWarmOrdersUnreadThenRecentlyOpenedChats()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString s2 = "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2";
+        const QString s3 = "b3b3b3b3-b3b3-4b3b-8b3b-b3b3b3b3b3b3";
+        const QString topicB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        const QString uHot = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1";
+        const QString uCold = "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2";
+        const QString uRead = "d3d3d3d3-d3d3-4d3d-8d3d-d3d3d3d3d3d3";
+        const QString rRecent = "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c2";
+        const QString a1 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c1";
+        const auto streamDto = [&](const QString &id, qint64 active) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId},
+                {"name", id == streamId ? QStringLiteral("Main") : QStringLiteral("Other")},
+                {"encryption", false}, {"unread_count", active},
+                {"active_unread_count", active}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"},
+                {"default_topic_uuid", id == streamId ? topicId : (id == s2 ? uHot : rRecent)},
+                {"last_message_uuid", QJsonValue(QJsonValue::Null)}};
+        };
+        const auto topicDto = [](const QString &stream, const QString &id, const QString &last,
+                                 qint64 activeUnread, const QString &updated, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"name", QStringLiteral("Topic ") + id.left(4)}, {"unread_count", activeUnread},
+                {"active_unread_count", activeUnread}, {"passive_unread_count", 0},
+                {"updated_at", updated},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        const auto msgIn = [](const QString &content, const QString &uuid,
+                              const QString &stream, const QString &topic) {
+            auto row = message(content, uuid, topic);
+            row["stream_uuid"] = stream;
+            return row;
+        };
+        const QHash<QString, QJsonObject> dtoById{
+            {topicId, topicDto(streamId, topicId, a2, 0, "2026-01-02T10:00:00Z", true)},
+            {topicB, topicDto(streamId, topicB, a1, 0, "2026-01-02T10:00:00Z", false)},
+            {uHot, topicDto(s2, uHot, "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e1", 2, "2026-01-05T10:00:00Z", true)},
+            {uCold, topicDto(s2, uCold, "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2e1", 1, "2026-01-03T10:00:00Z", false)},
+            {uRead, topicDto(s2, uRead, "d3d3d3d3-d3d3-4d3d-8d3d-d3d3d3d3d3e1", 0, "2026-01-04T10:00:00Z", false)},
+            {rRecent, topicDto(s3, rRecent, "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1", 0, "2026-01-01T10:00:00Z", true)},
+        };
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{streamDto(streamId, 0), streamDto(s2, 3), streamDto(s3, 0)}};
+        };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto parent = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (parent == s2) return Response{QJsonArray{dtoById.value(uHot), dtoById.value(uCold), dtoById.value(uRead)}};
+            if (parent == s3) return Response{QJsonArray{dtoById.value(rRecent)}};
+            return Response{QJsonArray{dtoById.value(topicId), dtoById.value(topicB)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId) return Response{streamDto(streamId, 0)};
+            if (id == s2) return Response{streamDto(s2, 3)};
+            if (id == s3) return Response{streamDto(s3, 0)};
+            if (dtoById.contains(id)) return Response{dtoById.value(id)};
+            return Response{topicDto(streamId, id, QString(), 0, "2026-01-02T10:00:00Z", false)};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicB) return Response{QJsonArray{msgIn("B one", a1, streamId, topicB)}};
+            if (topic == uHot) return Response{QJsonArray{msgIn("U hot", "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e1", s2, uHot)}};
+            if (topic == uCold) return Response{QJsonArray{msgIn("U cold", "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2e1", s2, uCold)}};
+            if (topic == uRead) return Response{QJsonArray{msgIn("U read", "d3d3d3d3-d3d3-4d3d-8d3d-d3d3d3d3d3e1", s2, uRead)}};
+            if (topic == rRecent) return Response{QJsonArray{msgIn("R recent", "e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1", s3, rRecent)}};
+            return Response{QJsonArray{msgIn("A two", a2, streamId, topicId), msgIn("A one", a1, streamId, topicId)}};
+        };
+        QVector<QString> warm;
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                if (!topic.isEmpty()) warm.append(topic);
+            }
+            return original(request);
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(false);   // setup navigations must not warm
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 3);
+        c.showInbox();                            // the unread stream catalog hydrates (#64)
+        c.selectStream(s3);                       // the recent chat feeds the recency list
+        QTRY_VERIFY(c.topics().size() == 1);
+        c.selectTopic(rRecent);                   // the user recently opened this chat
+        c.selectStream(streamId);
+        c.setTopicPreloadEnabledForTest(true);    // only now: every sweep page is unambiguous
+        c.selectStream(streamId);                 // a verified catalog commit arms the sweep
+        warm.clear();                             // only sweep traffic counts from here
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicB));    // the current stream goes first
+        QTRY_VERIFY(c.hasPreparedTopicSlice(uHot));      // unread chats, newest activity first
+        QTRY_VERIFY(c.hasPreparedTopicSlice(uCold));
+        QTRY_VERIFY(c.hasPreparedTopicSlice(rRecent));   // recently opened chats follow
+        QTest::qWait(400);
+        QVERIFY2(!c.hasPreparedTopicSlice(uRead),
+            "a read, never-opened chat on another stream is not a warm candidate");
+        QCOMPARE(warm.count(topicB), 1);         // at most one first page per chat
+        QCOMPARE(warm.count(uHot), 1);
+        QCOMPARE(warm.count(uCold), 1);
+        // The tier-3 page may be dispatched a second time if its first
+        // attempt raced the arming catalog commit and was retired by the
+        // foreground fence (the contract test 3 pins down in isolation).
+        QVERIFY2(warm.count(rRecent) >= 1 && warm.count(rRecent) <= 2,
+            qPrintable(QStringLiteral("rRecent warm count %1").arg(warm.count(rRecent))));
+        // lastIndexOf: a retired first attempt sits before the effective
+        // epoch pages; the ORDER contract is about the effective warm order.
+        QVERIFY(warm.lastIndexOf(topicB) < warm.lastIndexOf(uHot));
+        QVERIFY(warm.lastIndexOf(uHot) < warm.lastIndexOf(uCold));
+        QVERIFY(warm.lastIndexOf(uCold) < warm.lastIndexOf(rRecent));
+    }
+
+    // Issue #729 phase 2: the warm queue yields to foreground traffic - it
+    // issues nothing while a user-attributed request is in flight and resumes
+    // once the controller is idle again.
+    void crossRouteWarmYieldsWhileForegroundLoadIsInFlight()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString topicB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c2";
+        const QString a1 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c1";
+        const auto topicDto = [](const QString &id, const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", QStringLiteral("Topic ") + id.left(4)}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.topics = [&](const Request &) {
+            return Response{QJsonArray{topicDto(topicId, a2, true), topicDto(topicB, a1, false)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+            return Response{topicDto(id, QString(), id == topicId)};
+        };
+        QVector<std::function<void()>> held;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicB)
+                return Response{QJsonArray{message("B one", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000c1", topicB)}};
+            Response heldPage{QJsonArray{message("A two", a2), message("A one", a1)}};
+            heldPage.defer = [&held](std::function<void()> send) { held.append(std::move(send)); };
+            return heldPage;
+        };
+        QVector<QString> warm;
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                if (topic == topicB) warm.append(topic);
+            }
+            return original(request);
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 1);
+        c.selectStream(streamId);
+        QTRY_VERIFY(c.busy());                    // the open topic's first page is held
+        QTest::qWait(400);
+        QVERIFY2(warm.isEmpty(),
+            "the warm sweep may not dispatch while foreground traffic is in flight");
+        QCOMPARE(held.size(), 1);
+        held.first()();
+        QTRY_VERIFY(!c.busy());
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicB));   // the sweep resumes when idle
+    }
+
+    // Issue #729 phase 2 coalescing fence: when a warm page for a topic is
+    // still in flight and the user opens that topic (a newer foreground page
+    // settles first), the late warm reply is discarded whole - it may never
+    // be remembered as a prepared slice that would paint over the newer page
+    // on the next visit, and it is not re-requested.
+    void warmRetiredByForegroundOpenCannotServeStaleRows()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString s2 = "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2";
+        const QString uHot = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c2";
+        const QString staleId = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e1";
+        const QString freshId = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e2";
+        const auto streamDto = [&](const QString &id, qint64 active) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId},
+                {"name", id == streamId ? QStringLiteral("Main") : QStringLiteral("Other")},
+                {"encryption", false}, {"unread_count", active},
+                {"active_unread_count", active}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"},
+                {"default_topic_uuid", id == streamId ? topicId : uHot},
+                {"last_message_uuid", QJsonValue(QJsonValue::Null)}};
+        };
+        const auto topicDto = [](const QString &stream, const QString &id, const QString &last,
+                                 qint64 activeUnread, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", stream},
+                {"name", QStringLiteral("Topic ") + id.left(4)}, {"unread_count", activeUnread},
+                {"active_unread_count", activeUnread}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-05T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{streamDto(streamId, 0), streamDto(s2, 2)}};
+        };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto parent = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (parent == s2)
+                return Response{QJsonArray{topicDto(s2, uHot, staleId, 2, true)}};
+            return Response{QJsonArray{topicDto(streamId, topicId, a2, 0, true)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId) return Response{streamDto(streamId, 0)};
+            if (id == s2) return Response{streamDto(s2, 2)};
+            if (id == uHot) return Response{topicDto(s2, uHot, staleId, 2, true)};
+            return Response{topicDto(streamId, id, QString(), 0, false)};
+        };
+        int uHotGets = 0;
+        QVector<std::function<void()>> gates;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == uHot) {
+                ++uHotGets;
+                if (uHotGets == 1) { // the warm page: a stale snapshot, held back
+                    auto stale = message("warm stale", staleId, uHot);
+                    stale["stream_uuid"] = s2;
+                    Response heldStale{QJsonArray{stale}};
+                    heldStale.defer = [&gates](std::function<void()> send) { gates.append(std::move(send)); };
+                    return heldStale;
+                }
+                auto fresh = message("foreground fresh", freshId, uHot);
+                fresh["stream_uuid"] = s2;
+                return Response{QJsonArray{fresh}};
+            }
+            return Response{QJsonArray{message("A two", a2)}};
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 2);
+        c.selectStream(streamId);
+        c.showInbox();                            // uHot becomes a tier-2 candidate
+        QTRY_COMPARE(gates.size(), 1);            // its warm page is in flight
+        c.selectStream(s2);                       // the user opens it anyway
+        QTRY_VERIFY(c.topics().size() == 1);
+        c.selectTopic(uHot);                      // the foreground open supersedes the warm slot
+        QTRY_COMPARE(uHotGets, 2);                // the foreground first page (GET #2)
+        QTRY_VERIFY(!c.busy());
+        QCOMPARE(c.messages().size(), 1);
+        QCOMPARE(c.messages().first().toMap().value("id").toString(), freshId);
+        gates.first()();                          // the stale warm reply arrives late
+        QTest::qWait(300);
+        QCOMPARE(c.messages().size(), 1);         // it may not overwrite the fresh page
+        QCOMPARE(c.messages().first().toMap().value("id").toString(), freshId);
+        QCOMPARE(uHotGets, 2);                    // nor re-arm a warm re-request
+    }
+
+    // Issue #729 phase 2 yield/backoff: each throttled (429/5xx) warm reply
+    // doubles the batcher's idle delay within a catalog epoch (bounded), and
+    // the verified catalog commit seam re-arms both the transient skip set
+    // and the delay, letting a recovered topic warm normally.
+    void warmThrottleBackoffDoublesAndRearmsOnVerifiedCatalog()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString s2 = "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2";
+        const QString uT1 = "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1";
+        const QString uT2 = "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2d2";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c2";
+        const auto streamDto = [&](const QString &id, qint64 active) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId},
+                {"name", id == streamId ? QStringLiteral("Main") : QStringLiteral("Other")},
+                {"encryption", false}, {"unread_count", active},
+                {"active_unread_count", active}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"},
+                {"default_topic_uuid", id == streamId ? topicId : uT1},
+                {"last_message_uuid", QJsonValue(QJsonValue::Null)}};
+        };
+        const auto topicDto = [s2](const QString &id, qint64 activeUnread, const QString &updated,
+                                   const QString &last) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", s2},
+                {"name", QStringLiteral("Topic ") + id.left(4)}, {"unread_count", activeUnread},
+                {"active_unread_count", activeUnread}, {"passive_unread_count", 0},
+                {"updated_at", updated},
+                {"last_message_uuid", last}};
+            return row;
+        };
+        const auto msgIn = [s2](const QString &content, const QString &uuid,
+                                const QString &topic) {
+            auto row = message(content, uuid, topic);
+            row["stream_uuid"] = s2;
+            return row;
+        };
+        fixture.streams = [&](const Request &) {
+            return Response{QJsonArray{streamDto(streamId, 0), streamDto(s2, 2)}};
+        };
+        fixture.topics = [&](const Request &request) -> Response {
+            const auto parent = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            if (parent == s2)
+                return Response{QJsonArray{topicDto(uT1, 1, "2026-01-05T10:00:00Z", "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e1"),
+                    topicDto(uT2, 1, "2026-01-03T10:00:00Z", "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2e1")}};
+            QJsonObject main{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Native topic"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", a2}, {"is_default", true}};
+            return Response{QJsonArray{main}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId) return Response{streamDto(streamId, 0)};
+            if (id == s2) return Response{streamDto(s2, 2)};
+            if (id == uT1) return Response{topicDto(uT1, 1, "2026-01-05T10:00:00Z", "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e1")};
+            if (id == uT2) return Response{topicDto(uT2, 1, "2026-01-03T10:00:00Z", "d2d2d2d2-d2d2-4d2d-8d2d-d2d2d2d2d2e1")};
+            QJsonObject main{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", "Native topic"}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", a2}, {"is_default", true}};
+            return Response{main};
+        };
+        int t1Gets = 0;
+        int t2Gets = 0;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == uT1) {
+                ++t1Gets;
+                if (t1Gets == 1) return Response{QJsonObject{{"detail", "throttled"}}, 429};
+                return Response{QJsonArray{msgIn("T one", "d1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1e1", uT1)}};
+            }
+            if (topic == uT2) {
+                ++t2Gets;
+                return Response{QJsonObject{{"detail", "throttled"}}, 503};
+            }
+            return Response{QJsonArray{message("A two", a2)}};
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 2);
+        c.selectStream(streamId);
+        c.showInbox();
+        // One epoch: both throttled replies land; the delay doubles per reply.
+        QTRY_COMPARE(t1Gets, 1);
+        QTRY_COMPARE(t2Gets, 1);
+        QTRY_COMPARE(c.topicPreloadBackoffMsForTest(), 4000);
+        QTest::qWait(300);
+        QCOMPARE(t1Gets, 1); // skipped, not hammered
+        QCOMPARE(t2Gets, 1);
+        // The verified catalog re-arms the skip set and the delay: the
+        // recovered topic warms normally, one fresh throttle restarts the
+        // doubling from the base.
+        c.selectStream(streamId);
+        QTRY_COMPARE(t1Gets, 2);
+        QTRY_VERIFY(c.hasPreparedTopicSlice(uT1));
+        QTRY_COMPARE(t2Gets, 2);
+        QTRY_COMPARE(c.topicPreloadBackoffMsForTest(), 2000);
+    }
+
     void folderRailUnreadFollowsConfirmedReads_data()
     {
         QTest::addColumn<QString>("path");

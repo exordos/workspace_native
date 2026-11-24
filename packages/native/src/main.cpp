@@ -150,6 +150,9 @@ int main(int argc, char **argv)
     workspace::MessageImages messageImages(&api, &session, &files);
     workspace::NativePreferences preferences;
     workspace::NativeCacheService cache;
+    // Inline previews persist their encoded originals as derived cache data,
+    // so a chat switch or restart re-renders from disk without a transfer (#729).
+    messageImages.setCacheService(&cache);
     workspace::NativeDraftService draftStorage;
     workspace::NativeDrafts drafts(&draftStorage);
     workspace::bindNativeCachePreferences(cache, preferences);

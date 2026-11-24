@@ -6,8 +6,10 @@
 #include <QPointer>
 #include <QThread>
 #include <QVariantMap>
+#include "native-cache-service.h"
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QQuickImageProvider;
 class QTimer;
@@ -39,6 +41,9 @@ public:
     };
     explicit MessageImages(ApiClient *api, Session *session, FileClient *files, QObject *parent = nullptr);
     ~MessageImages() override;
+    // Optional derived-preview disk store (#729 Phase 1). Null or unavailable
+    // keeps today's download-only behaviour; availability is probed per fetch.
+    void setCacheService(NativeCacheService *cache) { m_cache = cache; }
     // 0 means invalid source, no ready owner, or bounded capacity exhausted.
     Q_INVOKABLE quint64 acquire(const QString &urn);
     Q_INVOKABLE void release(quint64 token);
@@ -71,7 +76,7 @@ private:
     enum class Phase { Queued, Network, Decode, Ready, Failed, TransportFailed };
     struct Entry { Phase phase = Phase::Queued; int consumers = 0; quint64 order = 0, touched = 0, job = 0;
         QSize naturalSize; qint64 previewBytes = 0; QTimer *handoff = nullptr; };
-    enum class JobPhase { Network, Decode };
+    enum class JobPhase { Probe, Network, Decode };
     struct Job { QString scope, uuid; quint64 transfer = 0; JobPhase phase = JobPhase::Network;
         QTimer *watchdog = nullptr; };
     QByteArray currentOwner() const;
@@ -79,6 +84,9 @@ private:
     void refreshScope();
     void releaseConsumer(const QString &uuid);
     void drain();
+    void startTransfer(quint64 job, const QString &scope, const QString &uuid);
+    void blobRead(const QString &scope, quint64 job, const std::optional<QByteArray> &bytes);
+    void beginDecode(const QString &scope, quint64 job, const QByteArray &bytes);
     void downloaded(const QString &scope, quint64 job, const FileResult &result);
     void decoded(const QString &scope, quint64 job, const QImage &image, const QSize &naturalSize);
     void decodeWatchdogExpired(const QString &scope, quint64 job);
@@ -91,6 +99,7 @@ private:
     QPointer<ApiClient> m_api;
     QPointer<Session> m_session;
     QPointer<FileClient> m_files;
+    QPointer<NativeCacheService> m_cache;
     QByteArray m_owner;
     qint64 m_retainedBytes = 0;
     int m_decodeTimeoutMs = 0;
