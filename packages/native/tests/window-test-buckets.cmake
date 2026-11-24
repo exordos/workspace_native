@@ -324,6 +324,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions
     servicesPlaceholderGridColumnsFollowWindowWidth
     sidebarSearchHighlightsVisibleTopicInsteadOfCollapsedStream
+    sidebarTopicSwitchKeepsComposerWriting
     topicContextMenuActionFailureSurfacesErrorNotice
     topicContextMenuRenameInterruptedByRenewalLeavesTheFormUsable
     windowSidebarDirectRowKeepsPlainAvatarBackground

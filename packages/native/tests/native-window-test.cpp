@@ -45969,6 +45969,74 @@ private slots:
         QVERIFY(support);
         QVERIFY(support->isVisible());
     }
+
+    // Issue #780: switching sidebar topics with the mouse while the composer
+    // holds a writing session must hand the caret to the destination composer,
+    // so text typed right after the switch lands in that topic's own draft.
+    // Keyboard traversal and explicit caret moves keep the pre-switch behavior.
+    void sidebarTopicSwitchKeepsComposerWriting()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Topic switch focus teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-focus", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); // General Topic, Planning, closed Releases
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        auto typeTo = [window](const QString &text) {
+            // Repo idiom: QtTest key helpers are QWidget-only; type to the focus object.
+            auto *target = window->focusObject(); QVERIFY(target);
+            for (const auto &character : text) {
+                QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(character));
+                QKeyEvent release(QEvent::KeyRelease, 0, Qt::NoModifier, QString(character));
+                QCoreApplication::sendEvent(target, &press);
+                QCoreApplication::sendEvent(target, &release);
+            }
+        };
+        auto focusedComposer = [window]() {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName() == QLatin1String("messageComposer");
+        };
+        auto *composer = visibleItem(window->contentItem(), QStringLiteral("messageComposer")); QVERIFY(composer);
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        typeTo("general draft");
+        QTRY_COMPARE(controller.draft(), QStringLiteral("general draft"));
+        // A plain pointer switch: the destination composer takes the caret and
+        // the very next keystrokes land in its own draft.
+        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+        QTRY_VERIFY_WITH_TIMEOUT(focusedComposer(), 2000);
+        typeTo("planning");
+        QTRY_COMPARE(controller.draft(), QStringLiteral("planning"));
+        // Returning to the first topic restores its own draft into the caret.
+        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(focusedComposer(), 2000);
+        QTRY_COMPARE(controller.draft(), QStringLiteral("general draft"));
+        // A read-only destination keeps its own draft out of the composer; the
+        // caret stays on a usable element and the next keystroke is not eaten.
+        const QString closedTopic = QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        click(window, visibleItem(window->contentItem(), "topic-" + closedTopic));
+        QTRY_COMPARE(controller.selectedTopic(), closedTopic);
+        QVERIFY(!focusedComposer());
+        // The composer projects the closed topic's own (empty) draft; keys that
+        // land on the row write nothing anywhere.
+        QTRY_COMPARE(controller.draft(), QString());
+        typeTo("zzz");
+        QCOMPARE(controller.draft(), QString());
+        QCOMPARE(controller.selectedTopic(), closedTopic);
+    }
 };
 
 
