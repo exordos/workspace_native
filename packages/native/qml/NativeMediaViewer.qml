@@ -359,6 +359,7 @@ Popup {
         // the controls before the user can act.
         Timer {
             id: controlsHideTimer
+            objectName: "mediaViewer-controlsHideTimer"
             interval: 2500
             onTriggered: if (videoPlayer.playbackState === MediaPlayer.PlayingState
                     && !videoHover.pointing)

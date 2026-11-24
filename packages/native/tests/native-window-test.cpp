@@ -22972,6 +22972,13 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto barShown = [bar] { return bar->property("visible").toBool(); };
         QVERIFY2(barShown(), "the bar must start shown when playback arms the countdown");
         QTest::mouseMove(window, QPoint(4, 4)); // park the cursor off the picture
+        // Exact countdown contract (finding r4686911130): the sampled floor can
+        // only prove the countdown is NOT below its sample point, so pin the
+        // timer interval the bar's hide actually rides on: a shortened
+        // countdown fails HERE even when it stays above the floor sample.
+        auto *hideTimer = window->findChild<QObject *>("mediaViewer-controlsHideTimer");
+        QVERIFY2(hideTimer, "the auto-hide countdown must expose its timer as a test seam");
+        QCOMPARE(hideTimer->property("interval").toInt(), 2500);
         // Floor bound on the 2500 ms countdown (NativeMediaViewer.qml
         // controlsHideTimer): a shortened countdown must fail HERE, not slip
         // silently past the upper-bound hide check behind it.
