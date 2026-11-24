@@ -54,6 +54,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     prefetchRefetchesOnFirstScrollAfterRestore
     quickReactionsPaintAndReceiveClicksAboveAdjacentMessages
     sidebarNormalDensityKeepsTheMeasuredLadder
+    startupPaintsSavedCacheWhileRefreshIsInFlight
     windowChannelInfoStaleMembersLoadKeepsAddedMember
     windowResizeHandOffReArmsForWheelAfterSendCapture
     zoomedImageDragsToPanWithinTheMediaViewport
