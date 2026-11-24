@@ -1059,9 +1059,16 @@ live desktop-daemon reproduction has not been run.
 ## Next ten Linux releases
 
 **No pre-agreed release horizon is in force.** The former ten-row table
-(0.4 unread navigation through 0.13 global search) shipped in full as closed
-epics #1-#13 and was removed here as stale: at the time of this refresh the app
-is at 0.48.x and the original estimates described none of the shipped order.
+(0.4 unread navigation through 0.13 global search) shipped in its agreed scope
+as epics #1-#13 (all closed) and was removed here as stale: at the time of this
+refresh the app is at 0.48.x and the original estimates described none of the
+shipped order. A closed epic is not a closed capability: the parity ledger still
+tracks residual gaps inherited from those rows - initial unread opening and
+durable reading positions ("History and reading position"), durable outgoing
+messages and full outbox durability ("Realtime and local recovery", "Encrypted
+chats and secret fragments") and global message search ("Users, profiles and
+search"; the reference app itself exposes no server-side message search) - and
+these remain tracked in the issue queue.
 The roadmap of record is the tracked issue queue in
 `exordos/workspace_native`, ordered by the priority labels (P1-critical >
 P2-high > P3-normal); releases are cut whenever the merged train carries
