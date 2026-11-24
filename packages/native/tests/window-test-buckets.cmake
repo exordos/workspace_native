@@ -490,6 +490,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     globalNewChatOffersTheSourceTopicTab
     heicImagePaintsBubbleViewerRenderAndDownloadSavesOriginal
     inboxPageChipRowsAndCloseFlow
+    integrationSettingsEntryDimsBackgroundWhilePressed
     licensesCloseResolvesBackVersusMessengerHome
     loginCardDiscoveryFailureKeepsCredentialsHidden
     mentionRunsOnOneLineStaySeparated

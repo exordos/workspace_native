@@ -24717,6 +24717,54 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("externalAccountReconnect"));
     }
 
+    // Issue #794: the admin-gated integration-settings entry must react to a
+    // press exactly like NativeButton does (background opacity 0.8 while
+    // down, restored on release). The granted state is produced by serving
+    // the zulip policy route (200) so admin.probe() flips accessStatus.
+    void integrationSettingsEntryDimsBackgroundWhilePressed()
+    {
+        ChannelInfoWindowScene scene;
+        const QString policy = "/api/workspace/v1/messenger/external_provider_policies/zulip";
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == policy)
+                // A 200 flips accessStatus to granted even when the dto fails
+                // to parse, so the entry surfaces without populating the
+                // policy draft; the ready-draft projection has its own
+                // binding-loop contract (#816) and must not ride in here.
+                return {QJsonObject{{"uuid","77777777-7777-4777-8777-000000000007"},
+                    {"provider","zulip"},{"revision",0}}, 200};
+            return base(request);
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QQuickItem *entry = nullptr;
+        QTRY_VERIFY(([&] { entry = visibleItem("externalProviderEntry"); return entry != nullptr; })());
+        const QRectF bounds(QPointF{}, scene.window->size());
+        auto entryInWindow = [&] { return bounds.contains(entry->mapRectToScene(QRectF(QPointF{}, entry->size()))); };
+        if (!entryInWindow()) {
+            auto *scroll = visibleItem("accountMenuScroll");
+            QVERIFY(scroll);
+            scroll->setProperty("contentY", scroll->property("contentY").toReal()
+                + entry->mapToItem(scroll, QPointF(0, 0)).y() - 24);
+            QTRY_VERIFY(entryInWindow());
+        }
+        auto *background = entry->property("background").value<QQuickItem *>();
+        QVERIFY(background);
+        QCOMPARE(background->opacity(), qreal(1));
+        const auto center = entry->mapRectToScene(QRectF(QPointF{}, entry->size())).center().toPoint();
+        QTest::mousePress(scene.window, Qt::LeftButton, Qt::NoModifier, center);
+        QTRY_COMPARE(background->opacity(), qreal(0.8));
+        // Release away from the row: down must clear without firing the
+        // click path (the admin dialog has its own separate contract).
+        const auto away = center - QPoint(0, 90);
+        QTest::mouseMove(scene.window, away);
+        QTest::mouseRelease(scene.window, Qt::LeftButton, Qt::NoModifier, away);
+        QCOMPARE(background->opacity(), qreal(1));
+    }
+
     // Reference: packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx (measured
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
