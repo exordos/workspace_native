@@ -24830,6 +24830,91 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(!visibleItem("chatBackgroundPresetBadge-sea"));
     }
 
+    // Issue #733: the wallpaper is bound to the message viewport itself -
+    // scene-aligned with the scroll wrapper and equal in size to it - at the
+    // initial layout AND after a layout change that moves the conversation
+    // origin (the sidebar drag the issue reproduces with). The pre-fix
+    // mapToItem placement kept a stale origin, so the image bled behind the
+    // folder rail and left a plain strip beside the message area.
+    void chatBackgroundTracksMessageViewportAcrossLayoutChanges()
+    {
+        ChannelInfoWindowScene scene;
+        // Tall viewport so the appearance accordion background section stays
+        // inside the ScrollView fold for clicks (same fixture as #637).
+        scene.window->resize(900, 1400);
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountAppearanceAction"));
+        click(scene.window, visibleItem("accountSetting-background"));
+        auto *seaCard = visibleItem("chatBackgroundPreset-sea");
+        QVERIFY(seaCard);
+        QVERIFY2(seaCard->property("enabled").toBool(), "preset card disabled - store unavailable?");
+        click(scene.window, seaCard);
+        QVERIFY(visibleItem("chatBackgroundApplyDialog"));
+        click(scene.window, visibleItem("chatBackgroundApplyAll"));
+        QTRY_VERIFY(!visibleItem("chatBackgroundApplyDialog"));
+        auto *bg = visibleItem("chatBackground");
+        QVERIFY(bg);
+        auto *list = visibleItem("messageList");
+        QVERIFY(list);
+        auto alignedNow = [&]() {
+            const QPointF listPos = list->mapToScene(QPointF(0, 0));
+            const QPointF bgPos = bg->mapToScene(QPointF(0, 0));
+            return qFuzzyCompare(bgPos.x(), listPos.x())
+                && qFuzzyCompare(bgPos.y(), listPos.y())
+                && qFuzzyCompare(bg->width(), list->width())
+                && qFuzzyCompare(bg->height(), list->height());
+        };
+        const auto describe = [&]() {
+            const QPointF listPos = list->mapToScene(QPointF(0, 0));
+            const QPointF bgPos = bg->mapToScene(QPointF(0, 0));
+            return QStringLiteral("bg scene (%1,%2) size (%3x%4); message viewport scene (%5,%6) size (%7x%8)")
+                .arg(bgPos.x()).arg(bgPos.y()).arg(bg->width()).arg(bg->height())
+                .arg(listPos.x()).arg(listPos.y()).arg(list->width()).arg(list->height());
+        };
+        // Stage 1: initial layout after applying the preset.
+        for (int i = 0; i < 20 && !alignedNow(); ++i)
+            QTest::qWait(50);
+        QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after apply: ") + describe()));
+        // Stage 2: widen the sidebar - the conversation origin moves and the
+        // wallpaper must follow it (this is the stale-origin repro).
+        auto *handle = visibleItem("sidebarResizeHandle");
+        QVERIFY(handle);
+        const auto grab = handle->mapToScene(QPointF(handle->width() / 2, handle->height() / 2)).toPoint();
+        const qreal viewportOriginBefore = list->mapToScene(QPointF(0, 0)).x();
+        QTest::mousePress(scene.window, Qt::LeftButton, {}, grab);
+        QTest::mouseMove(scene.window, grab + QPoint(64, 0));
+        QTest::mouseRelease(scene.window, Qt::LeftButton, {}, grab + QPoint(64, 0));
+        // Gate on the layout change actually taking effect: the drag must move the
+        // viewport origin right (the requested 64 px can be clamped at
+        // sidebarMaximum, so the check demands a real shift, not the exact delta);
+        // otherwise the alignment check below could pass vacuously without a move.
+        for (int i = 0; i < 40 && list->mapToScene(QPointF(0, 0)).x() < viewportOriginBefore + 30.0; ++i)
+            QTest::qWait(50);
+        QVERIFY2(list->mapToScene(QPointF(0, 0)).x() >= viewportOriginBefore + 30.0,
+            qPrintable(QStringLiteral("sidebar drag did not move the viewport: origin x ")
+                + QString::number(list->mapToScene(QPointF(0, 0)).x())
+                + QStringLiteral(", was ") + QString::number(viewportOriginBefore)));
+        for (int i = 0; i < 20 && !alignedNow(); ++i)
+            QTest::qWait(50);
+        QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after sidebar drag: ") + describe()));
+        // Stage 3: a window resize keeps the wallpaper viewport-aligned.
+        scene.window->resize(1200, 1000);
+        // Same gate as stage 2: wait until the resize target is actually reached,
+        // so the alignment check cannot pass on the pre-resize geometry.
+        for (int i = 0; i < 40 && (scene.window->width() != 1200 || scene.window->height() != 1000); ++i)
+            QTest::qWait(50);
+        QVERIFY2(scene.window->width() == 1200 && scene.window->height() == 1000,
+            qPrintable(QStringLiteral("window did not reach resize target: ")
+                + QString::number(scene.window->width()) + QStringLiteral("x")
+                + QString::number(scene.window->height())));
+        for (int i = 0; i < 20 && !alignedNow(); ++i)
+            QTest::qWait(50);
+        QVERIFY2(alignedNow(), qPrintable(QStringLiteral("after resize: ") + describe()));
+        // PreserveAspectCrop only stays inside the viewport when clipped.
+        QVERIFY(bg->property("clip").toBool());
+    }
+
     void windowChannelInfoHeaderSummary()
     {
         ChannelInfoWindowScene scene;

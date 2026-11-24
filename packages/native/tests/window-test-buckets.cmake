@@ -514,6 +514,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
     archiveMatchesPinnedGeometryAndVirtualSearch
     captionAndPickedImageSendThenPaintOwnInlinePixels
     chatBackgroundSectionAppliesPresetAndRepaintsConversation
+    chatBackgroundTracksMessageViewportAcrossLayoutChanges
     composerHeightFollowsContentDragKeyboardAndFullHeight
     composerToolPopoversUseTheCurrentDraft
     diagnosticsNewPingCancelsPendingFeedbackReset
