@@ -1,3 +1,20 @@
+# Workspace Native 0.48.1 - Linux development preview
+
+- Fixed: the reconnect banner stays quiet while a realtime connection drop self-recovers; it now appears only when the connection actually needs your attention.
+- The voice call window now loads: the QtWebEngine call runtime ships with the Linux package, and if the call shell still fails to load it settles cleanly so the window stays usable (issue #728).
+- Fixed: topic-summary drafts are rebased per field and only the fields you edited are sent, so an in-progress draft no longer clobbers remote updates (issue #735).
+- Fixed: a provider-policy conflict retry keeps the peer admin limits instead of dropping them (issue #739).
+- Top-bar clusters and the chat header stay disjoint at narrow window widths (issue #726).
+- Compact composer controls are centered with the one-line input row (issue #722).
+- The member remove action now has its own column with a row-wide reveal (issue #723).
+- The Add members modal is centered in the application area (issue #727).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.48.0 to 0.48.1](https://github.com/exordos/workspace_native/compare/0.48.0...0.48.1)
+
+---
+
 # Workspace Native 0.48.0 - Linux development preview
 
 - Clicking your name or avatar in the top bar now opens the Account page in the right drawer over the chat, mirroring the desktop client: profile and account controls open in place without leaving the conversation, and requesting Diagnostics from that page closes the account layer and opens diagnostics as before.
