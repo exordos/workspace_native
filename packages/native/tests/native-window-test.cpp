@@ -21376,6 +21376,195 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!viewer->open());
     }
 
+    // Issue #730: a zoomed image pans with the primary pointer button within
+    // bounds derived from the painted pixels; axes that fit stay centered, the
+    // pan recalculates when zoom or the window size changes, it resets with the
+    // zoom across slots, and drag+release never closes the viewer.
+    void zoomedImageDragsToPanWithinTheMediaViewport()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            for (const auto &fileUuid : {fileA, fileB}) {
+                const auto file = "/api/workspace/v1/messenger/files/" + fileUuid;
+                if (path.startsWith(file)) {
+                    if (path == file) {
+                        auto metadata = avatarProbeMetadata(fileUuid, png);
+                        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                        return Response{metadata};
+                    }
+                    if (path == file + "/actions/download") {
+                        Response result; result.rawBody = png; result.rawContentType = "image/png";
+                        return result;
+                    }
+                    return Response{QJsonObject{}, 404};
+                }
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerRow(second, fileB, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *viewer = controller.mediaViewer(); QVERIFY(viewer);
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        auto *image = visibleItem(content, "mediaViewer-image"); QVERIFY(image);
+        const auto wheel = [&](QPoint pixels, QPoint angle) {
+            const QPoint center(window->width() / 2, window->height() / 2);
+            QWheelEvent event(center, window->mapToGlobal(center), pixels, angle,
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        // The media area is px-16 pb-28 pt-14 (media-viewer-overlay.ui.tsx:126):
+        // scene rect (64,56)-(64,112); its center is therefore (W/2, H/2 - 28).
+        const QPointF areaCenter(window->width() / 2.0, window->height() / 2.0 - 28.0);
+        const auto paintedCenter = [&]() {
+            return image->mapToScene(QPointF(image->width() / 2.0, image->height() / 2.0));
+        };
+        const auto near = [](QPointF a, QPointF b) { return qAbs(a.x() - b.x()) < 0.75 && qAbs(a.y() - b.y()) < 0.75; };
+        QVERIFY(near(paintedCenter(), areaCenter));
+        // Zoom to the ceiling: angleDelta 4800 steps the +0.001-per-unit curve
+        // past the clamp (mediaViewer zoomByWheel), so the painted picture is
+        // oversized on both axes and every edge is out of reach without a pan.
+        wheel({}, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 3.0);
+        const qreal boundX = qMax(0.0, (image->property("paintedWidth").toReal() * image->scale()
+            - (window->width() - 128.0)) / 2.0);
+        const qreal boundY = qMax(0.0, (image->property("paintedHeight").toReal() * image->scale()
+            - (window->height() - 168.0)) / 2.0);
+        QVERIFY2(boundX > 60.0 && boundY > 60.0,
+            qPrintable(QStringLiteral("fixture does not overshoot: bound ")
+                + QString::number(boundX) + QStringLiteral("x") + QString::number(boundY)));
+        // Stage 1: a plain drag moves the picture 1:1 with the pointer on both
+        // axes and the release leaves the viewer open (no backdrop-close).
+        const QPoint grab(window->width() / 2, window->height() / 2 - 28);
+        const QPointF beforeDrag = paintedCenter();
+        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+        QTest::mouseMove(window, grab + QPoint(20, 15));
+        QTest::qWait(20);
+        QTest::mouseMove(window, grab + QPoint(60, 45));
+        QTest::qWait(20);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + QPoint(60, 45));
+        QVERIFY2(viewer->open(), "drag-and-release closed the media viewer");
+        QTRY_VERIFY(([&]{ const QPointF c = paintedCenter() - beforeDrag;
+            return qAbs(c.x() - 60.0) < 0.75 && qAbs(c.y() - 45.0) < 0.75; })());
+        // Stage 2: dragging far past the edge pins the picture at the bound
+        // (edges reachable, no overscroll): the painted center sits exactly
+        // boundX/boundY right/down of the area center.
+        QTest::mousePress(window, Qt::LeftButton, {}, grab + QPoint(60, 45));
+        QTest::mouseMove(window, grab + QPoint(660, 545));
+        QTest::qWait(20);
+        QTest::mouseMove(window, grab + QPoint(1260, 1045));
+        QTest::qWait(20);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + QPoint(1260, 1045));
+        QVERIFY2(viewer->open(), "overshoot drag closed the media viewer");
+        QTRY_VERIFY(([&]{ const QPointF c = paintedCenter();
+            return qAbs(c.x() - (areaCenter.x() + boundX)) < 0.75
+                && qAbs(c.y() - (areaCenter.y() + boundY)) < 0.75; })());
+        // Stage 3: zooming back until the picture fits re-centers both axes
+        // (bounds recalculate with zoom), so the panned state cannot strand
+        // the picture off-center at scale 1.
+        wheel({}, QPoint(0, -2000));
+        QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(near(paintedCenter(), areaCenter));
+        // Stage 4: switching slots resets zoom and pan together; the next
+        // slot must arrive centered even though the previous one ended at
+        // a panned, zoomed position.
+        wheel({}, QPoint(0, 2000));
+        QCOMPARE(image->scale(), 3.0);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab);
+        QTest::mouseMove(window, grab + QPoint(40, 30));
+        QTest::qWait(20);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab + QPoint(40, 30));
+        QVERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QCOMPARE(image->scale(), 1.0);
+        QTRY_VERIFY(image->isVisible());
+        QTRY_VERIFY(near(paintedCenter(), areaCenter));
+        // Stage 5 (exo-review finding on #762): shrinking the window shrinks
+        // the bounds, and the stored pan must shrink with them. Otherwise the
+        // raw pan keeps a hidden excess: the picture sits at the new edge, yet
+        // the reverse drag first chews through the slack and the picture is
+        // stuck at the edge.
+        wheel({}, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 3.0);
+        QTest::qWait(50);
+        const qreal boundBefore = image->property("panBoundX").toReal();
+        QVERIFY2(boundBefore > 60.0, qPrintable(QStringLiteral("bound too small: ")
+            + QString::number(boundBefore)));
+        const QPoint grab2(window->width() / 2, window->height() / 2 - 28);
+        const QPoint edgePin(int(boundBefore) + 200, int(boundBefore) + 200);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab2);
+        QTest::mouseMove(window, grab2 + edgePin / 2);
+        QTest::qWait(20);
+        QTest::mouseMove(window, grab2 + edgePin);
+        QTest::qWait(20);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab2 + edgePin);
+        QVERIFY(viewer->open());
+        auto *viewerPopup = window->findChild<QObject *>("mediaViewer-popup");
+        QVERIFY(viewerPopup);
+        QTRY_VERIFY(([&]{
+            return qAbs(viewerPopup->property("panX").toReal() - boundBefore) < 0.01;
+        })());
+        window->resize(1000, 640);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        // The stored pan may never exceed the bounds the picture is drawn in,
+        // measured after the relayout settled.
+        QTRY_VERIFY(([&]{
+            const qreal boundNow = image->property("panBoundX").toReal();
+            return boundNow > 10.0
+                && qAbs(boundNow - boundBefore) > 40.0
+                && viewerPopup->property("panX").toReal() <= boundNow + 0.5;
+        })());
+        // The visible contract: the first reverse drag after the resize moves
+        // the picture 1:1, it does not vanish into hidden slack.
+        const QPointF beforeReverse = paintedCenter();
+        const QPoint grab3(window->width() / 2, window->height() / 2 - 28);
+        QTest::mousePress(window, Qt::LeftButton, {}, grab3);
+        QTest::mouseMove(window, grab3 + QPoint(-60, 0));
+        QTest::qWait(30);
+        QTest::mouseRelease(window, Qt::LeftButton, {}, grab3 + QPoint(-60, 0));
+        QVERIFY(viewer->open());
+        QTRY_VERIFY(([&]{
+            return qAbs(paintedCenter().x() - (beforeReverse.x() - 60.0)) < 0.75;
+        })());
+        // Escape still closes after all the pointer traffic.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!viewer->open());
+    }
+
     void mediaViewerBackdropClickClosesWhileSlotLoadsAndStaysOpenWhenReady()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
