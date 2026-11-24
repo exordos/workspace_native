@@ -203,6 +203,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     fullscreenEnterWmRestoreAfterStateSignalDuringGatePersistsRestoredBounds
     globalTopicSelectUsesSourceGeometryKeyboardAndVirtualOptions
     globalUserSearchMatchesDirectoryAndOpensDirect
+    mediaViewerControlsStayVisibleWhileBarControlFocused
     pollBubbleResultsAlwaysVisibleBeforeVote
     profileAndTopbarUseMeasuredThreeLineGeometry
 )
@@ -544,6 +545,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
     emptyMessageActionTargetDoesNotBuildMessageProjection
     folderRailContextMenuKeepsSystemFoldersReadOnly
     folderRailContextMenuRenamesAndDeletesCustomFolders
+    mediaViewerTabReachesVideoControlsAfterAutoHide
     messageTimePanelAlignsDaysUnderWeekdays
     messageUpdatesRespectTheVisibleScrollPosition
     pollBubbleReadOnlyChannelHasNoControls
