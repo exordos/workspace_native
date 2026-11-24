@@ -166,7 +166,16 @@ ApplicationWindow {
             onPersonalInfoRequested: rightDrawer.openPersonalInfo()
             onSettingsRequested: root.openPreferencePanel("settings")
             onAppearanceRequested: root.openPreferencePanel("appearance")
-            onAboutRequested: root.openAbout(true)
+            onAboutRequested: {
+                // #788: the About drawer and the right drawer share the right
+                // edge at z 2, so the account layer must close before the
+                // version panel opens - otherwise About paints behind the
+                // drawer and its controls swallow clicks. Same pattern as the
+                // diagnostics route fix (b7660707); Back still returns to the
+                // account root via aboutDrawer.onBackRequested.
+                rightDrawer.closeCurrent()
+                root.openAbout(true)
+            }
             onDiagnosticsRequested: {
                 // The reference user menu closes on navigation (route change
                 // closes the menu). Diagnostics is a main-section page, so the

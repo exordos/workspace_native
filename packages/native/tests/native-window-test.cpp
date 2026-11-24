@@ -38378,6 +38378,56 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
     }
 
+    // Issue #788: the App version row of the account layer must deliver a
+    // reachable About/version panel. Both NativeAboutDrawer and the right
+    // drawer paint at z 2 on the same right edge, so the account layer has
+    // to close first (mirroring the diagnostics route fix b7660707);
+    // otherwise the version panel opens behind the drawer and its controls
+    // swallow no clicks. Driving the real route (accountMenuButton ->
+    // aboutAction), not the updatesVisible property shortcut the older
+    // about cases use, is what witnesses the covering.
+    void accountDrawerAppVersionOpensReachableAboutPanel()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        MockServer releases; std::function<void()> sendMetadata;
+        auto releaseHeld = qScopeGuard([&]{ if (sendMetadata) sendMetadata(); });
+        releases.handler = [&](const Request &) -> Response {
+            Response result{QJsonObject{{"tag_name","0.1.0"},{"draft",false},{"prerelease",false}}};
+            result.defer = [&](std::function<void()> send){ sendMetadata = std::move(send); };
+            return result;
+        };
+        NativeUpdater updater(releases.origin().resolved(QUrl("/latest")),"0.1.0",directory.filePath("updates"));
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences,nullptr,&updater);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("Account About routing teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("aboutAction"), 4000);
+        auto *accountLayer = visibleItem("accountMenuLayer"); QVERIFY(accountLayer);
+        click(window, visibleItem("aboutAction"));
+        auto *about = visibleItem("nativeAboutDrawer"); QVERIFY(about);
+        QTRY_VERIFY(about->property("visible").toBool());
+        // The account layer must no longer cover the right edge.
+        QVERIFY2(!accountLayer->isVisible(),
+                 "account layer still mounted on top of the About panel (#788)");
+        // The About panel is on top: its back affordance must actually take
+        // the click (in the bug the account drawer intercepted it, so Back
+        // never fired). Clicking through is the user-visible oracle; the
+        // transition below proves the event reached the panel, not a cover.
+        auto *back = visibleItem("nativeAboutBack"); QVERIFY(back);
+        // The back affordance returns to the account root screen.
+        click(window, back);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("currentServerLabel"), 4000);
+        QVERIFY(!visibleItem("nativeAboutDrawer"));
+        Q_UNUSED(sendMetadata);
+    }
+
     // Issue #420: with the memory panel (#416) the advanced snapshot toggle
     // sits below the fold of the 900 px window fixture. The page body is a
     // Flickable mirroring the reference's scrolling document
