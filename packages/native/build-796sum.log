@@ -1,0 +1,212 @@
+[1/98] Generating translations/workspace_ru.qm
+Updating '/home/ubuntu/dev/lanes/796-sum/packages/native/build/796sum/translations/workspace_ru.qm'...
+    Generated 1764 translation(s) (1764 finished and 0 unfinished)
+[2/98] Building CXX object CMakeFiles/workspace-native-core_resources_1.dir/build/796sum/.qt/rcc/qrc_native_emoji_init.cpp.o
+[3/98] Automatic MOC and UIC for target workspace-message-time
+[4/98] Generating notification-sounds/default.wav, notification-sounds/subtle.wav, notification-sounds/digital.wav, notification-sounds/glass.wav, notification-sounds/pulse.wav
+[5/98] Generating licenses/licenses.json
+[6/98] Building CXX object CMakeFiles/workspace-message-time.dir/workspace-message-time_autogen/mocs_compilation.cpp.o
+[7/98] Building CXX object CMakeFiles/workspace-native-ui_resources_1.dir/build/796sum/.qt/rcc/qrc_native_translations_init.cpp.o
+[8/98] Building CXX object CMakeFiles/workspace-native-ui_resources_2.dir/build/796sum/.qt/rcc/qrc_native_sounds_init.cpp.o
+[9/98] Building CXX object CMakeFiles/workspace-native-ui_resources_3.dir/build/796sum/.qt/rcc/qrc_native_licenses_init.cpp.o
+[10/98] Building CXX object CMakeFiles/workspace-native-ui_resources_6.dir/build/796sum/.qt/rcc/qrc_native_brand_init.cpp.o
+[11/98] Building CXX object CMakeFiles/workspace-native-ui_resources_5.dir/build/796sum/.qt/rcc/qrc_native_icons_init.cpp.o
+[12/98] Building CXX object CMakeFiles/workspace-native-ui_resources_4.dir/build/796sum/.qt/rcc/qrc_native_call_bridge_js_init.cpp.o
+[13/98] Building CXX object CMakeFiles/workspace-native-ui_resources_7.dir/build/796sum/.qt/rcc/qrc_native_chat_background_init.cpp.o
+[14/98] Building CXX object CMakeFiles/workspace-native-ui_resources_8.dir/build/796sum/.qt/rcc/qrc_native_app_icon_init.cpp.o
+[15/98] Automatic MOC and UIC for target workspace-native-support
+[16/98] Building CXX object CMakeFiles/workspace-message-time.dir/src/messages/time/message-time.cpp.o
+[17/98] Linking CXX static library libworkspace-message-time.a
+[18/98] Building CXX object CMakeFiles/workspace-native-support.dir/workspace-native-support_autogen/mocs_compilation.cpp.o
+[19/98] Automatic MOC and UIC for target workspace-native-core
+[20/98] Running rcc for resource native_emoji
+[21/98] Building CXX object CMakeFiles/workspace-native-support.dir/src/support/support-report.cpp.o
+[22/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/workspace-reference.cpp.o
+[23/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/heif-preview.cpp.o
+[24/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/api-client.cpp.o
+[25/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/file-client.cpp.o
+[26/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-spoilers.cpp.o
+[27/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/domain.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp: In function ‘std::optional<workspace::Stream> workspace::parseStream(const QJsonObject&, const QString&)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp:500:103: warning: missing initializer for member ‘workspace::Stream::security’ [-Wmissing-field-initializers]
+  500 |                   json.value("notification_mode").toString(), json.value("private").toBool(), *updated};
+      |                                                                                                       ^
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp:500:103: warning: missing initializer for member ‘workspace::Stream::defaultTopic’ [-Wmissing-field-initializers]
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp:500:103: warning: missing initializer for member ‘workspace::Stream::viewer’ [-Wmissing-field-initializers]
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp:500:103: warning: missing initializer for member ‘workspace::Stream::owner’ [-Wmissing-field-initializers]
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp:500:103: warning: missing initializer for member ‘workspace::Stream::allowKeySharingByHolders’ [-Wmissing-field-initializers]
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/domain.cpp:500:103: warning: missing initializer for member ‘workspace::Stream::keySharingUpdatedMicros’ [-Wmissing-field-initializers]
+[28/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-deeplink.cpp.o
+[29/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-chat-crypto.cpp.o
+[30/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-markdown.cpp.o
+[31/98] Building CXX object CMakeFiles/workspace-native-core.dir/workspace-native-core_autogen/mocs_compilation.cpp.o
+[32/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-external-accounts.cpp.o
+[33/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-external-provider-admin.cpp.o
+[34/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-chat-key-vault.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-chat-key-vault.cpp: In function ‘std::optional<workspace::NativeChatKeyVault::PendingRequest> workspace::{anonymous}::decodeRequest(const QByteArray&)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-chat-key-vault.cpp:427:130: warning: missing initializer for member ‘workspace::NativeChatKeyVault::PendingRequest::targetTopic’ [-Wmissing-field-initializers]
+  427 |         decodedBytes(object.value("publicKey")), decodedBytes(object.value("privateKey")), qint64(created), quint64(revision), {}};
+      |                                                                                                                                  ^
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-chat-key-vault.cpp: In function ‘std::optional<workspace::NativeChatKeyVault::CreateStage> workspace::{anonymous}::decodeCreateStage(const QByteArray&)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-chat-key-vault.cpp:798:21: warning: redundant move in return statement [-Wredundant-move]
+  798 |     return std::move(stage);
+      |            ~~~~~~~~~^~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-chat-key-vault.cpp:798:21: note: remove ‘std::move’ call
+[35/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-auth-guard.cpp.o
+[36/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-instance.cpp.o
+[37/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-preferences.cpp.o
+[38/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-logging.cpp.o
+[39/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-updater-taskbar.cpp.o
+[40/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-diagnostics.cpp.o
+[41/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-updater.cpp.o
+[42/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-cache-service.cpp.o
+[43/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-draft-store.cpp.o
+[44/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-draft-service.cpp.o
+[45/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-cache.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-cache.cpp: In member function ‘std::optional<QJsonArray> workspace::NativeCache::sanitize(const Key&, const QJsonArray&) const’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-cache.cpp:326:16: warning: enumeration value ‘MediaBlob’ not handled in switch [-Wswitch]
+  326 |         switch (key.kind) {
+      |                ^
+[46/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/display-capture-policy.cpp.o
+[47/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/jitsi-call.cpp.o
+[48/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-notifications.cpp.o
+[49/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/native-call-store.cpp.o
+[50/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/native-call-window.cpp.o
+[51/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/incoming-call.cpp.o
+[52/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-drafts.cpp.o
+[53/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/incoming-call-lifecycle.cpp.o
+[54/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/call/screen-share-source-picker.cpp.o
+[55/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-call-bridge.cpp.o
+[56/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-realtime-cursor-store.cpp.o
+[57/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/chat-background.cpp.o
+[58/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/session.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/session.cpp: In lambda function:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/session.cpp:114:68: warning: missing initializer for member ‘workspace::Project::organizationName’ [-Wmissing-field-initializers]
+  114 |         guard->m_projects = {{account.project, account.projectName}};
+      |                                                                    ^
+[59/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/realtime-client.cpp.o
+[60/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/media-viewer.cpp.o
+[61/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/session-vault.cpp.o
+[62/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/power-watcher.cpp.o
+[63/98] Building CXX object CMakeFiles/workspace-native-core.dir/build/796sum/.qt/rcc/qrc_native_emoji.cpp.o
+[64/98] Linking CXX static library libworkspace-native-support.a
+[65/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-call-awareness.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-call-awareness.cpp: In function ‘workspace::{anonymous}::InhibitTarget workspace::{anonymous}::inhibitTarget(workspace::CallAwareness::ServiceKind)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-call-awareness.cpp:39:12: warning: enumeration value ‘None’ not handled in switch [-Wswitch]
+   39 |     switch (kind) {
+      |            ^
+[66/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-hotkeys.cpp.o
+[67/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-outgoing.cpp.o
+[68/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/composer-references.cpp.o
+[69/98] Building CXX object CMakeFiles/workspace-native-core.dir/src/native-controller.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In static member function ‘static workspace::NativeController::UserPresentation workspace::NativeController::makeUserPresentation(const QString&, const QJsonObject&, bool, const UserPresentation&)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:3157:65: warning: missing initializer for member ‘workspace::NativeController::UserPresentation::lastSeen’ [-Wmissing-field-initializers]
+ 3157 |         sourceTrimmed(row.value("email").toString()), {}, {}, {}};
+      |                                                                 ^
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:3157:65: warning: missing initializer for member ‘workspace::NativeController::UserPresentation::createdAt’ [-Wmissing-field-initializers]
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:3157:65: warning: missing initializer for member ‘workspace::NativeController::UserPresentation::username’ [-Wmissing-field-initializers]
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In member function ‘QVariantList workspace::NativeController::channelInfoMembers() const’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:4211:16: warning: unused variable ‘directoryOwned’ [-Wunused-variable]
+ 4211 |     const bool directoryOwned = m_channelDirectoryOwner == creationOwnerKey();
+      |                ^~~~~~~~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In function ‘QDateTime workspace::inboxUpdated(qint64)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:9336:42: warning: ‘static QDateTime QDateTime::fromMSecsSinceEpoch(qint64, Qt::TimeSpec, int)’ is deprecated: Pass QTimeZone instead of time-spec, offset [-Wdeprecated-declarations]
+ 9336 |     return QDateTime::fromMSecsSinceEpoch(microsEpoch / 1000, Qt::UTC);
+      |            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/x86_64-linux-gnu/qt6/QtCore/qcborvalue.h:11,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtCore/qjsonvalue.h:8,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtCore/QJsonValue:1,
+                 from /home/ubuntu/dev/lanes/796-sum/packages/native/src/api-client.h:5,
+                 from /home/ubuntu/dev/lanes/796-sum/packages/native/src/native-external-accounts.h:3,
+                 from /home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.h:2,
+                 from /home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:1:
+/usr/include/x86_64-linux-gnu/qt6/QtCore/qdatetime.h:489:22: note: declared here
+  489 |     static QDateTime fromMSecsSinceEpoch(qint64 msecs, Qt::TimeSpec spec, int offsetFromUtc = 0);
+      |                      ^~~~~~~~~~~~~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In member function ‘void workspace::NativeController::enqueueUpload(const QString&, const QString&, std::shared_ptr<QTemporaryFile>)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:10883:113: warning: missing initializer for member ‘workspace::NativeController::UploadEntry::alias’ [-Wmissing-field-initializers]
+10883 |     UploadEntry entry{task, creationOwnerKey(), QStringLiteral("validating"), {}, {}, {}, QFileInfo(path).size()};
+      |                                                                                                                 ^
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In member function ‘void workspace::NativeController::prepareConversationOpening(const QString&)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:17484:125: warning: missing initializer for member ‘workspace::NativeController::ConversationOpening::savedAnchor’ [-Wmissing-field-initializers]
+17484 |     m_conversationOpening = {m_selection, m_api->generation(), ++m_nextConversationOpening, true, true, false, false, {}, -1};
+      |                                                                                                                             ^
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In member function ‘QString workspace::NativeController::buildForwardSnapshot(const QStringList&, const QHash<QString, workspace::Message>&) const’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:21086:69: warning: ‘static QDateTime QDateTime::fromMSecsSinceEpoch(qint64, Qt::TimeSpec, int)’ is deprecated: Pass QTimeZone instead of time-spec, offset [-Wdeprecated-declarations]
+21086 |             options.sourceCreatedAt = QDateTime::fromMSecsSinceEpoch(message.createdMicros / 1000, Qt::UTC)
+      |                                       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/x86_64-linux-gnu/qt6/QtCore/qdatetime.h:489:22: note: declared here
+  489 |     static QDateTime fromMSecsSinceEpoch(qint64 msecs, Qt::TimeSpec spec, int offsetFromUtc = 0);
+      |                      ^~~~~~~~~~~~~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In member function ‘void workspace::NativeController::sendPoll(const QVariantList&, bool, bool, bool, const QString&, bool, const QString&, const QString&)’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:21475:30: warning: unused variable ‘optionValue’ [-Wunused-variable]
+21475 |             for (const auto &optionValue : questionValue.toObject()
+      |                              ^~~~~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp: In lambda function:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/native-controller.cpp:22269:27: warning: ‘QVariant::Type QVariant::type() const’ is deprecated: Use typeId() or metaType(). [-Wdeprecated-declarations]
+22269 |         switch (value.type()) {
+      |                 ~~~~~~~~~~^~
+In file included from /usr/include/x86_64-linux-gnu/qt6/QtCore/qlocale.h:8,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtCore/qcalendar.h:10,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtCore/qdatetime.h:8:
+/usr/include/x86_64-linux-gnu/qt6/QtCore/qvariant.h:564:10: note: declared here
+  564 |     Type type() const
+      |          ^~~~
+[70/98] Linking CXX static library libworkspace-native-core.a
+[71/98] Automatic MOC and UIC for target workspace-native-ui
+[72/98] Running rcc for resource native_licenses
+[73/98] Running rcc for resource native_brand
+[74/98] Running rcc for resource native_sounds
+[75/98] Running rcc for resource native_chat_background
+[76/98] Running rcc for resource native_call_bridge_js
+[77/98] Running rcc for resource native_app_icon
+[78/98] Running rcc for resource native_icons
+/home/ubuntu/dev/lanes/796-sum/packages/native/build/796sum/.qt/rcc/native_icons.qrc: Warning: potential duplicate alias detected: 'files.svg'
+[79/98] Running rcc for resource native_translations
+[80/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_sounds.cpp.o
+[81/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_translations.cpp.o
+[82/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_call_bridge_js.cpp.o
+[83/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_licenses.cpp.o
+[84/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_brand.cpp.o
+[85/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_icons.cpp.o
+[86/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_chat_background.cpp.o
+[87/98] Building CXX object CMakeFiles/workspace-native-ui.dir/build/796sum/.qt/rcc/qrc_native_app_icon.cpp.o
+[88/98] Building CXX object CMakeFiles/workspace-native-ui.dir/workspace-native-ui_autogen/mocs_compilation.cpp.o
+[89/98] Building CXX object CMakeFiles/workspace-native-ui.dir/src/avatar-images.cpp.o
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/avatar-images.cpp: In member function ‘void workspace::AvatarImages::drain()’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/src/avatar-images.cpp:245:65: warning: missing initializer for member ‘workspace::AvatarImages::Job::remote’ [-Wmissing-field-initializers]
+  245 |         m_jobs.insert(job, Job{scope, uuid, 0, JobPhase::Network});
+      |                                                                 ^
+[90/98] Building CXX object CMakeFiles/workspace-native-ui.dir/src/native-app.cpp.o
+[91/98] Building CXX object CMakeFiles/workspace-native-ui.dir/src/message-images.cpp.o
+[92/98] Linking CXX static library libworkspace-native-ui.a
+[93/98] Running rcc for resource native_qml
+[94/98] Automatic MOC and UIC for target native-window-test
+[95/98] Building CXX object CMakeFiles/native-window-test.dir/native-window-test_autogen/mocs_compilation.cpp.o
+[96/98] Building CXX object CMakeFiles/native-window-test.dir/build/796sum/.qt/rcc/qrc_native_qml.cpp.o
+[97/98] Building CXX object CMakeFiles/native-window-test.dir/tests/native-window-test.cpp.o
+In file included from /usr/include/x86_64-linux-gnu/qt6/QtTest/qtesteventloop.h:8,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtTest/qsignalspy.h:10,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtTest/QSignalSpy:1,
+                 from /home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:37:
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp: In member function ‘void NativeWindowTest::chatClickActionLatestTopicOpensTheLastMessageTopic()’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:38223:56: warning: capture of variable ‘workspace::test::streamId’ with non-automatic storage duration
+38223 |         QVERIFY(QTest::qWaitFor([&liveIface, &window, &streamId] {
+      |                                                        ^~~~~~~~
+In file included from /home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:1:
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/mock-server.h:20:22: note: ‘const QString workspace::test::streamId’ declared here
+   20 | inline const QString streamId = "33333333-3333-4333-8333-333333333333";
+      |                      ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:38236:56: warning: capture of variable ‘workspace::test::streamId’ with non-automatic storage duration
+38236 |         QVERIFY(QTest::qWaitFor([&liveIface, &window, &streamId] {
+      |                                                        ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/mock-server.h:20:22: note: ‘const QString workspace::test::streamId’ declared here
+   20 | inline const QString streamId = "33333333-3333-4333-8333-333333333333";
+      |                      ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:38250:44: warning: capture of variable ‘workspace::test::streamId’ with non-automatic storage duration
+38250 |         QVERIFY(QTest::qWaitFor([&window, &streamId] {
+      |                                            ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/mock-server.h:20:22: note: ‘const QString workspace::test::streamId’ declared here
+   20 | inline const QString streamId = "33333333-3333-4333-8333-333333333333";
+      |                      ^~~~~~~~
+[98/98] Linking CXX executable native-window-test

@@ -1,0 +1,27 @@
+[1/4] Automatic MOC and UIC for target native-window-test
+[2/3] Building CXX object CMakeFiles/native-window-test.dir/tests/native-window-test.cpp.o
+In file included from /usr/include/x86_64-linux-gnu/qt6/QtTest/qtesteventloop.h:8,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtTest/qsignalspy.h:10,
+                 from /usr/include/x86_64-linux-gnu/qt6/QtTest/QSignalSpy:1,
+                 from /home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:37:
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp: In member function ‘void NativeWindowTest::chatClickActionLatestTopicOpensTheLastMessageTopic()’:
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:38229:56: warning: capture of variable ‘workspace::test::streamId’ with non-automatic storage duration
+38229 |         QVERIFY(QTest::qWaitFor([&liveIface, &window, &streamId] {
+      |                                                        ^~~~~~~~
+In file included from /home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:1:
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/mock-server.h:20:22: note: ‘const QString workspace::test::streamId’ declared here
+   20 | inline const QString streamId = "33333333-3333-4333-8333-333333333333";
+      |                      ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:38242:56: warning: capture of variable ‘workspace::test::streamId’ with non-automatic storage duration
+38242 |         QVERIFY(QTest::qWaitFor([&liveIface, &window, &streamId] {
+      |                                                        ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/mock-server.h:20:22: note: ‘const QString workspace::test::streamId’ declared here
+   20 | inline const QString streamId = "33333333-3333-4333-8333-333333333333";
+      |                      ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/native-window-test.cpp:38256:44: warning: capture of variable ‘workspace::test::streamId’ with non-automatic storage duration
+38256 |         QVERIFY(QTest::qWaitFor([&window, &streamId] {
+      |                                            ^~~~~~~~
+/home/ubuntu/dev/lanes/796-sum/packages/native/tests/mock-server.h:20:22: note: ‘const QString workspace::test::streamId’ declared here
+   20 | inline const QString streamId = "33333333-3333-4333-8333-333333333333";
+      |                      ^~~~~~~~
+[3/3] Linking CXX executable native-window-test

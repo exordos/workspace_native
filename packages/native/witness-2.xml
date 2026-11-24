@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TestCase name="NativeWindowTest">
+  <Environment>
+    <QtVersion>6.10.2</QtVersion>
+    <QtBuild>Qt 6.10.2 (x86_64&#x002D;little_endian&#x002D;lp64 shared (dynamic) release build; by GCC 15.2.0)</QtBuild>
+    <QTestVersion>6.10.2</QTestVersion>
+  </Environment>
+  <TestFunction name="initTestCase">
+    <Incident type="pass" file="" line="0" />
+    <Duration msecs="0.012211"/>
+  </TestFunction>
+  <TestFunction name="channelTopicSummaryDialogEndpointDeleteConfirmDispatchesAndCancelRestores">
+  <Message type="qinfo" file="" line="0">
+    <Description><![CDATA[qt.multimedia.ffmpeg: Using Qt multimedia with FFmpeg version 8.0.1-3ubuntu2 GPL version 2 or later]]></Description>
+  </Message>
+    <Incident type="fail" file="/home/ubuntu/dev/lanes/796&#x002D;sum/packages/native/tests/native&#x002D;window&#x002D;test.cpp" line="25899">
+      <Description><![CDATA['visibleItem("channelTopicSummaryEndpoint-0")' returned FALSE. ()]]></Description>
+    </Incident>
+    <Duration msecs="16478.5"/>
+  </TestFunction>
+  <TestFunction name="cleanupTestCase">
+    <Incident type="pass" file="" line="0" />
+    <Duration msecs="0.01072"/>
+  </TestFunction>
+  <Duration msecs="16478.9"/>
+</TestCase>
