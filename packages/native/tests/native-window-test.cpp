@@ -40138,9 +40138,41 @@ private slots:
                 QTRY_VERIFY(!menu->property("visible").toBool());
             }
             auto *cell = visibleItem("folder-" + key); QVERIFY(cell);
-            const auto point = cell->mapToScene(QPointF(cell->width() / 2, cell->height() / 2));
+            // Issue #810: the rail can still reflow right after catalog
+            // hydration, and a synthetic right-click resolved against a
+            // mid-layout delegate lands on the neighbouring row, so the menu
+            // opens with the neighbour's target key (Full-gate shard flake:
+            // a click aimed at "all" recorded target key "personal"). Wait
+            // for the delegate's scene geometry to quiesce, then resolve the
+            // click point only for the final dispatch so no reflow can come
+            // between the measurement and the hit.
+            const auto cellCenter = [cell] {
+                return cell->mapToScene(QPointF(cell->width() / 2, cell->height() / 2));
+            };
+            QPointF previous = cellCenter();
+            int stableSamples = 0;
+            for (int i = 0; i < 80 && stableSamples < 3; ++i) {
+                QTest::qWait(25);
+                const QPointF next = cellCenter();
+                stableSamples = next == previous ? stableSamples + 1 : 0;
+                previous = next;
+            }
+            QVERIFY2(stableSamples == 3, qPrintable(
+                QStringLiteral("folder rail delegate %1 never quiesced (#810 drift)").arg(key)));
+            const auto point = cellCenter();
             QTest::mouseClick(window, Qt::RightButton, Qt::NoModifier, point.toPoint());
             QTRY_VERIFY(menu->property("visible").toBool());
+            // Hit witness: the click point must still fall inside the intended
+            // delegate. If the rail ever drifted during delivery, fail here
+            // with the geometry instead of misattributing the neighbour key.
+            const QPointF cellTopLeft = cell->mapToScene(QPointF(0, 0));
+            const QRectF cellRect(cellTopLeft,
+                cell->mapToScene(QPointF(cell->width(), cell->height())));
+            QVERIFY2(cellRect.contains(point), qPrintable(
+                QStringLiteral("rail drifted between click resolve and hit: expected %1, point (%2,%3) outside delegate rect (%4,%5 %6x%7)")
+                    .arg(key).arg(point.x()).arg(point.y())
+                    .arg(cellTopLeft.x()).arg(cellTopLeft.y())
+                    .arg(cell->width()).arg(cell->height())));
             QCOMPARE(window->property("folderMenuTargetKey").toString(), key);
         };
         // All (pinned slot) and Personal (system slot): both actions disabled.
