@@ -1,3 +1,4 @@
+accountDrawerAppVersionOpensReachableAboutPanel=1.36189
 activityPanelExpandedSearchRemovesChatListGap=1.26701
 attachmentCardMalformedNameEscapeStillProjectsEveryCard=0.762411
 disclosureChevronsUseSharedSvgFamily=4.30664

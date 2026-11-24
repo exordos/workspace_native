@@ -83,6 +83,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_3
     workspaceCallHeaderButtonFollowsMeetHost
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_4
+    accountDrawerAppVersionOpensReachableAboutPanel
     activityPanelExpandedSearchRemovesChatListGap
     attachmentCardMalformedNameEscapeStillProjectsEveryCard
     disclosureChevronsUseSharedSvgFamily
