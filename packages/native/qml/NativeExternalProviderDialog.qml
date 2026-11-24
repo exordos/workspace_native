@@ -336,7 +336,16 @@ Dialog {
                                         Component.onCompleted: { const field = limitField; Qt.callLater(() => { if (field) field.projectionReady = true }) }
                                         Accessible.name: limitField.modelData.label
                                         enabled: !dialog.admin.saveBusy && !dialog.admin.caBlocked
-                                        onTextChanged: {
+                                        // Issue #816: the write-back must be driven
+                                        // by user editing only. textChanged also
+                                        // fires when this very binding re-evaluates
+                                        // from draftNumber, so setLimit mutated the
+                                        // draft while draftNumber was still being
+                                        // evaluated: Qt logged a binding loop on
+                                        // draftNumber and froze the field at a
+                                        // stale value. textEdited fires only for
+                                        // user input, breaking the projection cycle.
+                                        onTextEdited: {
                                             if (!limitField.projectionReady) return
                                             if (limitField.parsed < 0) return
                                             const value = limitField.modelData.mib ? limitField.parsed * 1048576 : limitField.parsed
