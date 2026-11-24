@@ -31166,7 +31166,7 @@ private:
             })
         )JS"));
         QVERIFY(!observe.call({viewObject, decoy.toString(), previousLoad}).isError());
-        std::function<void()> finishMeeting;
+        std::vector<std::function<void()>> deferredMeeting;
         const auto handle = fixture.server.handler;
         fixture.server.handler = [&](const Request &request) {
             auto response = handle(request);
@@ -31175,7 +31175,7 @@ private:
                     response.status = 302;
                     response.headers.insert("Location", "/redirected-meeting");
                 }
-                response.defer = [&](auto finish) { finishMeeting = std::move(finish); };
+                response.defer = [&](auto finish) { deferredMeeting.push_back(std::move(finish)); };
             } else if (request.target.path() == QStringLiteral("/redirected-meeting")) {
                 response.status = 200;
                 response.rawBody = embedMeetingPage();
@@ -31200,17 +31200,38 @@ private:
         // failOnWarning above), no load ever started, and the controller
         // stayed in Loading - the Ready timeout below fails in that state.
         fixture.breakMeetingLoads = 0;
+        const auto meetingDeferredBefore = int(deferredMeeting.size());
         clickReadyItem(window, retry);
-        QTRY_VERIFY_WITH_TIMEOUT(bool(finishMeeting), 5000);
-        // Chromium may post the preceding terminal event after the physical
-        // Retry. Replay that actual 404 while the new HTTP response is held.
-        const auto deliver = engine.evaluate(QStringLiteral("(view, info) => view.loadingChanged(info)"));
-        QVERIFY(!deliver.call({viewObject, previousLoad.property("failure")}).isError());
+        // #792: Retry re-instantiates the embed surface (the Loader briefly
+        // holds its source empty so a failed import genuinely re-runs), so
+        // the pre-retry wrapper points at a destroyed object and its stale
+        // terminal-event replay is structurally gone: events of the torn-down
+        // surface can never reach the controller anymore. Re-acquire the live
+        // view; a possibly orphaned pre-swap request must not starve the
+        // recovery, so every deferred meeting response that arrives is
+        // released until the state machine reports Ready.
+        QObject *liveView = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            auto *item = loader->property("item").value<QObject *>();
+            liveView = nullptr;
+            if (item) {
+                for (auto *child : item->findChildren<QObject *>()) {
+                    if (child->inherits("QQuickWebEngineView")) { liveView = child; break; }
+                }
+            }
+            return liveView && liveView != engineView;
+        })(), 5000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
-        finishMeeting();
-        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
-            == int(JitsiCallWindowController::Ready), 20000);
-        QCOMPARE(engineView->property("url").toUrl().path(),
+        int released = meetingDeferredBefore;
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            while (released < int(deferredMeeting.size())) {
+                deferredMeeting[size_t(released)]();
+                deferredMeeting[size_t(released)] = nullptr;
+                ++released;
+            }
+            return controller.callWindow()->embedState() == int(JitsiCallWindowController::Ready);
+        })(), 20000);
+        QCOMPARE(liveView->property("url").toUrl().path(),
                  redirect ? QStringLiteral("/redirected-meeting") : QStringLiteral("/workspace-call-room"));
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
