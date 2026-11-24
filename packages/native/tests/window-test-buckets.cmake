@@ -603,6 +603,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_24
     quickFileDialogsUploadThenSaveAnAuthenticatedAttachment
     rightClickOnMediaBodyLinkOffersCopyLink
     rightDrawerRootRequestSelectsAccountRootAfterPromotion
+    startupCacheSelectionStaysQuietWhileRefreshIsInFlight
     switchingStreamKeepsSidebarScrollAndOrder
     wheelNotchScrollsMatchTheReferenceContract
     windowChannelInfoNonOwnerMemberGates
