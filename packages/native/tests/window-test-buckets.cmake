@@ -571,6 +571,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     sidebarCompactDensityKeepsTheAvatarInLatestTopicMode
     sidebarExpandsUnselectedStreamWithoutNavigating
     sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery
+    sidebarTopicSwitchDropsWritingSessionAfterCancelledPress
     sourcePickerSuggestedHistoryPersistsAndClearsBetweenOwners
     startupDirectoryDoesNotPopulateHiddenPickers
     uploadedAvatarsUseRealMainPixels

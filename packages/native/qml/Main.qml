@@ -888,6 +888,22 @@ ApplicationWindow {
             return;
         composerText.forceActiveFocus(Qt.OtherFocusReason);
     }
+    // Exo-review round 2 (finding 4679419818): a press begun on a topic row
+    // grabs focus onto the row, so the composer-level interruption check above
+    // has already fired and will not re-fire. Watch the window's focus item:
+    // focus moving to any target that is neither the composer nor a sidebar
+    // topic row is an explicit caret move that ends the session (a cancelled
+    // press followed by a click into search must leave nothing to resume).
+    // Loss of focus to null stays neutral - focus sinks can vanish mid-switch.
+    function composerSessionGrabTarget(item) {
+        if (item === composerText)
+            return true;
+        return String(item ? item.objectName || "" : "").indexOf("topic-") === 0;
+    }
+    function endComposerWritingSessionOnFocusMove(item) {
+        if (root.composerWritingSession && item && !root.composerSessionGrabTarget(item))
+            root.composerWritingSession = false;
+    }
     readonly property var pendingOutgoing: root.controller.outgoingSend || ({})
     readonly property var encryptedPendingSend: root.encryptedConversation && String(root.pendingOutgoing.id || "").length > 0 ? root.pendingOutgoing : root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
@@ -4936,7 +4952,12 @@ component NativeMentionChip: Item {
     // Focus session change: the user moved focus themselves (click, tab) or
     // a focused delegate was destroyed mid-chain - either way a pending
     // automatic focus claim is no longer wanted.
-    onActiveFocusItemChanged: ++root.sidebarSearchFocusSession
+    onActiveFocusItemChanged: {
+        ++root.sidebarSearchFocusSession
+        // Issue #780 round 2 (finding 4679419818): see the writer-session
+        // helpers above - the same focus event also ends a stale session.
+        root.endComposerWritingSessionOnFocusMove(root.activeFocusItem)
+    }
     Connections {
         target: root.controller
         // Model change: rows shift indices when the filtered list refreshes,
