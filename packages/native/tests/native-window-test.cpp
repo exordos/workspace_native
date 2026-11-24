@@ -1531,6 +1531,118 @@ static QByteArray mediaViewerVideoBytesLong()
 }
 
 
+static QByteArray mediaViewerLongVideoBytes()
+{
+    // Issue #796 witness fixture: a 7.0 s h264 clip (a still frame, same
+    // decoder path as the short fixture). The auto-hide contract needs the
+    // player to stay in PlayingState past the 2500 ms countdown, which the
+    // 0.5 s round-trip fixture can never reach (a paused or ended clip pins
+    // the bar open by design).
+    return QByteArray::fromBase64(QByteArrayLiteral(
+        "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAhwbW9vdgAAAGxtdmhkAAAAAAAAAAAA"
+        "AAAAAAAD6AAAG1gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAA"
+        "AABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAB5t0cmFrAAAAXHRraGQAAAADAAAA"
+        "AAAAAAAAAAABAAAAAAAAG1gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAA"
+        "AAAAAAAAAABAAAAAAUAAAADwAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAABtYAAAEAAABAAAA"
+        "AAcTbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAyAAABXgBVxAAAAAAALWhkbHIAAAAAAAAAAHZp"
+        "ZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAAGvm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAA"
+        "ACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAABn5zdGJsAAAAwnN0c2QAAAAAAAAA"
+        "AQAAALJhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAUAA8ABIAAAASAAAAAAAAAABFUxhdmM2"
+        "Mi4xMS4xMDAgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAAOGF2Y0MBZAAW/+EAGmdkABascgRBQfsB"
+        "EAAAAwAQAAADAyDxYthGAQAHaOhDg5LIsP34+AAAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAA"
+        "AAAPoAAAAAAAAAAYc3R0cwAAAAAAAAABAAAArwAAAgAAAAAUc3RzcwAAAAAAAAABAAAAAQAAAohj"
+        "dHRzAAAAAAAAAE8AAAABAAAEAAAAAAEAABQAAAAAAQAACAAAAAADAAAAAAAAAAQAAAIAAAAAAQAA"
+        "FAAAAAABAAAIAAAAAAMAAAAAAAAABAAAAgAAAAABAAAUAAAAAAEAAAgAAAAAAwAAAAAAAAAEAAAC"
+        "AAAAAAEAABQAAAAAAQAACAAAAAADAAAAAAAAAAQAAAIAAAAAAQAAFAAAAAABAAAIAAAAAAMAAAAA"
+        "AAAABAAAAgAAAAABAAAUAAAAAAEAAAgAAAAAAwAAAAAAAAAEAAACAAAAAAEAABQAAAAAAQAACAAA"
+        "AAADAAAAAAAAAAQAAAIAAAAAAQAAFAAAAAABAAAIAAAAAAMAAAAAAAAABAAAAgAAAAABAAAUAAAA"
+        "AAEAAAgAAAAAAwAAAAAAAAAEAAACAAAAAAEAABQAAAAAAQAACAAAAAADAAAAAAAAAAQAAAIAAAAA"
+        "AQAAFAAAAAABAAAIAAAAAAMAAAAAAAAABAAAAgAAAAABAAAUAAAAAAEAAAgAAAAAAwAAAAAAAAAE"
+        "AAACAAAAAAEAABQAAAAAAQAACAAAAAADAAAAAAAAAAQAAAIAAAAAAQAAFAAAAAABAAAIAAAAAAMA"
+        "AAAAAAAABAAAAgAAAAABAAAUAAAAAAEAAAgAAAAAAwAAAAAAAAAEAAACAAAAAAEAABQAAAAAAQAA"
+        "CAAAAAADAAAAAAAAAAQAAAIAAAAAAQAAFAAAAAABAAAIAAAAAAMAAAAAAAAABAAAAgAAAAABAAAU"
+        "AAAAAAEAAAgAAAAAAwAAAAAAAAAEAAACAAAAAAEAABQAAAAAAQAACAAAAAADAAAAAAAAAAQAAAIA"
+        "AAAAAQAACAAAAAACAAACAAAAABxzdHNjAAAAAAAAAAEAAAABAAAArwAAAAEAAALQc3RzegAAAAAA"
+        "AAAAAAAArwAAAuIAAAAQAAAADQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAWAAAADgAA"
+        "AA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAXAAAADgAAAA4AAAAOAAAADgAAAA4AAAAOAAAA"
+        "DgAAAA4AAAAZAAAADgAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAaAAAADgAAAA4AAAAO"
+        "AAAADgAAAA4AAAAOAAAADgAAAA4AAAAcAAAADgAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4A"
+        "AAAeAAAADgAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAfAAAAEQAAAA4AAAAOAAAADgAA"
+        "AA4AAAAOAAAADgAAAA4AAAAfAAAAEQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAfAAAA"
+        "EQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAfAAAAEQAAAA4AAAAOAAAADgAAAA4AAAAO"
+        "AAAADgAAAA4AAAAfAAAAEQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAfAAAAEQAAAA4A"
+        "AAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAfAAAAEQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAA"
+        "AA4AAAAfAAAAEQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAeAAAAEQAAAA4AAAAOAAAA"
+        "DgAAAA4AAAAOAAAADgAAAA4AAAAeAAAAEQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAe"
+        "AAAAEQAAAA4AAAAOAAAADgAAAA4AAAAOAAAADgAAAA4AAAAeAAAAEQAAAA4AAAAOAAAADgAAAA4A"
+        "AAAOAAAADgAAAA4AAAAeAAAAEQAAAA4AAAAUc3RjbwAAAAAAAAABAAAIoAAAAGF1ZHRhAAAAWW1l"
+        "dGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAA"
+        "ABxkYXRhAAAAAQAAAABMYXZmNjIuMy4xMDAAAAAIZnJlZQAADbRtZGF0AAACogYF//+e3EXpvebZ"
+        "SLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5"
+        "bGVmdCAyMDAzLTIwMjUgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRp"
+        "b25zOiBjYWJhYz0xIHJlZj0xNiBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgzOjB4MTMzIG1lPXVt"
+        "aCBzdWJtZT0xMCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTI0"
+        "IGNocm9tYV9tZT0xIHRyZWxsaXM9MiA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0"
+        "X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTcgbG9va2FoZWFkX3RocmVhZHM9"
+        "MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2Nv"
+        "bXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz04IGJfcHlyYW1pZD0yIGJfYWRhcHQ9"
+        "MiBiX2JpYXM9MCBkaXJlY3Q9MyB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50"
+        "PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhl"
+        "YWQ9NjAgcmM9Y3JmIG1idHJlZT0xIGNyZj00MC4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02"
+        "OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAOGWIgQACH/4IJ5lhqwk+pshg"
+        "SVTxvnbmA4lg+D5A8ABq7cnF1AdX9IAM2AAG7IBopDSnEZHm1kHBAAAADEGaCS2IIf8AAAMCkgAA"
+        "AAlBnhCHEN8ACkkAAAAKAZ4YJohX/wAMqAAAAAoBnhhGiFf/AAypAAAACgGeGGaIV/8ADKkAAAAK"
+        "AZ4YrUhX/wAMqQAAAAoBnhjNSFf/AAypAAAACgGeGO1IV/8ADKgAAAAKAZ4ZDUhX/wAMqAAAABJB"
+        "mhpJNQIC0TKYEEP/AAADApMAAAAKQZ4hpcQ3/wAKSAAAAAoBnilFohX/AAyoAAAACgGeKWWiFf8A"
+        "DKkAAAAKAZ4phaIV/wAMqQAAAAoBninMkhX/AAypAAAACgGeKeySFf8ADKgAAAAKAZ4qDJIV/wAM"
+        "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"
+        "Tax0hX8ADKk="
+    ));
+}
+
 static QByteArray mediaViewerGarbageVideoBytes()
 {
     return QByteArray("NOT-A-DECODABLE-VIDEO-FILE-FOR-DISPLAY-ERROR-TESTING");
@@ -22767,6 +22879,119 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY2(playerState() == 1, "the long clip must still be playing at the witness");
         QVERIFY2(bar->isVisible(),
             "the bar control Shift+Tab reached must keep the bar visible past auto-hide");
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #796 item 3: the mediaViewer-controls auto-hide window witness.
+    // The #731 cases pin the bar visible/pinned only; this case proves the
+    // full hide/return contract of docs/NATIVE_DESKTOP_VIDEO_PLAYBACK.md:
+    // mid-playback with the pointer off the picture the 2500 ms countdown
+    // hides the bar; a pointer move over the picture re-shows it and re-arms
+    // the countdown (hides again); pausing through the picture click brings
+    // the bar back and pins it past the countdown (an ended/paused clip must
+    // always offer its controls). Driven with the committed 7 s fixture.
+    void mediaViewerVideoControlsAutoHideReturnsOnMoveAndPause()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerLongVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-autohide.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer auto-hide window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 8000);
+        auto *player = window->findChild<QObject *>("mediaViewer-player"); QVERIFY(player);
+        const auto playerState = [&] { return player->property("playbackState").toInt(); };
+        // The countdown arms only mid-playback: reach Playing first. No pointer
+        // event has entered the window yet, so the HoverHandler pointing gate
+        // is already false and the 2500 ms timer may fire.
+        QTRY_VERIFY_WITH_TIMEOUT(playerState() == 1, 15000);
+        // A hidden bar is still a child of the window (visibleItem filters
+        // hidden items out), so the oracle reads the item's own visible
+        // property regardless of effective visibility.
+        auto *bar = window->findChild<QObject *>("mediaViewer-controls"); QVERIFY(bar);
+        const auto barShown = [bar] { return bar->property("visible").toBool(); };
+        QVERIFY2(barShown(), "the bar must start shown when playback arms the countdown");
+        QTest::mouseMove(window, QPoint(4, 4)); // park the cursor off the picture
+        QTRY_VERIFY_WITH_TIMEOUT(!barShown(), 9000);
+        QVERIFY2(playerState() == 1, "the clip must still be mid-playback when the bar hid");
+        // A pointer move over the picture re-shows the bar (and re-arms).
+        auto *video = visibleItem(content, "mediaViewer-video"); QVERIFY(video);
+        const QPointF videoCenterScene = video->mapToScene(
+            QPointF(video->width() / 2, video->height() / 2));
+        QTest::mouseMove(window, videoCenterScene.toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(barShown(), 5000);
+        // Re-arm proof: leaving the picture again hides the bar on the new
+        // countdown (a timer that never re-armed would fail here).
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_VERIFY_WITH_TIMEOUT(!barShown(), 9000);
+        // Pausing through the picture click path brings the bar back and pins
+        // it: a paused clip always shows its controls (browser convention),
+        // so it must survive well past the countdown interval.
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, videoCenterScene.toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(playerState() == 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(barShown(), 5000);
+        QTest::qWait(3500); // > the 2500 ms countdown
+        QVERIFY2(barShown(), "a paused clip must keep the controls bar pinned past the countdown");
         click(window, visibleItem(content, "mediaViewer-close"));
         QTRY_VERIFY(!viewer->open());
     }
