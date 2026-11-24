@@ -29,8 +29,12 @@ server to install alongside it.
 Download the latest Linux archive (`Exordos-Workspace-Native-<version>-linux-x86_64.tar.gz`,
 with `SHA256SUMS`) from the
 [releases page](https://github.com/exordos/workspace_native/releases/latest),
-unpack it and start `bin/workspace-native`. The archive carries its own runtime,
-so nothing else needs to be installed.
+unpack it and start `bin/workspace-native`. The archive bundles the Qt runtime
+that was built on the supported host, so nothing else needs to be installed.
+Published archives target x86_64 Linux on glibc 2.43 or newer (Ubuntu 26.04 or
+newer); on an older host the loader cannot start the bundled runtime. The
+[release documentation](docs/NATIVE_DESKTOP_RELEASES.md) records the supported
+platform for each package.
 
 ## Local development
 
