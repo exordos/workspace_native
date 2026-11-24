@@ -444,6 +444,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_18
     loginCardMountsOrganizationStepOnly
     mentionsPageChipFilterAndCloseFlow
     messageTimePanelFollowsChipWhileHistoryScrolls
+    mouseSendRestoresComposerFocusForTheNextMessage
     realMenuInputWaitsForSourceLayout
     receivedStandaloneImagePaintsBetweenTextAndCaption
     replyMenuQuotesOnlyTheCurrentBubbleSelection
