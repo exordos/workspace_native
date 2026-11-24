@@ -26808,6 +26808,89 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummaryEndpointForm")); // reset after ITS OWN success
     }
 
+    // #796 item 1: the endpoint DELETE flow had no window-level witness. Delete
+    // must arm the confirm band instead of firing immediately, Cancel must
+    // leave the list untouched, and confirm-Yes must dispatch DELETE for the
+    // row's uuid and drop exactly that row from the Repeater.
+    void channelTopicSummaryDialogEndpointDeleteConfirmDispatchesAndCancelRestores()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QString keepUuid = QStringLiteral("7b41c2d0-9a5e-4f83-b6c1-5d20e8a94f31");
+        const QString dropUuid = QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77");
+        const QJsonObject dropDto{
+            {"uuid", dropUuid},
+            {"name", QStringLiteral("Doomed Endpoint")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const QJsonObject keepDto{
+            {"uuid", keepUuid},
+            {"name", QStringLiteral("Kept Endpoint")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 110}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        QJsonArray rows;
+        rows.append(dropDto);
+        rows.append(keepDto);
+        int deletes = 0;
+        QString deletePath;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains(QStringLiteral("/topic_summary_endpoints")))
+                return Response{rows};
+            if (request.method == "DELETE" && path.contains(QStringLiteral("/topic_summary_endpoints/"))) {
+                ++deletes;
+                deletePath = path;
+                return Response{};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-1"));
+        // Delete arms the confirm band without dispatching anything.
+        click(scene.window, visibleItem("channelTopicSummaryEndpointDelete"));
+        auto *band = visibleItem("channelTopicSummaryDeleteConfirm");
+        QVERIFY(band);
+        QCOMPARE(deletes, 0);
+        QQuickItem *cancel = nullptr;
+        for (auto *child : band->findChildren<QQuickItem *>()) {
+            if (child->property("text").toString() == QStringLiteral("Cancel") && child->isVisible()) {
+                cancel = child;
+                break;
+            }
+        }
+        QVERIFY(cancel);
+        click(scene.window, cancel);
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryDeleteConfirm"));
+        QCOMPARE(deletes, 0);
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-1"));
+        // Confirm-Yes dispatches DELETE for the row uuid and removes the row.
+        click(scene.window, visibleItem("channelTopicSummaryEndpointDelete"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryDeleteConfirm"));
+        click(scene.window, visibleItem("channelTopicSummaryDeleteConfirmYes"));
+        QTRY_COMPARE(deletes, 1);
+        QVERIFY(deletePath.contains(dropUuid));
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryDeleteConfirm"));
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryEndpoint-1"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        auto *survivor = visibleItem("channelTopicSummaryEndpointName");
+        QVERIFY(survivor);
+        QCOMPARE(survivor->property("text").toString(), QStringLiteral("Kept Endpoint"));
+    }
+
     // Finding 7 [medium]: validation failures must produce per-field feedback
     // beside the affected field (reference endpointValidationErrorText() +
     // live draft validation) and must keep Save gated.
