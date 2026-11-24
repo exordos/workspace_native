@@ -7467,6 +7467,7 @@ component NativeMentionChip: Item {
                 }
             }
             Rectangle {
+                objectName: "conversationErrorStrip"
                 visible: root.controller.error.length > 0
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.max(40, errorText.implicitHeight + 16)
@@ -7474,6 +7475,7 @@ component NativeMentionChip: Item {
                 radius: 6
                 Text {
                     id: errorText
+                    objectName: "conversationErrorText"
                     anchors.left: parent.left
                     anchors.right: cacheRetry.visible ? cacheRetry.left : parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -16101,7 +16103,16 @@ component NativeMentionChip: Item {
         Rectangle {
             id: bootstrapErrorBanner
             objectName: "bootstrapErrorBanner"
+            // Issue #786: a failed refresh of a saved conversation already
+            // renders the same controller.error with its own Retry on the
+            // conversation surface (conversationErrorStrip + cacheRetryButton).
+            // While that surface is on screen and owns the recovery, the
+            // window-wide strip must not duplicate the alert with a second
+            // Retry; without a saved history (no cacheStale) or without an
+            // open conversation page the bootstrap strip stays the recovery.
             visible: root.controller.bootstrapError
+                && !(conversation.visible && root.controller.error.length > 0
+                    && root.controller.cacheStale)
             width: topBannerOverlay.width
             // Column still lays out hidden children, so a hidden strip must
             // collapse to zero height to keep the visible one flush at top.
