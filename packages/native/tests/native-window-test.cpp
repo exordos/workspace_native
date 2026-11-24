@@ -25374,6 +25374,59 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(background->opacity(), qreal(1));
     }
 
+    // Issue #816: opening the integration-settings dialog while the policy
+    // draft is ready must project the three limit fields without a QML
+    // binding loop - the textChanged write-back re-notified the draft while
+    // the draftNumber binding was still re-evaluating, and Qt froze the
+    // fields at a stale value. QML warnings fail the window harness, so the
+    // witness is the dialog opening green plus the projected draft values.
+    void externalProviderDialogProjectsReadyDraftWithoutBindingLoop()
+    {
+        ChannelInfoWindowScene scene;
+        const QString policy = "/api/workspace/v1/messenger/external_provider_policies/zulip";
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == policy)
+                return {QJsonObject{{"uuid","77777777-7777-4777-8777-000000000007"},
+                    {"provider","zulip"},
+                    {"created_at","2026-01-02T10:00:00Z"},
+                    {"updated_at","2026-11-20T10:00:00Z"},
+                    {"revision",3},{"enabled",true},{"emergency_suspended",false},
+                    {"limits",QJsonObject{{"max_accounts",5},
+                        {"max_selected_chats_per_account",20},{"max_file_bytes",52428800}}},
+                    {"custom_ca_bundle",QJsonValue::Null}}, 200};
+            return base(request);
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QQuickItem *entry = nullptr;
+        QTRY_VERIFY(([&] { entry = visibleItem("externalProviderEntry"); return entry != nullptr; })());
+        const QRectF bounds(QPointF{}, scene.window->size());
+        auto entryInWindow = [&] { return bounds.contains(entry->mapRectToScene(QRectF(QPointF{}, entry->size()))); };
+        if (!entryInWindow()) {
+            auto *scroll = visibleItem("accountMenuScroll");
+            QVERIFY(scroll);
+            scroll->setProperty("contentY", scroll->property("contentY").toReal()
+                + entry->mapToItem(scroll, QPointF(0, 0)).y() - 24);
+            QTRY_VERIFY(entryInWindow());
+        }
+        click(scene.window, entry);
+        QTRY_VERIFY(visibleItem("extProviderLimitsField-max_accounts"));
+        // Every limit field shows the draft value (the loop froze these at
+        // stale values in the reported repro).
+        QTRY_COMPARE(visibleItem("extProviderLimitsField-max_accounts")
+            ->property("text").toString(), QStringLiteral("5"));
+        QCOMPARE(visibleItem("extProviderLimitsField-max_selected_chats_per_account")
+            ->property("text").toString(), QStringLiteral("20"));
+        QCOMPARE(visibleItem("extProviderLimitsField-max_file_bytes")
+            ->property("text").toString(), QStringLiteral("50"));
+        click(scene.window, visibleItem("extProviderClose"));
+        QTRY_VERIFY(!visibleItem("externalProviderDialog")
+            || !visibleItem("extProviderLimitsField-max_accounts"));
+    }
+
     // Reference: packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx (measured
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
