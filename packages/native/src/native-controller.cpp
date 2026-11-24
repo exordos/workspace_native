@@ -7197,6 +7197,20 @@ void NativeController::openCache()
         m_startupCacheMode = false;
         m_startupIdentity.clear();
         scheduleRowPreviewHydration();
+        // Issue #802: a selection made inside the shell only got cache-only
+        // reads (cachedCollection suppresses network while the startup cache
+        // mode is on). Revalidate the current selection now that the lease is
+        // owned and the session verified; a skipped channel stays untouched.
+        // Deferred to the next event-loop pass: the resolve cascade continues
+        // into refresh(), which bumps the catalog epoch and would fence a
+        // request dispatched from this stack (mirrors the deferred-NOTIFY
+        // shape of the sidebar collapse fix #660/#693).
+        const QPointer<NativeController> self(this);
+        QTimer::singleShot(0, this, [self] {
+            if (!self) return;
+            if (!self->m_stream.isEmpty()) self->loadTopics();
+            if (self->hasConversation()) self->loadMessages();
+        });
         emit stateChanged();
         return;
     }
@@ -9903,6 +9917,18 @@ void NativeController::cachedCollection(const NativeCache::Key &key, const QStri
             // The captured epoch is gone and nothing will ever be dispatched:
             // deliver the terminal failure instead of dropping the request (#64).
             if (failed) failed();
+            return;
+        }
+        if (m_startupCacheMode) {
+            // Issue #802: while the startup cache shell owns the screen the
+            // saved session is still being renewed, so every authenticated
+            // collection read would be rejected locally by the API client
+            // ("Sign in to continue.") and surface as a false catalog error
+            // mid-resume. Startup-shell reads are cache-only: settle the
+            // caller's bookkeeping through the quiet failure terminal (#64)
+            // and let the openCache handoff revalidate the current selection
+            // once the session is verified.
+            if (failed && !*networkStarted) failed();
             return;
         }
         *networkStarted = true;

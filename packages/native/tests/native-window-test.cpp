@@ -45994,6 +45994,116 @@ private slots:
         QCOMPARE(controller.selectedStream(), streamId);
     }
 
+    // Issue #802: while the startup cache shell owns the screen the saved
+    // session is still being renewed. Selecting a cached channel in that gap
+    // must not dispatch authenticated collection fetches the API client
+    // rejects locally ("Sign in to continue."), so no false catalog error may
+    // appear mid-resume; the current selection revalidates once verified.
+    void startupCacheSelectionStaysQuietWhileRefreshIsInFlight()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QUrl server(QStringLiteral("https://startup-select.invalid"));
+        const QString plainStream = QStringLiteral("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+        const QJsonArray streams{windowChannel(streamId, "Saved channel with topics"),
+            windowChannel(plainStream, "Saved channel without topics")};
+        {
+            // Stale seed: entries older than the TTL, so every row projects as
+            // a cache read while the refresh is held.
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
+            QVERIFY(seed.open(server, projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
+            // Only the first channel has a saved topic catalog; the second is
+            // the cache-miss selection the issue reproduces with.
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, streamId, {}, {}},
+                QJsonArray{windowChannelTopic(topicId, streamId, QStringLiteral("Saved topic"))}));
+        }
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, server, projectId, userId, QStringLiteral("synthetic-user"),
+            QStringLiteral("Synthetic project")};
+        saved.id = SessionVault::accountId(server, projectId, userId);
+        bool stored = false;
+        vault.save(saved, QByteArray("startup-select-private"), [&](QString error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The token/introspect chain is held exactly like the #789 paint case,
+        // so both selections below happen while the resume is in flight.
+        std::function<void()> releaseRefresh;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const ApiResult held{QJsonObject{{"access_token", QStringLiteral("startup-select-access")},
+                    {"refresh_token", QStringLiteral("startup-select-private")}, {"expires_in", 3600}}, 200, {}, {}};
+                releaseRefresh = [done, held] { done(held); };
+                return;
+            }
+            auto response = sessionResponse(request);
+            if (path.endsWith("/streams/")) response = Response{streams};
+            else if (path.contains("/streams/" + streamId)) response = Response{streams.first().toObject()};
+            else if (path.contains("/streams/" + plainStream)) response = Response{streams[1].toObject()};
+            else if (path.endsWith("/users/")) response = Response{QJsonArray{QJsonObject{{"uuid", userId},
+                {"project_id", projectId}, {"username", QStringLiteral("synthetic-user")},
+                {"first_name", QStringLiteral("Synthetic")}, {"email", QStringLiteral("synthetic@example.invalid")}}}};
+            else if (path.endsWith("/stream_topics/"))
+                response = Response{QJsonArray{windowChannelTopic(topicId, streamId, QStringLiteral("First topic"))}};
+            else if (path.endsWith("/messages/") || path.endsWith("/folders/")) response = Response{QJsonArray{}};
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("startup-select.ini"));
+        preferences.setLocale("en");
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Startup selection teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        controller.resumeSavedAccount(saved.id);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.startupCacheMode(), 1500);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 1500);
+        // Select the channel with a saved catalog while the refresh is held:
+        // the saved topics must project from the cache with no error surfaced.
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.selectedStream() == streamId, 1500);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.topics().size() >= 1, 2000);
+        QCOMPARE(controller.error(), QString());
+        // Then the channel with no saved catalog: the miss stays silent (the
+        // ordinary pre-catalog empty pane is the waiting state), never the
+        // quoted sign-in error the issue reproduces.
+        clickCurrentItem(window, "stream-" + plainStream);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.selectedStream() == plainStream, 1500);
+        QTest::qWait(500);
+        QCOMPARE(controller.error(), QString());
+        QCOMPARE(controller.topics().size(), 0);
+        QVERIFY(bool(releaseRefresh)); // both selections happened mid-refresh
+        releaseRefresh();
+        releaseRefresh = nullptr;
+        // The late refresh settles the same session without disturbing the
+        // user's selection; the verified-catalog round trip itself is the
+        // ordinary post-auth path (#789 handover contract).
+        QTRY_VERIFY_WITH_TIMEOUT(controller.authenticated(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.startupCacheMode(), 3000);
+        QCOMPARE(controller.selectedStream(), plainStream);
+        QVERIFY(controller.streams().size() >= 2);
+    }
+
     // Issue #789 review (finding 4676864838): startup cache mode is an
     // optimistically painted shell - it may only take over the screen once the
     // cache actually opened. When the open fails (here: a read-only cache
