@@ -75,6 +75,10 @@ signals:
     void otpChallengeInvalidated();
     void projectsAvailable();
     void authenticated();
+    // Issue #789: a saved account's identity (server/project/user) is fully
+    // resolved from the vault without any network round; the cache may start
+    // painting from it while the refresh chain is still in flight.
+    void startupIdentityResolved();
     void signedOut();
     void error(const QString &message);
     void busyChanged(bool busy);

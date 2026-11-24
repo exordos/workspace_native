@@ -113,6 +113,9 @@ void Session::resumeSavedAccount(const QString &id)
         guard->m_login = account.login;
         guard->m_projects = {{account.project, account.projectName}};
         guard->m_refreshToken = token;
+        // Issue #789: the identity is verified-local here; announce it before
+        // the token/introspect chain so the controller can paint from cache.
+        emit guard->startupIdentityResolved();
         guard->refreshProject();
     });
 }

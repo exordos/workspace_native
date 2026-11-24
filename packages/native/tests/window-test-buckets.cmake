@@ -54,6 +54,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     prefetchRefetchesOnFirstScrollAfterRestore
     quickReactionsPaintAndReceiveClicksAboveAdjacentMessages
     sidebarNormalDensityKeepsTheMeasuredLadder
+    startupPaintsSavedCacheWhileRefreshIsInFlight
     windowChannelInfoStaleMembersLoadKeepsAddedMember
     windowResizeHandOffReArmsForWheelAfterSendCapture
     zoomedImageDragsToPanWithinTheMediaViewport
@@ -380,6 +381,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     rightDrawerConversationSwitchDropsNestedChatScreens
     rightDrawerPromotesExistingLayersInsteadOfDuplicating
     sidebarHydrationKeepsFocusOnOtherStream
+    startupCacheEmptyStoreKeepsSignInVisible
     windowChannelInfoAddDialogClearsSelectionOnClose
     windowChannelInfoAddMemberFlow
     windowChannelInfoNotificationBusyIsPerStreamRequestScoped
@@ -491,6 +493,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     sidebarCatalogFailureShowsBlockingErrorCard
     sidebarCatalogStatesExposeAccessibleText
     sidebarExpansionPersistsAndRevealsTopics
+    startupCacheOpenFailureKeepsSignInVisible
     topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks
     topicContextMenuMarkReadVisibilityAndAction
     upToEditLastAndSaveUseTheComposerEditMode

@@ -7069,6 +7069,10 @@ void NativeController::notifyTrustChanged()
 
 bool NativeController::cacheStale() const
 {
+    // Issue #789: while the startup identity paints from the saved cache the
+    // network view is by definition not yet verified - the stale pill labels
+    // the painted content from the moment rows appear.
+    if (m_startupCacheMode && !m_streams.isEmpty()) return true;
     return m_cacheProtection && ((m_syncBlocked && (!m_streams.isEmpty() || !m_messages.isEmpty()))
         || (m_cacheHydrated && ((!m_catalogVerified && !m_streams.isEmpty())
             || (!m_usersVerified && !m_names.isEmpty()) || (!m_topicsVerified && !m_topics.isEmpty())
@@ -7160,6 +7164,9 @@ bool NativeController::openCachedSearchResult(const QString &id)
 
 void NativeController::closeCache()
 {
+    // Issue #789: a discarded lease ends the startup cache-first mode with it.
+    m_startupCacheMode = false;
+    m_startupIdentity.clear();
     const QPointer<NativeController> openingGuard(this);
     clearCachedSearch();
     if (!openingGuard) return;
@@ -7179,6 +7186,20 @@ void NativeController::closeCache()
 
 void NativeController::openCache()
 {
+    // Issue #789: the startup bootstrap may already have opened this exact
+    // identity. Re-opening it would bump the cache revision and re-project the
+    // rows under a new lease, blanking the painted cached content the refresh
+    // is only supposed to add to. Hand ownership over instead.
+    const QString bootstrapIdentity = m_api->server().toString() + QLatin1Char('|')
+        + m_session->project() + QLatin1Char('|') + m_session->user();
+    if (m_startupCacheMode && !m_startupIdentity.isEmpty()
+        && m_startupIdentity == bootstrapIdentity) {
+        m_startupCacheMode = false;
+        m_startupIdentity.clear();
+        scheduleRowPreviewHydration();
+        emit stateChanged();
+        return;
+    }
     const QPointer<NativeController> openingGuard(this);
     clearCachedSearch();
     if (!openingGuard) return;
@@ -7198,6 +7219,102 @@ void NativeController::openCache()
         // the guard chain that `cache->open` is evaluated under.
         scheduleRowPreviewHydration();
     }
+}
+
+void NativeController::openCacheForStartupIdentity()
+{
+    // Issue #789: paint-from-cache startup. The vault already confirmed the
+    // saved identity, so the cache can open behind the stale-pill projection
+    // while Session renews the token and re-introspects.
+    if (authenticated() || !m_cache) return;
+    if (m_session->project().isEmpty() || m_session->user().isEmpty()) return;
+    const QString identity = m_api->server().toString() + QLatin1Char('|')
+        + m_session->project() + QLatin1Char('|') + m_session->user();
+    if (identity == m_startupIdentity) return;
+    clearCachedSearch();
+    ++m_cacheRevision;
+    m_cacheHydrations.clear();
+    m_cacheWasAvailable = false;
+    m_cacheLease = {};
+    m_startupIdentity = identity;
+    const auto revision = m_cacheRevision;
+    const QPointer<NativeController> guard(this);
+    // Issue #789 review (finding 4676864838): the cache-first shell may take
+    // over the screen only once the cache actually opened. open() reports only
+    // that the job was accepted; the completion carries the real verdict, and
+    // a failed open must leave the sign-in card on screen instead of hiding
+    // it behind an empty cached workspace while a stalled refresh runs.
+    const bool accepted = m_cache->open(m_api->server(), m_session->project(), m_session->user(), this,
+        [this, guard, identity, revision](bool opened) {
+        if (!guard) return;
+        if (guard->m_startupIdentity != identity || guard->m_cacheRevision != revision) return;
+        if (!opened || guard->authenticated()) {
+            // The attempt is over (failed, or the session authenticated
+            // first): release the identity so a later resolve may retry,
+            // and the startup mode is never entered.
+            guard->m_startupIdentity.clear();
+            emit guard->stateChanged();
+            return;
+        }
+        // Issue #789 review (finding 4677301847): an opened cache is not yet a
+        // paintable one. The startup shell may replace the sign-in card only
+        // once cached rows are actually projected (loadStartupCacheStreams);
+        // an opened-but-empty store releases the attempt like a failed open.
+        if (guard->m_cache) guard->m_cacheLease = guard->m_cache->lease();
+        // The service emits stateChanged before this queued completion runs,
+        // so the becameReady projection seam could not see the attempt yet;
+        // project the cached channel list from here (idempotent).
+        guard->loadStartupCacheStreams();
+    });
+    if (!accepted && guard && m_startupIdentity == identity)
+        m_startupIdentity.clear();
+    if (guard) emit stateChanged();
+}
+
+void NativeController::loadStartupCacheStreams()
+{
+    // Issue #789: the first paint of a saved account comes from the local
+    // cache, not from the token/introspect chain. Project the saved channel
+    // list exactly like the stale-cache network fallback would, but under the
+    // startup guards: the authoritative refresh replaces these rows later.
+    // Issue #789 review (finding 4677301847): startup cache mode begins with
+    // the projected rows, not with the open verdict - an opened store without
+    // displayable rows releases the attempt like a failed open, so the
+    // sign-in card stays on screen instead of an empty shell.
+    if ((!m_startupCacheMode && m_startupIdentity.isEmpty()) || !m_cache || authenticated()) return;
+    const auto lease = m_cacheLease;
+    const auto revision = m_cacheRevision;
+    const auto identity = m_startupIdentity;
+    const QPointer<NativeController> guard(this);
+    m_cache->get(lease, {NativeCache::Kind::Streams, {}, {}, {}}, this,
+        [this, guard, lease, revision, identity](std::optional<NativeCacheService::Entry> entry) {
+        if (!guard || guard->m_startupIdentity != identity) return;
+        if (guard->m_cacheRevision != revision) return;
+        if (guard->m_cacheLease.owner != lease.owner || guard->m_cacheLease.generation != lease.generation) return;
+        // No displayable rows: release the identity (only while the shell has
+        // not started) so a later resolve may retry and the sign-in stays.
+        const auto releaseAttempt = [&] {
+            if (!guard->m_startupCacheMode) {
+                guard->m_startupIdentity.clear();
+                emit guard->stateChanged();
+            }
+        };
+        if (guard->authenticated() || !guard->m_streams.isEmpty()) { releaseAttempt(); return; }
+        if (!entry) { releaseAttempt(); return; }
+        QVector<Stream> streams;
+        QSet<QString> ids;
+        for (const auto &value : entry->rows) {
+            const auto parsed = parseStream(value.toObject(), guard->m_session->project());
+            if (!parsed || ids.contains(parsed->uuid)) continue;
+            ids.insert(parsed->uuid);
+            streams.append(*parsed);
+        }
+        if (streams.isEmpty()) { releaseAttempt(); return; }
+        guard->m_startupCacheMode = true;
+        guard->m_streams = streams;
+        emit guard->streamsChanged();
+        emit guard->stateChanged();
+    });
 }
 
 void NativeController::markCacheStale()
@@ -9739,6 +9856,12 @@ void NativeController::useCache(NativeCacheService *cache)
         if (changed) emit cachedSearchAvailabilityChanged();
         if (!availabilityGuard) return;
         if (!becameReady) return;
+        // Issue #789: the startup identity's first paint waits on this cache,
+        // not on the network; project the saved channel list as soon as ready.
+        // (Finding 4677301847: an in-flight attempt must NOT be projected from
+        // here - the lease hand-over still lives in the open completion, so an
+        // early get would run on the pre-hand-over lease.)
+        if (m_startupCacheMode) loadStartupCacheStreams();
         hydrateChatRequestLookups();
         auto pending = std::move(m_cacheHydrations);
         m_cacheHydrations.clear();
@@ -10539,7 +10662,16 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // both active operations and queued paths before resetting their UI state.
         resetReadState();
         resetReactions(true);
-        closeCache();
+        // Issue #789: a token rotation inside the resume chain must not tear
+        // down the cache-first projection. The saved identity stands until the
+        // late introspect re-confirms it; openCache hands the lease over then.
+        // Issue #789 review (finding 4679305627): the attempt is fenced by the
+        // identity, not only by the started mode - startup cache mode begins
+        // when rows project, so a fast token reply that advances the
+        // generation while the open or the lookup is still in flight must not
+        // run closeCache, or the attempt is discarded before it can paint and
+        // the sign-in card wins.
+        if (!m_startupCacheMode && m_startupIdentity.isEmpty()) closeCache();
         if (!guard) return;
         m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
         cancelFileTransfers(tr("Attachment transfer interrupted by a session change. Choose the file again."));
@@ -10548,6 +10680,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         if (guard) emit messagesChanged();
     });
     connect(session, &Session::authenticated, this, &NativeController::startAuthenticatedWorkspace);
+    // Issue #789: the vault-resolved startup identity opens the cache ahead of
+    // the token/introspect chain, so the shell paints from cache immediately.
+    connect(session, &Session::startupIdentityResolved, this,
+            &NativeController::openCacheForStartupIdentity);
     m_mentionIndexRetry.setSingleShot(true);
     connect(&m_mentionIndexRetry, &QTimer::timeout, this, &NativeController::loadMentionIndex);
     m_poll.setInterval(15000);

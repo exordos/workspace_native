@@ -45639,6 +45639,262 @@ private slots:
         QCOMPARE(controller.replyMessageId(), messageId);
         QCOMPARE(posts, 0);
     }
+    // Issue #789: with a saved cache and a stalled session refresh the client
+    // must paint the cached chats immediately (#157 cache-first contract). The
+    // refresh reply is held open indefinitely (mock defer), so every assertion
+    // below runs while the token/introspect chain is provably still in flight.
+    void startupPaintsSavedCacheWhileRefreshIsInFlight()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QUrl server(QStringLiteral("https://startup-paint.invalid"));
+        const QJsonArray streams{windowChannel(streamId, "Saved startup channel")};
+        {
+            // Stale seed: entries older than the TTL, so the stale pill must
+            // appear together with the cached rows.
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
+            QVERIFY(seed.open(server, projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
+        }
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, server, projectId, userId, QStringLiteral("synthetic-user"),
+            QStringLiteral("Synthetic project")};
+        saved.id = SessionVault::accountId(server, projectId, userId);
+        bool stored = false;
+        vault.save(saved, QByteArray("startup-refresh-private"), [&](QString error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The token/introspect chain stalls: this models the measured multi-second
+        // resume path; the reply completes only when the test releases it.
+        std::function<void()> releaseRefresh;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const ApiResult held{QJsonObject{{"access_token", QStringLiteral("startup-access")},
+                    {"refresh_token", QStringLiteral("startup-refresh-private")}, {"expires_in", 3600}}, 200, {}, {}};
+                releaseRefresh = [done, held] { done(held); };
+                return;
+            }
+            auto response = sessionResponse(request);
+            if (path.endsWith("/streams/")) response = Response{streams};
+            else if (path.contains("/streams/" + streamId)) response = Response{streams.first().toObject()};
+            else if (path.endsWith("/users/")) response = Response{QJsonArray{QJsonObject{{"uuid", userId},
+                {"project_id", projectId}, {"username", QStringLiteral("synthetic-user")},
+                {"first_name", QStringLiteral("Synthetic")}, {"email", QStringLiteral("synthetic@example.invalid")}}}};
+            else if (path.endsWith("/stream_topics/"))
+                response = Response{QJsonArray{windowChannelTopic(topicId, streamId, QStringLiteral("First topic"))}};
+            else if (path.endsWith("/messages/") || path.endsWith("/folders/")) response = Response{QJsonArray{}};
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("startup-paint.ini"));
+        preferences.setLocale("en");
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Startup paint teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        const auto t0 = QDateTime::currentMSecsSinceEpoch();
+        controller.resumeSavedAccount(saved.id);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.startupCacheMode(), 1500);
+        // Acceptance: cached content painted within 1.5 s of window map.
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId), 1500);
+        const auto paintMs = QDateTime::currentMSecsSinceEpoch() - t0;
+        QVERIFY2(paintMs <= 1500, qPrintable(QString("cached paint took %1 ms").arg(paintMs)));
+        QCOMPARE(controller.streams().size(), 1);
+        auto *status = item(window->contentItem(), "cacheStatus");
+        QVERIFY(status);
+        QTRY_VERIFY(status->isVisible());
+        QVERIFY(status->property("text").toString().startsWith("Showing saved chats"));
+        QVERIFY(bool(releaseRefresh)); // the refresh chain is still held here
+        // Interactive: the painted cached row responds to a click while the
+        // refresh is still in flight.
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.selectedStream() == streamId, 1500);
+        releaseRefresh();
+        releaseRefresh = nullptr;
+        // The late refresh must be additive: the release queue must keep
+        // pumping while the reply chain settles, and the painted cached row
+        // must survive it. (Pill-clear on a fully verified catalog is covered
+        // by the post-login stale cases; here the synthetic bootstrap is
+        // intentionally partial.)
+        QTRY_VERIFY_WITH_TIMEOUT(controller.authenticated(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.startupCacheMode(), 3000);
+        QVERIFY(controller.streams().size() >= 1);
+        QVERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
+        QCOMPARE(controller.selectedStream(), streamId);
+    }
+
+    // Issue #789 review (finding 4676864838): startup cache mode is an
+    // optimistically painted shell - it may only take over the screen once the
+    // cache actually opened. When the open fails (here: a read-only cache
+    // directory) while the session refresh is still held open, the sign-in
+    // card must stay visible instead of an empty cached workspace.
+    void startupCacheOpenFailureKeepsSignInVisible()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QUrl server(QStringLiteral("https://startup-fail.invalid"));
+        // The cache directory holds a DIRECTORY where the sqlite database file
+        // belongs: the cache open rejects it and fails for good.
+        const QString cacheDir = directory.filePath("blocked-cache");
+        QVERIFY(QDir().mkpath(cacheDir));
+        QVERIFY(QDir().mkpath(QDir(cacheDir).filePath("cache.sqlite3")));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, server, projectId, userId, QStringLiteral("synthetic-user"),
+            QStringLiteral("Synthetic project")};
+        saved.id = SessionVault::accountId(server, projectId, userId);
+        bool stored = false;
+        vault.save(saved, QByteArray("startup-fail-private"), [&](QString error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The token/introspect chain is held open forever: the failed cache
+        // open is the only thing that may end the startup attempt.
+        std::function<void()> releaseRefresh;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const ApiResult held{QJsonObject{{"access_token", QStringLiteral("startup-access")},
+                    {"refresh_token", QStringLiteral("startup-fail-private")}, {"expires_in", 3600}}, 200, {}, {}};
+                releaseRefresh = [done, held] { done(held); };
+                return;
+            }
+            auto response = sessionResponse(request);
+            if (path.endsWith("/messages/") || path.endsWith("/folders/")) response = Response{QJsonArray{}};
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeCacheService cache(cacheDir, {}, true);
+        NativePreferences preferences(directory.filePath("startup-fail.ini"));
+        preferences.setLocale("en");
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Startup failure teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        controller.resumeSavedAccount(saved.id);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(releaseRefresh), 3000); // refresh chain is provably held
+        // The startup identity does open the cache, and the open fails.
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.available() && !cache.error().isEmpty(), 5000);
+        // A failed open never enters startup cache mode and projects nothing.
+        QVERIFY(!controller.startupCacheMode());
+        QVERIFY(controller.streams().isEmpty());
+        // The sign-in card is still on screen (its action shares the card's
+        // visibility binding in Main.qml).
+        auto *support = item(window->contentItem(), "loginSupportAction");
+        QVERIFY(support);
+        QVERIFY(support->isVisible());
+    }
+
+    // Issue #789 review (finding 4677301847): an opened cache is not yet a
+    // paintable one. When the cache opens successfully but holds no saved
+    // streams entry, there is nothing to display - the startup shell may not
+    // replace the sign-in card, and a held refresh chain must leave the user
+    // on the sign-in screen instead of an empty workspace.
+    void startupCacheEmptyStoreKeepsSignInVisible()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QUrl server(QStringLiteral("https://startup-empty.invalid"));
+        // Fresh cache directory: the open itself succeeds, but the store
+        // contains no streams entry - the cached projection finds nothing.
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, server, projectId, userId, QStringLiteral("synthetic-user"),
+            QStringLiteral("Synthetic project")};
+        saved.id = SessionVault::accountId(server, projectId, userId);
+        bool stored = false;
+        vault.save(saved, QByteArray("startup-empty-private"), [&](QString error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The token/introspect chain is held open forever: only the cached
+        // content verdict may decide what the shell shows.
+        std::function<void()> releaseRefresh;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const ApiResult held{QJsonObject{{"access_token", QStringLiteral("startup-access")},
+                    {"refresh_token", QStringLiteral("startup-empty-private")}, {"expires_in", 3600}}, 200, {}, {}};
+                releaseRefresh = [done, held] { done(held); };
+                return;
+            }
+            auto response = sessionResponse(request);
+            if (path.endsWith("/messages/") || path.endsWith("/folders/")) response = Response{QJsonArray{}};
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("startup-empty.ini"));
+        preferences.setLocale("en");
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Empty startup cache teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        controller.resumeSavedAccount(saved.id);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(releaseRefresh), 3000); // refresh chain is provably held
+        // The cache opens successfully this time - the failure verdict is not
+        // what keeps the sign-in on screen.
+        QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 5000);
+        // Let the cached-streams lookup settle: it is a miss, there are no rows.
+        for (int i = 0; i < 10; ++i) QTest::qWait(50);
+        // No projected rows means the startup shell never starts.
+        QVERIFY2(!controller.startupCacheMode(), "an empty startup cache entered startup cache mode");
+        QVERIFY(controller.streams().isEmpty());
+        // The sign-in card stays on screen (support action shares its binding).
+        auto *support = item(window->contentItem(), "loginSupportAction");
+        QVERIFY(support);
+        QVERIFY(support->isVisible());
+    }
 };
 
 
