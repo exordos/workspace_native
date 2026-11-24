@@ -10508,6 +10508,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // interrupted outcomes and reconcile the catalog so the topic menu and
         // rename form become usable again under the renewed session.
         interruptTopicActions();
+        // Issue #736: the same bump retires an in-flight topic-summary settings
+        // operation; the wrapper skips its callback forever, so the shared busy
+        // flag would lock both dialog tabs until restart. Settle every retired
+        // op as a retryable interrupted outcome; a late reply of the retired
+        // generation still finds no ticket and cannot settle or apply values.
+        interruptTopicSummaryOps();
         if (!lookupGuard) return;
         // Issue #50 review 4611502344: the same bump retires an in-flight
         // Diagnostics transport ping; its wrapper callback can never settle,
@@ -21782,6 +21788,29 @@ bool NativeController::finishTopicSummaryOp(const QString &key, quint64 token)
     return current;
 }
 
+// Issue #736: a session change retires the transport generation, so the wrapper
+// skips the callbacks of every in-flight summary op forever and nothing else
+// releases the shared busy flag - both dialog tabs stayed locked until restart
+// and any retry was ignored (begin returns 0 for a key already busy). Settle
+// the retired ledger once with a retryable interrupted outcome. The unverified
+// gates flag keeps the fields locked until a fresh load proves the values;
+// token fencing in each callback still fences the late replies, which now find
+// no ticket and can neither settle a newer op nor apply another owner's data.
+void NativeController::interruptTopicSummaryOps()
+{
+    if (m_topicSummaryOps.isEmpty()) return;
+    // A retired create may still have committed server-side before the
+    // transport died (the reply fence does not prove the write failed): a
+    // blind retry would duplicate the endpoint, so mark the list as needing
+    // reconciliation before any next create is dispatched
+    // (#755 finding 4670644138).
+    if (m_topicSummaryOps.contains(QStringLiteral("endpoint-new")))
+        m_topicSummaryCreateNeedsReconcile = true;
+    m_topicSummaryOps.clear();
+    m_topicSummarySettingsBusy = false;
+    setTopicSummaryStatus(QStringLiteral("error"), QStringLiteral("interrupted"));
+}
+
 void NativeController::setTopicSummaryStatus(const QString &status, const QString &error)
 {
     if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) return;
@@ -21899,6 +21928,10 @@ void NativeController::loadTopicSummaryEndpoints()
             rows.append(row);
         }
         m_topicSummaryEndpoints = rows;
+        // Verified list: an interrupted create is reconciled now (the row is
+        // visible if it committed server-side), so a fresh create may dispatch
+        // again (#755 finding 4670644138).
+        m_topicSummaryCreateNeedsReconcile = false;
         emit topicSummaryStateChanged();
         setTopicSummaryStatus("");
     });
@@ -21969,6 +22002,14 @@ bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
     }
     if (!topicSummaryEndpointValidationErrors(form, true).isEmpty()) {
         setTopicSummaryStatus("error", "invalid");
+        return false;
+    }
+    if (m_topicSummaryCreateNeedsReconcile) {
+        // The previous create was retired without a settled reply, so it may
+        // have committed server-side: refuse a blind duplicate POST and
+        // reconcile the list instead; the committed row surfaces and a fresh
+        // create is dispatched only afterwards (#755 finding 4670644138).
+        loadTopicSummaryEndpoints();
         return false;
     }
     const auto token = beginTopicSummaryOp("endpoint-new");

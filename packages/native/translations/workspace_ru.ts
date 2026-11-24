@@ -5739,6 +5739,10 @@
         <translation>Ошибка сети. Изменения сохранены для повторной попытки.</translation>
     </message>
     <message>
+        <source>The settings operation was interrupted by a session refresh. Try again.</source>
+        <translation>Изменение настроек прервано обновлением сессии. Повторите попытку.</translation>
+    </message>
+    <message>
         <source>The server rejected the values.</source>
         <translation>Проверьте введенные значения.</translation>
     </message>

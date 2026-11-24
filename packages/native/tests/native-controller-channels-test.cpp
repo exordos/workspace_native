@@ -1047,6 +1047,122 @@ private slots:
         QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
     }
 
+    // Issue #736: a token renewal for the SAME account retires the transport
+    // generation, so the wrapper never answers the in-flight gates callback and
+    // nothing released the shared busy flag: the retry was ignored and both
+    // tabs stayed locked. The renewal must settle the retired summary
+    // operations with a retryable outcome, fence the late reply, and let the
+    // renewed session load the gates again without a restart.
+    void topicSummaryGatesRenewalReleasesBusyAndRetries()
+    {
+        TopicSummaryScene scene; scene.permissions = {QJsonValue("workspace.topic_summary_settings.manage")};
+        bool deferFirst = true;
+        std::function<void()> release;
+        const auto base = scene.fixture.authentication;
+        scene.fixture.authentication = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().contains("topic_summary_settings")
+                && deferFirst) {
+                deferFirst = false;
+                ++scene.gatesGets;
+                Response response{scene.gatesResponse};
+                response.defer = [&](auto finish) { release = std::move(finish); };
+                return response;
+            }
+            return base(request);
+        };
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryGates();
+        QTRY_COMPARE(scene.gatesGets, 1);
+        QVERIFY(bool(release));
+        QVERIFY(controller.topicSummarySettingsBusy());
+        // Same-owner renewal: a replacement access token bumps the generation.
+        scene.fixture.api.setAccessToken("summary-736-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.topicSummarySettingsBusy(), 4000);
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        // Unverified gates stay uneditable: the loaded flag cannot be set by a
+        // reply that never settled (review #708 finding 8 contract).
+        QVERIFY(!controller.topicSummaryGatesLoaded());
+        const auto statusAfterSettle = controller.topicSummarySettingsStatus();
+        // The late reply of the retired generation must settle nothing and must
+        // not apply its values to the renewed session.
+        release();
+        QTest::qWait(300);
+        QCOMPARE(controller.topicSummarySettingsStatus(), statusAfterSettle);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        QVERIFY(!controller.topicSummaryGatesLoaded());
+        // The renewed session loads the gates again with no restart.
+        controller.loadTopicSummaryGates();
+        QTRY_COMPARE(scene.gatesGets, 2);
+        QTRY_VERIFY(!controller.topicSummarySettingsBusy());
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString(""));
+        QVERIFY(controller.topicSummaryGatesLoaded());
+    }
+
+    void topicSummaryInterruptedCreateReconcilesBeforeRetry()
+    {
+        // exordy medium on #755 (finding 4670644138): a create whose request
+        // died mid-transport may still have committed server-side. An
+        // immediate retry must not blindly issue a second POST: the list is
+        // reconciled first, and only then is a fresh create allowed again.
+        TopicSummaryScene scene;
+        scene.permissions = {QJsonValue("workspace.topic_summary_endpoint.manage")};
+        QJsonArray served; // committed server-side rows
+        bool deferCreate = true;
+        std::function<void()> releaseCreate;
+        const auto base = scene.fixture.authentication;
+        scene.fixture.authentication = [&](const Request &request) -> Response {
+            if (request.target.path().contains("topic_summary_endpoints")) {
+                if (request.method == "POST") {
+                    scene.endpointPosts.append(request.body);
+                    auto committed = summaryEndpointRow(request.body.value("uuid").toString());
+                    committed.insert("name", request.body.value("name"));
+                    served.append(committed); // the server commits on receipt
+                    Response response{QJsonObject{}, 200};
+                    if (deferCreate) {
+                        deferCreate = false;
+                        response.defer = [&](auto finish) { releaseCreate = std::move(finish); };
+                    }
+                    return response;
+                }
+                ++scene.endpointGets;
+                return Response{served, 200};
+            }
+            return base(request);
+        };
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryEndpoints();
+        QTRY_COMPARE(scene.endpointGets, 1);
+        const QVariantMap form{{"name", "dup-guard"}, {"base_url", "https://summary.example/api/v1"},
+            {"model", "m"}, {"api_key", "k"}};
+        QVERIFY(controller.createTopicSummaryEndpoint(form));
+        QTRY_COMPARE(scene.endpointPosts.size(), qsizetype(1));
+        QVERIFY(controller.topicSummarySettingsBusy());
+        // Same-owner renewal retires the transport: the create settles as
+        // interrupted although the server already committed the row.
+        scene.fixture.api.setAccessToken("summary-755-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.topicSummarySettingsBusy(), 4000);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        // The retry must NOT post blindly: it triggers the list reconcile.
+        QVERIFY(!controller.createTopicSummaryEndpoint(form));
+        QCOMPARE(scene.endpointPosts.size(), 1);
+        QTRY_COMPARE(scene.endpointGets, 2);
+        // Reconcile proves the create committed: the row is visible instead
+        // of being silently duplicated.
+        QTRY_COMPARE(controller.topicSummaryEndpoints().size(), qsizetype(1));
+        QCOMPARE(controller.topicSummaryEndpoints().first().toMap().value("name").toString(),
+                 QString("dup-guard"));
+        // The late reply of the retired create must not append a second row.
+        releaseCreate();
+        QTest::qWait(300);
+        QCOMPARE(controller.topicSummaryEndpoints().size(), qsizetype(1));
+        // Reconciled: a fresh create is dispatched again.
+        QVERIFY(controller.createTopicSummaryEndpoint(
+            {{"name", "second"}, {"base_url", "https://summary.example/api/v1"}, {"model", "m"},
+             {"api_key", "k"}}));
+        QTRY_COMPARE(scene.endpointPosts.size(), qsizetype(2));
+    }
+
     void topicSummaryGatePermissionsFollowCapabilitiesAndRole()
     {
         TopicSummaryScene scene; QVERIFY(scene.fixture.start());
@@ -1077,7 +1193,7 @@ private slots:
         QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
         controller.loadTopicSummaryEndpoints();
         QTRY_VERIFY(!controller.topicSummarySettingsBusy());
-        QCOMPARE(controller.topicSummaryEndpoints().size(), 1);
+        QCOMPARE(controller.topicSummaryEndpoints().size(), qsizetype(1));
         const auto row = controller.topicSummaryEndpoints().first().toMap();
         QCOMPARE(row.value("uuid").toString(), summaryEndpointUuid);
         QVERIFY(row.value("last_error_code").isNull()); // absent audit fields normalize to null
@@ -1110,7 +1226,7 @@ private slots:
         controller.deleteTopicSummaryEndpoint(summaryEndpointUuid);
         QTRY_VERIFY(!controller.topicSummarySettingsBusy());
         QCOMPARE(scene.endpointDeletes, QStringList{summaryEndpointUuid});
-        QCOMPARE(controller.topicSummaryEndpoints().size(), 1);
+        QCOMPARE(controller.topicSummaryEndpoints().size(), qsizetype(1));
         QCOMPARE(controller.topicSummaryEndpoints().first().toMap().value("uuid").toString(),
             post.value("uuid").toString());
     }

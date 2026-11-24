@@ -2771,12 +2771,14 @@ private:
     // "endpoint:<uuid>"); token 0 means the key was already busy.
     quint64 beginTopicSummaryOp(const QString &key);
     bool finishTopicSummaryOp(const QString &key, quint64 token);
+    void interruptTopicSummaryOps();
     void setTopicSummaryStatus(const QString &status, const QString &error = {});
     QHash<QString, quint64> m_topicSummaryOps;
     quint64 m_topicSummaryToken = 0;
     QVariantMap m_topicSummaryGates;
     bool m_topicSummaryGatesLoaded = false;
     QVariantList m_topicSummaryEndpoints;
+    bool m_topicSummaryCreateNeedsReconcile = false;
     bool m_topicSummarySettingsBusy = false;
     QString m_topicSummarySettingsStatus;
     QString m_topicSummarySettingsError;
