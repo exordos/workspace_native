@@ -318,6 +318,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     loginProjectStepSingleProjectIsPreselected
     mailtoAnchorStaysInteractiveAndNeverOffersCopyLink
     messageTimeChipOpensReadOnlyTimestampPanel
+    narrowDrawerKeepsComposerReachableAndSendable
     onlyTheActiveVisibleViewportAdvancesTheReadBoundary
     rightClickStandaloneImageBodyLinkOffersCopyLink
     savedHistorySurvivesProcessRestartAndRevalidatesBeforeActions
