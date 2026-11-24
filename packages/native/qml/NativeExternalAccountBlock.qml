@@ -202,6 +202,7 @@ ColumnLayout {
                     border.width: 1
                     border.color: providerEntry.visualFocus ? block.colors.accent : block.colors["border-subtle"]
                     color: providerEntry.hovered ? block.colors["sidebar-item-hover"] : Qt.alpha(block.colors["bg-elevated"], 0.3)
+                    opacity: providerEntry.enabled ? (providerEntry.down ? 0.8 : 1) : 0.5
                 }
                 onClicked: block.admin.openDialog()
             }
