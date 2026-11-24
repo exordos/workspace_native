@@ -45890,19 +45890,64 @@ private slots:
         QVERIFY(current->property("isCurrent").toBool());
         auto *idleBg = idle->property("background").value<QQuickItem *>(); QVERIFY(idleBg);
         auto *currentBg = current->property("background").value<QQuickItem *>(); QVERIFY(currentBg);
-        const auto idleCenter = idle->mapToScene(QPointF(idle->width() / 2, idle->height() / 2)).toPoint();
-        const auto currentCenter = current->mapToScene(QPointF(current->width() / 2, current->height() / 2)).toPoint();
+        // Issue #821: a freshly opened popup can still relayout after
+        // opened flips true, so a one-shot hover resolved against a
+        // mid-layout delegate hit-tests the wrong spot, and polling alone
+        // cannot recover because it never re-delivers the event (full-gate
+        // shards saw the tint stay #00000000 for the whole QTRY window).
+        // Mirror the quiesce pattern accepted in #810: wait for the
+        // delegate's scene geometry to settle, resolve the hover points
+        // from the final positions, assert each point actually lands on its
+        // delegate, and re-issue the hover inside the bounded wait so a
+        // hover lost to layout drift is deterministically re-delivered.
+        const auto idleCenterNow = [idle] {
+            return idle->mapToScene(QPointF(idle->width() / 2, idle->height() / 2));
+        };
+        const auto currentCenterNow = [current] {
+            return current->mapToScene(QPointF(current->width() / 2, current->height() / 2));
+        };
+        QPointF previous = idleCenterNow();
+        int stableSamples = 0;
+        for (int i = 0; i < 80 && stableSamples < 3; ++i) {
+            QTest::qWait(25);
+            const QPointF next = idleCenterNow();
+            stableSamples = next == previous ? stableSamples + 1 : 0;
+            previous = next;
+        }
+        QVERIFY2(stableSamples == 3, qPrintable(QStringLiteral(
+            "topic menu hover delegate %1 never quiesced (#821 drift)")
+                .arg(idle->objectName())));
+        const auto idleCenter = idleCenterNow().toPoint();
+        const auto currentCenter = currentCenterNow().toPoint();
+        const auto hoverUntil = [&](const QPoint &point, QObject *target,
+                                    const char *property, const QColor &expected) {
+            for (int attempt = 0; attempt < 5; ++attempt) {
+                QTest::mouseMove(scene.window.data(), point);
+                for (int i = 0; i < 20; ++i) {
+                    if (target->property(property).value<QColor>() == expected)
+                        return true;
+                    QTest::qWait(25);
+                }
+            }
+            return false;
+        };
         // Idle without hover: transparent background, text-muted glyph.
         QTest::mouseMove(scene.window.data(), QPoint(5, 5));
         QTRY_COMPARE(idleBg->property("color").value<QColor>(), QColor(Qt::transparent));
-        // Reference hover:bg-sidebar-hover + hover:text-text-primary.
-        QTest::mouseMove(scene.window.data(), idleCenter);
-        QTRY_COMPARE(idleBg->property("color").value<QColor>(), hoverTint);
+        // Reference hover:bg-sidebar-hover + hover:text-text-primary. The
+        // re-issue is the fix witness: it re-delivers from the settled point
+        // instead of papering over a lost event with a sleep.
+        QVERIFY2(hoverUntil(idleCenter, idleBg, "color", hoverTint),
+            qPrintable(QStringLiteral("hover at (%1,%2) never tinted the idle segment (#821)")
+                .arg(idleCenter.x()).arg(idleCenter.y())));
         QTRY_COMPARE(idle->property("glyphColor").value<QColor>(), primaryGlyph);
         // Hovering the current segment keeps its own card-bg/icon-active tone
-        // and the previously hovered idle segment clears back to transparent.
-        QTest::mouseMove(scene.window.data(), currentCenter);
-        QTRY_COMPARE(idleBg->property("color").value<QColor>(), QColor(Qt::transparent));
+        // and the previously hovered idle segment clears back to transparent;
+        // that clear is the observable proof the second move was delivered,
+        // so drive the bounded wait off it and pin the rest with QTRY.
+        QVERIFY2(hoverUntil(currentCenter, idleBg, "color", QColor(Qt::transparent)),
+            qPrintable(QStringLiteral("hover at (%1,%2) never cleared the previous hover (#821)")
+                .arg(currentCenter.x()).arg(currentCenter.y())));
         QTRY_COMPARE(currentBg->property("color").value<QColor>(), currentColor);
         QTRY_COMPARE(current->property("glyphColor").value<QColor>(), activeGlyph);
         menu->setProperty("visible", false);
