@@ -505,6 +505,62 @@ private slots:
         QVERIFY(cache.diskUsageBytes() <= cache.diskLimitBytes());
     }
 
+    void declinedPreviewReservationMustNotEvictExistingPreviews()
+    {
+        // #803: the derived-only trim for a preview reservation must make its
+        // durable deletes atomic with admitting the preview. When reclaiming
+        // every eligible derived entry still cannot free enough room, the write
+        // declines and the previews that were eviction candidates survive.
+        QTemporaryDir directory;
+        NativeCache cache(directory.path());
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        QVERIFY(cache.setDiskLimitBytes(2 * 1024 * 1024));
+        // Fill the physical budget with authoritative history pages until the
+        // journal-reserved budget admits neither the 96 KiB preview nor any
+        // further page, while small previews still fit. Same geometry as the
+        // #775 decline fixture: the reserved budget is ~375 4-KiB pages, the
+        // 96 KiB reservation costs 64 pages, so the decline fires once raw
+        // headroom drops below ~804 KiB; the loop lands it in [736, 780] KiB.
+        QStringList markers;
+        for (int page = 0; page < 44; ++page) {
+            const qint64 headroom = cache.diskLimitBytes() - cache.diskUsageBytes();
+            if (headroom <= 780 * 1024) break; // stop just below the 96 KiB reservation window
+            const QString marker = QStringLiteral("page-%1").arg(page);
+            const NativeCache::Key pageKey{NativeCache::Kind::History, Stream, Topic, marker.toUtf8()};
+            QVERIFY2(cache.put(lease, pageKey, {message(QString(40000, QChar(static_cast<ushort>('a' + page))))}),
+                qPrintable(cache.error()));
+            markers << marker;
+        }
+        const qint64 headroom = cache.diskLimitBytes() - cache.diskUsageBytes();
+        QVERIFY2(headroom > 720 * 1024 && headroom < 790 * 1024,
+            qPrintable(QStringLiteral("fixture headroom %1 KiB outside the [720,790] KiB band; retune fill")
+                .arg(headroom / 1024)));
+        const qint64 entriesBefore = cache.stats().entries;
+        // Two small previews occupy the only derived entries the reservation
+        // could reclaim; together they free far less than the shortfall.
+        const QString small1 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString small2 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY2(cache.putMediaBlob(lease, small1, QByteArray(1024, 'x')), qPrintable(cache.error()));
+        QVERIFY2(cache.putMediaBlob(lease, small2, QByteArray(2048, 'y')), qPrintable(cache.error()));
+        QCOMPARE(cache.getMediaBlob(lease, small1).value_or(QByteArray()), QByteArray(1024, 'x'));
+        QCOMPARE(cache.getMediaBlob(lease, small2).value_or(QByteArray()), QByteArray(2048, 'y'));
+        // The 96 KiB preview is within the per-file limit but cannot fit after
+        // reclaiming both small previews: the write must decline...
+        const QString big = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(!cache.putMediaBlob(lease, big, QByteArray(96 * 1024, 'p')));
+        QVERIFY(!cache.getMediaBlob(lease, big).has_value()); // declined writes persist nothing
+        QVERIFY2(cache.error().isEmpty(), "a declined preview reservation must not fail-close the cache");
+        // ...and the decline must not destroy the previews it tried to evict.
+        QCOMPARE(cache.stats().entries, entriesBefore);
+        QCOMPARE(cache.getMediaBlob(lease, small1).value_or(QByteArray()), QByteArray(1024, 'x'));
+        QCOMPARE(cache.getMediaBlob(lease, small2).value_or(QByteArray()), QByteArray(2048, 'y'));
+        for (const auto &marker : markers) {
+            const NativeCache::Key pageKey{NativeCache::Kind::History, Stream, Topic, marker.toUtf8()};
+            QVERIFY2(cache.get(lease, pageKey).has_value(), qPrintable(QStringLiteral("saved page %1 vanished").arg(marker)));
+        }
+        QVERIFY(cache.diskUsageBytes() <= cache.diskLimitBytes());
+    }
+
     void messageBodyFallbackRequiresViewerIdentityAndNeverManufacturesHistory()
     {
         QTemporaryDir directory; NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
