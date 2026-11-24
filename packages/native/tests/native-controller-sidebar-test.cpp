@@ -2838,6 +2838,83 @@ private slots:
         QCOMPARE(uHotGets, 2);                    // nor re-arm a warm re-request
     }
 
+    // Issue #777: a warm page is a dispatch-time snapshot. When a realtime
+    // deletion retires one of its rows while the request is in flight, the
+    // held reply must not restore the deleted row: the topic's history
+    // invalidation discards the stale reply whole and leaves the topic a warm
+    // candidate, so a fresh warm request prepares the remaining history and
+    // the first frame published on open never contains the deleted row.
+    void warmCannotServeMessageDeletedWhileRequestInFlight()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString topicB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        const QString a2 = "aaaaaaaa-aaaa-4aaa-8aaa-0000000000c2";
+        const QString b1 = "bbbbbbbb-bbbb-4bbb-8bbb-0000000000c1";
+        const QString b2 = "bbbbbbbb-bbbb-4bbb-8bbb-0000000000c2";
+        const auto topicDto = [](const QString &id, const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", QStringLiteral("Topic ") + id.left(4)}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"},
+                {"last_message_uuid", last.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(last)}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.topics = [&](const Request &) {
+            return Response{QJsonArray{topicDto(topicId, a2, true), topicDto(topicB, b2, false)}};
+        };
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+            return Response{topicDto(id, QString(), id == topicId)};
+        };
+        bool deleted = false;
+        int warmGets = 0;
+        QVector<std::function<void()>> gates;
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicB) {
+                ++warmGets;
+                QJsonArray rows{message("B two", b2, topicB)};
+                if (!deleted) rows.prepend(message("B one", b1, topicB));
+                Response reply{rows};
+                if (warmGets == 1) { // the warm page: a pre-delete snapshot, held back
+                    reply.defer = [&gates](std::function<void()> send) { gates.append(std::move(send)); };
+                }
+                return reply;
+            }
+            return Response{QJsonArray{message("A two", a2)}};
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 1);
+        c.selectStream(streamId);
+        QTRY_COMPARE(warmGets, 1);                // topic B's warm page is in flight
+        QVERIFY(!c.hasPreparedTopicSlice(topicB));
+        // Another client deletes B one while the warm request is held; the
+        // realtime tombstone invalidates the topic's saved history.
+        QVERIFY(c.applyRealtimeEvent(controllerEvent("message.deleted",
+            {{"uuid", b1}, {"stream_uuid", streamId}, {"topic_uuid", topicB}})));
+        deleted = true;                           // the server truth from here on
+        gates.first()();                          // the stale snapshot finally lands
+        // The stale reply may not become the prepared slice, and the topic
+        // must stay a warm candidate: the fresh request re-prepares history.
+        QTRY_COMPARE(warmGets, 2);
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicB));
+        // Opening B publishes the warm slice as its first frame; the deleted
+        // row must not resurrect in it.
+        c.selectTopic(topicB);
+        QVERIFY2(modelMessage(c, b1).isEmpty(), "the deleted row must not surface on open");
+        QVERIFY(!modelMessage(c, b2).isEmpty());  // the remaining history is still prepared
+    }
+
     // Issue #729 phase 2 yield/backoff: each throttled (429/5xx) warm reply
     // doubles the batcher's idle delay within a catalog epoch (bounded), and
     // the verified catalog commit seam re-arms both the transient skip set
