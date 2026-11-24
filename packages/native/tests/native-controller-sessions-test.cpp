@@ -1371,6 +1371,96 @@ private slots:
         QVERIFY(!guard->active());
         QVERIFY(!c.isAuthGuardActive());
     }
+
+    // Issue #789 review (finding 4679305627): a fast token reply must not
+    // cancel the startup cache attempt before the cached rows project. The
+    // renewal sweep fires while the startup identity's cache open/lookup is
+    // still in flight; the attempt is identity-fenced and must survive the
+    // generation bump, so the cached rows still paint while the slow
+    // introspect leg keeps the session unauthenticated.
+    void fastTokenRenewalKeepsStartupCacheAttempt()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ControllerMemorySecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const QUrl server("https://startup-fast-token.invalid");
+        SavedAccount saved{SessionVault::accountId(server, projectId, userId), server,
+            projectId, userId, "alice", "Alpha"};
+        bool stored = false;
+        vault.save(saved, "fast-refresh", [&](const QString &error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The saved store holds one stale cached channel for this identity.
+        const QString cachedStream = "55555555-5555-4555-8555-555555555555";
+        const QJsonObject streamDto{
+            {"uuid", cachedStream}, {"project_id", projectId}, {"user_uuid", userId},
+            {"owner", userId}, {"name", "Cached startup channel"}, {"description", ""},
+            {"role", "owner"}, {"notification_mode", "all_messages"}, {"source_name", "native"},
+            {"provider_uuid", QJsonValue::Null}, {"provider_identity", QJsonValue::Null},
+            {"invite_only", false}, {"announce", false}, {"private", false},
+            {"is_archived", false}, {"encryption", false},
+            {"current_encryption_key_uuid", QJsonValue::Null},
+            {"direct_user_uuid", QJsonValue::Null},
+            {"default_topic_uuid", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
+            {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+            {"last_message_uuid", QJsonValue::Null},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        {
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
+            QVERIFY(seed.open(server, projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}},
+                QJsonArray{streamDto}));
+        }
+        // The token leg answers synchronously (a fast reply), so the renewal
+        // sweep lands while the startup cache open is provably still pending.
+        // The introspect leg is held: the user-visible window is exactly
+        // token-installed-but-not-yet-authenticated.
+        std::function<void()> releaseIntrospect;
+        ApiClient api;
+        Session session(&api, nullptr, [&](const QByteArray &, const QString &path,
+            const QJsonValue &body, const QUrlQuery &, ApiClient::Callback done, bool,
+            const QMap<QByteArray, QByteArray> &) {
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                done(ApiResult{QJsonObject{{"access_token", "fast-token"},
+                    {"refresh_token", body.toObject().value("refresh_token").toString()},
+                    {"expires_in", 3600}}, 200, {}, {}});
+                return;
+            }
+            if (path.contains("introspect")) {
+                const ApiResult held{QJsonObject{{"user_info",
+                    QJsonObject{{"uuid", userId}}}, {"project_id", projectId},
+                    {"otp_verified", true}, {"permissions", QJsonArray{}}}, 200, {}, {}};
+                releaseIntrospect = [done, held] { done(held); };
+                return;
+            }
+            QTimer::singleShot(0, &api, [done] { done(ApiResult{QJsonArray{}, 404, {}, "unexpected"}); });
+        });
+        session.setVault(&vault);
+        NativeCacheService cache(directory.path(), {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        controller.resumeSavedAccount(saved.id);
+        // The fast token install happened (the held introspect proves the
+        // renewal sweep already ran) while the session is still unauthenticated.
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return static_cast<bool>(releaseIntrospect); })(), 3000);
+        QVERIFY(!controller.authenticated());
+        // The identity-fenced attempt must survive the generation bump: the
+        // stale cached channel paints under the startup shell. RED before the
+        // guard widened to the pending attempt: closeCache had discarded the
+        // open/lookup in flight and the shell never replaced the sign-in card.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.startupCacheMode(), 3000);
+        QCOMPARE(controller.streams().size(), 1);
+        QCOMPARE(controller.streams().first().toMap().value("id").toString(), cachedStream);
+        // The late introspect completes the session: the handover keeps the
+        // painted rows instead of blanking them.
+        releaseIntrospect();
+        releaseIntrospect = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(controller.authenticated(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.startupCacheMode(), 3000);
+        QCOMPARE(controller.streams().size(), 1);
+    }
 };
 
 QTEST_MAIN(ControllerSessionsTest)

@@ -10665,7 +10665,13 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // Issue #789: a token rotation inside the resume chain must not tear
         // down the cache-first projection. The saved identity stands until the
         // late introspect re-confirms it; openCache hands the lease over then.
-        if (!m_startupCacheMode) closeCache();
+        // Issue #789 review (finding 4679305627): the attempt is fenced by the
+        // identity, not only by the started mode - startup cache mode begins
+        // when rows project, so a fast token reply that advances the
+        // generation while the open or the lookup is still in flight must not
+        // run closeCache, or the attempt is discarded before it can paint and
+        // the sign-in card wins.
+        if (!m_startupCacheMode && m_startupIdentity.isEmpty()) closeCache();
         if (!guard) return;
         m_catalogVerified = m_usersVerified = m_topicsVerified = m_historyVerified = false;
         cancelFileTransfers(tr("Attachment transfer interrupted by a session change. Choose the file again."));
