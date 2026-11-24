@@ -394,6 +394,9 @@ void NativeExternalProviderAdmin::setLimit(const QString& key, double value)
     if (m_policyStatus != QStringLiteral("ready") || m_saveBusy
         || !m_draft.contains(key))
         return;
+    if (m_draft.value(key).toLongLong() == static_cast<qint64>(value))
+        return; // No-op writes must not notify: the field's initial text binding
+    // feeds setLimit during first evaluation (binding-loop guard, #737).
     m_draft[key] = static_cast<qint64>(value);
     emit changed();
 }

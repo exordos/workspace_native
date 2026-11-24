@@ -698,6 +698,8 @@ if(BUILD_TESTING)
         native-controller-notifications native-controller-transfers PROPERTIES RESOURCE_LOCK xdisplay)
     target_compile_definitions(native-controller-encrypted-channels-test PRIVATE
         WORKSPACE_NATIVE_MAIN_QML_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/qml/Main.qml")
+    target_compile_definitions(native-controller-ext-provider-test PRIVATE
+        WORKSPACE_NATIVE_EXT_PROVIDER_DIALOG_QML="${CMAKE_CURRENT_SOURCE_DIR}/qml/NativeExternalProviderDialog.qml")
     target_compile_definitions(native-controller-diagnostics-test PRIVATE
         WORKSPACE_NATIVE_DIAGNOSTICS_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/native-logging.cpp")
     # Actual local TLS/h2 transport regressions. Existing QtTest failOnWarning policy is untouched.

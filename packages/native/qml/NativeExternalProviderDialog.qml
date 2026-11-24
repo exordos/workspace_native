@@ -246,16 +246,16 @@ Dialog {
                             Label { text: qsTr("Emergency suspension"); font.pixelSize: 12; color: dialog.colors["text-secondary"] }
                             Label {
                                 objectName: "extProviderEmergencyRow"
-                                text: dialog.admin.policy.emergency_suspended ? qsTr("Integration suspended") : qsTr("Not active")
+                                text: dialog.admin.policy.emergencySuspended ? qsTr("Integration suspended") : qsTr("Not active")
                                 textFormat: Text.PlainText
                                 font.pixelSize: 12
-                                color: dialog.admin.policy.emergency_suspended ? dialog.colors["danger"] : dialog.colors["text-secondary"]
+                                color: dialog.admin.policy.emergencySuspended ? dialog.colors["danger"] : dialog.colors["text-secondary"]
                             }
                             Item { Layout.fillWidth: true }
                         }
                         RowLayout {
                             spacing: 8
-                            Label { objectName: "extProviderPolicyUpdated"; text: qsTr("Updated: %1").arg(dialog.formatTime(dialog.admin.policy.updated_at)); textFormat: Text.PlainText; font.pixelSize: 12; color: dialog.colors["text-muted"] }
+                            Label { objectName: "extProviderPolicyUpdated"; text: qsTr("Updated: %1").arg(dialog.formatTime(dialog.admin.policy.updatedAt)); textFormat: Text.PlainText; font.pixelSize: 12; color: dialog.colors["text-muted"] }
                             Item { Layout.fillWidth: true }
                             NativeButton { objectName: "extProviderPolicyRefresh"; colors: dialog.colors; text: qsTr("Refresh"); onClicked: dialog.admin.refreshPolicy() }
                         }
@@ -317,6 +317,7 @@ Dialog {
                                 Layout.fillWidth: true
                                 spacing: 4
                                 property real draftNumber: dialog.numberValue(dialog.admin.draft[limitField.modelData.key], 0)
+                                property bool projectionReady: false
                                 property real parsed: {
                                     const raw = limitInput.text.trim()
                                     if (!/^\d+$/.test(raw)) return -1
@@ -332,9 +333,11 @@ Dialog {
                                         Layout.maximumWidth: 220
                                         colors: dialog.colors
                                         text: limitField.modelData.mib ? String(dialog.numberValue(limitField.draftNumber, 0) / 1048576) : String(dialog.numberValue(limitField.draftNumber, 0))
+                                        Component.onCompleted: { const field = limitField; Qt.callLater(() => { if (field) field.projectionReady = true }) }
                                         Accessible.name: limitField.modelData.label
                                         enabled: !dialog.admin.saveBusy && !dialog.admin.caBlocked
                                         onTextChanged: {
+                                            if (!limitField.projectionReady) return
                                             if (limitField.parsed < 0) return
                                             const value = limitField.modelData.mib ? limitField.parsed * 1048576 : limitField.parsed
                                             if (value <= limitField.modelData.maximum * (limitField.modelData.mib ? 1048576 : 1))
@@ -380,7 +383,7 @@ Dialog {
                         spacing: 8
                         Label {
                             objectName: "extProviderCaEmpty"
-                            visible: !dialog.admin.policy.custom_ca_bundle
+                            visible: !dialog.admin.policy.ca?.present
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             text: qsTr("No custom certificate bundle is installed.")
@@ -388,12 +391,12 @@ Dialog {
                             color: dialog.colors["text-muted"]
                         }
                         ColumnLayout {
-                            visible: Boolean(dialog.admin.policy.custom_ca_bundle)
+                            visible: Boolean(dialog.admin.policy.ca?.present)
                             Layout.fillWidth: true
                             spacing: 6
-                            FieldRow { colors: dialog.colors; label: qsTr("Certificates"); value: String(dialog.admin.policy.custom_ca_bundle?.certificate_count ?? "") }
-                            FieldRow { colors: dialog.colors; label: qsTr("Generation"); value: String(dialog.admin.policy.custom_ca_bundle?.generation ?? "") }
-                            FieldRow { colors: dialog.colors; label: qsTr("SHA-256 fingerprint"); value: String(dialog.admin.policy.custom_ca_bundle?.sha256 ?? "") }
+                            FieldRow { colors: dialog.colors; label: qsTr("Certificates"); value: String(dialog.admin.policy.ca?.certificateCount ?? "") }
+                            FieldRow { colors: dialog.colors; label: qsTr("Generation"); value: String(dialog.admin.policy.ca?.generation ?? "") }
+                            FieldRow { colors: dialog.colors; label: qsTr("SHA-256 fingerprint"); value: String(dialog.admin.policy.ca?.sha256 ?? "") }
                         }
                     }
                 }
@@ -415,7 +418,7 @@ Dialog {
                                 tone: String(dialog.admin.health.status ?? "") === "healthy" ? dialog.colors["call-green"] : dialog.colors["danger"]
                                 label: String(dialog.admin.health.status ?? "") === "healthy" ? qsTr("Operational") : qsTr("Unavailable")
                             }
-                            Label { objectName: "extProviderHealthUpdated"; text: qsTr("Updated: %1").arg(dialog.formatTime(dialog.admin.health.updated_at)); textFormat: Text.PlainText; font.pixelSize: 12; color: dialog.colors["text-muted"] }
+                            Label { objectName: "extProviderHealthUpdated"; text: qsTr("Updated: %1").arg(dialog.formatTime(dialog.admin.health.updatedAt)); textFormat: Text.PlainText; font.pixelSize: 12; color: dialog.colors["text-muted"] }
                             Item { Layout.fillWidth: true }
                             NativeButton { objectName: "extProviderHealthRefresh"; colors: dialog.colors; text: qsTr("Refresh"); onClicked: dialog.admin.refreshHealth() }
                         }
@@ -440,10 +443,10 @@ Dialog {
                             columns: Math.max(1, Math.min(5, Math.floor(width / 160)))
                             columnSpacing: 16
                             rowSpacing: 16
-                            StatBlock { colors: dialog.colors; heading: qsTr("Accounts"); rows: dialog.countRows(dialog.admin.health.account_counts, "account") }
-                            StatBlock { colors: dialog.colors; heading: qsTr("Chats"); rows: dialog.countRows(dialog.admin.health.chat_counts, "chat") }
-                            StatBlock { colors: dialog.colors; heading: qsTr("Bridge instances"); rows: dialog.countRows(dialog.admin.health.bridge_counts, "bridge") }
-                            StatBlock { colors: dialog.colors; heading: qsTr("Operations"); rows: dialog.countRows(dialog.admin.health.operation_counts, "operation") }
+                            StatBlock { colors: dialog.colors; heading: qsTr("Accounts"); rows: dialog.countRows(dialog.admin.health.accountCounts, "account") }
+                            StatBlock { colors: dialog.colors; heading: qsTr("Chats"); rows: dialog.countRows(dialog.admin.health.chatCounts, "chat") }
+                            StatBlock { colors: dialog.colors; heading: qsTr("Bridge instances"); rows: dialog.countRows(dialog.admin.health.bridgeCounts, "bridge") }
+                            StatBlock { colors: dialog.colors; heading: qsTr("Operations"); rows: dialog.countRows(dialog.admin.health.operationCounts, "operation") }
                             StatBlock { colors: dialog.colors; heading: qsTr("Metrics"); rows: dialog.countRows(dialog.admin.health.metrics, "metric") }
                         }
                     }
@@ -462,7 +465,7 @@ Dialog {
                         Label { objectName: "extProviderActionError"; Layout.fillWidth: true; visible: dialog.admin.actionFailed; Accessible.role: Accessible.AlertMessage; wrapMode: Text.Wrap; text: qsTr("Could not complete the action. The form settings were not changed."); font.pixelSize: 12; color: dialog.colors["danger"] }
                         NativeButton {
                             objectName: "extProviderSuspend"
-                            visible: !dialog.confirming && !dialog.admin.policy.emergency_suspended
+                            visible: !dialog.confirming && !dialog.admin.policy.emergencySuspended
                             colors: dialog.colors
                             enabled: !dialog.admin.saveBusy && dialog.admin.actionStatus === "none"
                             text: dialog.admin.actionStatus === "suspending" ? qsTr("Suspending\u2026") : qsTr("Suspend integration")
@@ -470,7 +473,7 @@ Dialog {
                         }
                         NativeButton {
                             objectName: "extProviderResume"
-                            visible: !dialog.confirming && Boolean(dialog.admin.policy.emergency_suspended)
+                            visible: !dialog.confirming && Boolean(dialog.admin.policy.emergencySuspended)
                             colors: dialog.colors
                             enabled: !dialog.admin.saveBusy && dialog.admin.actionStatus === "none"
                             text: dialog.admin.actionStatus === "resuming" ? qsTr("Resuming\u2026") : qsTr("Resume integration")
