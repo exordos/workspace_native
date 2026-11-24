@@ -45819,6 +45819,82 @@ private slots:
         QVERIFY(support);
         QVERIFY(support->isVisible());
     }
+
+    // Issue #789 review (finding 4677301847): an opened cache is not yet a
+    // paintable one. When the cache opens successfully but holds no saved
+    // streams entry, there is nothing to display - the startup shell may not
+    // replace the sign-in card, and a held refresh chain must leave the user
+    // on the sign-in screen instead of an empty workspace.
+    void startupCacheEmptyStoreKeepsSignInVisible()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QUrl server(QStringLiteral("https://startup-empty.invalid"));
+        // Fresh cache directory: the open itself succeeds, but the store
+        // contains no streams entry - the cached projection finds nothing.
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, server, projectId, userId, QStringLiteral("synthetic-user"),
+            QStringLiteral("Synthetic project")};
+        saved.id = SessionVault::accountId(server, projectId, userId);
+        bool stored = false;
+        vault.save(saved, QByteArray("startup-empty-private"), [&](QString error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The token/introspect chain is held open forever: only the cached
+        // content verdict may decide what the shell shows.
+        std::function<void()> releaseRefresh;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const ApiResult held{QJsonObject{{"access_token", QStringLiteral("startup-access")},
+                    {"refresh_token", QStringLiteral("startup-empty-private")}, {"expires_in", 3600}}, 200, {}, {}};
+                releaseRefresh = [done, held] { done(held); };
+                return;
+            }
+            auto response = sessionResponse(request);
+            if (path.endsWith("/messages/") || path.endsWith("/folders/")) response = Response{QJsonArray{}};
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("startup-empty.ini"));
+        preferences.setLocale("en");
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Empty startup cache teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        controller.resumeSavedAccount(saved.id);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(releaseRefresh), 3000); // refresh chain is provably held
+        // The cache opens successfully this time - the failure verdict is not
+        // what keeps the sign-in on screen.
+        QTRY_VERIFY_WITH_TIMEOUT(cache.available(), 5000);
+        // Let the cached-streams lookup settle: it is a miss, there are no rows.
+        for (int i = 0; i < 10; ++i) QTest::qWait(50);
+        // No projected rows means the startup shell never starts.
+        QVERIFY2(!controller.startupCacheMode(), "an empty startup cache entered startup cache mode");
+        QVERIFY(controller.streams().isEmpty());
+        // The sign-in card stays on screen (support action shares its binding).
+        auto *support = item(window->contentItem(), "loginSupportAction");
+        QVERIFY(support);
+        QVERIFY(support->isVisible());
+    }
 };
 
 
