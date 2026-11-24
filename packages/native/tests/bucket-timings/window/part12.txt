@@ -22,6 +22,7 @@ pollCreateDialogDeadlineMustBeFuture=1.13539
 pollCreateDialogEnforcesServerLimits=1.59584
 pollVoterPreviewsOpenAndPaginateWithoutDuplicates=1.58209
 pollVoterQueuesStopWhenResultsBecomeAnonymous=1.52243
+replyMenuHandsFocusToComposer=0.875863
 servicesHeaderHintFitsAtMinimumWindowWidth=1.2158
 sidebarSearchArrowsCycleFilteredResults=1.60359
 topicContextMenuRenameDialogRules=0.816603
