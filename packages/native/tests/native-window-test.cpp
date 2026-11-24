@@ -31201,6 +31201,16 @@ private:
         // stayed in Loading - the Ready timeout below fails in that state.
         fixture.breakMeetingLoads = 0;
         const auto meetingDeferredBefore = int(deferredMeeting.size());
+        // exordy finding: comparing against the stale engineView pointer is
+        // unsafe - the allocator may hand the freshly created view the very
+        // address the destroyed one vacated, so address inequality could
+        // never become true despite a successful re-instantiation. Arm the
+        // retirement tracker BEFORE the retry click tears the surface down
+        // (constructing a QPointer on the already-destroyed object is UB):
+        // destruction nulls the QPointer even when the address is recycled
+        // immediately, and once the old surface is gone any WebEngineView
+        // under the Loader IS the replacement.
+        QPointer<QObject> retiredView(engineView);
         clickReadyItem(window, retry);
         // #792: Retry re-instantiates the embed surface (the Loader briefly
         // holds its source empty so a failed import genuinely re-runs), so
@@ -31212,6 +31222,9 @@ private:
         // released until the state machine reports Ready.
         QObject *liveView = nullptr;
         QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            if (!retiredView.isNull()) {
+                return false;  // old surface not torn down yet
+            }
             auto *item = loader->property("item").value<QObject *>();
             liveView = nullptr;
             if (item) {
@@ -31219,7 +31232,7 @@ private:
                     if (child->inherits("QQuickWebEngineView")) { liveView = child; break; }
                 }
             }
-            return liveView && liveView != engineView;
+            return liveView != nullptr;
         })(), 5000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         int released = meetingDeferredBefore;
