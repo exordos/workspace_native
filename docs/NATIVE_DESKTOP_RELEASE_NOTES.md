@@ -1,3 +1,19 @@
+# Workspace Native 0.49.0 - Linux development preview
+
+- Image previews now open without waiting: encoded previews are kept in the on-disk cache and re-rendered from disk when you reopen a chat or restart the app, and the background prefetch now warms unread and recently opened chats beyond the selected stream (issue #729).
+- Zoomed images in the media viewer can be dragged to pan (issue #730).
+- Fixed: the chat wallpaper is bound to the actual message viewport and no longer drifts with the surrounding chrome (issue #733).
+- Fixed: the AI summary dialog reloads its landing section when reopened (issue #738).
+- Fixed: retired AI topic-summary work is settled at a session change, so a summary reply from the previous session can no longer surface in the new one (issue #736).
+- Fixed: stale Zulip policy refresh replies are discarded after a confirmed save (issue #740).
+- Fixed: the integration settings dialog now shows suspended state, timestamps and health counters (issue #752).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.48.1 to 0.49.0](https://github.com/exordos/workspace_native/compare/0.48.1...0.49.0)
+
+---
+
 # Workspace Native 0.48.1 - Linux development preview
 
 - Fixed: the reconnect banner stays quiet while a realtime connection drop self-recovers; it now appears only when the connection actually needs your attention.
