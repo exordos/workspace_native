@@ -892,12 +892,17 @@ void NativePreferences::fitFrameToAvailableGeometry()
         m_frameFitTimer.stop();
         return;
     }
-    if (m_window->windowState() != Qt::WindowNoState) return;
-    const auto margins = m_window->frameMargins();
-    if (margins.isNull()) { // undecorated: frame == client, nothing to fit
-        if (m_frameFitDeadline.elapsed() > 4000) m_frameFitTimer.stop();
+    // Review #811 finding 2: the deadline retires the poll in every state.
+    // A window minimized over startup defers the fit via the state guard
+    // below; letting the poll run forever would fit it after a much later
+    // restore, so giving up at the deadline is the deliberate verdict.
+    if (m_frameFitDeadline.elapsed() > 4000) {
+        m_frameFitTimer.stop();
         return;
     }
+    if (m_window->windowState() != Qt::WindowNoState) return;
+    const auto margins = m_window->frameMargins();
+    if (margins.isNull()) return; // undecorated: frame == client, nothing to fit
     m_frameFitTimer.stop();
     const auto *screen = m_window->screen();
     if (!screen) return;
@@ -917,7 +922,15 @@ void NativePreferences::fitFrameToAvailableGeometry()
     if (y + fitted.height() - 1 + margins.bottom() > available.bottom())
         y = available.bottom() + 1 - margins.bottom() - fitted.height();
     fitted.moveTopLeft(QPoint(x, y));
-    if (fitted != client) m_window->setGeometry(fitted);
+    if (fitted != client) {
+        m_window->setGeometry(fitted);
+        // Review #811 finding 1: the immediate fit of a re-attached window
+        // runs before the geometry handlers are connected, so capture the
+        // fitted client here; otherwise saveWindow persists the unfitted
+        // bounds and the next start escapes below the screen again.
+        m_normalGeometry = fitted;
+        m_windowSaveTimer.start();
+    }
 }
 
 void NativePreferences::saveWindow()

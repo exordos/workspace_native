@@ -45809,9 +45809,11 @@ private slots:
         });
         preferences.attachWindow(&window);
         window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
-        // The one-shot frame fit may only act once the WM has reported its
-        // frame extents; undecorated platforms have nothing to fit.
-        QTRY_VERIFY_WITH_TIMEOUT(([&] { return window.frameMargins() != QMargins(); })(), 5000);
+        // Review #811 finding 3: a display without decorations legitimately
+        // reports zero frame margins and has nothing to fit, so the wait may
+        // not demand nonzero margins. The containment contract below holds
+        // for both worlds: under a decorating WM it only goes true once the
+        // one-shot fit has acted; on an undecorated display it holds as is.
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             const QRect frame = window.frameGeometry();
             return frame.top() >= available.top() && frame.bottom() <= available.bottom()
@@ -45828,6 +45830,58 @@ private slots:
         // The fitted client keeps the reference minimums (700x600 client).
         QVERIFY(window.height() >= 600 || available.height() < 627);
         QVERIFY(window.width() >= 700 || available.width() < 702);
+
+        // Review #811 round 1: the same contract must hold on the paths the
+        // plain startup cannot hit by itself. Both findings are collected
+        // (not short-circuited) so one run witnesses each of them.
+        QStringList fitIssues;
+        preferences.attachWindow(nullptr); // persists what the fit captured
+        if (window.frameMargins() != QMargins()) {
+            // Finding 1: simulate a legacy frame-inclusive save, then
+            // re-attach while the WM extents are already known: the fit
+            // runs immediately, before any geometry handler is connected,
+            // so it must capture the fitted client into the saved state.
+            {
+                QSettings settings(path, QSettings::IniFormat);
+                settings.setValue("window/x", available.x());
+                settings.setValue("window/y", available.y());
+                settings.setValue("window/width", available.width());
+                settings.setValue("window/height", available.height());
+                settings.sync();
+            }
+            preferences.attachWindow(&window);
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                const QRect frame = window.frameGeometry();
+                return frame.top() >= available.top() && frame.bottom() <= available.bottom()
+                    && frame.left() >= available.left() && frame.right() <= available.right();
+            })(), 5000);
+            const QRect reattached = window.geometry();
+            preferences.attachWindow(nullptr);
+            const QSettings saved(path, QSettings::IniFormat);
+            if (saved.value("window/x").toInt() != reattached.x()
+                || saved.value("window/y").toInt() != reattached.y()
+                || saved.value("window/width").toInt() != reattached.width()
+                || saved.value("window/height").toInt() != reattached.height())
+                fitIssues << QStringLiteral(
+                    "reattach fit not persisted: saved %1,%2 %3x%4 vs fitted %5,%6 %7x%8")
+                    .arg(saved.value("window/x").toInt()).arg(saved.value("window/y").toInt())
+                    .arg(saved.value("window/width").toInt()).arg(saved.value("window/height").toInt())
+                    .arg(reattached.x()).arg(reattached.y())
+                    .arg(reattached.width()).arg(reattached.height());
+        }
+        {   // Finding 2: a startup window that minimizes before the fit
+            // verdict must still retire the one-shot poll at its deadline
+            // instead of polling forever and fitting after a late restore.
+            QWindow probe;
+            preferences.attachWindow(&probe);
+            probe.showMinimized();
+            QTest::qWait(4600); // past the 4 s frame-fit deadline
+            if (preferences.frameFitPendingForTest())
+                fitIssues << QStringLiteral("frame-fit poll outlived its deadline while minimized");
+            preferences.attachWindow(nullptr);
+            probe.close();
+        }
+        QVERIFY2(fitIssues.isEmpty(), qPrintable(fitIssues.join(QLatin1Char(';'))));
     }
 
     // Issue #789: with a saved cache and a stalled session refresh the client

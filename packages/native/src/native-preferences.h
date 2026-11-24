@@ -69,6 +69,9 @@ public:
     // Test seam for the portal probe (like setNowProvider for the clock): pins
     // the exposed flag to the given value as a portal announcing that key would.
     void setPrefersReducedMotionOverride(bool reduced);
+    // Test seam (#805 review finding 2): reports whether the one-shot
+    // startup frame-fit poll armed by attachWindow is still running.
+    bool frameFitPendingForTest() const { return m_frameFitTimer.isActive(); }
     qreal sidebarPreferredWidth() const { return m_sidebarWidth; }
     bool composerToolbarExpanded() const { return m_composerToolbarExpanded; }
     QString error() const { return m_error; }
