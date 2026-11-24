@@ -2281,9 +2281,9 @@ public:
 
 // Shared live window scene: sign in, select the channel and open the drawer's
 // chat-info root screen where the channel info layer mounts.
-// #770: counts raw-client requests that land during a scene teardown pump
-// (the lateTeardownRequestDoesNotReenterDeadCaseLocals seam).
-static int g_lateTeardownArrivals = 0;
+// #770: server-side counter of requests the quiesced mock server serves
+// during a scene teardown pump (lateTeardownRequestDoesNotReenterDeadCaseLocals).
+static std::atomic<int> g_lateTeardownServed{0};
 
 struct ChannelInfoWindowScene {
     WindowChannelInfoFixture fixture;
@@ -45315,10 +45315,15 @@ private slots:
     // the pump, so a late request only ever sees the safe empty fallback.
     void lateTeardownRequestDoesNotReenterDeadCaseLocals()
     {
-        const int arrivalsBefore = g_lateTeardownArrivals;
+        const int servedBefore = g_lateTeardownServed.load();
         {
             ChannelInfoWindowScene scene(true,
                 QStringLiteral("workspace.topic_summary_settings.manage"));
+            // The oracle counts SERVER-SIDE dispatch: the late request must
+            // actually reach the mock server's quiesced fallback after the
+            // case locals died. A client-side connect counter would pass even
+            // when the request is never served (exo-review on #772).
+            scene.fixture.server.quiescedRequestCount = &g_lateTeardownServed;
             QList<QJsonObject> saveBodies; // already dead when the late request lands
             const auto base = scene.fixture.server.handler;
             scene.fixture.server.handler = [&](const Request &request) -> Response {
@@ -45331,7 +45336,6 @@ private slots:
             const quint16 port = quint16(scene.fixture.server.serverPort());
             auto *late = new QTcpSocket(&scene.controller);
             QObject::connect(late, &QTcpSocket::connected, late, [late] {
-                ++g_lateTeardownArrivals;
                 const QByteArray head =
                     "GET /messages/?topic_uuid=00000000-0000-4000-8000-000000000000 HTTP/1.1\r\n"
                     "Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n";
@@ -45341,8 +45345,8 @@ private slots:
                 late->connectToHost(QHostAddress::LocalHost, port);
             });
         }
-        QVERIFY2(g_lateTeardownArrivals > arrivalsBefore,
-            "the late request must land inside the teardown pump (seam exercised)");
+        QTRY_VERIFY2(g_lateTeardownServed.load() > servedBefore,
+            "the late request must be served by the quiesced mock server (fallback path exercised)");
     }
 };
 

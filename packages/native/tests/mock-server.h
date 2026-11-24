@@ -9,6 +9,7 @@
 #include <QTcpSocket>
 #include <QTimer>
 #include <QUrl>
+#include <atomic>
 #include <functional>
 #include <memory>
 
@@ -47,6 +48,12 @@ class MockServer final : public QTcpServer {
 public:
     std::function<Response(const Request &)> handler;
     QVector<Request> requests;
+    // #770: a test may point this at storage that outlives the server. The
+    // fallback branch below counts SERVER-SIDE processing of requests that
+    // arrive after the test quiesced its handler, so a teardown-seam oracle
+    // observes the server actually serving the late request instead of a
+    // client-side connect event (a connect alone proves nothing).
+    std::atomic<int>* quiescedRequestCount = nullptr;
 
     MockServer()
     {
@@ -83,7 +90,10 @@ public:
                     request.body = QJsonDocument::fromJson(request.rawBody).object();
                     socket->setProperty("handled", true);
                     requests.append(request);
-                    const auto response = handler ? handler(request) : Response{};
+                    const bool servedQuiesced = !handler;
+                    const auto response = servedQuiesced ? Response{} : handler(request);
+                    if (servedQuiesced && quiescedRequestCount)
+                        ++*quiescedRequestCount;
                     const auto send = [guarded = QPointer<QTcpSocket>(socket), response] {
                         auto *socket = guarded.data();
                         if (!socket || socket->state() != QAbstractSocket::ConnectedState)

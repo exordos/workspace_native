@@ -1,0 +1,20 @@
+fix(tests): quiesce mock server before scene teardown pumps (#770)
+
+Root cause (full bt + reproduction in issue #770): scene destructors pump
+the event loop (frame/focus acknowledgement in closeIncubatedTestWindow)
+after the case's later-declared locals were destroyed. A late in-flight
+client request landing in that pump re-enters the case's [ref]-captured
+handler chain and invokes the destroyed `base` std::function copy: CI
+aborts with std::bad_function_call, locally the freed memory produced a
+wild call. Parallel load only delays the last request past the case body.
+
+- All six scene destructors that pump the teardown loop now set
+  server.handler to {} as their first statement, so the pump only ever
+  sees the safe empty fallback already defined in mock-server.h:86.
+- Adds deterministic regression seam lateTeardownRequestDoesNotReenterDeadCaseLocals:
+  a raw client parented to the scene's controller connects via a 0 ms
+  timer that can only fire inside the destructor pump, provably after
+  the captured locals died; the arrival counter proves the seam was
+  exercised on every run.
+
+Tests-only change; no product code paths touched.
