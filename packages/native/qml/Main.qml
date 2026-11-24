@@ -827,6 +827,24 @@ ApplicationWindow {
         composerText.forceActiveFocus(Qt.OtherFocusReason);
         composerText.cursorPosition = composerText.length;
     }
+    // Issue #779: Reply from either entry point must leave the caret in the
+    // writable editor, so typing right after the quote appears lands in the
+    // active reply draft. The message context menu owns focus while open, so
+    // a request made from it settles when the menu closes; the hover path
+    // settles on the next event pass. Only explicit Reply activation moves
+    // focus - background reply-state changes leave the caret alone.
+    property bool replyFocusPending: false
+    function requestComposerFocusAfterReply() {
+        root.replyFocusPending = true;
+        Qt.callLater(root.settleReplyFocus);
+    }
+    function settleReplyFocus() {
+        if (!root.replyFocusPending) return;
+        if (messageMenu.visible) return; // messageMenu.onClosed re-settles.
+        root.replyFocusPending = false;
+        if (composerText.enabled)
+            composerText.forceActiveFocus(Qt.OtherFocusReason);
+    }
     readonly property var pendingOutgoing: root.controller.outgoingSend || ({})
     readonly property var encryptedPendingSend: root.encryptedConversation && String(root.pendingOutgoing.id || "").length > 0 ? root.pendingOutgoing : root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
@@ -9638,8 +9656,11 @@ component NativeMentionChip: Item {
                                 color: quickReply.hovered ? root.colors["card-bg-active"] : root.colors["card-bg"]
                                 border.color: quickReply.visualFocus ? root.colors.accent : root.colors["border-subtle"]
                             }
-                            onClicked: root.controller.addReplyTab(messageRow.modelData.id,
-                                String(messageBody.selectedText || "").replace(/[\u2028\u2029]/g, "\n"))
+                            onClicked: {
+                                root.controller.addReplyTab(messageRow.modelData.id,
+                                    String(messageBody.selectedText || "").replace(/[\u2028\u2029]/g, "\n"));
+                                root.requestComposerFocusAfterReply();
+                            }
                         }
                         Column {
                             id: bubbleContent
@@ -15713,8 +15734,11 @@ component NativeMentionChip: Item {
             color: root.colors["bg-elevated"]
             border.color: root.colors["border-subtle"]
         }
-        onClosed: if (reactionPicker.visible)
-            reactionPicker.close()
+        onClosed: {
+            if (reactionPicker.visible)
+                reactionPicker.close()
+            settleReplyFocus()
+        }
         onAboutToShow: root.quickUsage = root.preferences.quickReactionUsage
         function focusEdge(last) {
             // Qt Menu handles Up/Down; the desktop context menu also has
@@ -15831,6 +15855,7 @@ component NativeMentionChip: Item {
                 root.controller.replyMessageId.length > 0
                     ? root.controller.addReplyTab(root.menuMessageId, selection)
                     : root.controller.beginReply(root.menuMessageId, selection);
+                root.requestComposerFocusAfterReply();
             }
         }
         MessageMenuSeparator {
