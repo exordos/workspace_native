@@ -34388,6 +34388,43 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!view("accountSetting-locale"));
     }
 
+    // Issue #791: the #724 popup->drawer migration also broke the auto read
+    // gate in the chat: readActive (Main.qml) gated on root.accountRootVisible
+    // (undefined on the window root, so the term never took effect) instead of
+    // rightDrawer.accountRootVisible. Auto read receipts must pause while the
+    // account drawer covers the chat and resume immediately after it closes.
+    void windowAccountDrawerRootGatesChatReadActivity()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("read-gate.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *list = view("messageList"); QVERIFY(list);
+        QTRY_VERIFY(list->property("readActive").toBool());
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeRightDrawerShell"), 5000);
+        auto *drawer = item(window->contentItem(), "nativeRightDrawer"); QVERIFY(drawer);
+        QVERIFY(drawer->property("drawerOpen").toBool());
+        QVERIFY(drawer->property("accountRootVisible").toBool());
+        // The suppression must come from accountRootVisible itself, not from a
+        // transient busy/layout state while the drawer opens.
+        QTRY_VERIFY(!controller.busy());
+        QTest::qWait(500);
+        QVERIFY(!list->property("readActive").toBool());
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+        QTRY_VERIFY(list->property("readActive").toBool());
+    }
+
     // Issue #724: the signed-in account entry opens the Account page inside the
     // right drawer instead of the removed floating popup (reference
     // right-panel-user-menu.ui.tsx at e0194ff, docs/NATIVE_DESKTOP_ACCOUNT_DRAWER.md).
