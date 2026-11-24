@@ -20409,6 +20409,90 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.canSend()); QCOMPARE(posts, 1);
     }
 
+    // Issue #782: reference contract - handleSend() ticks setSendFocusRequest when
+    // the send resolves (message-composer.ui.tsx :1268) and the enable-focus effect
+    // (:741-765) hands the caret back to the textarea, suppressed when the
+    // conversation scope changed while the send was in flight (:1273). The pointer
+    // Send releases the caret (the button loses enabled while busy and once the
+    // draft is empty), so the next word must land in the composer without another
+    // click; a newer explicit focus choice while the send is pending wins.
+    void mouseSendRestoresComposerFocusForTheNextMessage_data()
+    {
+        QTest::addColumn<bool>("focusOtherControlWhilePending");
+        QTest::newRow("pointer-send") << false;
+        QTest::newRow("newer-focus-wins") << true;
+    }
+
+    void mouseSendRestoresComposerFocusForTheNextMessage()
+    {
+        QFETCH(bool, focusOtherControlWhilePending);
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        QJsonObject saved; int posts = 0;
+        std::function<void()> complete;
+        const auto release = qScopeGuard([&] { if (complete) complete(); });
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                ++posts; saved = message(request.body.value("payload").toObject().value("content").toString(), returnedId);
+                Response response{saved, 201};
+                response.defer = [&](auto send) { complete = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && path.endsWith("/messages/"))
+                return {QJsonArray{message("Original message", messageId)}};
+            if (request.method == "GET" && path.endsWith("/messages/" + returnedId)) return {saved};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Mouse send focus teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-send-focus", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId); QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+
+        auto *content = window->contentItem();
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        click(window, composer); QTRY_VERIFY(composer->hasActiveFocus());
+        for (const char key : QByteArray("first")) QTest::keyClick(window, key);
+        QTRY_COMPARE(controller.draft(), QString("first"));
+        auto *send = qobject_cast<QQuickItem *>(window->findChild<QObject *>("sendButton")); QVERIFY(send);
+        QTRY_VERIFY(send->isEnabled());
+        click(window, send);
+        QTRY_VERIFY(bool(complete)); QCOMPARE(posts, 1);
+        auto *headerAction = item(content, "channelHeaderInfoAction");
+        if (focusOtherControlWhilePending) {
+            // An explicit focus move made while the send is in flight is the
+            // newer choice; the settling response must not steal the caret.
+            QVERIFY(headerAction && headerAction->isVisible());
+            headerAction->forceActiveFocus(Qt::TabFocusReason);
+            QTRY_VERIFY(headerAction->hasActiveFocus());
+        }
+        complete(); complete = {};
+        QTRY_VERIFY(controller.draft().isEmpty());
+        QTest::qWait(100); // let any focus handoff settle before the verdict
+        if (focusOtherControlWhilePending) {
+            QVERIFY2(headerAction->hasActiveFocus(), "a later send response stole a newer focus choice");
+            QVERIFY(!composer->hasActiveFocus());
+        } else {
+            QTRY_VERIFY2(composer->hasActiveFocus(), "focus did not return to the composer after the confirmed mouse send");
+            for (const char key : QByteArray("next")) QTest::keyClick(window, key);
+            QTRY_COMPARE(controller.draft(), QString("next"));
+            QTRY_VERIFY(send->isEnabled()); // Send stays keyboard-accessible with the new draft
+        }
+        QCOMPARE(posts, 1);
+    }
+
     // Issue #217 (docs/NATIVE_DESKTOP_QUOTE_MEDIA_THUMBNAILS.md): a quoted message
     // that carries a media preview shows a 48 px thumbnail as the leading element
     // of both quote frames - the composer reply preface and the received bubble -
