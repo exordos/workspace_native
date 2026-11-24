@@ -8,6 +8,7 @@ incomingCallLargeButtonsFitNarrowViewport=0.215664
 loginCardMountsOrganizationStepOnly=0.45005
 mentionsPageChipFilterAndCloseFlow=1.54745
 messageTimePanelFollowsChipWhileHistoryScrolls=4.32467
+mouseSendRestoresComposerFocusForTheNextMessage=2.43574
 realMenuInputWaitsForSourceLayout=0.525621
 receivedStandaloneImagePaintsBetweenTextAndCaption=1.11006
 replyMenuQuotesOnlyTheCurrentBubbleSelection=0.884542
