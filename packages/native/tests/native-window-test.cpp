@@ -2281,6 +2281,10 @@ public:
 
 // Shared live window scene: sign in, select the channel and open the drawer's
 // chat-info root screen where the channel info layer mounts.
+// #770: server-side counter of requests the quiesced mock server serves
+// during a scene teardown pump (lateTeardownRequestDoesNotReenterDeadCaseLocals).
+static std::atomic<int> g_lateTeardownServed{0};
+
 struct ChannelInfoWindowScene {
     WindowChannelInfoFixture fixture;
     QTemporaryDir directory;
@@ -2334,6 +2338,12 @@ struct ChannelInfoWindowScene {
     }
     ~ChannelInfoWindowScene()
     {
+        // The teardown below pumps the event loop (frame/focus acknowledgement).
+        // A late in-flight client request would re-enter the case's handler
+        // chain after its [ref]-captured locals were destroyed -> wild call /
+        // std::bad_function_call abort (#770). Quiesce the server first so the
+        // pump answers with the safe empty fallback.
+        fixture.server.handler = {};
         if (window && !closeIncubatedTestWindow(engine, window))
             QTest::qFail("channel info scene teardown", __FILE__, __LINE__);
     }
@@ -2506,6 +2516,7 @@ struct ProfileWindowScene {
     }
     ~ProfileWindowScene()
     {
+        fixture.server.handler = {}; // #770 teardown-pump re-entry guard
         if (window && !closeIncubatedTestWindow(engine, window))
             QTest::qFail("profile scene teardown", __FILE__, __LINE__);
     }
@@ -3046,6 +3057,7 @@ struct NativeWindowScene {
     }
     ~NativeWindowScene()
     {
+        server.handler = {}; // #770 teardown-pump re-entry guard
         if (window)
             closeIncubatedTestWindow(engine, window);
     }
@@ -3122,6 +3134,7 @@ struct PollBubbleScene {
     }
     ~PollBubbleScene()
     {
+        fixture.server.handler = {}; // #770 teardown-pump re-entry guard
         if (window && !closeIncubatedTestWindow(engine, window))
             QTest::qFail("poll scene teardown", __FILE__, __LINE__);
     }
@@ -3292,6 +3305,7 @@ struct WindowStreamColorScene {
     }
     ~WindowStreamColorScene()
     {
+        fixture.server.handler = {}; // #770 teardown-pump re-entry guard
         if (window && !closeIncubatedTestWindow(engine, window))
             QTest::qFail("stream color scene teardown", __FILE__, __LINE__);
     }
@@ -3448,6 +3462,7 @@ struct WindowChatHeaderCountersScene {
     }
     ~WindowChatHeaderCountersScene()
     {
+        fixture.server.handler = {}; // #770 teardown-pump re-entry guard
         if (window && !closeIncubatedTestWindow(engine, window))
             QTest::qFail("chat header scene teardown", __FILE__, __LINE__);
     }
@@ -45288,6 +45303,50 @@ private slots:
         QTRY_VERIFY(!visibleItem(content, "pollButton"));
         QTRY_VERIFY(visibleItem(content, "attachButton"));
         QTRY_VERIFY(visibleItem(content, "composerEmojiButton"));
+    }
+
+    // #770 deterministic teardown seam. Scene destructors pump the event loop
+    // (frame/focus acknowledgement inside closeIncubatedTestWindow) AFTER the
+    // case's later-declared locals are destroyed. Before the fix, a client
+    // request landing in that pump re-entered the case's [ref]-captured
+    // handler chain - calling the destroyed `base` std::function copy - and
+    // aborted the process (std::bad_function_call / wild call: the CI failure
+    // family in issue #770). Each scene now quiesces its mock server before
+    // the pump, so a late request only ever sees the safe empty fallback.
+    void lateTeardownRequestDoesNotReenterDeadCaseLocals()
+    {
+        const int servedBefore = g_lateTeardownServed.load();
+        {
+            ChannelInfoWindowScene scene(true,
+                QStringLiteral("workspace.topic_summary_settings.manage"));
+            // The oracle counts SERVER-SIDE dispatch: the late request must
+            // actually reach the mock server's quiesced fallback after the
+            // case locals died. A client-side connect counter would pass even
+            // when the request is never served (exo-review on #772).
+            scene.fixture.server.quiescedRequestCount = &g_lateTeardownServed;
+            QList<QJsonObject> saveBodies; // already dead when the late request lands
+            const auto base = scene.fixture.server.handler;
+            scene.fixture.server.handler = [&](const Request &request) -> Response {
+                saveBodies.append(request.body); // dangling after scope exit
+                return base(request);
+            };
+            // A raw client parented to the scene's controller outlives the case
+            // locals; the 0 ms timer can only fire once the destructor starts
+            // pumping, so the request provably arrives after `base` died.
+            const quint16 port = quint16(scene.fixture.server.serverPort());
+            auto *late = new QTcpSocket(&scene.controller);
+            QObject::connect(late, &QTcpSocket::connected, late, [late] {
+                const QByteArray head =
+                    "GET /messages/?topic_uuid=00000000-0000-4000-8000-000000000000 HTTP/1.1\r\n"
+                    "Host: 127.0.0.1\r\nContent-Length: 0\r\n\r\n";
+                late->write(head);
+            });
+            QTimer::singleShot(0, late, [late, port] {
+                late->connectToHost(QHostAddress::LocalHost, port);
+            });
+        }
+        QTRY_VERIFY2(g_lateTeardownServed.load() > servedBefore,
+            "the late request must be served by the quiesced mock server (fallback path exercised)");
     }
 };
 
