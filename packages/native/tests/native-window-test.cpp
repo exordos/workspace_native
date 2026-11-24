@@ -30554,6 +30554,70 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
 
+    void callWindowEmbedRetryReinstantiatesFailedLoader()
+    {
+        // Issue #792: Retry on the import-failure path must genuinely re-instantiate
+        // the embed Loader. retry() used to flip embedState LoadFailed->Loading while
+        // the Loader stayed active with status Loader.Error: no status change ever
+        // re-fired, so nothing re-attempted the import and the shell only escaped
+        // Loading when the 30 s settle deadline re-fired apiLoadFailed - the Retry
+        // affordance could never succeed. A real retry returns the Loader status to
+        // Null (destroy) and back (re-instantiation), and the fresh failure lands
+        // through onStatusChanged well inside the deadline window.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call embed retry reload teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        clickCallCard(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QVERIFY(loader);
+        QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
+        if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000))
+            QSKIP("QtWebEngine embed surface unavailable in this runtime");
+        // The seam: the same missing-runtime instantiation as the loader-error case.
+        loader->setProperty("source",
+            QUrl(QStringLiteral("qrc:/workspace/qml/cassi-missing-runtime.qml")));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::LoadFailed), 2000);
+        // Watch status transitions only after the stub settled, so the source
+        // swap's own transitions cannot satisfy the count.
+        const QMetaObject *meta = loader->metaObject();
+        int statusSignal = -1;
+        for (int i = 0; i < meta->methodCount(); ++i) {
+            const QMetaMethod method = meta->method(i);
+            if (method.methodType() == QMetaMethod::Signal
+                && method.name() == QByteArrayLiteral("statusChanged")) {
+                statusSignal = i;
+                break;
+            }
+        }
+        QVERIFY(statusSignal >= 0);
+        QSignalSpy statusSpy(loader, meta->method(statusSignal));
+        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
+        QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+        // A genuine retry destroys the failed item and instantiates afresh:
+        // status Error -> Null -> Error means at least two transitions.
+        QTRY_VERIFY_WITH_TIMEOUT(statusSpy.count() >= 2, 5000);
+        // The fresh failure drives the state machine through the Loader's own
+        // status change - prompt, not the 30 s deadline spin.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
+            == int(JitsiCallWindowController::LoadFailed), 5000);
+        controller.callWindow()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
+    }
+
     // Finding 5 (round 4), hardened for #252: the live participant count and
     // the shared roster must arrive through the production external-API
     // handshake, driven by the embed page itself. The fixture page now emits
