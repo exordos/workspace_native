@@ -45482,6 +45482,122 @@ private slots:
         window->showNormal();
         QTRY_VERIFY_WITH_TIMEOUT(outline->property("visible").toBool(), 5000);
     }
+
+    // Issue #779: choosing Reply must move the keyboard caret into the
+    // composer, so text typed right after the quote appears lands in the
+    // active reply draft. Hover entry point.
+    void replyHoverHandsFocusToComposer()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto peer = message("Peer reply target", messageId);
+        peer["is_own"] = false;
+        int posts = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) ++posts;
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{peer}, 200};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Reply hover focus teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-reply", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *content = window->contentItem();
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseMove(window, bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *quickReply = item(content, "quickReply-" + messageId); QVERIFY(quickReply);
+        QTRY_VERIFY(quickReply->isVisible());
+        click(window, quickReply);
+        QTRY_COMPARE(controller.replyMessageId(), messageId);
+        // The caret must land in the writable editor, not stay on the button.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName() == QLatin1String("messageComposer");
+        })(), 2000);
+        // Repo idiom: QtTest key helpers are QWidget-only; type to the focus object.
+        auto *typeTarget = window->focusObject(); QVERIFY(typeTarget);
+        for (const auto &character : QStringLiteral("abc")) {
+            QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(character));
+            QKeyEvent release(QEvent::KeyRelease, 0, Qt::NoModifier, QString(character));
+            QCoreApplication::sendEvent(typeTarget, &press);
+            QCoreApplication::sendEvent(typeTarget, &release);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(controller.draft(), QStringLiteral("abc"), 2000);
+        QCOMPARE(controller.replyMessageId(), messageId);
+        QCOMPARE(posts, 0);
+    }
+
+    // Issue #779: same contract for the message context menu entry point -
+    // the composer may only take the caret after the menu released focus.
+    void replyMenuHandsFocusToComposer()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto peer = message("Peer reply target", messageId);
+        peer["is_own"] = false;
+        int posts = 0;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/messages/")) ++posts;
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{peer}, 200};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("Reply menu focus teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-native-reply", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto *content = window->contentItem();
+        auto *bubble = item(content, "message-" + messageId); QVERIFY(bubble);
+        QTest::mouseClick(window, Qt::RightButton, {},
+            bubble->mapToScene(QPointF(bubble->width() / 2, bubble->height() / 2)).toPoint());
+        auto *menu = window->findChild<QObject *>("messageMenu"); QVERIFY(menu);
+        QTRY_VERIFY(menu->property("visible").toBool());
+        auto *replyAction = qobject_cast<QQuickItem *>(window->findChild<QObject *>("replyMessageAction")); QVERIFY(replyAction);
+        click(window, replyAction);
+        QTRY_VERIFY(!menu->property("visible").toBool());
+        QTRY_COMPARE(controller.replyMessageId(), messageId);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *focus = window->activeFocusItem();
+            return focus && focus->objectName() == QLatin1String("messageComposer");
+        })(), 2000);
+        auto *typeTarget = window->focusObject(); QVERIFY(typeTarget);
+        for (const auto &character : QStringLiteral("abc")) {
+            QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, QString(character));
+            QKeyEvent release(QEvent::KeyRelease, 0, Qt::NoModifier, QString(character));
+            QCoreApplication::sendEvent(typeTarget, &press);
+            QCoreApplication::sendEvent(typeTarget, &release);
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(controller.draft(), QStringLiteral("abc"), 2000);
+        QCOMPARE(controller.replyMessageId(), messageId);
+        QCOMPARE(posts, 0);
+    }
 };
 
 
