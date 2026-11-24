@@ -2467,6 +2467,100 @@ private slots:
         QCOMPARE(fAttempts, 2);
     }
 
+    // Issue #776: a same-owner session renewal retires the two admitted
+    // preload dispatches, and the request wrapper discards retired-generation
+    // transport callbacks whole - the callback that frees the two-slot
+    // budget never runs. Without releasing the retired slots here, the queue
+    // stops making progress for the rest of the session.
+    void topicPreloadRetiredSlotsReopenAfterSameOwnerRenewal()
+    {
+        Fixture fixture; fixture.aggregateMessages = true;
+        const QString topicB = "bbbbbbbb-bbbb-4bbb-8bbb-00000000000b";
+        const QString topicC = "cccccccc-cccc-4ccc-8ccc-00000000000c";
+        const QString topicD = "dddddddd-dddd-4ddd-8ddd-00000000000d";
+        const auto aMsg = message("A one", "aaaaaaaa-aaaa-4aaa-8aaa-0000000000f1");
+        const auto bMsg = message("B one", "bbbbbbbb-bbbb-4bbb-8bbb-0000000000f1", topicB);
+        const auto cMsg = message("C one", "cccccccc-cccc-4ccc-8ccc-0000000000f1", topicC);
+        const auto dMsg = message("D one", "dddddddd-dddd-4ddd-8ddd-0000000000f1", topicD);
+        const auto topicDto = [](const QString &id, const QString &last, bool isDefault) {
+            QJsonObject row{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", QStringLiteral("Topic")}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"updated_at", "2026-01-02T10:00:00Z"}, {"last_message_uuid", last}};
+            if (isDefault) row["is_default"] = true;
+            return row;
+        };
+        fixture.topics = [&](const Request &) {
+            return Response{QJsonArray{
+                topicDto(topicId, aMsg.value("uuid").toString(), true),
+                topicDto(topicB, bMsg.value("uuid").toString(), false),
+                topicDto(topicC, cMsg.value("uuid").toString(), false),
+                topicDto(topicD, dMsg.value("uuid").toString(), false)}};
+        };
+        // The pointer must be present in the detail DTO too (fixture contract).
+        fixture.counters = [&](const Request &request) -> Response {
+            const auto id = request.target.path().section('/', -1);
+            if (id == streamId)
+                return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", QStringLiteral("Native channel")}, {"encryption", false},
+                    {"unread_count", 0}, {"active_unread_count", 0},
+                    {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue(QJsonValue::Null)}}};
+            if (id == topicB) return Response{topicDto(topicB, bMsg.value("uuid").toString(), false)};
+            if (id == topicC) return Response{topicDto(topicC, cMsg.value("uuid").toString(), false)};
+            if (id == topicD) return Response{topicDto(topicD, dMsg.value("uuid").toString(), false)};
+            return Response{topicDto(topicId, aMsg.value("uuid").toString(), true)};
+        };
+        fixture.messages = [&](const Request &request) -> Response {
+            const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+            if (topic == topicB) return Response{QJsonArray{bMsg}};
+            if (topic == topicC) return Response{QJsonArray{cMsg}};
+            if (topic == topicD) return Response{QJsonArray{dMsg}};
+            return Response{QJsonArray{aMsg}};
+        };
+        bool retired = false;
+        QHash<QString, std::function<void()>> held;
+        QStringList preloadGets;
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/")) {
+                const auto topic = QUrlQuery(request.target).queryItemValue("topic_uuid");
+                if (topic == topicB || topic == topicC || topic == topicD) preloadGets.append(topic);
+                if (!retired && (topic == topicB || topic == topicC)) {
+                    Response response{QJsonArray{topic == topicB ? bMsg : cMsg}};
+                    response.defer = [&, topic](std::function<void()> send) {
+                        held.insert(topic, std::move(send));
+                    };
+                    return response;
+                }
+            }
+            return original(request);
+        };
+        auto &c = fixture.controller;
+        c.setTopicPreloadEnabledForTest(true);
+        c.setTopicPreloadIntervalMsForTest(30);
+        c.login(fixture.server.origin().toString(), "user", "password", "");
+        QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
+        QTRY_COMPARE(c.streams().size(), 1);
+        c.selectStream(streamId);
+        // The two-slot budget admits B and C and holds their replies in flight.
+        QTRY_VERIFY(([&]{ return held.size() == 2; })());
+        QVERIFY(!preloadGets.contains(topicD));
+        // A same-owner renewal retires the in-flight generation; the wrapper
+        // discards the two held callbacks whole, so their slots must be
+        // released at the renewal itself.
+        retired = true;
+        fixture.api.setAccessToken("renewed-token", true);
+        for (auto &send : held) if (send) send();
+        held.clear();
+        // The queue re-arms under the renewed session and every unopened
+        // topic ends up with a prepared slice.
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicB));
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicC));
+        QTRY_VERIFY(c.hasPreparedTopicSlice(topicD));
+        QVERIFY(preloadGets.contains(topicD));
+    }
+
     // Issue #729 phase 2: the cross-route warm queue. Candidates extend beyond
     // the selected stream in a fixed order - current stream first, then unread
     // chats newest-activity first, then recently opened chats (the recency
