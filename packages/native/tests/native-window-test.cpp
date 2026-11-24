@@ -45779,6 +45779,57 @@ private slots:
             qPrintable(QString("topic prompt bottom %1 exceeds client height %2")
                 .arg(promptBottom).arg(window->height())));
     }
+
+    // #805: Qt measures width/height as the client area while the reference
+    // stores frame bounds (main.ts getBounds/getNormalBounds of the pinned
+    // revision). A default or restored size that fills the work area therefore
+    // sits the title bar below the screen bottom under a decorating WM, hiding
+    // the composer row. Once the WM reports frame extents the restored client
+    // must be fitted so the whole frame stays inside the available geometry.
+    void restoredFrameFitsTheAvailableScreen()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto path = directory.filePath("preferences.ini");
+        const auto available = QGuiApplication::primaryScreen()->availableGeometry();
+        {   // A saved state that fills the whole work area (the reference-era
+            // frame-inclusive 900 px on a 900 px screen reproduces exactly).
+            QSettings settings(path, QSettings::IniFormat);
+            settings.setValue("window/x", available.x());
+            settings.setValue("window/y", available.y());
+            settings.setValue("window/width", available.width());
+            settings.setValue("window/height", available.height());
+            settings.setValue("window/maximized", false);
+            settings.sync();
+        }
+        NativePreferences preferences(path);
+        QWindow window;
+        auto teardown = qScopeGuard([&preferences, &window] {
+            preferences.attachWindow(nullptr);
+            window.close();
+        });
+        preferences.attachWindow(&window);
+        window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
+        // The one-shot frame fit may only act once the WM has reported its
+        // frame extents; undecorated platforms have nothing to fit.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return window.frameMargins() != QMargins(); })(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const QRect frame = window.frameGeometry();
+            return frame.top() >= available.top() && frame.bottom() <= available.bottom()
+                && frame.left() >= available.left() && frame.right() <= available.right();
+        })(), 5000);
+        const QRect frame = window.frameGeometry();
+        QVERIFY2(frame.top() >= available.top() && frame.bottom() <= available.bottom(),
+            qPrintable(QString("frame %1..%2 escapes available %3..%4 vertically")
+                .arg(frame.top()).arg(frame.bottom())
+                .append(QString(" vs %1..%2").arg(available.top()).arg(available.bottom()))));
+        QVERIFY2(frame.left() >= available.left() && frame.right() <= available.right(),
+            qPrintable(QString("frame %1..%2 escapes available %3..%4 horizontally")
+                .arg(frame.left()).arg(frame.right()).arg(available.left()).arg(available.right())));
+        // The fitted client keeps the reference minimums (700x600 client).
+        QVERIFY(window.height() >= 600 || available.height() < 627);
+        QVERIFY(window.width() >= 700 || available.width() < 702);
+    }
+
     // Issue #789: with a saved cache and a stalled session refresh the client
     // must paint the cached chats immediately (#157 cache-first contract). The
     // refresh reply is held open indefinitely (mock defer), so every assertion

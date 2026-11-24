@@ -791,6 +791,7 @@ void NativePreferences::attachWindow(QWindow *window)
         m_window->removeEventFilter(this);
     }
     m_windowSaveTimer.stop();
+    m_frameFitTimer.stop();
     // #62 round 2: an in-flight transition belongs to the window being
     // detached; never let its gate leak onto the next one.
     m_fullscreenGateSettle.stop();
@@ -835,6 +836,25 @@ void NativePreferences::attachWindow(QWindow *window)
     m_windowMaximized = m_settings.value("window/maximized", false).toBool();
     window->setGeometry(m_normalGeometry);
     if (m_windowMaximized) window->setWindowState(Qt::WindowMaximized);
+    // #805: Qt's width/height are client-area sizes while the reference stores
+    // frame bounds (main.ts getBounds/getNormalBounds of the pinned revision),
+    // so a saved or default size that exactly fills the work area puts the
+    // title bar's worth of pixels below the screen bottom under a decorating
+    // WM - the composer row falls off screen. Once the WM reports its frame
+    // extents, fit the client exactly once so the whole frame stays inside the
+    // screen's available geometry. This is a startup-only adjustment: user
+    // geometry is honoured afterwards, and a window that starts maximized is
+    // left alone (the reference restores unmaximized bounds unfitted too).
+    // Qt exposes no frameMarginsChanged notification, so a short bounded
+    // poll watches for the WM to report its extents; it stops after the first
+    // verdict (fit, undecorated, or deadline) until the next window attach.
+    m_frameFitTimer.stop();
+    m_frameFitTimer.setInterval(50);
+    connect(&m_frameFitTimer, &QTimer::timeout, this,
+        &NativePreferences::fitFrameToAvailableGeometry, Qt::UniqueConnection);
+    m_frameFitDeadline.restart();
+    fitFrameToAvailableGeometry(); // a re-attached window already has extents
+    m_frameFitTimer.start();
     const auto geometryChanged = [this] {
         if (!m_window) return;
         if (m_fullscreenPending) { noteFullscreenGateSignal(); return; }
@@ -858,6 +878,46 @@ void NativePreferences::attachWindow(QWindow *window)
         else if (state == Qt::WindowNoState) m_windowMaximized = false;
         m_windowSaveTimer.start();
     });
+}
+
+// #805 one-shot startup fit (see attachWindow): shrink and move the client so
+// the decorated frame stays inside the screen's available geometry. Stops the
+// poll on the first verdict: an undecorated window needs no fit, a deadline of
+// 4 s covers a WM that never reports extents, and any state other than a
+// settled normal window (maximized start, fullscreen pending) defers to the
+// reference behaviour of restoring bounds unfitted.
+void NativePreferences::fitFrameToAvailableGeometry()
+{
+    if (!m_window || m_fullscreenPending || m_windowMaximized) {
+        m_frameFitTimer.stop();
+        return;
+    }
+    if (m_window->windowState() != Qt::WindowNoState) return;
+    const auto margins = m_window->frameMargins();
+    if (margins.isNull()) { // undecorated: frame == client, nothing to fit
+        if (m_frameFitDeadline.elapsed() > 4000) m_frameFitTimer.stop();
+        return;
+    }
+    m_frameFitTimer.stop();
+    const auto *screen = m_window->screen();
+    if (!screen) return;
+    const QRect available = screen->availableGeometry();
+    const QRect client = m_window->geometry();
+    QRect fitted = client;
+    if (client.width() + margins.left() + margins.right() > available.width())
+        fitted.setWidth(qMax(700, available.width() - margins.left() - margins.right()));
+    if (client.height() + margins.top() + margins.bottom() > available.height())
+        fitted.setHeight(qMax(600, available.height() - margins.top() - margins.bottom()));
+    int x = fitted.x();
+    if (x - margins.left() < available.x()) x = available.x() + margins.left();
+    if (x + fitted.width() - 1 + margins.right() > available.right())
+        x = available.right() + 1 - margins.right() - fitted.width();
+    int y = fitted.y();
+    if (y - margins.top() < available.y()) y = available.y() + margins.top();
+    if (y + fitted.height() - 1 + margins.bottom() > available.bottom())
+        y = available.bottom() + 1 - margins.bottom() - fitted.height();
+    fitted.moveTopLeft(QPoint(x, y));
+    if (fitted != client) m_window->setGeometry(fitted);
 }
 
 void NativePreferences::saveWindow()

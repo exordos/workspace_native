@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <QRect>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QDate>
 #include <QJsonObject>
 #include <QVariantList>
@@ -237,6 +238,9 @@ private:
     QPointer<QWindow> m_window;
     QTimer m_windowSaveTimer;
     QTimer m_conversationSaveTimer;
+    QTimer m_frameFitTimer;
+    QElapsedTimer m_frameFitDeadline;
+    void fitFrameToAvailableGeometry();
     QString m_pendingConversationOwner;
     QStringList m_pendingConversation;
     QStringList m_organizationHistory;
