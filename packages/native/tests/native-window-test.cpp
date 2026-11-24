@@ -22972,6 +22972,11 @@ mv -Tf "$root/.current-new" "$root/current"
         const auto barShown = [bar] { return bar->property("visible").toBool(); };
         QVERIFY2(barShown(), "the bar must start shown when playback arms the countdown");
         QTest::mouseMove(window, QPoint(4, 4)); // park the cursor off the picture
+        // Floor bound on the 2500 ms countdown (NativeMediaViewer.qml
+        // controlsHideTimer): a shortened countdown must fail HERE, not slip
+        // silently past the upper-bound hide check behind it.
+        QTest::qWait(1900); // below the 2500 ms countdown
+        QVERIFY2(barShown(), "the bar must still be shown at 1900 ms of the countdown");
         QTRY_VERIFY_WITH_TIMEOUT(!barShown(), 9000);
         QVERIFY2(playerState() == 1, "the clip must still be mid-playback when the bar hid");
         // A pointer move over the picture re-shows the bar (and re-arms).
@@ -22981,8 +22986,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::mouseMove(window, videoCenterScene.toPoint());
         QTRY_VERIFY_WITH_TIMEOUT(barShown(), 5000);
         // Re-arm proof: leaving the picture again hides the bar on the new
-        // countdown (a timer that never re-armed would fail here).
+        // countdown (a timer that never re-armed would fail here). The 1900 ms
+        // floor sample pins the NEW countdown too: it must be the full
+        // 2500 ms, not an early expiry of a stale timer.
         QTest::mouseMove(window, QPoint(4, 4));
+        QTest::qWait(1900);
+        QVERIFY2(barShown(), "the re-armed countdown must keep the bar shown at 1900 ms");
         QTRY_VERIFY_WITH_TIMEOUT(!barShown(), 9000);
         // Pausing through the picture click path brings the bar back and pins
         // it: a paused clip always shows its controls (browser convention),
