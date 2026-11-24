@@ -336,6 +336,12 @@ Dialog {
                 // formRevision ticks on every draft mutation (QML var identity across
                 // property reads is not stable, so a counter is the safe comparison).
                 property int formRevision: 0
+                // Revision at which the CURRENT draft session started (set by
+                // reset/startCreate/startEdit). #795 round 2 (finding
+                // 4687482010): merely opening an unchanged edit or a delete
+                // confirmation must not read as unsaved - only mutations after
+                // this mark are real draft changes.
+                property int draftStartRevision: 0
                 property int dispatchRevision: -1
                 property string dispatchUuid: ""
                 // Dispatch identity (review finding 1): a late "saved" may only touch
@@ -347,6 +353,7 @@ Dialog {
                 property int draftSession: 0
                 property int dispatchSession: -1
                 function reset() { editingUuid = ""; form = ({}); editBaseline = ({}); confirmDelete = false; formRevision += 1
+                    draftStartRevision = formRevision
                     draftSession += 1; dispatchSession = -1 }
                 // The values that the in-flight request submits, and the endpoint
                 // uuids visible when a CREATE was dispatched: a late "saved" that
@@ -384,7 +391,10 @@ Dialog {
                 }
                 readonly property bool endpointsAllowed: dlg.perm("endpoints") === "allowed"
                 readonly property bool editing: editingUuid.length > 0
-                readonly property bool dirty: editing
+                // Opening an edit/delete confirmation is NOT a draft change:
+                // dirty counts only setField mutations after the session's start
+                // mark (finding 4687482010).
+                readonly property bool dirty: editing && formRevision !== draftStartRevision
                 // Mutable numeric fields with the reference bounds
                 // (topic-summary-endpoints.lib.ts validateInteger/validateNumber ranges).
                 readonly property var numberRules: ({
@@ -536,6 +546,7 @@ Dialog {
                             max_output_tokens: 512, top_p: 1, presence_penalty: 0, frequency_penalty: 0,
                             enabled: true, supports_vision: false, supports_reasoning: false}
                     formRevision += 1
+                    draftStartRevision = formRevision
                     draftSession += 1
                 }
                 function startEdit(row) {
@@ -550,6 +561,7 @@ Dialog {
                     form = seeded
                     editBaseline = JSON.parse(JSON.stringify(seeded))
                     formRevision += 1
+                    draftStartRevision = formRevision
                     draftSession += 1
                 }
                 contentHeight: endpointsCol.implicitHeight
@@ -823,9 +835,10 @@ Dialog {
 
     // Error notice band shared by the gates/endpoints tabs (reference: border danger/30, bg danger/5).
     // #795: the band renders only when this tab's own op family produced the
-    // failure. The controller records the producer when it sets an error, so a
-    // late reply that lands while the other tab is visible cannot paint the
-    // wrong band ("gates"/"endpoints" vocabulary).
+    // failure. The controller records every producing family when it sets an
+    // error, so a late reply that lands while the other tab is visible cannot
+    // paint the wrong band, and one interruption that retired in-flight ops of
+    // BOTH families keeps both bands attributed (finding 4687482019).
     component ErrorNotice: Rectangle {
         id: errBand
         property string name: ""
@@ -834,7 +847,7 @@ Dialog {
         Layout.fillWidth: true
         visible: dlg.controller.topicSummarySettingsStatus === "error"
             && dlg.controller.topicSummarySettingsError !== "forbidden"
-            && dlg.controller.topicSummarySettingsErrorOp === producer
+            && dlg.controller.topicSummarySettingsErrorOps.includes(producer)
         radius: 8
         Layout.preferredHeight: visible ? errText.implicitHeight + 20 : 0
         color: Qt.alpha(dlg.colors.danger, 0.05)

@@ -22077,7 +22077,7 @@ quint64 NativeController::beginTopicSummaryOp(const QString &key)
     m_topicSummarySettingsBusy = true;
     m_topicSummarySettingsStatus.clear();
     m_topicSummarySettingsError.clear();
-    m_topicSummarySettingsErrorOp.clear();
+    m_topicSummarySettingsErrorOps.clear();
     emit topicSummaryStateChanged();
     return token;
 }
@@ -22109,33 +22109,47 @@ void NativeController::interruptTopicSummaryOps()
     // (#755 finding 4670644138).
     if (m_topicSummaryOps.contains(QStringLiteral("endpoint-new")))
         m_topicSummaryCreateNeedsReconcile = true;
-    QString interruptedFamily;
+    // Finding 4687482019: the retired ledger may span both tab families, and
+    // attributing the interruption to a single arbitrary key would gate the
+    // other family's band off even though its op was interrupted too. Record
+    // every affected family (deduped, sorted for a deterministic ledger read).
+    QStringList interruptedFamilies;
     for (const auto &key : m_topicSummaryOps.keys()) {
-        interruptedFamily = topicSummaryErrorFamily(key);
-        if (!interruptedFamily.isEmpty()) break;
+        const auto family = topicSummaryErrorFamily(key);
+        if (!family.isEmpty() && !interruptedFamilies.contains(family))
+            interruptedFamilies.append(family);
     }
+    interruptedFamilies.sort();
     m_topicSummaryOps.clear();
     m_topicSummarySettingsBusy = false;
-    setTopicSummaryStatus(QStringLiteral("error"), QStringLiteral("interrupted"), interruptedFamily);
+    setTopicSummaryStatusOps(QStringLiteral("error"), QStringLiteral("interrupted"),
+        interruptedFamilies);
 }
 
 void NativeController::setTopicSummaryStatus(const QString &status, const QString &error,
     const QString &errorOp)
 {
+    setTopicSummaryStatusOps(status, error,
+        errorOp.isEmpty() ? QStringList{} : QStringList{errorOp});
+}
+
+void NativeController::setTopicSummaryStatusOps(const QString &status, const QString &error,
+    const QStringList &errorOps)
+{
     if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) {
-        // Same visible state and producer: a re-notify would only add traffic
-        // pins. A different producer is a visible change though - the error
-        // band binds on topicSummarySettingsErrorOp (dialog gates on it), so
-        // the ledger switch must be announced or the band stays bound to the
-        // first producer (exo-review finding on #829).
-        if (m_topicSummarySettingsErrorOp == errorOp) return;
-        m_topicSummarySettingsErrorOp = errorOp;
+        // Same visible state and producers: a re-notify would only add traffic
+        // pins. A different producer set is a visible change though - the error
+        // bands bind on topicSummarySettingsErrorOps (dialog gates on it), so
+        // the ledger switch must be announced or the bands stay bound to the
+        // first producers (exo-review finding on #829).
+        if (m_topicSummarySettingsErrorOps == errorOps) return;
+        m_topicSummarySettingsErrorOps = errorOps;
         emit topicSummaryStateChanged();
         return;
     }
     m_topicSummarySettingsStatus = status;
     m_topicSummarySettingsError = error;
-    m_topicSummarySettingsErrorOp = errorOp;
+    m_topicSummarySettingsErrorOps = errorOps;
     emit topicSummaryStateChanged();
 }
 

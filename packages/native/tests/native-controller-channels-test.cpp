@@ -1047,7 +1047,7 @@ private slots:
         QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
     }
 
-    // exo-review round on #795: the error band binds on topicSummarySettingsErrorOp
+    // exo-review round on #795: the error band binds on topicSummarySettingsErrorOps
     // (NativeTopicSummarySettingsDialog gates on it), whose NOTIFY is
     // topicSummaryStateChanged. The same-status/error branch updated the ledger
     // quietly, so a second producer failing with the identical status/error left
@@ -1060,21 +1060,74 @@ private slots:
     {
         TopicSummaryScene scene; // no manage permissions: both loaders take the forbidden branch
         QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
-        QString lastAnnouncedOp;
+        QStringList lastAnnouncedOps;
         QObject::connect(&controller, &NativeController::topicSummaryStateChanged,
-            [&]{ lastAnnouncedOp = controller.topicSummarySettingsErrorOp(); });
+            [&]{ lastAnnouncedOps = controller.topicSummarySettingsErrorOps(); });
+        const QStringList gatesOnly{QStringLiteral("gates")};
+        const QStringList endpointsOnly{QStringLiteral("endpoints")};
         controller.loadTopicSummaryGates();
         QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
         QCOMPARE(controller.topicSummarySettingsError(), QString("forbidden"));
-        QCOMPARE(controller.topicSummarySettingsErrorOp(), QString("gates"));
-        QCOMPARE(lastAnnouncedOp, QString("gates"));
+        QCOMPARE(controller.topicSummarySettingsErrorOps(), gatesOnly);
+        QCOMPARE(lastAnnouncedOps, gatesOnly);
         controller.loadTopicSummaryEndpoints();
         QCOMPARE(controller.topicSummarySettingsError(), QString("forbidden"));
-        QCOMPARE(controller.topicSummarySettingsErrorOp(), QString("endpoints"));
+        QCOMPARE(controller.topicSummarySettingsErrorOps(), endpointsOnly);
         // The band re-evaluates on the notify: if the newest producer was written
         // without announcing, the last notify still carried "gates" and QML pins
         // the band to the retired producer.
-        QCOMPARE(lastAnnouncedOp, controller.topicSummarySettingsErrorOp());
+        QCOMPARE(lastAnnouncedOps, controller.topicSummarySettingsErrorOps());
+    }
+
+    // Finding 4687482019 on #795: a token renewal retires the in-flight ops of
+    // BOTH tab families at once. Attributing the interruption to a single
+    // arbitrary ledger key gated the other family's error band off even though
+    // its request was interrupted too; the ledger must keep EVERY affected
+    // family so each tab's own band stays attributed after the sweep.
+    void topicSummaryInterruptionAttributesEveryAffectedFamily()
+    {
+        TopicSummaryScene scene;
+        scene.permissions = {QJsonValue("workspace.topic_summary_settings.manage"),
+            QJsonValue("workspace.topic_summary_endpoint.manage")};
+        std::function<void()> releaseGates;
+        std::function<void()> releaseEndpoints;
+        const auto authBase = scene.fixture.authentication;
+        scene.fixture.authentication = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.contains(QStringLiteral("topic_summary_settings"))) {
+                ++scene.gatesGets;
+                Response response{scene.gatesResponse};
+                response.defer = [&](auto finish) { releaseGates = std::move(finish); };
+                return response;
+            }
+            if (path.contains(QStringLiteral("topic_summary_endpoints"))) {
+                ++scene.endpointGets;
+                Response response{scene.endpointsResponse};
+                response.defer = [&](auto finish) { releaseEndpoints = std::move(finish); };
+                return response;
+            }
+            return authBase(request);
+        };
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        controller.loadTopicSummaryGates();
+        controller.loadTopicSummaryEndpoints();
+        QTRY_COMPARE(scene.gatesGets, 1);
+        QTRY_COMPARE(scene.endpointGets, 1);
+        QVERIFY(controller.topicSummarySettingsBusy());
+        // One renewal retires the transport generation under both families.
+        scene.fixture.api.setAccessToken("summary-both-families-renewed-access-token");
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.topicSummarySettingsBusy(), 4000);
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        const QStringList bothFamilies{QStringLiteral("endpoints"), QStringLiteral("gates")};
+        QCOMPARE(controller.topicSummarySettingsErrorOps(), bothFamilies);
+        // The late retired replies must settle nothing and must not rewrite the
+        // attribution ledger.
+        if (releaseGates) releaseGates();
+        if (releaseEndpoints) releaseEndpoints();
+        QTest::qWait(300);
+        QCOMPARE(controller.topicSummarySettingsError(), QString("interrupted"));
+        QCOMPARE(controller.topicSummarySettingsErrorOps(), bothFamilies);
     }
 
     // Issue #736: a token renewal for the SAME account retires the transport

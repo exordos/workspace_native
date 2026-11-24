@@ -27161,15 +27161,27 @@ mv -Tf "$root/.current-new" "$root/current"
     void channelTopicSummarySavedFooterYieldsToNewEdits()
     {
         ChannelInfoWindowScene scene(true,
-            QStringLiteral("workspace.topic_summary_settings.manage"));
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
         const QJsonObject gatesDto{
             {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
         int saves = 0;
         const auto base = scene.fixture.server.handler;
         scene.fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
             if (request.method == "GET" && path.contains("/topic_summary_settings/"))
                 return Response{gatesDto};
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
             if (request.method == "PUT" && path.contains("/topic_summary_settings/")) {
                 ++saves;
                 return Response{QJsonObject{{"project_id", projectId},
@@ -27196,6 +27208,42 @@ mv -Tf "$root/.current-new" "$root/current"
         // marker immediately (#795).
         click(scene.window, visibleItem("channelTopicSummaryGatesProject"));
         QTRY_VERIFY(!visibleItem("channelTopicSummaryGatesProject")->property("checked").toBool());
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        // Finding 4687482010: opening the endpoint delete confirmation or an
+        // UNCHANGED edit form must not flip the footer to "unsaved" - the tab's
+        // dirty flag counts real draft mutations only. The witness runs in a
+        // freshly opened dialog so every form starts from a quiet, fully seeded
+        // state (a reopen re-runs the GETs, so no lingering op status is
+        // assumed). A mutation through the same form must still flip it
+        // (guard against over-gating).
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        click(scene.window, visibleItem("channelTopicSummaryEndpointDelete"));
+        auto *quietBand = visibleItem("channelTopicSummaryDeleteConfirm");
+        QVERIFY(quietBand);
+        QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        {
+            QQuickItem *bandCancel = nullptr;
+            for (auto *child : quietBand->findChildren<QQuickItem *>()) {
+                if (child->property("text").toString() == QStringLiteral("Cancel")
+                    && child->isVisible()) {
+                    bandCancel = child;
+                    break;
+                }
+            }
+            QVERIFY(bandCancel);
+            click(scene.window, bandCancel);
+        }
+        QTRY_VERIFY(!visibleItem("channelTopicSummaryDeleteConfirm"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        visibleItem("channelTopicSummaryField-name")->setProperty("text", QStringLiteral("Touched"));
         QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
         QTest::keyClick(scene.window, Qt::Key_Escape);
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
@@ -27272,8 +27320,9 @@ mv -Tf "$root/.current-new" "$root/current"
                    && scene.controller.property("topicSummarySettingsError").toString()
                        == QStringLiteral("server"));
         QVERIFY(!visibleItem("channelTopicSummaryEndpointsError"));
-        QCOMPARE(scene.controller.property("topicSummarySettingsErrorOp").toString(),
-                 QStringLiteral("gates"));
+        const QStringList gatesAttributed{QStringLiteral("gates")};
+        QCOMPARE(scene.controller.property("topicSummarySettingsErrorOps").toStringList(),
+                 gatesAttributed);
         QTest::keyClick(scene.window, Qt::Key_Escape);
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
