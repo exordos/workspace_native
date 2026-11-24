@@ -309,7 +309,7 @@ Dialog {
                         checkedFlag: gatesTab.projectDraft; enabledFlag: gatesTab.gatesAllowed && !controller.topicSummarySettingsBusy && controller.topicSummaryGatesLoaded
                         onFlipped: checked => { gatesTab.userEdited = true; gatesTab.projectDraft = checked }
                     }
-                    ErrorNotice { name: "channelTopicSummaryGatesError" }
+                    ErrorNotice { name: "channelTopicSummaryGatesError"; producer: "gates" }
                     Item { Layout.preferredHeight: 16 }
                 }
             }
@@ -709,7 +709,7 @@ Dialog {
                             checkedFlag: Boolean(endpointsTab.field("supports_reasoning", false)); enabledFlag: true
                             onFlipped: checked => endpointsTab.setField("supports_reasoning", checked) }
                     }
-                    ErrorNotice { name: "channelTopicSummaryEndpointsError" }
+                    ErrorNotice { name: "channelTopicSummaryEndpointsError"; producer: "endpoints" }
                     Item { Layout.preferredHeight: 16 }
                 }
             }
@@ -822,13 +822,19 @@ Dialog {
     }
 
     // Error notice band shared by the gates/endpoints tabs (reference: border danger/30, bg danger/5).
+    // #795: the band renders only when this tab's own op family produced the
+    // failure. The controller records the producer when it sets an error, so a
+    // late reply that lands while the other tab is visible cannot paint the
+    // wrong band ("gates"/"endpoints" vocabulary).
     component ErrorNotice: Rectangle {
         id: errBand
         property string name: ""
+        required property string producer
         objectName: name
         Layout.fillWidth: true
         visible: dlg.controller.topicSummarySettingsStatus === "error"
             && dlg.controller.topicSummarySettingsError !== "forbidden"
+            && dlg.controller.topicSummarySettingsErrorOp === producer
         radius: 8
         Layout.preferredHeight: visible ? errText.implicitHeight + 20 : 0
         color: Qt.alpha(dlg.colors.danger, 0.05)
@@ -883,13 +889,15 @@ Dialog {
         }
     }
 
-    // Unsaved marker: while a tab carries a dirty draft the footer shows the yellow dot;
-    // controller statuses ("saved"/"error") win over the local marker.
+    // Unsaved marker: #795 inverts the old controller-wins priority. The
+    // controller's "saved"/"error" are op-end statuses that linger until the
+    // next op starts, so a dirty draft must outrank them: the first edit after
+    // a settled save (or after a failed attempt) shows the yellow unsaved
+    // marker immediately instead of the stale "Saved"/silent-error render.
     property string footerStatus: {
-        const ctrlStatus = controller.topicSummarySettingsStatus
-        if (ctrlStatus === "saved" || ctrlStatus === "error") return ctrlStatus
         const anyDirty = topicTab.dirty || gatesTab.dirty || endpointsTab.dirty
-        return anyDirty ? "unsaved" : ""
+        if (anyDirty) return "unsaved"
+        return controller.topicSummarySettingsStatus === "saved" ? "saved" : ""
     }
     // Maps the reference status.forbidden/network/invalid/contract/server kinds to visible text.
     function errorStatusText() {

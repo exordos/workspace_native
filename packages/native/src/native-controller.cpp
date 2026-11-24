@@ -22057,6 +22057,16 @@ const QStringList &topicSummaryEndpointMutableFields()
     return fields;
 }
 
+// #795: every topic-summary op belongs to the tab family whose error band shows
+// the failure; the controller records it with the error so a late reply that
+// lands while the other section is visible cannot paint the wrong band.
+QString topicSummaryErrorFamily(const QString &key)
+{
+    if (key.startsWith(QLatin1String("gates"))) return QStringLiteral("gates");
+    if (key.startsWith(QLatin1String("endpoint"))) return QStringLiteral("endpoints");
+    return QString();
+}
+
 } // namespace
 
 quint64 NativeController::beginTopicSummaryOp(const QString &key)
@@ -22067,6 +22077,7 @@ quint64 NativeController::beginTopicSummaryOp(const QString &key)
     m_topicSummarySettingsBusy = true;
     m_topicSummarySettingsStatus.clear();
     m_topicSummarySettingsError.clear();
+    m_topicSummarySettingsErrorOp.clear();
     emit topicSummaryStateChanged();
     return token;
 }
@@ -22098,16 +22109,29 @@ void NativeController::interruptTopicSummaryOps()
     // (#755 finding 4670644138).
     if (m_topicSummaryOps.contains(QStringLiteral("endpoint-new")))
         m_topicSummaryCreateNeedsReconcile = true;
+    QString interruptedFamily;
+    for (const auto &key : std::as_const(m_topicSummaryOps)) {
+        interruptedFamily = topicSummaryErrorFamily(key);
+        if (!interruptedFamily.isEmpty()) break;
+    }
     m_topicSummaryOps.clear();
     m_topicSummarySettingsBusy = false;
-    setTopicSummaryStatus(QStringLiteral("error"), QStringLiteral("interrupted"));
+    setTopicSummaryStatus(QStringLiteral("error"), QStringLiteral("interrupted"), interruptedFamily);
 }
 
-void NativeController::setTopicSummaryStatus(const QString &status, const QString &error)
+void NativeController::setTopicSummaryStatus(const QString &status, const QString &error,
+    const QString &errorOp)
 {
-    if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) return;
+    if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) {
+        // Same visible state, possibly a different producer: update the ledger
+        // quietly - every QML consumer gates on the status, so a re-notify for
+        // the same status/error pair would only add traffic pins.
+        m_topicSummarySettingsErrorOp = errorOp;
+        return;
+    }
     m_topicSummarySettingsStatus = status;
     m_topicSummarySettingsError = error;
+    m_topicSummarySettingsErrorOp = errorOp;
     emit topicSummaryStateChanged();
 }
 
@@ -22132,7 +22156,7 @@ QString NativeController::topicSummaryTabPermission(const QString &tab) const
 void NativeController::loadTopicSummaryGates()
 {
     if (!authenticated() || !m_session->canManageSummaryGates()) {
-        setTopicSummaryStatus("error", "forbidden");
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("gates"));
         return;
     }
     // Review #708 finding 8: unverified gate values must never be editable or
@@ -22149,9 +22173,9 @@ void NativeController::loadTopicSummaryGates()
         const auto json = response.data.toObject();
         const auto global = json.value("global_enabled");
         const auto local = json.value("project_enabled");
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("gates")); return; }
         if (!json.value("project_id").isString() || !global.isBool() || !local.isBool()) {
-            setTopicSummaryStatus("error", topicSummaryErrorKind(response, true));
+            setTopicSummaryStatus("error", topicSummaryErrorKind(response, true), QStringLiteral("gates"));
             return;
         }
         m_topicSummaryGates = {{"projectId", json.value("project_id").toString()},
@@ -22168,7 +22192,7 @@ void NativeController::loadTopicSummaryGates()
 void NativeController::saveTopicSummaryGates(bool globalEnabled, bool projectEnabled)
 {
     if (!authenticated() || !m_session->canManageSummaryGates()) {
-        setTopicSummaryStatus("error", "forbidden");
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("gates"));
         return;
     }
     const auto token = beginTopicSummaryOp("gates");
@@ -22179,7 +22203,7 @@ void NativeController::saveTopicSummaryGates(bool globalEnabled, bool projectEna
     request("PUT", path, body, {}, [this, token, owner, globalEnabled, projectEnabled](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("gates", token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("gates")); return; }
         // Merge only the two gate booleans of the echo (plus its project id when
         // well-shaped); a whole-row replacement could regress newer fields.
         const auto json = response.data.toObject();
@@ -22199,7 +22223,7 @@ void NativeController::saveTopicSummaryGates(bool globalEnabled, bool projectEna
 void NativeController::loadTopicSummaryEndpoints()
 {
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden");
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
         return;
     }
     const auto token = beginTopicSummaryOp("endpoints");
@@ -22208,13 +22232,13 @@ void NativeController::loadTopicSummaryEndpoints()
     request("GET", messenger + "/topic_summary_endpoints/", {}, {}, [this, token, owner](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoints", token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
-        if (!response.data.isArray()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response, true)); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
+        if (!response.data.isArray()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response, true), QStringLiteral("endpoints")); return; }
         QVariantList rows;
         for (const auto &raw : response.data.toArray()) {
             QVariantMap row;
             if (!topicSummaryEndpointRow(raw.toObject(), row)) {
-                setTopicSummaryStatus("error", topicSummaryErrorKind(response, true));
+                setTopicSummaryStatus("error", topicSummaryErrorKind(response, true), QStringLiteral("endpoints"));
                 return;
             }
             rows.append(row);
@@ -22289,11 +22313,11 @@ QStringList NativeController::topicSummaryEndpointValidationErrors(const QVarian
 bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
 {
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden");
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
         return false;
     }
     if (!topicSummaryEndpointValidationErrors(form, true).isEmpty()) {
-        setTopicSummaryStatus("error", "invalid");
+        setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"));
         return false;
     }
     if (m_topicSummaryCreateNeedsReconcile) {
@@ -22326,7 +22350,7 @@ bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
         [this, token, owner, body](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoint-new", token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
         QVariantMap row;
         if (!response.data.isNull() && topicSummaryEndpointRow(response.data.toObject(), row)) {
             m_topicSummaryEndpoints.append(row);
@@ -22353,12 +22377,12 @@ bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
 bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVariantMap &form)
 {
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden");
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
         return false;
     }
-    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid"); return false; }
+    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints")); return false; }
     if (!topicSummaryEndpointValidationErrors(form, false).isEmpty()) {
-        setTopicSummaryStatus("error", "invalid");
+        setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"));
         return false;
     }
     // Partial update: only the fields the caller actually carries, and never an
@@ -22375,7 +22399,7 @@ bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVa
             if (!value.toString().isEmpty()) body.insert(field, value.toString());
         } else body.insert(field, QJsonValue::fromVariant(value));
     }
-    if (body.isEmpty()) { setTopicSummaryStatus("error", "invalid"); return false; }
+    if (body.isEmpty()) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints")); return false; }
     const auto token = beginTopicSummaryOp("endpoint-" + uuid);
     if (!token) return false;
     const auto owner = ownerKey();
@@ -22383,7 +22407,7 @@ bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVa
         [this, token, owner, uuid, body](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
         for (auto &entry : m_topicSummaryEndpoints) {
             auto row = entry.toMap();
             if (row.value("uuid").toString() != uuid) continue;
@@ -22402,10 +22426,10 @@ bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVa
 void NativeController::deleteTopicSummaryEndpoint(const QString &uuid)
 {
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden");
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
         return;
     }
-    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid"); return; }
+    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints")); return; }
     const auto token = beginTopicSummaryOp("endpoint-" + uuid);
     if (!token) return;
     const auto owner = ownerKey();
@@ -22413,7 +22437,7 @@ void NativeController::deleteTopicSummaryEndpoint(const QString &uuid)
         [this, token, owner, uuid](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response)); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
         for (int i = 0; i < m_topicSummaryEndpoints.size(); ++i) {
             if (m_topicSummaryEndpoints.at(i).toMap().value("uuid").toString() == uuid) {
                 m_topicSummaryEndpoints.removeAt(i);

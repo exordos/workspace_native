@@ -119,3 +119,24 @@ Native must mirror every new `tr()` string into
 
 - The #133 placeholder popup is replaced (new functionality extends the shipped entry;
   the entry button itself keeps its objectName and position).
+
+## #795: transient footer status and per-op error producer
+
+Two contract corrections on top of the original design:
+
+1. Footer priority (#795). The footer's "saved"/"error" statuses are op-end
+   statuses: the controller keeps them until the NEXT op begins. The original
+   binding let them outrank dirtiness, so after a settled save every fresh
+   edit kept showing the green "Saved" and a stale "error" suppressed the
+   yellow marker. New rule: a dirty draft always wins - the first edit on any
+   tab downgrades the footer to "unsaved" at once; "saved" renders only while
+   no tab carries unsaved edits.
+2. Error producer ledger (#795). `topicSummarySettingsStatus/Error` is one
+   shared surface and cannot say which section failed; a late reply can land
+   while the other tab is on screen (save in flight -> tab switch -> its GET
+   settles -> the late failure lands), so a gates failure used to render
+   inside the endpoints band until the next GET re-ran. The controller now
+   records `topicSummarySettingsErrorOp` ("gates"/"endpoints") whenever it
+   sets an error - by op key family (`gates*`, `endpoint*`) - and each tab's
+   ErrorNotice gates on its own producer. The ledger clears with every new
+   dispatch (beginTopicSummaryOp) and on any non-error status transition.

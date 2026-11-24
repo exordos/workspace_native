@@ -2774,6 +2774,10 @@ public:
     Q_PROPERTY(bool topicSummaryGatesLoaded READ topicSummaryGatesLoaded NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(QString topicSummarySettingsStatus READ topicSummarySettingsStatus NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(QString topicSummarySettingsError READ topicSummarySettingsError NOTIFY topicSummaryStateChanged)
+    // #795: which tab family ("gates"/"endpoints") produced the current error.
+    // A shared status cannot tell, and a late reply can land while the other
+    // tab is on screen, so each error band gates on its own producer.
+    Q_PROPERTY(QString topicSummarySettingsErrorOp READ topicSummarySettingsErrorOp NOTIFY topicSummaryStateChanged)
 
     QVariantMap topicSummaryGates() const { return m_topicSummaryGates; }
     bool topicSummaryGatesLoaded() const { return m_topicSummaryGatesLoaded; }
@@ -2781,6 +2785,7 @@ public:
     bool topicSummarySettingsBusy() const { return m_topicSummarySettingsBusy; }
     QString topicSummarySettingsStatus() const { return m_topicSummarySettingsStatus; }
     QString topicSummarySettingsError() const { return m_topicSummarySettingsError; }
+    QString topicSummarySettingsErrorOp() const { return m_topicSummarySettingsErrorOp; }
 
     // "allowed" | "denied" | "unknown" for tab "topic" | "gates" | "endpoints",
     // mirroring messenger-topic-summary-permissions.lib.ts.
@@ -2804,7 +2809,8 @@ private:
     quint64 beginTopicSummaryOp(const QString &key);
     bool finishTopicSummaryOp(const QString &key, quint64 token);
     void interruptTopicSummaryOps();
-    void setTopicSummaryStatus(const QString &status, const QString &error = {});
+    void setTopicSummaryStatus(const QString &status, const QString &error = {},
+        const QString &errorOp = {});
     QHash<QString, quint64> m_topicSummaryOps;
     quint64 m_topicSummaryToken = 0;
     QVariantMap m_topicSummaryGates;
@@ -2814,6 +2820,7 @@ private:
     bool m_topicSummarySettingsBusy = false;
     QString m_topicSummarySettingsStatus;
     QString m_topicSummarySettingsError;
+    QString m_topicSummarySettingsErrorOp;
 };
 
 }
