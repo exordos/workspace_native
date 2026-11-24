@@ -50,6 +50,11 @@ struct FileResult;
 class NativeController final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool authenticated READ authenticated NOTIFY stateChanged)
+    // Issue #789: true while the workspace is painted from the cached data of
+    // the saved startup identity and the session refresh chain is still in
+    // flight. Leaving it flips back to the authenticated projection or to the
+    // sign-in screen; cached rows are never blanked by the handover.
+    Q_PROPERTY(bool startupCacheMode READ startupCacheMode NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
     Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
@@ -381,6 +386,7 @@ public:
     void reloadSnapshot();
     bool applyRealtimeEvent(const QJsonObject &envelope);
     bool authenticated() const { return m_session->ready(); }
+    bool startupCacheMode() const { return m_startupCacheMode; }
     // Sidebar row previews and the reference relative-time label, measured in
     // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md; exposed for the QtTest contract cases.
     static QString summarizeRowPreview(const QString &plainText);
@@ -1577,6 +1583,9 @@ private:
     bool authoritativeRoute() const;
     void notifyTrustChanged();
     void openCache();
+    // Issue #789: opens the cache for the vault-resolved startup identity
+    // before the session refresh chain completes; see startupCacheMode.
+    void openCacheForStartupIdentity();
     void closeCache();
     void markCacheStale();
     void observeTransport(const ApiResult &result);
@@ -1873,6 +1882,10 @@ private:
     bool m_cacheForgettingAccount = false;
     quint64 m_localResetGeneration = 0;
     NativeCache::Lease m_cacheLease;
+    // Issue #789: startup cache-first state (see startupCacheMode). The
+    // identity memo is the server|project|user tuple the bootstrap opened.
+    bool m_startupCacheMode = false;
+    QString m_startupIdentity;
     quint64 m_cacheRevision = 0;
     bool m_cacheProtection = false;
     bool m_cacheHydrated = false;

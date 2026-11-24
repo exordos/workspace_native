@@ -2057,7 +2057,7 @@ component NativeMentionChip: Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: 12
-        visible: !root.controller.authenticated
+        visible: !root.controller.authenticated && !root.controller.startupCacheMode
         text: qsTr("Report a problem")
         onClicked: supportPopup.active = true
     }
@@ -2091,7 +2091,9 @@ component NativeMentionChip: Item {
         property bool showSavedAccounts: false
         readonly property bool savedAccountsOnly: showSavedAccounts && root.controller.savedAccounts.length > 0
             && root.controller.loginStep === "organization"
-        visible: !root.controller.authenticated
+        // Issue #789: while the cached shell paints from the startup identity,
+        // the sign-in form must not cover it; the refresh runs in background.
+        visible: !root.controller.authenticated && !root.controller.startupCacheMode
         onVisibleChanged: if (!visible) showSavedAccounts = false
         width: Math.min(root.width - 32, 448)
         height: Math.min(root.height - 32, loginContent.implicitHeight)
@@ -5140,7 +5142,9 @@ component NativeMentionChip: Item {
     RowLayout {
         id: workspace
         Keys.onEscapePressed: event => root.handleChatEscape(event)
-        visible: root.controller.authenticated
+        // Issue #789: the cached shell of the saved startup identity paints
+        // while the session refresh chain is still in flight (startupCacheMode).
+        visible: root.controller.authenticated || root.controller.startupCacheMode
         anchors.top: topBar.bottom
         anchors.topMargin: 4
         anchors.bottom: parent.bottom
@@ -13624,7 +13628,7 @@ component NativeMentionChip: Item {
         x: 8
         y: 8
         z: 10
-        visible: root.controller.authenticated && root.controller.cacheStale
+        visible: root.controller.authenticated && root.controller.cacheStale || root.controller.startupCacheMode && root.controller.cacheStale
         width: Math.min(Math.max(0, messageList.width - 16), Math.ceil(cacheStatus.implicitWidth) + 20 + (cacheActivity.visible ? 22 : 0))
         height: 26
         radius: 13

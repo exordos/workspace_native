@@ -7160,6 +7160,9 @@ bool NativeController::openCachedSearchResult(const QString &id)
 
 void NativeController::closeCache()
 {
+    // Issue #789: a discarded lease ends the startup cache-first mode with it.
+    m_startupCacheMode = false;
+    m_startupIdentity.clear();
     const QPointer<NativeController> openingGuard(this);
     clearCachedSearch();
     if (!openingGuard) return;
@@ -7179,6 +7182,20 @@ void NativeController::closeCache()
 
 void NativeController::openCache()
 {
+    // Issue #789: the startup bootstrap may already have opened this exact
+    // identity. Re-opening it would bump the cache revision and re-project the
+    // rows under a new lease, blanking the painted cached content the refresh
+    // is only supposed to add to. Hand ownership over instead.
+    const QString bootstrapIdentity = m_api->server().toString() + QLatin1Char('|')
+        + m_session->project() + QLatin1Char('|') + m_session->user();
+    if (m_startupCacheMode && !m_startupIdentity.isEmpty()
+        && m_startupIdentity == bootstrapIdentity) {
+        m_startupCacheMode = false;
+        m_startupIdentity.clear();
+        scheduleRowPreviewHydration();
+        emit stateChanged();
+        return;
+    }
     const QPointer<NativeController> openingGuard(this);
     clearCachedSearch();
     if (!openingGuard) return;
@@ -7198,6 +7215,29 @@ void NativeController::openCache()
         // the guard chain that `cache->open` is evaluated under.
         scheduleRowPreviewHydration();
     }
+}
+
+void NativeController::openCacheForStartupIdentity()
+{
+    // Issue #789: paint-from-cache startup. The vault already confirmed the
+    // saved identity, so the cache can open behind the stale-pill projection
+    // while Session renews the token and re-introspects.
+    if (authenticated() || !m_cache) return;
+    if (m_session->project().isEmpty() || m_session->user().isEmpty()) return;
+    const QString identity = m_api->server().toString() + QLatin1Char('|')
+        + m_session->project() + QLatin1Char('|') + m_session->user();
+    if (identity == m_startupIdentity) return;
+    clearCachedSearch();
+    ++m_cacheRevision;
+    m_cacheHydrations.clear();
+    m_cacheWasAvailable = false;
+    m_cacheLease = {};
+    m_startupIdentity = identity;
+    m_startupCacheMode = true;
+    const QPointer<NativeController> guard(this);
+    if (m_cache->open(m_api->server(), m_session->project(), m_session->user()) && guard)
+        m_cacheLease = m_cache->lease();
+    if (guard) emit stateChanged();
 }
 
 void NativeController::markCacheStale()
@@ -10548,6 +10588,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         if (guard) emit messagesChanged();
     });
     connect(session, &Session::authenticated, this, &NativeController::startAuthenticatedWorkspace);
+    // Issue #789: the vault-resolved startup identity opens the cache ahead of
+    // the token/introspect chain, so the shell paints from cache immediately.
+    connect(session, &Session::startupIdentityResolved, this,
+            &NativeController::openCacheForStartupIdentity);
     m_mentionIndexRetry.setSingleShot(true);
     connect(&m_mentionIndexRetry, &QTimer::timeout, this, &NativeController::loadMentionIndex);
     m_poll.setInterval(15000);
