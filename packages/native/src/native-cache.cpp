@@ -681,7 +681,9 @@ bool NativeCache::putMediaBlob(const Lease &lease, const QString &uuid, const QB
     {
         QSqlQuery query(m_database); query.prepare("SELECT " + EntryBytesSql + " FROM entries WHERE owner=? AND key=?");
         query.addBindValue(m_owner); query.addBindValue(hash);
-        if (!query.exec()) { m_database.rollback(); return false; }
+        bool okay = query.exec();
+        if (m_failMediaBlobLookupForTest > 0) { --m_failMediaBlobLookupForTest; okay = false; }
+        if (!okay) { m_database.rollback(); return false; }
         if (query.next()) { existed = true; previousSize = query.value(0).toLongLong(); }
     }
     bool okay = true;

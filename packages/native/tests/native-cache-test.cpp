@@ -505,6 +505,52 @@ private slots:
         QVERIFY(cache.diskUsageBytes() <= cache.diskLimitBytes());
     }
 
+    // #828 review round: a query failure on the in-transaction existence lookup
+    // rolls back the reservation trim that already deleted previews, but the
+    // old path skipped the decline's totals resync - the restored entries stayed
+    // discounted in memory. The ledger must match the database after the rollback.
+    void failedLookupAfterTrimResyncsTotals()
+    {
+        QTemporaryDir directory;
+        NativeCache cache(directory.path());
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        QVERIFY(cache.setDiskLimitBytes(2 * 1024 * 1024));
+        // Same corridor as the decline fixture: physical headroom in the
+        // [720,790] KiB band, two small previews as the only reclaimable
+        // derived entries. In this corridor a 90 KiB preview is admitted ONLY
+        // after the trim reclaims both previews (calibrated boundary), so the
+        // injected lookup failure fires with deletes in flight.
+        for (int page = 0; page < 44; ++page) {
+            const qint64 headroom = cache.diskLimitBytes() - cache.diskUsageBytes();
+            if (headroom <= 780 * 1024) break;
+            const QString marker = QStringLiteral("page-%1").arg(page);
+            const NativeCache::Key pageKey{NativeCache::Kind::History, Stream, Topic, marker.toUtf8()};
+            QVERIFY2(cache.put(lease, pageKey, {message(QString(40000, QChar(static_cast<ushort>('a' + page))))}),
+                qPrintable(cache.error()));
+        }
+        const qint64 headroom = cache.diskLimitBytes() - cache.diskUsageBytes();
+        QVERIFY2(headroom > 720 * 1024 && headroom < 790 * 1024,
+            qPrintable(QStringLiteral("fixture headroom %1 KiB outside the [720,790] KiB band; retune fill")
+                .arg(headroom / 1024)));
+        const QString small1 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const QString small2 = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY2(cache.putMediaBlob(lease, small1, QByteArray(1024, 'x')), qPrintable(cache.error()));
+        QVERIFY2(cache.putMediaBlob(lease, small2, QByteArray(2048, 'y')), qPrintable(cache.error()));
+        const qint64 entriesBefore = cache.stats().entries;
+        const qint64 bytesBefore = cache.stats().bytes;
+        cache.failMediaBlobLookupForTest(1);
+        const QString big = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(!cache.putMediaBlob(lease, big, QByteArray(90 * 1024, 'p')));
+        QVERIFY2(cache.error().isEmpty(), "a failed in-transaction lookup must not fail-close the cache");
+        QVERIFY(!cache.getMediaBlob(lease, big).has_value()); // the rolled-back insert persisted nothing
+        // The rollback restored the trimmed previews: the ledger must match the
+        // database again, not keep the pre-rollback discount.
+        QCOMPARE(cache.stats().entries, entriesBefore);
+        QCOMPARE(cache.stats().bytes, bytesBefore);
+        QCOMPARE(cache.getMediaBlob(lease, small1).value_or(QByteArray()), QByteArray(1024, 'x'));
+        QCOMPARE(cache.getMediaBlob(lease, small2).value_or(QByteArray()), QByteArray(2048, 'y'));
+    }
+
     void declinedPreviewReservationMustNotEvictExistingPreviews()
     {
         // #803: the derived-only trim for a preview reservation must make its

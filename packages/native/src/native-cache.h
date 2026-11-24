@@ -128,6 +128,11 @@ public:
     // forgotten. Does not expose its cached rows or switch the active owner.
     bool forgetAccount(const QUrl &server, const QString &project, const QString &user);
     Stats stats() const;
+    // Test seam: fail the next N mid-transaction existence lookups of
+    // putMediaBlob. A query error at that point is otherwise unobservable
+    // from a test process, and it is the only path that rolls back trim
+    // deletes without the decline's ledger resync (#828 review round).
+    void failMediaBlobLookupForTest(int times = 1) { m_failMediaBlobLookupForTest = times; }
 
 signals:
     void errorChanged();
@@ -166,6 +171,7 @@ private:
     qint64 m_diskLimitBytes = DefaultDiskLimitBytes;
     mutable qint64 m_totalEntries = 0;
     mutable qint64 m_totalBytes = 0;
+    int m_failMediaBlobLookupForTest = 0;
     mutable qint64 m_dataVersion = -1;
 };
 
