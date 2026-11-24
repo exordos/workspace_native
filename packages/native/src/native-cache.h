@@ -137,7 +137,7 @@ private:
     QByteArray keyHash(const Key &key) const;
     std::optional<QJsonArray> sanitize(const Key &key, const QJsonArray &rows) const;
     bool fail();
-    bool trim(qint64 incomingBytes = 0);
+    bool trim(qint64 incomingBytes = 0, bool derivedOnly = false, bool *declined = nullptr);
     bool checkpoint(bool enforceLimit = true);
     bool applyDiskLimit();
     qint64 databaseLimitBytes() const;

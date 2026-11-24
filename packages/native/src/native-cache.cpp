@@ -659,7 +659,13 @@ bool NativeCache::putMediaBlob(const Lease &lease, const QString &uuid, const QB
     if (size > entryLimitBytes() || size > m_policy.maxBytes) return false;
     const auto now = m_clock();
     if (now < 0 || now > std::numeric_limits<qint64>::max() - m_policy.ttlMs) return false;
-    if (!trim(size)) return fail();
+    // #775: preview persistence is admission-checked against derived entries
+    // only - a preview that cannot fit without evicting authoritative pages
+    // declines and the visible pipeline keeps the bytes in memory. A decline
+    // is an ordinary refusal, like the over-limit early return above: it must
+    // not route through fail(), which closes the whole cache.
+    bool declined = false;
+    if (!trim(size, /*derivedOnly=*/true, &declined)) return declined ? false : fail();
     bool existed = false; qint64 previousSize = 0;
     {
         QSqlQuery query(m_database); query.prepare("SELECT " + EntryBytesSql + " FROM entries WHERE owner=? AND key=?");
@@ -795,7 +801,7 @@ bool NativeCache::refreshTotals(bool force) const
     return true;
 }
 
-bool NativeCache::trim(qint64 incomingBytes)
+bool NativeCache::trim(qint64 incomingBytes, bool derivedOnly, bool *declined)
 {
     if (!refreshTotals()) return false;
     QSqlQuery query(m_database);
@@ -827,7 +833,17 @@ bool NativeCache::trim(qint64 incomingBytes)
         // Derived blobs go first regardless of recency (#729 design decision 3);
         // authoritative pages only join once no blob remains to reclaim.
         if (!collect("WHERE kind=6")) return false;
-        if (removals.isEmpty() && !collect("WHERE kind<>6")) return false;
+        if (removals.isEmpty()) {
+            // #775: a derived preview may replace older derived entries, but when
+            // none remain the reservation must not fall back to authoritative
+            // pages. Decline the write so saved offline history survives; the
+            // caller keeps the bytes it already has in memory.
+            if (derivedOnly) {
+                if (declined) *declined = true;
+                return false;
+            }
+            if (!collect("WHERE kind<>6")) return false;
+        }
         if (removals.isEmpty()) return false;
         for (const auto &item : removals) {
             if (shouldCancel()) return false;
