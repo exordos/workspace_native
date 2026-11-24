@@ -10465,6 +10465,12 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         m_chatHeaderMembersPendingEvents.clear();
         m_quoteInFlight.clear();
         m_quoteRetryAfter.clear();
+        // Issue #776: retired preload callbacks are discarded by the request
+        // wrapper, so the slots the two-slot budget subtracts are never freed
+        // at the callback. Release them at the generation bump itself, or the
+        // warm queue stops making progress for the rest of the session. The
+        // self-rearming preload timer picks the freed budget up on its next tick.
+        m_topicPreloadInFlight.clear();
         // Retired transport callbacks are deliberately dropped. Settle their
         // UI operations here while retaining same-owner retry UUIDs.
         const auto pollOperations = m_pendingPollCreations;
