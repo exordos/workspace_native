@@ -492,6 +492,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     sidebarCatalogFailureShowsBlockingErrorCard
     sidebarCatalogStatesExposeAccessibleText
     sidebarExpansionPersistsAndRevealsTopics
+    startupCacheOpenFailureKeepsSignInVisible
     topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks
     topicContextMenuMarkReadVisibilityAndAction
     upToEditLastAndSaveUseTheComposerEditMode
