@@ -904,6 +904,23 @@ ApplicationWindow {
         if (root.composerWritingSession && item && !root.composerSessionGrabTarget(item))
             root.composerWritingSession = false;
     }
+    // Issue #782: the reference hands the caret back to the composer when a
+    // mouse send confirms (message-composer.ui.tsx:1268 setSendFocusRequest,
+    // the :741-765 effect delivers it, :1273 drops it when the conversation
+    // scope changed while the send was in flight). A pointer send arms the
+    // handoff scoped to its conversation; onMessageSent settles it, any
+    // explicit focus move made while the send is pending outranks it.
+    property string sendFocusHandoff: ""
+    function noteSendFocusHandoff() {
+        root.sendFocusHandoff = root.controller.selectedStream + "/" + root.controller.selectedTopic;
+    }
+    function settleSendFocusHandoff(stream, topic) {
+        if (root.sendFocusHandoff !== stream + "/" + topic)
+            return;
+        root.sendFocusHandoff = "";
+        if (composerText.enabled)
+            composerText.forceActiveFocus(Qt.OtherFocusReason);
+    }
     readonly property var pendingOutgoing: root.controller.outgoingSend || ({})
     readonly property var encryptedPendingSend: root.encryptedConversation && String(root.pendingOutgoing.id || "").length > 0 ? root.pendingOutgoing : root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
@@ -2026,6 +2043,11 @@ component NativeMentionChip: Item {
             if (root.controller.selectedStream === stream && root.controller.selectedTopic === topic) {
                 messageComposerShell.preview = false;
                 messageList.followSentMessage(id);
+                root.settleSendFocusHandoff(stream, topic);
+            } else {
+                // #782: the conversation changed while the send was in flight,
+                // so the pending handoff belongs to a scope the user left.
+                root.sendFocusHandoff = "";
             }
         }
     }
@@ -4957,6 +4979,17 @@ component NativeMentionChip: Item {
         // Issue #780 round 2 (finding 4679419818): see the writer-session
         // helpers above - the same focus event also ends a stale session.
         root.endComposerWritingSessionOnFocusMove(root.activeFocusItem)
+        // #782: an explicit focus move while a send is pending outranks the
+        // pending handoff. Two destinations stay neutral: null, and the
+        // window's internal scene root - Qt parks focus there when the
+        // focused control becomes disabled, which is exactly what the send
+        // does to the composer while the request is in flight. The scene
+        // root is an internal QQuickRootItem with no QML-level identity, so
+        // its type name is the only stable handle.
+        if (root.sendFocusHandoff.length > 0 && root.activeFocusItem
+                && root.activeFocusItem !== composerText
+                && String(root.activeFocusItem).indexOf("QQuickRootItem") !== 0)
+            root.sendFocusHandoff = "";
     }
     Connections {
         target: root.controller
@@ -12685,8 +12718,12 @@ component NativeMentionChip: Item {
                         onClicked: {
                             if (root.controller.editingMessageId.length)
                                 root.controller.submitEditMessage();
-                            else
+                            else {
+                                // #782: a pointer send asks for the caret back
+                                // once the send confirms (edit-save does not).
+                                root.noteSendFocusHandoff();
                                 root.controller.send();
+                            }
                         }
                     }
                     }
