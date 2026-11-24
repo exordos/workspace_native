@@ -859,6 +859,25 @@ ApplicationWindow {
         if (composerText.enabled)
             composerText.forceActiveFocus(Qt.OtherFocusReason);
     }
+    // Issue #780: a writing session survives a pointer switch to another sidebar
+    // topic. The composer marks the session while it holds the caret; a sidebar
+    // topic click consumes at most one resume and hands the caret back to the
+    // writable destination, so typing lands without an extra click (the UX
+    // problem named in the issue: the switch cost a click and silently dropped
+    // the typed start). Consuming per click and never reacting on focus loss
+    // keeps keyboard traversal, filtered search and explicit caret moves at
+    // their current behavior; a read-only destination keeps the row focused.
+    // Sidebar focus-on-press steals focus before the click is emitted, so the
+    // session is read in the click handler, not at press (probed on Qt 6.10).
+    property bool composerWritingSession: false
+    function noteComposerWriting() { root.composerWritingSession = true; }
+    function resumeComposerWritingAfterSwitch() {
+        const resume = root.composerWritingSession;
+        root.composerWritingSession = false;
+        if (!resume || !root.composerAvailable)
+            return;
+        composerText.forceActiveFocus(Qt.OtherFocusReason);
+    }
     readonly property var pendingOutgoing: root.controller.outgoingSend || ({})
     readonly property var encryptedPendingSend: root.encryptedConversation && String(root.pendingOutgoing.id || "").length > 0 ? root.pendingOutgoing : root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
@@ -6607,6 +6626,7 @@ component NativeMentionChip: Item {
                                     root.controller.selectTopic(modelData.id);
                                 else
                                     root.controller.openTopic(modelData.id, streamDelegate.modelData.id);
+                                root.resumeComposerWritingAfterSwitch();
                             }
                             // Issue #628: ArrowUp/ArrowDown over the filtered
                             // results (reference sidebar-workspace-search.lib.ts:7-33).
@@ -12288,6 +12308,7 @@ component NativeMentionChip: Item {
                                     readOnly: root.controller.mediaViewer.open
                                     enabled: root.composerAvailable && !Boolean(root.encryptedPendingSend.busy)
                                     text: root.controller.draft
+                                    onActiveFocusChanged: if (activeFocus) root.noteComposerWriting()
                                     onTextChanged: {
                                         if (root.composerAvailable && root.controller.draft !== text)
                                             root.controller.draft = text;
