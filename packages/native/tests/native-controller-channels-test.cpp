@@ -1047,6 +1047,36 @@ private slots:
         QCOMPARE(controller.topicSummarySettingsError(), QString("contract"));
     }
 
+    // exo-review round on #795: the error band binds on topicSummarySettingsErrorOp
+    // (NativeTopicSummarySettingsDialog gates on it), whose NOTIFY is
+    // topicSummaryStateChanged. The same-status/error branch updated the ledger
+    // quietly, so a second producer failing with the identical status/error left
+    // the band bound to the first producer. Server-op failures cannot hit the
+    // quiet branch (begin resets the ledger and announces); the permission gates
+    // write the ledger directly - two back-to-back forbidden branches are the
+    // same status/error with a producer switch. Record what each notify exposes:
+    // the last announce must carry the final producer, or QML rebinds to it.
+    void topicSummarySameErrorProducerChangeAnnounces()
+    {
+        TopicSummaryScene scene; // no manage permissions: both loaders take the forbidden branch
+        QVERIFY(scene.fixture.start()); auto &controller = scene.fixture.controller;
+        QString lastAnnouncedOp;
+        QObject::connect(&controller, &NativeController::topicSummaryStateChanged,
+            [&]{ lastAnnouncedOp = controller.topicSummarySettingsErrorOp(); });
+        controller.loadTopicSummaryGates();
+        QCOMPARE(controller.topicSummarySettingsStatus(), QString("error"));
+        QCOMPARE(controller.topicSummarySettingsError(), QString("forbidden"));
+        QCOMPARE(controller.topicSummarySettingsErrorOp(), QString("gates"));
+        QCOMPARE(lastAnnouncedOp, QString("gates"));
+        controller.loadTopicSummaryEndpoints();
+        QCOMPARE(controller.topicSummarySettingsError(), QString("forbidden"));
+        QCOMPARE(controller.topicSummarySettingsErrorOp(), QString("endpoints"));
+        // The band re-evaluates on the notify: if the newest producer was written
+        // without announcing, the last notify still carried "gates" and QML pins
+        // the band to the retired producer.
+        QCOMPARE(lastAnnouncedOp, controller.topicSummarySettingsErrorOp());
+    }
+
     // Issue #736: a token renewal for the SAME account retires the transport
     // generation, so the wrapper never answers the in-flight gates callback and
     // nothing released the shared busy flag: the retry was ignored and both
