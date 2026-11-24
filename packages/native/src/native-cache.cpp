@@ -664,17 +664,28 @@ bool NativeCache::putMediaBlob(const Lease &lease, const QString &uuid, const QB
     // declines and the visible pipeline keeps the bytes in memory. A decline
     // is an ordinary refusal, like the over-limit early return above: it must
     // not route through fail(), which closes the whole cache.
+    // #803: the reservation trim deletes candidates, so its deletes join the
+    // same transaction as the insert - a decline rolls every candidate delete
+    // back and an admission commits eviction and insert together. A refusal
+    // must never leave previously cached previews destroyed.
     bool declined = false;
-    if (!trim(size, /*derivedOnly=*/true, &declined)) return declined ? false : fail();
+    if (!m_database.transaction()) return fail();
+    if (!trim(size, /*derivedOnly=*/true, &declined)) {
+        m_database.rollback();
+        // Rollback restored the candidates; resync the totals the trim had
+        // already discounted in memory before treating the write as refused.
+        if (declined) return refreshTotals(true) ? false : fail();
+        return fail();
+    }
     bool existed = false; qint64 previousSize = 0;
     {
         QSqlQuery query(m_database); query.prepare("SELECT " + EntryBytesSql + " FROM entries WHERE owner=? AND key=?");
         query.addBindValue(m_owner); query.addBindValue(hash);
-        if (!query.exec()) return false;
+        if (!query.exec()) { m_database.rollback(); return false; }
         if (query.next()) { existed = true; previousSize = query.value(0).toLongLong(); }
     }
-    bool okay = m_database.transaction();
-    if (okay) {
+    bool okay = true;
+    {
         QSqlQuery query(m_database);
         // Empty stream/topic/marker bind as '' deliberately: a default-
         // constructed QString()/QByteArray() is QVariant-null and would hit the
