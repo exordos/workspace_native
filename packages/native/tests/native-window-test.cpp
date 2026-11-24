@@ -45713,6 +45713,72 @@ private slots:
         QCOMPARE(controller.replyMessageId(), messageId);
         QCOMPARE(posts, 0);
     }
+
+    // Issue #805: at laptop-class restored window heights the chat pane's
+    // bottom surface must stay fully inside the client area. The message
+    // list is the compressing surface; neither the composer stack (topic
+    // conversation) nor the "Select topic:" prompt (stream view) may drop
+    // below the window bottom edge.
+    void shortWindowKeepsComposerAboveBottom()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Short composer window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "cassi-native-height", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 3); // General Topic, Planning, closed Releases
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        window->resize(1024, 768);
+        QTRY_VERIFY(!controller.busy());
+        auto *shell = visibleItem(window->contentItem(), QStringLiteral("messageComposerShell")); QVERIFY(shell);
+        QTRY_VERIFY(shell->isVisible());
+        const auto shellBottom = shell->mapToScene(QPointF(0, shell->height())).y();
+        QVERIFY2(shellBottom <= window->height() + 0.5,
+            qPrintable(QString("composer bottom %1 exceeds client height %2")
+                .arg(shellBottom).arg(window->height())));
+    }
+
+    void shortWindowKeepsTopicPromptAboveBottom()
+    {
+        QTest::failOnWarning();
+        WindowDirectFixture fixture; fixture.seed();
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Short prompt window teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "cassi-native-height", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(windowDirectId());
+        QTRY_VERIFY(controller.selectedStream() == windowDirectId());
+        QVERIFY(controller.selectedTopic().isEmpty());
+        window->resize(1024, 768);
+        QTRY_VERIFY(!controller.busy());
+        auto *prompt = visibleItem(window->contentItem(), QStringLiteral("streamTopicPrompt")); QVERIFY(prompt);
+        QTRY_VERIFY(prompt->isVisible());
+        const auto promptBottom = prompt->mapToScene(QPointF(0, prompt->height())).y();
+        QVERIFY2(promptBottom <= window->height() + 0.5,
+            qPrintable(QString("topic prompt bottom %1 exceeds client height %2")
+                .arg(promptBottom).arg(window->height())));
+    }
     // Issue #789: with a saved cache and a stalled session refresh the client
     // must paint the cached chats immediately (#157 cache-first contract). The
     // refresh reply is held open indefinitely (mock defer), so every assertion
