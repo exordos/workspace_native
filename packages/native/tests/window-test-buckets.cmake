@@ -203,6 +203,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_9
     accountLayerSurvivesSectionSwitch
     callEmbedGrantsCapturePermissionsOnlyToTheMeetingOrigin
+    channelTopicSummaryDialogReopenReloadsInitialSection
     composerMentionPopupInsertsDisambiguatedDuplicateNames
     crossParagraphBubbleSelectionQuotesWithNewlines
     forwardSelectionModeTogglesPerBubbleAndBarCancelClears

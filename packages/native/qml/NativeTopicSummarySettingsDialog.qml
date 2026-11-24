@@ -56,15 +56,24 @@ Dialog {
         // The gear that opens this dialog always belongs to a topic's summary
         // row, so the topic section is the promised landing tab; fall back to
         // the first permitted tab only when this user may not see "topic".
-        dlg.activeTab = dlg.tabs.indexOf("topic") >= 0 ? "topic"
+        const landing = dlg.tabs.indexOf("topic") >= 0 ? "topic"
             : (dlg.tabs.length ? dlg.tabs[0] : "")
         topicTab.reset()
         gatesTab.reset()
         endpointsTab.reset()
+        // #738: a reopen keeps the same landing tab, so the change signal
+        // below cannot be the only load trigger - an error state would strand
+        // the section until restart. Load explicitly when no change will
+        // fire; when the tab does change, onActiveTabChanged owns the single
+        // request for it (no duplicate GET on the open path).
+        if (landing == dlg.activeTab)
+            dlg.loadSection(landing)
+        dlg.activeTab = landing
     }
-    onActiveTabChanged: {
-        if (activeTab === "gates") controller.loadTopicSummaryGates()
-        else if (activeTab === "endpoints") controller.loadTopicSummaryEndpoints()
+    onActiveTabChanged: dlg.loadSection(activeTab)
+    function loadSection(tab) {
+        if (tab === "gates") controller.loadTopicSummaryGates()
+        else if (tab === "endpoints") controller.loadTopicSummaryEndpoints()
     }
 
     ColumnLayout {
