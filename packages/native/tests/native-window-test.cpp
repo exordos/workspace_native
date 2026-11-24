@@ -26626,12 +26626,24 @@ mv -Tf "$root/.current-new" "$root/current"
         // Hover the row, then move onto the button: the X stays revealed across
         // the move (pre-fix: the raised Button steals hover, cardHover drops
         // and the 120 ms fade hides the X under the pointer).
-        QTest::mouseMove(scene.window, row->mapToScene(
-            QPointF(row->width() / 2, row->height() / 2)).toPoint());
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 1000);
-        QTest::mouseMove(scene.window, remove->mapToScene(
-            QPointF(remove->width() / 2, remove->height() / 2)).toPoint());
-        QTRY_VERIFY(remove->property("hovered").toBool());
+        // #773: Qt Quick re-evaluates hover only when a pointer event arrives,
+        // so a single synthetic move can miss the row's final geometry under
+        // parallel CI load (a late layout pass shifts the row and the pointer
+        // position is never re-delivered). Re-issue the same move on every poll
+        // - a real user's pointer always sits over live geometry - and keep the
+        // original compare so the failure message names the reveal.
+        auto hoverRow = [&]{
+            QTest::mouseMove(scene.window, row->mapToScene(
+                QPointF(row->width() / 2, row->height() / 2)).toPoint());
+            return remove->property("opacity").toDouble();
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(hoverRow(), 1.0, 1000);
+        auto hoverRemove = [&]{
+            QTest::mouseMove(scene.window, remove->mapToScene(
+                QPointF(remove->width() / 2, remove->height() / 2)).toPoint());
+            return remove->property("hovered").toBool();
+        };
+        QTRY_VERIFY(hoverRemove());
         QTest::qWait(300);  // outlives the 120 ms opacity animation
         QCOMPARE(remove->property("opacity").toDouble(), 1.0);
         // Reveal is opacity-only: the text does not move when the action shows
