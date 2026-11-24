@@ -26121,11 +26121,17 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("channelTopicSummaryGatesGlobal")->property("checked").toBool());
         QVERIFY(!visibleItem("channelTopicSummaryGatesProject")->property("checked").toBool());
         // Endpoints tab: catalog rows render from the DTO list.
+        // QTRY_COMPARE above is satisfied the moment the GET reaches the mock
+        // handler, i.e. before the reply round-trips and the ListView incubates
+        // the delegate (issue #822: the one-shot VERIFY raced that window and
+        // flaked the tip gate). Bound the wait on the actual row materialization
+        // - visibleItem re-runs inside the poll - as the sibling endpoint cases
+        // already do, then read the painted name through the same bounded oracle.
         click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
         QTRY_COMPARE(endpointGets, 1);
         QCOMPARE(dialog->property("activeTab").toString(), QString("endpoints"));
-        QVERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
-        QCOMPARE(scene.text("channelTopicSummaryEndpointName"), QString("Synthetic GPT"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QTRY_COMPARE(scene.text("channelTopicSummaryEndpointName"), QString("Synthetic GPT"));
         QVERIFY(visibleItem("channelTopicSummaryEndpointAdd"));
         // Back to the topic tab triggers no additional traffic.
         click(scene.window, visibleItem("channelTopicSummaryTab-topic"));
