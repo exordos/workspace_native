@@ -385,6 +385,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     replyBannerAndQuoteJumpUseTheComposer
     rightDrawerConversationSwitchDropsNestedChatScreens
     rightDrawerPromotesExistingLayersInsteadOfDuplicating
+    savedHistoryRefreshFailureShowsOneAlertAndOneRetry
     sidebarHydrationKeepsFocusOnOtherStream
     startupCacheEmptyStoreKeepsSignInVisible
     windowChannelInfoAddDialogClearsSelectionOnClose
@@ -481,6 +482,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     appearanceAndSidebarRestoreAfterQuickWindowRecreation
     archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling
+    bootstrapFailureWithoutSavedHistoryKeepsItsRetry
     callWindowEmbedLoaderErrorSettlesShellToLoadFailed
     channelTopicMenuAndSummarySaveUseTheSelectedTopic
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable

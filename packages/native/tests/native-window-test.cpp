@@ -10541,6 +10541,153 @@ mv -Tf "$root/.current-new" "$root/current"
         cache.shutdown(); QTRY_VERIFY(cache.stopped());
     }
 
+    // Issue #786: a failed refresh of a saved conversation must be announced
+    // exactly once. Both the conversation error strip (with its Retry in
+    // cacheRetryButton) and the window-wide bootstrapErrorBanner (with
+    // bootstrapRetryButton) used to render the identical controller.error,
+    // two alerts and two Retries pointing at different recovery paths.
+    void savedHistoryRefreshFailureShowsOneAlertAndOneRetry()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        MockServer server;
+        const QJsonArray streams{windowChannel(streamId, "Retry channel")};
+        const QJsonArray topicRows{windowChannelTopic(topicId, streamId, "Retry topic")};
+        const QJsonArray savedHistory{message("Saved message before the refresh")};
+        const QJsonArray verifiedHistory{message("Verified message after Retry")};
+        const QJsonArray users{QJsonObject{{"uuid", userId}, {"project_id", projectId},
+            {"username", "synthetic-user"}, {"first_name", "Synthetic"}, {"email", "synthetic@example.invalid"}}};
+        {
+            // Stale seed: the conversation is restored from the saved cache
+            // while the refresh is still in flight (the issue's restart).
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
+            QVERIFY(seed.open(server.origin(), projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Users, {}, {}, {}}, users));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}}, streams));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, streamId, {}, {}}, topicRows));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::History, streamId, topicId, {}}, savedHistory));
+        }
+        bool historyFails = true;
+        bool usersHeldOnce = false;
+        QList<std::function<void()>> releaseHistory;
+        std::function<void()> releaseUsers;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/users/")) {
+                Response response{users};
+                if (!usersHeldOnce) {
+                    // Hold the bootstrap snapshot open so the history failure
+                    // lands while the refresh is still in flight.
+                    usersHeldOnce = true;
+                    response.defer = [&](auto send) { releaseUsers = std::move(send); };
+                }
+                return response;
+            }
+            if (path.endsWith("/messages/")) {
+                if (QUrlQuery(request.target).queryItemValue("topic_uuid").isEmpty())
+                    return Response{QJsonArray{}};
+                if (historyFails)
+                    return Response{QJsonObject{}, 503};
+                Response response{verifiedHistory};
+                response.defer = [&](auto send) { releaseHistory.append(std::move(send)); };
+                return response;
+            }
+            if (path.endsWith("/streams/")) return Response{streams};
+            if (path.endsWith("/streams/" + streamId)) return Response{streams.first().toObject()};
+            if (path.endsWith("/stream_topics/")) return Response{topicRows};
+            return sessionResponse(request);
+        };
+        NativeCacheService cache(directory.path(), {}, true);
+        NativePreferences preferences(directory.filePath("single-retry.ini")); preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Single-retry teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(bool(releaseUsers)); // the refresh is still in flight
+        QTRY_COMPARE(controller.streams().size(), 1);
+        auto *content = window->contentItem();
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_VERIFY(controller.topicsComplete());
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.messages().size(), 1); // the saved message is painted
+        QTRY_VERIFY(controller.cacheStale());
+        auto *composer = item(content, "messageComposer"); QVERIFY(composer);
+        composer->setProperty("text", "Draft across the failed refresh");
+        // The in-flight history refresh fails with HTTP 503 (the issue's step 3).
+        QTRY_VERIFY_WITH_TIMEOUT(controller.error().contains("HTTP 503"), 5000);
+        QVERIFY(controller.cacheStale());
+        // Acceptance 1: exactly one actionable alert and one Retry. The
+        // conversation surface owns this failure; the window-wide bootstrap
+        // strip must not duplicate the same text with a second Retry.
+        QVERIFY2(visibleItem(content, "cacheRetryButton"), "the conversation retry is missing");
+        QVERIFY2(!visibleItem(content, "bootstrapErrorBanner"),
+            "the bootstrap banner duplicates the conversation error with a second Retry");
+        QVERIFY2(!visibleItem(content, "bootstrapRetryButton"), "a second Retry is visible");
+        // The saved message and the saved-history status stay visible.
+        QVERIFY(item(content, "message-" + messageId));
+        auto *status = item(content, "cacheStatus"); QVERIFY(status);
+        QVERIFY(status->isVisible());
+        // Acceptance 2: Retry recovers, preserving the saved message and the
+        // draft during the attempt, and clears the failure on success.
+        QTRY_VERIFY(!controller.busy());
+        releaseUsers(); releaseUsers = nullptr;
+        historyFails = false;
+        click(window, visibleItem(content, "cacheRetryButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(!releaseHistory.isEmpty(), 5000);
+        for (auto &send : releaseHistory)
+            send();
+        releaseHistory.clear();
+        QTRY_VERIFY_WITH_TIMEOUT(controller.error().isEmpty(), 5000);
+        QTRY_VERIFY(!controller.cacheStale());
+        QVERIFY(!visibleItem(content, "bootstrapErrorBanner"));
+        QCOMPARE(controller.draft(), QString("Draft across the failed refresh"));
+        QTRY_VERIFY(item(content, "message-" + messageId));
+        QVERIFY(item(content, "message-" + messageId)->property("width").toReal() > 0);
+        cache.shutdown(); QTRY_VERIFY(cache.stopped());
+    }
+
+    // Issue #786 acceptance 3: a bootstrap failure with no saved conversation
+    // keeps its own recovery surface - the single Retry on the bootstrap
+    // banner - when the conversation surface cannot own the failure.
+    void bootstrapFailureWithoutSavedHistoryKeepsItsRetry()
+    {
+        WindowBannerFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("bootstrap-retry.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Bootstrap retry teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QVERIFY(fixture.start(controller));
+        QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
+        QVERIFY(!visibleItem("bootstrapErrorBanner"));
+        QVERIFY(!visibleItem("cacheRetryButton")); // nothing saved: no conversation surface
+        fixture.breakStreams = true;
+        controller.refresh();
+        QTRY_VERIFY(visibleItem("bootstrapErrorBanner"));
+        QVERIFY(visibleItem("bootstrapRetryButton"));
+        QVERIFY(!visibleItem("cacheRetryButton")); // exactly one Retry owns this failure
+        fixture.breakStreams = false;
+        click(window, visibleItem("bootstrapRetryButton"));
+        QTRY_VERIFY(!visibleItem("bootstrapErrorBanner"));
+    }
+
     void startupDirectoryDoesNotPopulateHiddenPickers_data()
     {
         QTest::addColumn<bool>("warm");
