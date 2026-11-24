@@ -26806,7 +26806,13 @@ mv -Tf "$root/.current-new" "$root/current"
         // asserting (QTRY's first immediate poll would race the response).
         auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
         QVERIFY(dialog);
-        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        auto *summaryController = dialog->property("controller").value<QObject *>();
+        QVERIFY(summaryController);
+        // The confirmation echo still flips the controller op status; the newer
+        // unsaved edit outranks it in the footer (#795).
+        QTRY_COMPARE(summaryController->property("topicSummarySettingsStatus").toString(),
+            QStringLiteral("saved"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
         // The success may reset only the submitted revision; the newer edit survives.
         QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
         QCOMPARE(visibleItem("channelTopicSummaryField-priority")->property("text").toString(),
@@ -26869,7 +26875,13 @@ mv -Tf "$root/.current-new" "$root/current"
         send();
         auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
         QVERIFY(dialog);
-        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        auto *summaryController = dialog->property("controller").value<QObject *>();
+        QVERIFY(summaryController);
+        // The confirmation echo still flips the controller op status; the newer
+        // unsaved edit outranks it in the footer (#795).
+        QTRY_COMPARE(summaryController->property("topicSummarySettingsStatus").toString(),
+            QStringLiteral("saved"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
         // The preserved draft must now target the CREATED endpoint: saving again
         // dispatches an UPDATE to the created uuid, never a second CREATE.
         QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
@@ -26935,7 +26947,13 @@ mv -Tf "$root/.current-new" "$root/current"
         send();
         auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
         QVERIFY(dialog);
-        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        auto *summaryController = dialog->property("controller").value<QObject *>();
+        QVERIFY(summaryController);
+        // The confirmation echo still flips the controller op status; the newer
+        // unsaved edit outranks it in the footer (#795).
+        QTRY_COMPARE(summaryController->property("topicSummarySettingsStatus").toString(),
+            QStringLiteral("saved"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
         // The server now holds 150, so the reverted 100 IS a pending change: the
         // baseline must rebase to the SUBMITTED values, keeping the draft savable.
         QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
@@ -27040,7 +27058,13 @@ mv -Tf "$root/.current-new" "$root/current"
         auto send = std::move(releasePut);
         QVERIFY(send);
         send();
-        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        auto *summaryController = dialog->property("controller").value<QObject *>();
+        QVERIFY(summaryController);
+        // The confirmation echo still flips the controller op status; the newer
+        // unsaved edit outranks it in the footer (#795).
+        QTRY_COMPARE(summaryController->property("topicSummarySettingsStatus").toString(),
+            QStringLiteral("saved"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
         // B's draft must carry ONLY B's own edit: 250 over B's own baseline. The
         // bug rebased B onto A's submitted values, leaking A's fields into the PUT.
         QVERIFY(visibleItem("channelTopicSummaryEndpointForm"));
@@ -27110,7 +27134,13 @@ mv -Tf "$root/.current-new" "$root/current"
         send();
         auto *dialog = scene.window->findChild<QObject*>("channelTopicSummarySettingsDialog");
         QVERIFY(dialog);
-        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        auto *summaryController = dialog->property("controller").value<QObject *>();
+        QVERIFY(summaryController);
+        // The confirmation echo still flips the controller op status; the newer
+        // unsaved edit outranks it in the footer (#795).
+        QTRY_COMPARE(summaryController->property("topicSummarySettingsStatus").toString(),
+            QStringLiteral("saved"));
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
         // The success consumed the key it submitted: the field must be blank again...
         QTRY_COMPARE(visibleItem("channelTopicSummaryField-api_key")->property("text").toString(),
             QString());
