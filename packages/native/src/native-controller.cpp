@@ -22123,10 +22123,14 @@ void NativeController::setTopicSummaryStatus(const QString &status, const QStrin
     const QString &errorOp)
 {
     if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) {
-        // Same visible state, possibly a different producer: update the ledger
-        // quietly - every QML consumer gates on the status, so a re-notify for
-        // the same status/error pair would only add traffic pins.
+        // Same visible state and producer: a re-notify would only add traffic
+        // pins. A different producer is a visible change though - the error
+        // band binds on topicSummarySettingsErrorOp (dialog gates on it), so
+        // the ledger switch must be announced or the band stays bound to the
+        // first producer (exo-review finding on #829).
+        if (m_topicSummarySettingsErrorOp == errorOp) return;
         m_topicSummarySettingsErrorOp = errorOp;
+        emit topicSummaryStateChanged();
         return;
     }
     m_topicSummarySettingsStatus = status;
