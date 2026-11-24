@@ -52,6 +52,8 @@ def require_webengine_runtime_files(prefix, qml):
         assert (qml/module/"qmldir").is_file(), f"Missing bundled WebEngine QML module: {module}"
     assert list((prefix/"share/qt-webengine/resources").glob("qtwebengine_resources*.pak")), \
         "Missing bundled WebEngine resource packs (call runtime #728)"
+    assert (prefix/"share/qt-webengine/resources/v8_context_snapshot.bin").is_file(), \
+        "Missing bundled V8 startup snapshot v8_context_snapshot.bin (call renderer #804)"
     assert list((prefix/"share/qt-webengine/locales").glob("*.pak")), \
         "Missing bundled WebEngine locale packs (call runtime #728)"
     # Every WebEngine SONAME the loader searches for must resolve inside the

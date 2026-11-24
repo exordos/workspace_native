@@ -80,6 +80,14 @@ foreach(resource_pak IN LISTS webengine_resource_paks)
     endif()
 endforeach()
 file(INSTALL ${webengine_resource_paks} DESTINATION "${webengine_package_data}/resources")
+# The V8 startup snapshot must come from the same Qt WebEngine build as the
+# helper and core library: a missing or mismatched snapshot aborts the renderer
+# at first page startup with "Error loading V8 startup snapshot file" (#804).
+set(webengine_v8_snapshot "${webengine_data_dir}/resources/v8_context_snapshot.bin")
+if(NOT EXISTS "${webengine_v8_snapshot}")
+    message(FATAL_ERROR "V8 startup snapshot ${webengine_v8_snapshot} is required for the call runtime (#804)")
+endif()
+file(INSTALL "${webengine_v8_snapshot}" DESTINATION "${webengine_package_data}/resources")
 if(NOT IS_DIRECTORY "${webengine_data_dir}/translations/qtwebengine_locales")
     message(FATAL_ERROR "WebEngine locale packs not found under ${webengine_data_dir}/translations")
 endif()
