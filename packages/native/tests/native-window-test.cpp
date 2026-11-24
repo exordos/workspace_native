@@ -26841,11 +26841,16 @@ mv -Tf "$root/.current-new" "$root/current"
         rows.append(dropDto);
         rows.append(keepDto);
         int deletes = 0;
+        int allDeletes = 0;
+        QStringList allDeletePaths;
         QString deletePath;
         // The full DELETE path is pinned exactly (finding 4687475401): the
         // list GET pins the service prefix, so the expected path is the whole
         // prefix + collection + uuid - a uuid with any unintended suffix or a
         // different prefix can no longer slip through substring matching.
+        // Every DELETE is counted before the path match (finding 4687773818):
+        // a DELETE to any other path must not escape the exactly-one-request
+        // assertion by delegating to the base handler.
         const QString collection = QStringLiteral("/topic_summary_endpoints/");
         QString apiPrefix;
         const auto base = scene.fixture.server.handler;
@@ -26856,11 +26861,14 @@ mv -Tf "$root/.current-new" "$root/current"
                 apiPrefix = clean.left(clean.size() - collection.size());
                 return Response{rows};
             }
-            if (request.method == "DELETE"
-                && clean == apiPrefix + collection + dropUuid) {
-                ++deletes;
-                deletePath = path;
-                return Response{};
+            if (request.method == "DELETE") {
+                ++allDeletes;
+                allDeletePaths.append(clean);
+                if (clean == apiPrefix + collection + dropUuid) {
+                    ++deletes;
+                    deletePath = path;
+                    return Response{};
+                }
             }
             return base(request);
         };
@@ -26874,6 +26882,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *band = visibleItem("channelTopicSummaryDeleteConfirm");
         QVERIFY(band);
         QCOMPARE(deletes, 0);
+        QCOMPARE(allDeletes, 0);
         QQuickItem *cancel = nullptr;
         for (auto *child : band->findChildren<QQuickItem *>()) {
             if (child->property("text").toString() == QStringLiteral("Cancel") && child->isVisible()) {
@@ -26885,6 +26894,7 @@ mv -Tf "$root/.current-new" "$root/current"
         click(scene.window, cancel);
         QTRY_VERIFY(!visibleItem("channelTopicSummaryDeleteConfirm"));
         QCOMPARE(deletes, 0);
+        QCOMPARE(allDeletes, 0);
         QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
         QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-1"));
         // Confirm-Yes dispatches DELETE for the row uuid and removes the row.
@@ -26892,6 +26902,11 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("channelTopicSummaryDeleteConfirm"));
         click(scene.window, visibleItem("channelTopicSummaryDeleteConfirmYes"));
         QTRY_COMPARE(deletes, 1);
+        // No second DELETE went anywhere else (finding 4687773818): the sole
+        // request of the whole flow is the pinned path.
+        QCOMPARE(allDeletes, 1);
+        const QStringList expectedDeletePaths{apiPrefix + collection + dropUuid};
+        QCOMPARE(allDeletePaths, expectedDeletePaths);
         QCOMPARE(deletePath.section(QLatin1Char('?'), 0, 0),
                  apiPrefix + collection + dropUuid);
         QTRY_VERIFY(!visibleItem("channelTopicSummaryDeleteConfirm"));
