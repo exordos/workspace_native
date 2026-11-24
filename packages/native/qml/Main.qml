@@ -16338,13 +16338,32 @@ component NativeMentionChip: Item {
     // re-requests the meeting URL through the live view (see
     // NativeCallWebEngineView.qml); Idle and InvalidUrl still own no surface.
     property var callPipEmbedHost: null
+    // #792: a retry after a failed import must genuinely re-instantiate the
+    // Loader. The state flip alone keeps it active with status Loader.Error,
+    // so nothing re-attempts the import and Retry can never succeed. The hold
+    // flag below briefly empties the Loader's source (its item is destroyed
+    // and status returns to Null); the timer restores it so the import really
+    // runs again, and the fresh verdict - good or bad - arrives through the
+    // Loader's own statusChanged, exactly like a first activation. The hold
+    // lives on `source`, NOT on `active`: re-import failure fires
+    // apiLoadFailed() synchronously inside the failure pass, and because
+    // apiLoadFailed re-notifies embedState - a dependency of the `active`
+    // binding - a hold term on `active` re-enters its own evaluation and Qt
+    // reports a binding loop on it (observed during the first fix round).
+    property bool callEmbedRetryHold: false
+    Timer {
+        id: callEmbedRetryReloadTimer
+        interval: 15
+        repeat: false
+        onTriggered: root.callEmbedRetryHold = false
+    }
     Loader {
         objectName: "callWindowEmbedLoader"
         active: root.controller.callWindow.mode !== 0
             && (root.controller.callWindow.embedState === 1 // Loading
                 || root.controller.callWindow.embedState === 2 // Ready
                 || root.controller.callWindow.embedState === 3) // LoadFailed
-        source: "NativeCallWebEngineView.qml"
+        source: root.callEmbedRetryHold ? "" : "NativeCallWebEngineView.qml"
         // Issue #728: a missing QtWebEngine/QtWebChannel runtime fails the
         // import, never reaches onLoaded, and would strand the shell on
         // Loading. Forward instantiation failure into the state machine so
@@ -16359,6 +16378,14 @@ component NativeMentionChip: Item {
         parent: root.callPipEmbedHost !== null ? root.callPipEmbedHost
             : callWindowExpandedShell.embedHost
         anchors.fill: parent
+    }
+    Connections {
+        target: root.controller.callWindow
+        // #792: drive the Loader deactivate/release cycle described above.
+        function onEmbedRetryRequested() {
+            root.callEmbedRetryHold = true
+            callEmbedRetryReloadTimer.restart()
+        }
     }
     // The PiP surface is a separate frameless tool window: Qt does not
     // instantiate Window elements nested in a Window's content, so it is
