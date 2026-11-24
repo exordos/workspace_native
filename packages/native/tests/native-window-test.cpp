@@ -22891,6 +22891,136 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!viewer->open());
     }
 
+    // Issue #793: the play/pause and mute transport glyphs of the video
+    // controls bar must respond to the pointer like every sibling control in
+    // this popup (ViewerArrow, ViewerButton, the retry chip) instead of the
+    // old fully transparent Rectangle that showed nothing on hover or press.
+    // The witness pauses the clip (so the painted frame under the bar is
+    // static), then drives a real hover move onto the mute glyph and a press,
+    // asserting the chip property AND a pixel change at a background corner
+    // of the tile where no glyph ink is painted.
+    void mediaViewerTransportGlyphsTintOnHoverAndPress()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        const QByteArray mp4 = mediaViewerVideoBytes();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileA)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileA, png);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                return Response{metadata};
+            }
+            if (path.startsWith("/api/workspace/v1/messenger/files/" + fileB)) {
+                if (path.endsWith("/actions/download")) {
+                    Response result; result.rawBody = mp4; result.rawContentType = "video/mp4";
+                    return result;
+                }
+                auto metadata = avatarProbeMetadata(fileB, mp4);
+                metadata["stream_uuid"] = streamId; metadata["name"] = "clip.mp4";
+                metadata["content_type"] = "video/mp4";
+                return Response{metadata};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerVideoRow(second, fileB, mp4.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer-glyph-hover.ini"));
+        preferences.setLocale("en"); preferences.setMode("dark");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Media viewer glyph hover window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        auto *viewer = controller.mediaViewer();
+        click(window, visibleItem(content, "inline-image-" + first));
+        QTRY_VERIFY(viewer->open());
+        click(window, visibleItem(content, "mediaViewer-next"));
+        QCOMPARE(viewer->index(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *v = visibleItem(content, "mediaViewer-video");
+            return v && v->isVisible(); })(), 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *b = visibleItem(content, "mediaViewer-controls");
+            return b && b->isVisible(); })(), 5000);
+
+        // Freeze the painted frame: the differential pixel oracle below must
+        // react only to the chip tint, never to advancing video content.
+        click(window, visibleItem(content, "mediaViewer-play"));
+        QTest::qWait(200);
+
+        auto backgroundColor = [](QQuickItem *glyph) -> QColor {
+            auto *bg = qobject_cast<QQuickItem *>(glyph->property("background").value<QObject *>());
+            return bg ? bg->property("color").value<QColor>() : QColor();
+        };
+        auto pixelAt = [window](const QPointF &scenePoint) -> QColor {
+            const QImage shot = window->grabWindow();
+            const qreal scale = shot.width() / qreal(window->width());
+            return shot.pixelColor(QPoint(qRound(scenePoint.x() * scale), qRound(scenePoint.y() * scale)));
+        };
+
+        auto *play = visibleItem(content, "mediaViewer-play"); QVERIFY(play);
+        auto *mute = visibleItem(content, "mediaViewer-mute"); QVERIFY(mute);
+        // Tile-local (4, 1.5): inside the r=6 rounded background, above the
+        // 20 px glyph image that starts at y=2 - pure background fill.
+        const QPointF muteCorner = mute->mapToScene(QPointF(4.0, 1.5));
+        const QPointF muteCenter = mute->mapToScene(QPointF(mute->width() / 2.0, mute->height() / 2.0));
+        // Idle: background unpainted, exactly as the pre-fix state.
+        QCOMPARE(backgroundColor(mute), QColor(0, 0, 0, 0));
+        const QColor idlePixel = pixelAt(muteCorner);
+        // Real hover move (the pointer stays inside the bar, so it remains
+        // pinned open; the pointer never left the bar between the pause click
+        // above and this move).
+        QTest::mouseMove(window, muteCenter.toPoint());
+        QTRY_VERIFY(backgroundColor(mute) == QColor("#33FFFFFF"));
+        QColor hoverPixel = idlePixel;
+        for (int i = 0; i < 40 && hoverPixel == idlePixel; ++i) { QTest::qWait(50); hoverPixel = pixelAt(muteCorner); }
+        QVERIFY2(hoverPixel != idlePixel, qPrintable(QStringLiteral(
+            "hovering the mute glyph must change the painted corner pixel, idle=%1 hover=%2")
+            .arg(idlePixel.name(), hoverPixel.name())));
+        // Press: one step brighter, and a further visible pixel change.
+        QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, muteCenter.toPoint());
+        QTRY_VERIFY(backgroundColor(mute) == QColor("#4DFFFFFF"));
+        const QColor pressedPixel = pixelAt(muteCorner);
+        QVERIFY2(pressedPixel != hoverPixel, qPrintable(QStringLiteral(
+            "pressing the mute glyph must change the painted corner pixel, hover=%1 pressed=%2")
+            .arg(hoverPixel.name(), pressedPixel.name())));
+        QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, muteCenter.toPoint());
+        QTRY_VERIFY(backgroundColor(mute) == QColor("#33FFFFFF"));
+        // The play glyph carries the identical response (same component).
+        const QPointF playCenter = play->mapToScene(QPointF(play->width() / 2.0, play->height() / 2.0));
+        QTest::mouseMove(window, playCenter.toPoint());
+        QTRY_VERIFY(backgroundColor(play) == QColor("#33FFFFFF"));
+        click(window, visibleItem(content, "mediaViewer-close"));
+        QTRY_VERIFY(!viewer->open());
+    }
+
     // Issue #731 stop-on-switch contract: navigating away from the video slot
     // and closing the viewer both settle the player into StoppedState, so no
     // audio can leak from media the user no longer watches.

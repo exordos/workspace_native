@@ -153,6 +153,13 @@ the model slot states), never decoded pixels.
   images.
 - `videos.svg` joins the `native_icons` bundle from
   `packages/web/src/shared/assets/icons/`.
+- Transport glyph feedback (issue #793): the play/pause and mute `ViewerGlyph`
+  buttons carry the same pointer response as the sibling controls of the bar -
+  `hoverEnabled` with a radius-6 chip background painted `#33FFFFFF` on hover
+  and `#4DFFFFFF` while pressed (the retry chip's ramp), transparent at rest,
+  because the reference video chrome is Chromium's native controls
+  (`media-viewer-overlay.ui.tsx` `<video controls>`) and gives no own hover
+  values to measure; the bar's internal consistency is the contract.
 
 ### CMake
 
