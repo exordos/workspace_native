@@ -2774,10 +2774,12 @@ public:
     Q_PROPERTY(bool topicSummaryGatesLoaded READ topicSummaryGatesLoaded NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(QString topicSummarySettingsStatus READ topicSummarySettingsStatus NOTIFY topicSummaryStateChanged)
     Q_PROPERTY(QString topicSummarySettingsError READ topicSummarySettingsError NOTIFY topicSummaryStateChanged)
-    // #795: which tab family ("gates"/"endpoints") produced the current error.
+    // #795: which tab families ("gates"/"endpoints") produced the current error.
     // A shared status cannot tell, and a late reply can land while the other
-    // tab is on screen, so each error band gates on its own producer.
-    Q_PROPERTY(QString topicSummarySettingsErrorOp READ topicSummarySettingsErrorOp NOTIFY topicSummaryStateChanged)
+    // tab is on screen, so each error band gates on its own producer. A single
+    // interruption can retire in-flight ops of both families at once, hence a
+    // list: every affected family stays attributed (finding 4687482019).
+    Q_PROPERTY(QStringList topicSummarySettingsErrorOps READ topicSummarySettingsErrorOps NOTIFY topicSummaryStateChanged)
 
     QVariantMap topicSummaryGates() const { return m_topicSummaryGates; }
     bool topicSummaryGatesLoaded() const { return m_topicSummaryGatesLoaded; }
@@ -2785,7 +2787,7 @@ public:
     bool topicSummarySettingsBusy() const { return m_topicSummarySettingsBusy; }
     QString topicSummarySettingsStatus() const { return m_topicSummarySettingsStatus; }
     QString topicSummarySettingsError() const { return m_topicSummarySettingsError; }
-    QString topicSummarySettingsErrorOp() const { return m_topicSummarySettingsErrorOp; }
+    QStringList topicSummarySettingsErrorOps() const { return m_topicSummarySettingsErrorOps; }
 
     // "allowed" | "denied" | "unknown" for tab "topic" | "gates" | "endpoints",
     // mirroring messenger-topic-summary-permissions.lib.ts.
@@ -2811,6 +2813,10 @@ private:
     void interruptTopicSummaryOps();
     void setTopicSummaryStatus(const QString &status, const QString &error = {},
         const QString &errorOp = {});
+    // Multi-producer variant used by the interruption sweep: every family whose
+    // op was retired stays attributed (finding 4687482019).
+    void setTopicSummaryStatusOps(const QString &status, const QString &error,
+        const QStringList &errorOps);
     QHash<QString, quint64> m_topicSummaryOps;
     quint64 m_topicSummaryToken = 0;
     QVariantMap m_topicSummaryGates;
@@ -2820,7 +2826,7 @@ private:
     bool m_topicSummarySettingsBusy = false;
     QString m_topicSummarySettingsStatus;
     QString m_topicSummarySettingsError;
-    QString m_topicSummarySettingsErrorOp;
+    QStringList m_topicSummarySettingsErrorOps;
 };
 
 }
