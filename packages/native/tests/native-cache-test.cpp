@@ -456,6 +456,55 @@ private slots:
         QVERIFY(cache.get(lease, History).has_value()); // the authoritative page survives
     }
 
+    void previewAdmissionDeclinesInsteadOfEvictingSavedHistory()
+    {
+        // #775: a derived preview may replace older derived entries, but when the
+        // only way to make room is evicting authoritative pages, the preview write
+        // must decline persistence instead. Saved offline history never pays for
+        // a regenerable preview.
+        QTemporaryDir directory;
+        NativeCache cache(directory.path());
+        QVERIFY(cache.open(Server, Project, User)); const auto lease = cache.lease();
+        QVERIFY(cache.setDiskLimitBytes(2 * 1024 * 1024));
+        QVERIFY(cache.diskLimitBytes() > 0);
+        // Fill the physical budget with authoritative history pages only - no
+        // derived entry exists that a new preview could replace. Each ~40 KiB
+        // page spans ~11 database pages, so a 2 MiB disk budget (page limit
+        // ~375 pages once the journal reserve is removed) needs a solid set.
+        QStringList markers;
+        for (int page = 0; page < 44; ++page) {
+            const QString marker = QStringLiteral("page-%1").arg(page);
+            const NativeCache::Key pageKey{NativeCache::Kind::History, Stream, Topic, marker.toUtf8()};
+            QVERIFY2(cache.put(lease, pageKey, {message(QString(40000, QChar(static_cast<ushort>('a' + page))))}),
+                qPrintable(cache.error()));
+            markers << marker;
+            if (page >= 29 && cache.diskUsageBytes() > cache.diskLimitBytes() * 6 / 10) break;
+        }
+        QVERIFY2(cache.diskUsageBytes() > cache.diskLimitBytes() * 6 / 10,
+            "fixture did not reach physical pressure");
+        // Snapshot the pages that survived normal authoritative retention.
+        QStringList survivors;
+        for (const auto &marker : markers) {
+            const NativeCache::Key pageKey{NativeCache::Kind::History, Stream, Topic, marker.toUtf8()};
+            if (cache.get(lease, pageKey).has_value()) survivors << marker;
+        }
+        QVERIFY(!survivors.isEmpty());
+        const qint64 entriesBefore = cache.stats().entries;
+        // The preview is the largest blob the disk budget still admits by the
+        // entry limit (journal/4 at a 2 MiB disk limit is 128 KiB), so the only
+        // pages its reservation can reclaim are the authoritative ones.
+        const QString late = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QVERIFY(!cache.putMediaBlob(lease, late, QByteArray(96 * 1024, 'p')));
+        QVERIFY(!cache.getMediaBlob(lease, late).has_value()); // declined writes persist nothing
+        QVERIFY2(cache.error().isEmpty(), "a declined write must not fail-close the cache");
+        QCOMPARE(cache.stats().entries, entriesBefore); // no authoritative page was reclaimed
+        for (const auto &marker : survivors) {
+            const NativeCache::Key pageKey{NativeCache::Kind::History, Stream, Topic, marker.toUtf8()};
+            QVERIFY2(cache.get(lease, pageKey).has_value(), qPrintable(QStringLiteral("saved page %1 vanished").arg(marker)));
+        }
+        QVERIFY(cache.diskUsageBytes() <= cache.diskLimitBytes());
+    }
+
     void messageBodyFallbackRequiresViewerIdentityAndNeverManufacturesHistory()
     {
         QTemporaryDir directory; NativeCache cache(directory.path()); QVERIFY(cache.open(Server, Project, User));
