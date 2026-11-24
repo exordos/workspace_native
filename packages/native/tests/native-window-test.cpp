@@ -45811,9 +45811,15 @@ private slots:
         window.show(); QVERIFY(QTest::qWaitForWindowExposed(&window));
         // Review #811 finding 3: a display without decorations legitimately
         // reports zero frame margins and has nothing to fit, so the wait may
-        // not demand nonzero margins. The containment contract below holds
-        // for both worlds: under a decorating WM it only goes true once the
-        // one-shot fit has acted; on an undecorated display it holds as is.
+        // not demand nonzero margins. Review #811 round 2 finding 1: the
+        // containment contract must not be evaluated before the WM's
+        // decoration verdict - with unreported margins the saved rect equals
+        // the frame and the contract holds trivially, hiding a later escape.
+        // Verdict: nonzero margins (WM reported extents) or the one-shot fit
+        // retiring at its deadline (undecorated display, nothing to fit).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return !window.frameMargins().isNull() || !preferences.frameFitPendingForTest();
+        })(), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             const QRect frame = window.frameGeometry();
             return frame.top() >= available.top() && frame.bottom() <= available.bottom()
