@@ -7256,11 +7256,13 @@ void NativeController::openCacheForStartupIdentity()
             emit guard->stateChanged();
             return;
         }
-        guard->m_startupCacheMode = true;
+        // Issue #789 review (finding 4677301847): an opened cache is not yet a
+        // paintable one. The startup shell may replace the sign-in card only
+        // once cached rows are actually projected (loadStartupCacheStreams);
+        // an opened-but-empty store releases the attempt like a failed open.
         if (guard->m_cache) guard->m_cacheLease = guard->m_cache->lease();
-        emit guard->stateChanged();
         // The service emits stateChanged before this queued completion runs,
-        // so the becameReady projection seam could not see the mode yet;
+        // so the becameReady projection seam could not see the attempt yet;
         // project the cached channel list from here (idempotent).
         guard->loadStartupCacheStreams();
     });
@@ -7275,17 +7277,30 @@ void NativeController::loadStartupCacheStreams()
     // cache, not from the token/introspect chain. Project the saved channel
     // list exactly like the stale-cache network fallback would, but under the
     // startup guards: the authoritative refresh replaces these rows later.
-    if (!m_startupCacheMode || !m_cache || authenticated()) return;
+    // Issue #789 review (finding 4677301847): startup cache mode begins with
+    // the projected rows, not with the open verdict - an opened store without
+    // displayable rows releases the attempt like a failed open, so the
+    // sign-in card stays on screen instead of an empty shell.
+    if ((!m_startupCacheMode && m_startupIdentity.isEmpty()) || !m_cache || authenticated()) return;
     const auto lease = m_cacheLease;
     const auto revision = m_cacheRevision;
     const auto identity = m_startupIdentity;
     const QPointer<NativeController> guard(this);
     m_cache->get(lease, {NativeCache::Kind::Streams, {}, {}, {}}, this,
         [this, guard, lease, revision, identity](std::optional<NativeCacheService::Entry> entry) {
-        if (!guard || !guard->m_startupCacheMode || guard->m_startupIdentity != identity) return;
-        if (!entry || guard->m_cacheRevision != revision) return;
+        if (!guard || guard->m_startupIdentity != identity) return;
+        if (guard->m_cacheRevision != revision) return;
         if (guard->m_cacheLease.owner != lease.owner || guard->m_cacheLease.generation != lease.generation) return;
-        if (guard->authenticated() || !guard->m_streams.isEmpty()) return;
+        // No displayable rows: release the identity (only while the shell has
+        // not started) so a later resolve may retry and the sign-in stays.
+        const auto releaseAttempt = [&] {
+            if (!guard->m_startupCacheMode) {
+                guard->m_startupIdentity.clear();
+                emit guard->stateChanged();
+            }
+        };
+        if (guard->authenticated() || !guard->m_streams.isEmpty()) { releaseAttempt(); return; }
+        if (!entry) { releaseAttempt(); return; }
         QVector<Stream> streams;
         QSet<QString> ids;
         for (const auto &value : entry->rows) {
@@ -7294,7 +7309,8 @@ void NativeController::loadStartupCacheStreams()
             ids.insert(parsed->uuid);
             streams.append(*parsed);
         }
-        if (streams.isEmpty()) return;
+        if (streams.isEmpty()) { releaseAttempt(); return; }
+        guard->m_startupCacheMode = true;
         guard->m_streams = streams;
         emit guard->streamsChanged();
         emit guard->stateChanged();
@@ -9842,6 +9858,9 @@ void NativeController::useCache(NativeCacheService *cache)
         if (!becameReady) return;
         // Issue #789: the startup identity's first paint waits on this cache,
         // not on the network; project the saved channel list as soon as ready.
+        // (Finding 4677301847: an in-flight attempt must NOT be projected from
+        // here - the lease hand-over still lives in the open completion, so an
+        // early get would run on the pre-hand-over lease.)
         if (m_startupCacheMode) loadStartupCacheStreams();
         hydrateChatRequestLookups();
         auto pending = std::move(m_cacheHydrations);
