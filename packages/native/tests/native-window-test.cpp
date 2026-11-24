@@ -24942,6 +24942,80 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("messageComposer"));
     }
 
+    // Issue #781: at the supported 702 x 716 size the open channel-info drawer
+    // may overlay the composer, so a real pointer click must still reach the
+    // editor and Send while the drawer is open (hit-testing, not just widths).
+    void narrowDrawerKeepsComposerReachableAndSendable()
+    {
+        QTest::failOnWarning();
+        ChannelInfoWindowScene scene;
+        scene.window->resize(702, 716);
+        QVERIFY(QTest::qWaitForWindowExposed(scene.window));
+        QTRY_VERIFY(scene.controller.hasConversation());
+        // The channel-info fixture answers message GETs with an empty page and
+        // has no POST handler; attach a minimal created-message contract so a
+        // successful send is observable server-side.
+        static const QString sentUuid = QStringLiteral("ca110000-0000-4000-8000-000000000781");
+        int messagePosts = 0;
+        const auto baseHandler = scene.fixture.server.handler;
+        scene.fixture.server.handler = [baseHandler, &messagePosts](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "POST" && path.endsWith("/messages/")) {
+                ++messagePosts;
+                const auto body = request.body;
+                return {QJsonObject{{QStringLiteral("uuid"), sentUuid},
+                    {QStringLiteral("project_id"), body.value("project_id").toString()},
+                    {QStringLiteral("author_uuid"), QStringLiteral("11111111-1111-4111-8111-111111111111")},
+                    {QStringLiteral("created_at"), QStringLiteral("2026-01-02T10:05:00Z")},
+                    {QStringLiteral("stream_uuid"), body.value("stream_uuid").toString()},
+                    {QStringLiteral("topic_uuid"), body.value("topic_uuid").toString()},
+                    {QStringLiteral("user_display_name"), QStringLiteral("Cassi Volkova")},
+                    {QStringLiteral("user_username"), QStringLiteral("cassi")},
+                    {QStringLiteral("payload"), body.value("payload").toObject()}}, 201};
+            }
+            if (request.method == "GET" && path.contains("/messages/" + sentUuid)) {
+                return {QJsonObject{{QStringLiteral("uuid"), sentUuid},
+                    {QStringLiteral("created_at"), QStringLiteral("2026-01-02T10:05:00Z")},
+                    {QStringLiteral("user_username"), QStringLiteral("cassi")},
+                    {QStringLiteral("payload"), QJsonObject{{QStringLiteral("content"), QStringLiteral("narrow draftx!")}}}}};
+            }
+            return baseHandler(request);
+        };
+        auto *composer = visibleItem(scene.window->contentItem(), QStringLiteral("messageComposer")); QVERIFY(composer);
+        click(scene.window, composer);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        for (const auto key : QByteArray("narrow draft"))
+            QTest::keyClick(scene.window, key);
+        QTRY_VERIFY(scene.controller.canSend());
+        click(scene.window, visibleItem(scene.window->contentItem(), QStringLiteral("conversationInfoAction")));
+        QTRY_VERIFY(visibleItem(scene.window->contentItem(), QStringLiteral("channelInfoLayer")));
+        // With the drawer open, a pointer click at the editor center must still
+        // land on the editor (an overlay covering it fails this and the send).
+        click(scene.window, composer);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        for (const auto key : QByteArray("x!"))
+            QTest::keyClick(scene.window, key);
+        auto *send = visibleItem(scene.window->contentItem(), QStringLiteral("sendButton")); QVERIFY(send);
+        QTRY_VERIFY(send->isEnabled());
+        click(scene.window, send);
+        // The created-message POST landing server-side is the reachability
+        // proof: the pointer click went through the open drawer to the real
+        // Send control (the channel-info fixture does not complete the
+        // canonical message round-trip, so the draft is not asserted here).
+        QTRY_VERIFY(messagePosts >= 1);
+        // Acceptance second size: docked mode at a desktop width keeps the
+        // same guarantee through its own code path (no float clip needed).
+        scene.window->resize(1000, 716);
+        QTRY_COMPARE_WITH_TIMEOUT(scene.window->width(), 1000, 4000);
+        QVERIFY(visibleItem(scene.window->contentItem(), QStringLiteral("channelInfoLayer")));
+        click(scene.window, composer);
+        QTRY_VERIFY(composer->hasActiveFocus());
+        auto *sendDocked = visibleItem(scene.window->contentItem(), QStringLiteral("sendButton")); QVERIFY(sendDocked);
+        QTRY_VERIFY(sendDocked->isEnabled());
+        click(scene.window, sendDocked);
+        QTRY_VERIFY(messagePosts >= 2);
+    }
+
     // Issue #726 companion: the Appearance accordion renders every caption
     // fully - no elided Text survives inside a section header or an option
     // row, so localized (ru) titles and theme/palette names stay readable at

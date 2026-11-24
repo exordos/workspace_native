@@ -142,6 +142,20 @@ ApplicationWindow {
         anchors.top: root.controller.authenticated ? topBar.bottom : parent.top
         anchors.topMargin: root.controller.authenticated ? 4 : 8
         anchors.bottom: parent.bottom
+        // Issue #781: in the narrow float mode (see narrowDrawerOverlay, #726)
+        // the drawer used to run full height and silently covered the composer:
+        // the editor kept its width but every pointer click landed on the
+        // drawer, so a user could not finish or send the draft they could see
+        // no more. Float mode now clips the drawer's bottom at the composer
+        // band top (messageList is the conversation column's last filling row,
+        // spacing 0 -> its bottom edge is the composer card top), leaving the
+        // editor and Send visible and hittable while details stay open. In
+        // docked mode the column reserves the drawer margin and nothing is
+        // covered, so the margin stays 0 there.
+        anchors.bottomMargin: root.narrowDrawerOverlay && conversation.visible
+            ? Math.max(0, parent.height - conversation.mapToItem(parent, 0,
+                    messageList.y + messageList.height).y)
+            : 0
         colors: root.colors
         // Favorites forces the right drawer closed when it mounts
         // (chat-page.ui.tsx:40-42 setRightDrawerOpen(false) plus
