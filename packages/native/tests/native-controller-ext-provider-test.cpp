@@ -622,6 +622,87 @@ private slots:
         QCOMPARE(ca.value("generation").toInt(), 1);
     }
 
+    // Issue #740: a policy GET that started before a confirmed save must not
+    // roll back the confirmed revision, ETag or values when it lands late;
+    // the form stays clean and a refresh started after the mutation still
+    // adopts the newer server snapshot.
+    void stalePolicyRefreshCannotRollBackConfirmedSave()
+    {
+        Server test;
+        std::function<void()> release;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        // Only the refresh GET is held - the initial load already landed.
+        test.deferPolicyGet = [&release](std::function<void()> send) { release = std::move(send); };
+        admin->refreshPolicy(); // Holds the rev-3 snapshot across the save.
+        QTRY_VERIFY(release);
+        test.deferPolicyGet = nullptr; // Later refreshes flow freely.
+        admin->setLimit("max_accounts", 7);
+        QVERIFY(admin->dirty());
+        admin->save();
+        QTRY_COMPARE(test.policyPuts, 1);
+        QTRY_VERIFY(!admin->dirty()); // Confirmed draft at revision 4.
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        release(); // The late GET lands with the rev-3 snapshot and ETag "3".
+        QTest::qWait(150);
+        // The late response is discarded: revision, values, clean draft survive.
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 7LL);
+        QVERIFY(!admin->dirty());
+        QVERIFY(!admin->conflict());
+        // A refresh started after the mutation must ADOPT a newer server
+        // snapshot, not merely reach the server: advance the server past the
+        // confirmed revision first and wait for the client to adopt the rev-5
+        // values and ETag (#740 review finding).
+        test.policy = policyDto(5, true, false, 9, 50, 10 * 1048576);
+        test.etag = "\"5\"";
+        admin->refreshPolicy();
+        QTRY_COMPARE(test.policyGets, 3);
+        QTRY_COMPARE(admin->policy().value("revision").toInt(), 5);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 9LL);
+        QCOMPARE(admin->policyEtag(), QStringLiteral("\"5\""));
+        QVERIFY(!admin->dirty()); // Adoption keeps the draft clean.
+    }
+
+    // Issue #740, review finding 4672617551: a policy GET that FAILS after a
+    // confirmed save must not put the confirmed policy back into the error
+    // state. The generation guard protects every reply of that GET, including
+    // non-authorization failures, not only the successful snapshot.
+    void failedStaleRefreshCannotMarkConfirmedPolicyError()
+    {
+        Server test;
+        std::function<void()> release;
+        QVERIFY(test.start());
+        auto admin = test.admin();
+        admin->probe();
+        QTRY_COMPARE(admin->accessStatus(), QString("granted"));
+        // The refresh GET is held and its reply fails with a server error.
+        test.getOverride = [&release](const Request&) {
+            Response failed { QJsonObject { { "type", "InternalError" } }, 500, 0, { } };
+            failed.defer = [&release](std::function<void()> send) { release = std::move(send); };
+            return failed;
+        };
+        admin->refreshPolicy(); // Dispatched before the save: stale generation.
+        QTRY_VERIFY(release);
+        test.getOverride = nullptr; // Later requests flow freely.
+        admin->setLimit("max_accounts", 7);
+        QVERIFY(admin->dirty());
+        admin->save();
+        QTRY_COMPARE(test.policyPuts, 1);
+        QTRY_VERIFY(!admin->dirty()); // Confirmed draft at revision 4.
+        release(); // The late failure lands after the confirmed save.
+        QTest::qWait(150);
+        // The late failure predates the confirmed write: status and values
+        // stay untouched - the generation guard discards the whole reply.
+        QCOMPARE(admin->policyStatus(), QString("ready"));
+        QCOMPARE(admin->policy().value("revision").toInt(), 4);
+        QCOMPARE(admin->policy().value("limits").toMap().value("max_accounts").toLongLong(), 7LL);
+        QVERIFY(!admin->dirty());
+        QVERIFY(!admin->conflict());
+    }
+
     void suspendRunsPendingThenFlipsAndResumeReturns()
     {
         Server test;
