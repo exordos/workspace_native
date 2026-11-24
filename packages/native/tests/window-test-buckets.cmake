@@ -135,6 +135,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     readRequestPulseOverlayPaintsAboveBubbleFill
     replyMenuQuotesTheDraggedBubbleFragment
     sidebarChatActionsCompleteFromMenu
+    sidebarTopicSwitchDropsWritingSessionAfterExplicitFocusMove
     updaterActualMainShowsAndExecutesTheDownloadAndInstallActions
     widenedPickerKeepsEveryEmojiBelowTheCategoryHeading
     windowStreamContextMenuNotificationHover
@@ -326,6 +327,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     servicesPlaceholderGridColumnsFollowWindowWidth
     shortWindowKeepsTopicPromptAboveBottom
     sidebarSearchHighlightsVisibleTopicInsteadOfCollapsedStream
+    sidebarTopicSwitchKeepsComposerWriting
     topicContextMenuActionFailureSurfacesErrorNotice
     topicContextMenuRenameInterruptedByRenewalLeavesTheFormUsable
     windowSidebarDirectRowKeepsPlainAvatarBackground
@@ -572,6 +574,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     sidebarCompactDensityKeepsTheAvatarInLatestTopicMode
     sidebarExpandsUnselectedStreamWithoutNavigating
     sidebarTopicCreationUsesCanonicalHttpAndScopedRecovery
+    sidebarTopicSwitchDropsWritingSessionAfterCancelledPress
     sourcePickerSuggestedHistoryPersistsAndClearsBetweenOwners
     startupDirectoryDoesNotPopulateHiddenPickers
     uploadedAvatarsUseRealMainPixels

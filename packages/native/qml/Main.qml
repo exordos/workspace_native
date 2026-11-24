@@ -859,6 +859,51 @@ ApplicationWindow {
         if (composerText.enabled)
             composerText.forceActiveFocus(Qt.OtherFocusReason);
     }
+    // Issue #780: a writing session survives a pointer switch to another sidebar
+    // topic. The composer marks the session while it holds the caret; a sidebar
+    // topic click consumes at most one resume and hands the caret back to the
+    // writable destination, so typing lands without an extra click (the UX
+    // problem named in the issue: the switch cost a click and silently dropped
+    // the typed start). Sidebar focus-on-press steals focus before the click is
+    // emitted, so the session is read in the click handler, not at press (probed
+    // on Qt 6.10). Exo-review round (finding 4678658088): the session survives
+    // only a focus move straight onto a sidebar topic row - the switch's own
+    // grab; any other focus target is an explicit caret move that ends the
+    // session, so a later switch never drags the caret back after the user
+    // relocated it.
+    property bool composerWritingSession: false
+    function noteComposerWriting() { root.composerWritingSession = true; }
+    function noteComposerWritingInterrupted() {
+        if (!root.composerWritingSession)
+            return
+        const target = root.activeFocusItem
+        if (target && String(target.objectName || "").indexOf("topic-") === 0)
+            return
+        root.composerWritingSession = false
+    }
+    function resumeComposerWritingAfterSwitch() {
+        const resume = root.composerWritingSession;
+        root.composerWritingSession = false;
+        if (!resume || !root.composerAvailable)
+            return;
+        composerText.forceActiveFocus(Qt.OtherFocusReason);
+    }
+    // Exo-review round 2 (finding 4679419818): a press begun on a topic row
+    // grabs focus onto the row, so the composer-level interruption check above
+    // has already fired and will not re-fire. Watch the window's focus item:
+    // focus moving to any target that is neither the composer nor a sidebar
+    // topic row is an explicit caret move that ends the session (a cancelled
+    // press followed by a click into search must leave nothing to resume).
+    // Loss of focus to null stays neutral - focus sinks can vanish mid-switch.
+    function composerSessionGrabTarget(item) {
+        if (item === composerText)
+            return true;
+        return String(item ? item.objectName || "" : "").indexOf("topic-") === 0;
+    }
+    function endComposerWritingSessionOnFocusMove(item) {
+        if (root.composerWritingSession && item && !root.composerSessionGrabTarget(item))
+            root.composerWritingSession = false;
+    }
     readonly property var pendingOutgoing: root.controller.outgoingSend || ({})
     readonly property var encryptedPendingSend: root.encryptedConversation && String(root.pendingOutgoing.id || "").length > 0 ? root.pendingOutgoing : root.chatEncryption.pendingSend || ({})
     readonly property bool encryptedComposerHasKey: root.encryptedConversation && String(root.chatEncryption.sendingKeyUuid || "").length > 0
@@ -4907,7 +4952,12 @@ component NativeMentionChip: Item {
     // Focus session change: the user moved focus themselves (click, tab) or
     // a focused delegate was destroyed mid-chain - either way a pending
     // automatic focus claim is no longer wanted.
-    onActiveFocusItemChanged: ++root.sidebarSearchFocusSession
+    onActiveFocusItemChanged: {
+        ++root.sidebarSearchFocusSession
+        // Issue #780 round 2 (finding 4679419818): see the writer-session
+        // helpers above - the same focus event also ends a stale session.
+        root.endComposerWritingSessionOnFocusMove(root.activeFocusItem)
+    }
     Connections {
         target: root.controller
         // Model change: rows shift indices when the filtered list refreshes,
@@ -6607,6 +6657,7 @@ component NativeMentionChip: Item {
                                     root.controller.selectTopic(modelData.id);
                                 else
                                     root.controller.openTopic(modelData.id, streamDelegate.modelData.id);
+                                root.resumeComposerWritingAfterSwitch();
                             }
                             // Issue #628: ArrowUp/ArrowDown over the filtered
                             // results (reference sidebar-workspace-search.lib.ts:7-33).
@@ -12288,6 +12339,7 @@ component NativeMentionChip: Item {
                                     readOnly: root.controller.mediaViewer.open
                                     enabled: root.composerAvailable && !Boolean(root.encryptedPendingSend.busy)
                                     text: root.controller.draft
+                                    onActiveFocusChanged: if (activeFocus) root.noteComposerWriting(); else root.noteComposerWritingInterrupted()
                                     onTextChanged: {
                                         if (root.composerAvailable && root.controller.draft !== text)
                                             root.controller.draft = text;
