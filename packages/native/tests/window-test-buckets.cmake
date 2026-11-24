@@ -381,6 +381,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     rightDrawerConversationSwitchDropsNestedChatScreens
     rightDrawerPromotesExistingLayersInsteadOfDuplicating
     sidebarHydrationKeepsFocusOnOtherStream
+    startupCacheEmptyStoreKeepsSignInVisible
     windowChannelInfoAddDialogClearsSelectionOnClose
     windowChannelInfoAddMemberFlow
     windowChannelInfoNotificationBusyIsPerStreamRequestScoped
