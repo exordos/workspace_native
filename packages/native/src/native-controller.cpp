@@ -22110,7 +22110,7 @@ void NativeController::interruptTopicSummaryOps()
     if (m_topicSummaryOps.contains(QStringLiteral("endpoint-new")))
         m_topicSummaryCreateNeedsReconcile = true;
     QString interruptedFamily;
-    for (const auto &key : std::as_const(m_topicSummaryOps)) {
+    for (const auto &key : m_topicSummaryOps.keys()) {
         interruptedFamily = topicSummaryErrorFamily(key);
         if (!interruptedFamily.isEmpty()) break;
     }
