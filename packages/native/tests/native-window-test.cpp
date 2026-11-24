@@ -26842,12 +26842,22 @@ mv -Tf "$root/.current-new" "$root/current"
         rows.append(keepDto);
         int deletes = 0;
         QString deletePath;
+        // The full DELETE path is pinned exactly (finding 4687475401): the
+        // list GET pins the service prefix, so the expected path is the whole
+        // prefix + collection + uuid - a uuid with any unintended suffix or a
+        // different prefix can no longer slip through substring matching.
+        const QString collection = QStringLiteral("/topic_summary_endpoints/");
+        QString apiPrefix;
         const auto base = scene.fixture.server.handler;
         scene.fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
-            if (request.method == "GET" && path.contains(QStringLiteral("/topic_summary_endpoints")))
+            const auto clean = path.section(QLatin1Char('?'), 0, 0);
+            if (request.method == "GET" && clean.endsWith(collection)) {
+                apiPrefix = clean.left(clean.size() - collection.size());
                 return Response{rows};
-            if (request.method == "DELETE" && path.contains(QStringLiteral("/topic_summary_endpoints/"))) {
+            }
+            if (request.method == "DELETE"
+                && clean == apiPrefix + collection + dropUuid) {
                 ++deletes;
                 deletePath = path;
                 return Response{};
@@ -26882,7 +26892,8 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("channelTopicSummaryDeleteConfirm"));
         click(scene.window, visibleItem("channelTopicSummaryDeleteConfirmYes"));
         QTRY_COMPARE(deletes, 1);
-        QVERIFY(deletePath.contains(dropUuid));
+        QCOMPARE(deletePath.section(QLatin1Char('?'), 0, 0),
+                 apiPrefix + collection + dropUuid);
         QTRY_VERIFY(!visibleItem("channelTopicSummaryDeleteConfirm"));
         QTRY_VERIFY(!visibleItem("channelTopicSummaryEndpoint-1"));
         QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
