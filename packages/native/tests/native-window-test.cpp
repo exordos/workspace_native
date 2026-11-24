@@ -45348,6 +45348,41 @@ private slots:
         QTRY_VERIFY2(g_lateTeardownServed.load() > servedBefore,
             "the late request must be served by the quiesced mock server (fallback path exercised)");
     }
+
+    void windowEdgeOutlineFramesRestoredWindowAndClearsOnMaximize()
+    {
+        // #720 acceptance: a restored window reads against a white backdrop (the
+        // palette-edge ring frames it and its top edge is the title-bar seam),
+        // and maximized mode gains no extra inset because the ring steps aside.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("edge outline teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->resize(980, 720);
+        auto *outline = window->findChild<QObject *>("windowEdgeOutline");
+        QVERIFY2(outline, "a restored window must paint the palette-edge perimeter ring");
+        QVERIFY(outline->property("visible").toBool());
+        QCOMPARE(outline->property("edgeWidth").toReal(), 1.0);
+        // Overlay contract: the ring exactly covers the content area, so it adds
+        // no layout inset and re-frames itself for free while resizing.
+        QTRY_VERIFY(qRound(outline->property("width").toReal()) == window->width()
+            && qRound(outline->property("height").toReal()) == window->height());
+        // The edge is the palette border token, so every palette and the dark
+        // mode keep the treatment theme-appropriate.
+        QVERIFY(outline->property("edgeColor").value<QColor>()
+            == QColor(window->property("colors").toMap().value("border-subtle").toString()));
+        // Maximized: the screen frame is the edge, so no fake inset is drawn.
+        window->showMaximized();
+        QTRY_VERIFY_WITH_TIMEOUT(!outline->property("visible").toBool(), 5000);
+        window->showNormal();
+        QTRY_VERIFY_WITH_TIMEOUT(outline->property("visible").toBool(), 5000);
+    }
 };
 
 
