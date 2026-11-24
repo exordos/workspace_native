@@ -683,7 +683,13 @@ bool NativeCache::putMediaBlob(const Lease &lease, const QString &uuid, const QB
         query.addBindValue(m_owner); query.addBindValue(hash);
         bool okay = query.exec();
         if (m_failMediaBlobLookupForTest > 0) { --m_failMediaBlobLookupForTest; okay = false; }
-        if (!okay) { m_database.rollback(); return false; }
+        if (!okay) {
+            // Rollback restored every trim delete: the ledger must re-derive
+            // from the database, exactly like the decline path, or the restored
+            // entries stay discounted in memory (#828 review round).
+            m_database.rollback();
+            return refreshTotals(true) ? false : fail();
+        }
         if (query.next()) { existed = true; previousSize = query.value(0).toLongLong(); }
     }
     bool okay = true;
