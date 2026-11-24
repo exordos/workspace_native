@@ -437,6 +437,13 @@ if(UNIX AND NOT APPLE)
         message(FATAL_ERROR "qtwebengine_resources.pak not found under ${WORKSPACE_NATIVE_QT_DATA_DIR}/resources "
             "(the call runtime needs libqt6webengine6-data)")
     endif()
+    # The V8 startup snapshot lives next to the .pak trees and is resolved from
+    # the packaged resources directory at renderer startup; without it the
+    # helper aborts with "Error loading V8 startup snapshot file" (#804).
+    if(NOT EXISTS "${WORKSPACE_NATIVE_QT_DATA_DIR}/resources/v8_context_snapshot.bin")
+        message(FATAL_ERROR "v8_context_snapshot.bin not found under ${WORKSPACE_NATIVE_QT_DATA_DIR}/resources "
+            "(the call renderer aborts without the V8 startup snapshot, #804)")
+    endif()
     install(FILES resources/workspace-native.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
         RENAME com.exordos.workspace.native.preview.desktop)
     install(FILES ../electron/resources/icon.png
