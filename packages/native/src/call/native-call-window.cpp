@@ -255,6 +255,10 @@ void JitsiCallWindowController::retry()
     m_embedDeadlineTimer.start(m_embedDeadlineMs);
     emit embedStateChanged();
     emit textsChanged();
+    // #792: the state flip alone changes nothing observable for the Loader
+    // (active through both states, status stuck at Error); ask the shell to
+    // genuinely re-evaluate the embed source.
+    emit embedRetryRequested();
 }
 
 void JitsiCallWindowController::ensureEmbed()

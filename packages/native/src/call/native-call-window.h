@@ -183,6 +183,11 @@ signals:
     void boundsChanged();
     void embedStateChanged();
     void embedCreated();
+    // #792: retry() asks the shell to re-instantiate the embed Loader. The
+    // state flip alone (LoadFailed->Loading) keeps the Loader active with
+    // status Loader.Error, so nothing re-attempts the import and Retry can
+    // never succeed - the shell must drive a real Loader reload.
+    void embedRetryRequested();
     void permissionsChanged();
     void participantCountChanged();
     void fullscreenChanged();
