@@ -606,15 +606,26 @@ Popup {
 
     // Flat tinted-glyph button of the video controls bar (issue #731):
     // 24x24 hit area, 20 px white glyph, no background fill (Chromium's
-    // transparent media-button chrome).
+    // transparent media-button chrome). Issue #793: the transport glyphs are
+    // the two most-used controls of the bar yet showed no pointer feedback at
+    // all, while every sibling in this popup (ViewerArrow, ViewerButton, the
+    // retry chip) tints on hover. Give them the same response as the retry
+    // chip of this popup (hovered #33FFFFFF, pressed one step brighter);
+    // the idle state stays transparent, matching the reference's native-
+    // controls chrome (media-viewer-overlay.ui.tsx <video controls>).
     component ViewerGlyph: AbstractButton {
         id: glyph
         required property string asset
         implicitWidth: 24
         implicitHeight: 24
         padding: 0
+        hoverEnabled: true
         onClicked: viewerRoot.pokeControls()
-        background: Rectangle { color: "transparent" }
+        background: Rectangle {
+            radius: 6
+            color: glyph.down ? "#4DFFFFFF"
+                : glyph.hovered ? "#33FFFFFF" : "transparent"
+        }
         Image {
             anchors.centerIn: parent
             source: "qrc:/workspace/icons/" + glyph.asset
