@@ -1058,32 +1058,17 @@ live desktop-daemon reproduction has not been run.
 
 ## Next ten Linux releases
 
-The following is the current delivery order requested by the user, starting
-after the 0.3.0 draft feature. Development is paused after that feature. New features increase MINOR; corrections to existing functionality
-increase PATCH, following the [version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases).
-Bug-fix releases can appear between these ten feature releases. Each row is
-planned work, not a claim of implementation or acceptance.
-The version estimates assume exactly this delivery order and one compatible
-feature release per row. They do not reserve version numbers. If a row ships
-earlier, is combined with another row, or changes scope, recalculate its version
-from the latest published release using the policy above. Copying the issue or
-milestone number into CMake is not a valid reason for a version bump.
-Release results will include the next ten priorities and their planned versions.
-Daily use and delivery through the existing updater come first. Each release
-keeps the configurable 10 GB disk-cache default and verifies affected API/cache
-costs, regression coverage and the installed update. Matched raw Source/Native
-screenshots accompany visual changes. These ten releases do not complete the
-full parity matrix or resume other platforms.
-
-| Priority | Provisional version (original order) | Main capability and acceptance target |
-| --- | --- | --- |
-| 1 | 0.4.0 | Unread navigation: open at the first unread message and keep visible reads and sidebar counters consistent with server state. |
-| 2 | 0.5.0 | Everyday sidebar: last-message previews, timestamps and activity ordering, using the existing cache and Source row geometry. |
-| 3 | 0.6.0 | Linux notifications: bounded, deduplicated desktop notifications that open the exact conversation/message and respect Source notification modes. |
-| 4 | 0.7.0 | Participant presentation: real Gravatar images and live presence on account, sidebar, header and messages. |
-| 5 | 0.8.0 | Inline message editing: Source edit state and Up-to-edit-last, preserving the prior draft and confirmed server result. |
-| 6 | 0.9.0 | Replies and quote navigation: Source reply context and opening/highlighting the original message, including unloaded history. |
-| 7 | 0.10.0 | Multi-message forwarding: selection, destination and canonical confirmation without duplicate sends. |
-| 8 | 0.11.0 | Media viewer: open received images/attachments, navigate media and save originals with bounded resource use. |
-| 9 | 0.12.0 | Durable outgoing messages: pending sends across restart and reconciliation without duplicates. |
-| 10 | 0.13.0 | Global message search: account/project-scoped results, filters and exact conversation/message navigation. |
+**No pre-agreed release horizon is in force.** The former ten-row table
+(0.4 unread navigation through 0.13 global search) shipped in full as closed
+epics #1-#13 and was removed here as stale: at the time of this refresh the app
+is at 0.48.x and the original estimates described none of the shipped order.
+The roadmap of record is the tracked issue queue in
+`exordos/workspace_native`, ordered by the priority labels (P1-critical >
+P2-high > P3-normal); releases are cut whenever the merged train carries
+user-meaningful functionality or fixes. Version bumps keep following the
+[version policy](NATIVE_DESKTOP_DEVELOPMENT.md#versioning-and-releases): new
+features increase MINOR, corrections increase PATCH, and copying an issue or
+milestone number into CMake is never a reason for a bump. Bug-fix releases can
+appear between feature releases. Each release still verifies affected API/cache
+costs, regression coverage and the installed update; matched raw Source/Native
+screenshots accompany visual changes.
