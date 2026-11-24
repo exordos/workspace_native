@@ -7237,10 +7237,35 @@ void NativeController::openCacheForStartupIdentity()
     m_cacheWasAvailable = false;
     m_cacheLease = {};
     m_startupIdentity = identity;
-    m_startupCacheMode = true;
+    const auto revision = m_cacheRevision;
     const QPointer<NativeController> guard(this);
-    if (m_cache->open(m_api->server(), m_session->project(), m_session->user()) && guard)
-        m_cacheLease = m_cache->lease();
+    // Issue #789 review (finding 4676864838): the cache-first shell may take
+    // over the screen only once the cache actually opened. open() reports only
+    // that the job was accepted; the completion carries the real verdict, and
+    // a failed open must leave the sign-in card on screen instead of hiding
+    // it behind an empty cached workspace while a stalled refresh runs.
+    const bool accepted = m_cache->open(m_api->server(), m_session->project(), m_session->user(), this,
+        [this, guard, identity, revision](bool opened) {
+        if (!guard) return;
+        if (guard->m_startupIdentity != identity || guard->m_cacheRevision != revision) return;
+        if (!opened || guard->authenticated()) {
+            // The attempt is over (failed, or the session authenticated
+            // first): release the identity so a later resolve may retry,
+            // and the startup mode is never entered.
+            guard->m_startupIdentity.clear();
+            emit guard->stateChanged();
+            return;
+        }
+        guard->m_startupCacheMode = true;
+        if (guard->m_cache) guard->m_cacheLease = guard->m_cache->lease();
+        emit guard->stateChanged();
+        // The service emits stateChanged before this queued completion runs,
+        // so the becameReady projection seam could not see the mode yet;
+        // project the cached channel list from here (idempotent).
+        guard->loadStartupCacheStreams();
+    });
+    if (!accepted && guard && m_startupIdentity == identity)
+        m_startupIdentity.clear();
     if (guard) emit stateChanged();
 }
 

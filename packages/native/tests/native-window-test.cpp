@@ -45742,6 +45742,83 @@ private slots:
         QVERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
         QCOMPARE(controller.selectedStream(), streamId);
     }
+
+    // Issue #789 review (finding 4676864838): startup cache mode is an
+    // optimistically painted shell - it may only take over the screen once the
+    // cache actually opened. When the open fails (here: a read-only cache
+    // directory) while the session refresh is still held open, the sign-in
+    // card must stay visible instead of an empty cached workspace.
+    void startupCacheOpenFailureKeepsSignInVisible()
+    {
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QUrl server(QStringLiteral("https://startup-fail.invalid"));
+        // The cache directory holds a DIRECTORY where the sqlite database file
+        // belongs: the cache open rejects it and fails for good.
+        const QString cacheDir = directory.filePath("blocked-cache");
+        QVERIFY(QDir().mkpath(cacheDir));
+        QVERIFY(QDir().mkpath(QDir(cacheDir).filePath("cache.sqlite3")));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, server, projectId, userId, QStringLiteral("synthetic-user"),
+            QStringLiteral("Synthetic project")};
+        saved.id = SessionVault::accountId(server, projectId, userId);
+        bool stored = false;
+        vault.save(saved, QByteArray("startup-fail-private"), [&](QString error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        // The token/introspect chain is held open forever: the failed cache
+        // open is the only thing that may end the startup attempt.
+        std::function<void()> releaseRefresh;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const ApiResult held{QJsonObject{{"access_token", QStringLiteral("startup-access")},
+                    {"refresh_token", QStringLiteral("startup-fail-private")}, {"expires_in", 3600}}, 200, {}, {}};
+                releaseRefresh = [done, held] { done(held); };
+                return;
+            }
+            auto response = sessionResponse(request);
+            if (path.endsWith("/messages/") || path.endsWith("/folders/")) response = Response{QJsonArray{}};
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        NativeCacheService cache(cacheDir, {}, true);
+        NativePreferences preferences(directory.filePath("startup-fail.ini"));
+        preferences.setLocale("en");
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        window->resize(1440, 900);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Startup failure teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QCOMPARE(controller.savedAccounts().size(), 1);
+        controller.resumeSavedAccount(saved.id);
+        QTRY_VERIFY_WITH_TIMEOUT(bool(releaseRefresh), 3000); // refresh chain is provably held
+        // The startup identity does open the cache, and the open fails.
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.available() && !cache.error().isEmpty(), 5000);
+        // A failed open never enters startup cache mode and projects nothing.
+        QVERIFY(!controller.startupCacheMode());
+        QVERIFY(controller.streams().isEmpty());
+        // The sign-in card is still on screen (its action shares the card's
+        // visibility binding in Main.qml).
+        auto *support = item(window->contentItem(), "loginSupportAction");
+        QVERIFY(support);
+        QVERIFY(support->isVisible());
+    }
 };
 
 
