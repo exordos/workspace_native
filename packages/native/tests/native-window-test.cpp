@@ -45006,6 +45006,47 @@ private slots:
         QCOMPARE(scene.notifPosts, 1);
     }
 
+    // Issue #790 (#665 parity clone): the topic menu notification-level
+    // segments must carry the same hover contract as the stream menu
+    // (workspace_ui notification-level-switch.lib.ts:63-66): idle segments
+    // tint with bg-sidebar-hover + text-text-primary while hovered, the
+    // current segment keeps card-bg/icon-active, so the selection stays
+    // distinct from the hover state.
+    void windowTopicContextMenuNotificationHover()
+    {
+        TopicMenuScene scene;
+        scene.openMenu(QStringLiteral("topic-") + topicId);
+        auto *menu = scene.menu(); QVERIFY(menu);
+        const auto colors = scene.window->property("colors").toMap();
+        const auto hoverTint = colors.value("sidebar-item-hover").value<QColor>();
+        const auto primaryGlyph = colors.value("text-primary").value<QColor>();
+        const auto currentColor = colors.value("card-bg").value<QColor>();
+        const auto activeGlyph = colors.value("icon-active").value<QColor>();
+        auto *idle = scene.row(QStringLiteral("topicNotifSegment-followed"));
+        auto *current = scene.row(QStringLiteral("topicNotifSegment-inherit"));
+        QVERIFY(idle && current);
+        QVERIFY(!idle->property("isCurrent").toBool());
+        QVERIFY(current->property("isCurrent").toBool());
+        auto *idleBg = idle->property("background").value<QQuickItem *>(); QVERIFY(idleBg);
+        auto *currentBg = current->property("background").value<QQuickItem *>(); QVERIFY(currentBg);
+        const auto idleCenter = idle->mapToScene(QPointF(idle->width() / 2, idle->height() / 2)).toPoint();
+        const auto currentCenter = current->mapToScene(QPointF(current->width() / 2, current->height() / 2)).toPoint();
+        // Idle without hover: transparent background, text-muted glyph.
+        QTest::mouseMove(scene.window.data(), QPoint(5, 5));
+        QTRY_COMPARE(idleBg->property("color").value<QColor>(), QColor(Qt::transparent));
+        // Reference hover:bg-sidebar-hover + hover:text-text-primary.
+        QTest::mouseMove(scene.window.data(), idleCenter);
+        QTRY_COMPARE(idleBg->property("color").value<QColor>(), hoverTint);
+        QTRY_COMPARE(idle->property("glyphColor").value<QColor>(), primaryGlyph);
+        // Hovering the current segment keeps its own card-bg/icon-active tone
+        // and the previously hovered idle segment clears back to transparent.
+        QTest::mouseMove(scene.window.data(), currentCenter);
+        QTRY_COMPARE(idleBg->property("color").value<QColor>(), QColor(Qt::transparent));
+        QTRY_COMPARE(currentBg->property("color").value<QColor>(), currentColor);
+        QTRY_COMPARE(current->property("glyphColor").value<QColor>(), activeGlyph);
+        menu->setProperty("visible", false);
+    }
+
     void topicContextMenuUnmutedSegmentsFollowStreamAndDirectRules()
     {
         // Reference: messenger-notification-mode.lib.ts level options - the

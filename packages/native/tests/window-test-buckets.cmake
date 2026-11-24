@@ -299,6 +299,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
     topicContextMenuRenameDialogRules
     windowProfileOtherUserMessageOpensDirectDefaultTopic
     windowStreamContextMenuNotificationSwitchDisabledWhileBusy
+    windowTopicContextMenuNotificationHover
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     activityCompactRailShowsUnreadMentionsBadgeOnceIndexed

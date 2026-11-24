@@ -260,6 +260,16 @@ Item {
                                 padding: 0
                                 display: AbstractButton.IconOnly
                                 readonly property bool isCurrent: block.currentLevel() === modelData
+                                // Issue #790 (#665 parity, workspace_ui
+                                // notification-level-switch.lib.ts:63-66): idle
+                                // segments tint with bg-sidebar-hover +
+                                // text-text-primary while hovered; the current
+                                // segment keeps card-bg/icon-active so the
+                                // selection stays distinct from the hover state
+                                // (the stream-menu contract established in
+                                // c09a9af0, Main.qml streamMenu segments).
+                                readonly property color glyphColor: isCurrent ? block.colors["icon-active"]
+                                    : (hovered && enabled ? block.colors["text-primary"] : block.colors["text-muted"])
                                 Accessible.role: Accessible.RadioButton
                                 Accessible.checkable: true
                                 Accessible.checked: isCurrent
@@ -267,10 +277,11 @@ Item {
                                 icon.source: "qrc:/workspace/icons/" + block.levelAsset(modelData)
                                 icon.width: 22
                                 icon.height: 22
-                                icon.color: isCurrent ? block.colors["icon-active"] : block.colors["text-muted"]
+                                icon.color: glyphColor
                                 background: Rectangle {
                                     radius: 6
-                                    color: levelSegment.isCurrent ? block.colors["card-bg"] : "transparent"
+                                    color: levelSegment.isCurrent ? block.colors["card-bg"]
+                                         : (levelSegment.hovered && levelSegment.enabled ? block.colors["sidebar-item-hover"] : "transparent")
                                     opacity: levelSegment.enabled ? 1.0 : 0.5
                                 }
                                 onClicked: {

@@ -27,3 +27,4 @@ sidebarSearchArrowsCycleFilteredResults=1.60359
 topicContextMenuRenameDialogRules=0.816603
 windowProfileOtherUserMessageOpensDirectDefaultTopic=2.78423
 windowStreamContextMenuNotificationSwitchDisabledWhileBusy=1.95612
+windowTopicContextMenuNotificationHover=0.854174
