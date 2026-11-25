@@ -474,6 +474,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     loginOtpPasswordIsDestroyedWhenOrganizationChanges
     loginRealmPreviewUsesOnlyAdvertisedBranding
     measuredQuoteHeightIncludesNestedTextBeforeViewportRestore
+    mediaViewerVideoControlsAutoHideReturnsOnMoveAndPause
     mentionRunsOnOneLineStaySeparated
     pollBubbleNarrowCardKeepsContentInside
     pollCreateDialogOpensWithOneQuestionAndDisabledCreate
