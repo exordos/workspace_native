@@ -2495,6 +2495,7 @@ struct ChannelInfoWindowScene {
         : fixture(streamOwner), preferences(directory.filePath("channel-info.ini")),
           session(&api), controller(&api, &session)
     {
+        controller.setRowPreviewNetworkEnabledForTest(false); // #860: uuid preview lookups would interleave into this case's traffic pins
         QVERIFY(directory.isValid());
         QStringList permissions;
         if (!permission.isEmpty()) permissions << permission;
@@ -3197,6 +3198,11 @@ struct NativeWindowScene {
         : preferences(preferencesDirectory.filePath("preferences.ini")),
           api(nullptr, true), session(&api), controller(&api, &session)
     {
+        // #860: the mock catalog advertises last_message_uuid for every row, so the network
+        // preview hydration would fire uuid lookups mid-readiness and recreate the delegates
+        // under the traffic- and scroll-pinned cases. The window harness runs the disk-only
+        // preview shape; the hydration contract lives in native-controller-sidebar-test.
+        controller.setRowPreviewNetworkEnabledForTest(false);
         for (int number = 0; number < 50; ++number) {
             auto entry = message(QStringLiteral("Wheel fixture %1").arg(number), messageUuid(number));
             entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
@@ -16061,6 +16067,7 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        controller.setRowPreviewNetworkEnabledForTest(false); // #860: uuid preview lookups would interleave into this case's traffic pins
         // Issue #718 slice 2: the background preload sweep would interleave
         // marker-less page GETs into this case's exact paging/pin budget;
         // sweep behaviour is covered by the sidebar cases.
@@ -16696,6 +16703,7 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        controller.setRowPreviewNetworkEnabledForTest(false); // #860: uuid preview lookups would interleave into this case's traffic pins
         // Issue #718 slice 2: the background preload sweep would interleave
         // marker-less page GETs into this case's exact paging/pin budget;
         // sweep behaviour is covered by the sidebar cases.
@@ -16859,6 +16867,7 @@ mv -Tf "$root/.current-new" "$root/current"
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        controller.setRowPreviewNetworkEnabledForTest(false); // #860: uuid preview lookups would interleave into this case's traffic pins
         // Issue #718 slice 2: the background preload sweep would interleave
         // marker-less page GETs into this case's exact paging/pin budget;
         // sweep behaviour is covered by the sidebar cases.
@@ -31496,6 +31505,7 @@ private:
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        controller.setRowPreviewNetworkEnabledForTest(false); // #860: uuid preview lookups would interleave into this case's traffic pins
         // Issue #718 slice 2: the background preload sweep would interleave
         // marker-less page GETs into this case's exact paging/pin budget;
         // sweep behaviour is covered by the sidebar cases.
@@ -31698,6 +31708,7 @@ private:
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
+        controller.setRowPreviewNetworkEnabledForTest(false); // #860: uuid preview lookups would interleave into this case's traffic pins
         QQmlApplicationEngine engine;
         loadNativeUi(engine, &controller, &preferences);
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
