@@ -14619,8 +14619,15 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *streamRow = item(window->contentItem(), "stream-" + streamId);
         QVERIFY(wantedTopic && otherTopic && streamRow);
         const auto reactionTopicReady = [&] {
-            auto *column = wantedTopic->parentItem();
-            if (!column || otherTopic->parentItem() != column || wantedTopic->window() != window
+            // Issue #847: sidebar topic rows can be wrapped by a per-row
+            // delegate item (the search "Other topics" separator support), so
+            // exact sibling identity is too strict. The contract is unchanged:
+            // the rows share one ancestor and occupy separate placed cells.
+            QQuickItem *column = nullptr;
+            for (auto *p = wantedTopic; p && !column; p = p->parentItem())
+                for (auto *q = otherTopic; q; q = q->parentItem())
+                    if (q == p) { column = q; break; }
+            if (!column || wantedTopic->window() != window
                 || otherTopic->window() != window || !wantedTopic->isVisible() || !otherTopic->isVisible()
                 || !wantedTopic->isEnabled() || !otherTopic->isEnabled()) return false;
             const QRectF wanted(wantedTopic->mapToScene(QPointF{}), wantedTopic->size());
