@@ -40,6 +40,14 @@ class JitsiCallWindowController final : public QObject {
     Q_PROPERTY(QString minimizeLabel READ minimizeLabel NOTIFY textsChanged)
     Q_PROPERTY(QString minimizeTooltip READ minimizeTooltip NOTIFY textsChanged)
     Q_PROPERTY(QString closeLabel READ closeLabel CONSTANT)
+    // #846 standalone OS call window: the call identity the reference shell
+    // keys its single-window rules on (workspace_ui e0194ffb
+    // jitsi-call-window.ts), and the shell visibility gate - the reference
+    // creates the window hidden and shows it only after a successful load
+    // (jitsi-call-window.ts:161-186), so visibility is exactly
+    // "expanded and the embed finished loading".
+    Q_PROPERTY(QString callId READ callId NOTIFY callIdChanged)
+    Q_PROPERTY(bool windowVisible READ windowVisible NOTIFY windowVisibilityChanged)
 public:
     enum Mode { Closed = 0, Expanded = 1, Minimized = 2 };
     Q_ENUM(Mode)
@@ -60,9 +68,30 @@ public:
     inline static constexpr int kParticipantsPollMs = 5000;
     inline static constexpr int kParticipantsPollUnfocusedMs = 30000;
 
+    // #846 standalone OS window contract (workspace_ui e0194ffb
+    // jitsi-call-window.ts): the expanded call presents as a top-level window
+    // with exactly these shell bounds (BrowserWindow construction :238-247)
+    // and load deadline (WINDOW_LOAD_TIMEOUT_MS, :11).
+    inline static constexpr int kStandaloneWidth = 1000;
+    inline static constexpr int kStandaloneHeight = 720;
+    inline static constexpr int kStandaloneMinWidth = 400;
+    inline static constexpr int kStandaloneMinHeight = 300;
+    inline static constexpr int kWindowLoadTimeoutMs = 15000;
+    // Payload bounds (readPayload, :40-90): callId 1..128, meetingUrl <=8192
+    // http(s) without userinfo and with a non-empty path, display strings
+    // truncated to 256, theme paletteId <=128 (invalid theme dropped, not a
+    // rejection).
+    inline static constexpr int kMaxCallIdLength = 128;
+    inline static constexpr int kMaxMeetingUrlLength = 8192;
+    inline static constexpr int kMaxTextLength = 256;
+    inline static constexpr int kMaxPaletteIdLength = 128;
+
     // jitsi-call-permissions.lib.ts:4 — set once per session, never revoked by
     // shell toggles.
     static QString allowPolicy();
+    // #846: the standalone shell background (jitsi-call-window.ts:244
+    // backgroundColor), pinned so QML and tests share one value.
+    static QString standaloneBackgroundColor();
 
     explicit JitsiCallWindowController(QObject *parent = nullptr);
 
@@ -74,6 +103,11 @@ public:
     static QRect defaultPipBounds(const QSize &viewport, const QPoint &screenOrigin);
 
     int mode() const { return m_mode; }
+    // #846 call identity (see the callId property). The store's uuid callId
+    // wins; direct open() payloads without one fall back to callKey and then
+    // the meeting URL so the identity is never empty while a call is open.
+    QString callId() const;
+    bool windowVisible() const { return m_mode == Expanded && m_embedState == Ready; }
     QRect bounds() const;
     int embedState() const { return m_embedState; }
     int embedCreations() const { return m_embedCreations; }
@@ -108,6 +142,23 @@ public:
     // Opens the shell in Expanded mode from a JitsiCallStore activeCall payload
     // (meetingUrl, locationName, optional meetUrl/displayName/startWithVideoMuted).
     void open(const QVariantMap &activeCall);
+    // #846: the single entry point for the standalone shell, a replica of the
+    // reference ipcMain.handle(open) (jitsi-call-window.ts:213-232): the
+    // payload goes through the readPayload bounds first, then the
+    // single-window rules apply - re-opening the same callId only announces
+    // focusRequested, a different callId announces openRejected and leaves
+    // the live window untouched. Returns whether the request was accepted.
+    Q_INVOKABLE bool requestStandaloneOpen(const QVariantMap &activeCall);
+    // Replica of readPayload (jitsi-call-window.ts:40-90) for the native
+    // activeCall payload: derives and validates callId (1..128; the store
+    // mints a uuid per call like the reference jitsi-call.model.ts:80),
+    // enforces the meetingUrl http(s)/userinfo/path bounds and the 8192
+    // cap, truncates locationName/displayName to 256 and drops an invalid
+    // theme entry (a bad theme never rejects the open). An empty meetingUrl
+    // is NOT rejected here: the shell's own InvalidUrl state owns unusable
+    // meeting links (the reference page does the same). Returns an empty
+    // map plus a reason in *rejectReason when the open must be refused.
+    static QVariantMap sanitizeShellPayload(const QVariantMap &payload, QString *rejectReason);
     Q_INVOKABLE void close();
     Q_INVOKABLE void toggleMinimize();
     Q_INVOKABLE void toggleFullscreen();
@@ -192,6 +243,18 @@ signals:
     void participantCountChanged();
     void fullscreenChanged();
     void closeRequested();
+    // #846 standalone shell announcements. windowVisibilityChanged fires when
+    // the hidden-until-loaded gate flips (the QML top-level Window binds its
+    // visible to it); focusRequested is the same-callId re-open (reference
+    // focus path); openRejected carries the refusal reason; standaloneClosed
+    // announces a closed call window to the main window (tray tooltip and
+    // display-sleep inhibit reset, reference ':closed' at :271-286) and fires
+    // ONLY when the window had actually loaded.
+    void windowVisibilityChanged();
+    void callIdChanged();
+    void focusRequested();
+    void openRejected(const QString &reason);
+    void standaloneClosed(const QString &callId);
     // One umbrella signal so every derived localized string re-binds at once.
     void textsChanged();
 
@@ -213,8 +276,15 @@ private:
     bool m_pipBoundsFromUser = false;
     QTimer m_pollTimer;
     QTimer m_embedDeadlineTimer;
-    int m_embedDeadlineMs = 30000;
+    // #846: the reference window load timeout (jitsi-call-window.ts:11) - a
+    // load that never reports success or failure fails the shell within this
+    // window, so the standalone surface is never shown for a stalled load.
+    int m_embedDeadlineMs = kWindowLoadTimeoutMs;
     int m_pollIntervalOverrideMs = 0;
+    // #846: true once the embed finished loading for the current call; the
+    // reference announces ':closed' to the main window only when the window
+    // had actually loaded (jitsi-call-window.ts:271-286).
+    bool m_windowShown = false;
     QVariantMap m_call;
     QString m_domain;
     QString m_roomName;

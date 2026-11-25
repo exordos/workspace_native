@@ -10289,10 +10289,17 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // #162: the call window shell follows the single-active-call store. An
     // active call opens the shell; closing the shell (close button or
     // readyToClose) ends the stored call exactly like the reference onClose.
+    // #846: the standalone entry point enforces the reference payload bounds
+    // and single-window rules first (jitsi-call-window.ts:213-232); a refused
+    // open ends the stored call too, so a rejected payload can never strand
+    // an active call without a window (reference: open returning false leaves
+    // no window and the main side resets its call state).
     connect(&m_callStore, &JitsiCallStore::activeCallChanged, this, [this] {
-        if (m_callStore.hasActiveCall())
-            m_callWindow.open(m_callStore.activeCall());
-        else if (m_callWindow.mode() != JitsiCallWindowController::Closed)
+        if (m_callStore.hasActiveCall()) {
+            if (!m_callWindow.requestStandaloneOpen(m_callStore.activeCall())
+                && m_callWindow.mode() == JitsiCallWindowController::Closed)
+                m_callStore.closeCall();
+        } else if (m_callWindow.mode() != JitsiCallWindowController::Closed)
             m_callWindow.close();
     });
     // Issue #163: the incoming invite lifecycle follows the same store

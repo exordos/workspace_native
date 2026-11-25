@@ -9,6 +9,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTest>
+#include <QUuid>
 #include <QXmlStreamReader>
 
 using namespace workspace;
@@ -1458,6 +1459,190 @@ private slots:
         QVERIFY2(!src.isEmpty(), "the shipped call-event glue must be locatable");
         QVERIFY2(!src.contains(QStringLiteral("else {\n                wire(\"__ready__\", data.params);\n            }")),
             "an unfamiliar ready ID must never be echoed unconditionally (#261 echo loop)");
+    }
+
+    // --- #846 standalone OS call window (workspace_ui e0194ffb
+    // jitsi-call-window.ts) ---
+
+    void standaloneShellGeometryMatchesReference()
+    {
+        // BrowserWindow construction (jitsi-call-window.ts:238-247) and
+        // WINDOW_LOAD_TIMEOUT_MS (:11).
+        QCOMPARE(JitsiCallWindowController::kStandaloneWidth, 1000);
+        QCOMPARE(JitsiCallWindowController::kStandaloneHeight, 720);
+        QCOMPARE(JitsiCallWindowController::kStandaloneMinWidth, 400);
+        QCOMPARE(JitsiCallWindowController::kStandaloneMinHeight, 300);
+        QCOMPARE(JitsiCallWindowController::kWindowLoadTimeoutMs, 15000);
+        QCOMPARE(JitsiCallWindowController::standaloneBackgroundColor(),
+            QStringLiteral("#1B1B1D"));
+        // The production embed deadline IS the reference window load timeout:
+        // a stalled load must fail within the same window the reference uses.
+        JitsiCallWindowController shell;
+        QVERIFY(shell.requestStandaloneOpen(validCall()));
+        QVERIFY(!shell.windowVisible());
+    }
+
+    void standaloneWindowStaysHiddenUntilLoaded()
+    {
+        // show:false + shown only after a successful load
+        // (jitsi-call-window.ts:245, :161-186).
+        JitsiCallWindowController shell;
+        QSignalSpy visibilitySpy(&shell, &JitsiCallWindowController::windowVisibilityChanged);
+        QVERIFY(!shell.windowVisible());
+        QVERIFY(shell.requestStandaloneOpen(validCall()));
+        QCOMPARE(shell.windowVisible(), false);   // Loading: still hidden
+        QCOMPARE(visibilitySpy.count(), 0);       // and never announced
+        shell.apiLoadSucceeded();
+        QCOMPARE(shell.windowVisible(), true);
+        QCOMPARE(visibilitySpy.count(), 1);
+        // Minimizing hands presentation to the PiP surface: the standalone
+        // window goes away with the expanded mode.
+        shell.toggleMinimize();
+        QCOMPARE(shell.windowVisible(), false);
+        QCOMPARE(visibilitySpy.count(), 2);
+        shell.toggleMinimize();
+        QCOMPARE(shell.windowVisible(), true);
+        QCOMPARE(visibilitySpy.count(), 3);
+    }
+
+    void standaloneClosedOnlyAnnouncedForLoadedWindow()
+    {
+        // The ':closed' announcement to the main window fires only when the
+        // window had actually loaded (jitsi-call-window.ts:271-286).
+        JitsiCallWindowController shell;
+        QSignalSpy closedSpy(&shell, &JitsiCallWindowController::standaloneClosed);
+        QVERIFY(shell.requestStandaloneOpen(validCall()));
+        shell.close();                            // load never completed
+        QCOMPARE(closedSpy.count(), 0);
+        QVERIFY(shell.requestStandaloneOpen(validCall()));
+        shell.apiLoadSucceeded();
+        const auto expectedId = shell.callId();
+        shell.close();
+        QCOMPARE(closedSpy.count(), 1);
+        QCOMPARE(closedSpy.at(0).at(0).toString(), expectedId);
+    }
+
+    void standaloneSingleWindowRules()
+    {
+        // Single-window rules (jitsi-call-window.ts:213-232): same callId
+        // focuses, a different callId is refused and the live window stays
+        // untouched.
+        JitsiCallWindowController shell;
+        QSignalSpy focusSpy(&shell, &JitsiCallWindowController::focusRequested);
+        QSignalSpy rejectSpy(&shell, &JitsiCallWindowController::openRejected);
+        QVERIFY(shell.requestStandaloneOpen(validCall()));
+        // Same callId re-open only focuses: the live call state is untouched.
+        QVERIFY(shell.requestStandaloneOpen(validCall()));
+        QCOMPARE(focusSpy.count(), 1);
+        QCOMPARE(rejectSpy.count(), 0);
+        QCOMPARE(shell.callId(), QStringLiteral("https://meet.jit.si/Room-X"));
+        QCOMPARE(shell.mode(), JitsiCallWindowController::Expanded);
+        // A different callId is refused while the window is open.
+        QVariantMap other;
+        other.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/Room-Y"));
+        QVERIFY(!shell.requestStandaloneOpen(other));
+        QCOMPARE(rejectSpy.count(), 1);
+        QCOMPARE(shell.callId(), QStringLiteral("https://meet.jit.si/Room-X"));
+        QCOMPARE(shell.mode(), JitsiCallWindowController::Expanded);
+        // Closing frees the slot (the reference clears it on 'closed').
+        shell.close();
+        QVERIFY(shell.requestStandaloneOpen(other));
+        QCOMPARE(shell.callId(), QStringLiteral("https://meet.jit.si/Room-Y"));
+    }
+
+    void standalonePayloadBoundsEnforced_data()
+    {
+        QTest::addColumn<QString>("payloadKind");
+        QTest::addColumn<bool>("accepted");
+        // callId bound (jitsi-call-window.ts:46-48).
+        QTest::newRow("callId-too-long") << QStringLiteral("long-call-id") << false;
+        // meetingUrl shape (:66-75): userinfo, missing path, wrong scheme,
+        // the 8192 cap.
+        QTest::newRow("userinfo") << QStringLiteral("userinfo") << false;
+        QTest::newRow("no-path") << QStringLiteral("no-path") << false;
+        QTest::newRow("bad-scheme") << QStringLiteral("bad-scheme") << false;
+        QTest::newRow("url-too-long") << QStringLiteral("url-too-long") << false;
+        // An absent meetingUrl is NOT refused here: the shell's InvalidUrl
+        // state owns unusable links (shipped #263/#728 contract).
+        QTest::newRow("blank-meeting-url") << QStringLiteral("blank-meeting-url") << true;
+        QTest::newRow("plain") << QStringLiteral("plain") << true;
+    }
+    void standalonePayloadBoundsEnforced()
+    {
+        QFETCH(QString, payloadKind);
+        QFETCH(bool, accepted);
+        QVariantMap payload;
+        if (payloadKind == QLatin1String("long-call-id")) {
+            payload.insert(QStringLiteral("meetingUrl"),
+                QStringLiteral("https://meet.jit.si/Room-X"));
+            payload.insert(QStringLiteral("callId"), QString(129, QLatin1Char('x')));
+        } else if (payloadKind == QLatin1String("userinfo")) {
+            payload.insert(QStringLiteral("meetingUrl"),
+                QStringLiteral("https://evil@meet.jit.si/Room-X"));
+        } else if (payloadKind == QLatin1String("no-path")) {
+            payload.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si"));
+        } else if (payloadKind == QLatin1String("bad-scheme")) {
+            payload.insert(QStringLiteral("meetingUrl"), QStringLiteral("ftp://meet.jit.si/Room-X"));
+        } else if (payloadKind == QLatin1String("url-too-long")) {
+            payload.insert(QStringLiteral("meetingUrl"),
+                QStringLiteral("https://meet.jit.si/") + QString(8192, QLatin1Char('r')));
+        } else if (payloadKind == QLatin1String("blank-meeting-url")) {
+            payload.insert(QStringLiteral("callId"), QStringLiteral("fixed-call-1"));
+        } else {
+            payload = validCall();
+        }
+        QString reason;
+        const auto sanitized = JitsiCallWindowController::sanitizeShellPayload(payload, &reason);
+        if (accepted) {
+            QVERIFY2(!sanitized.isEmpty(), qPrintable(reason));
+            if (payloadKind == QLatin1String("plain"))
+                QVERIFY(reason.isEmpty());
+        } else {
+            QVERIFY(sanitized.isEmpty());
+            QVERIFY(!reason.isEmpty());
+        }
+        // Text truncation and theme handling ride on the accepted path
+        // (readPayload :77-84).
+        QVariantMap texts;
+        texts.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/Room-X"));
+        texts.insert(QStringLiteral("locationName"), QString(300, QLatin1Char('a')));
+        texts.insert(QStringLiteral("displayName"), QString(300, QLatin1Char('b')));
+        QVariantMap badTheme;
+        badTheme.insert(QStringLiteral("mode"), QStringLiteral("sepia"));
+        badTheme.insert(QStringLiteral("paletteId"), QStringLiteral("p"));
+        texts.insert(QStringLiteral("theme"), badTheme);
+        const auto trimmed = JitsiCallWindowController::sanitizeShellPayload(texts, &reason);
+        QVERIFY(!trimmed.isEmpty());
+        QCOMPARE(trimmed.value(QStringLiteral("locationName")).toString().size(), 256);
+        QCOMPARE(trimmed.value(QStringLiteral("displayName")).toString().size(), 256);
+        QVERIFY(!trimmed.contains(QStringLiteral("theme")));
+        QVariantMap goodTheme;
+        goodTheme.insert(QStringLiteral("mode"), QStringLiteral("dark"));
+        goodTheme.insert(QStringLiteral("paletteId"), QStringLiteral("blue-cold"));
+        texts.insert(QStringLiteral("theme"), goodTheme);
+        const auto themed = JitsiCallWindowController::sanitizeShellPayload(texts, &reason);
+        QCOMPARE(themed.value(QStringLiteral("theme")).toMap()
+            .value(QStringLiteral("mode")).toString(), QStringLiteral("dark"));
+    }
+
+    void storeActiveCallCarriesUuidCallId()
+    {
+        // The reference mints a fresh random callId per opened call
+        // (jitsi-call.model.ts:80: crypto.randomUUID()).
+        QVariantMap payload;
+        payload.insert(QStringLiteral("meetingUrl"), QStringLiteral("https://meet.jit.si/Room-X"));
+        payload.insert(QStringLiteral("ownerKey"), QStringLiteral("owner-a"));
+        JitsiCallStore store;
+        store.requestOpenCall(payload);
+        const auto firstId = store.activeCall().value(QStringLiteral("callId")).toString();
+        QCOMPARE(firstId.size(), 36);
+        QVERIFY(!QUuid(firstId).isNull());
+        // A later call gets a fresh identity.
+        store.closeCall();
+        store.requestOpenCall(payload);
+        const auto secondId = store.activeCall().value(QStringLiteral("callId")).toString();
+        QVERIFY(!secondId.isEmpty());
+        QVERIFY(secondId != firstId);
     }
 
 private:

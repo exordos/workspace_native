@@ -3,6 +3,7 @@
 #include "call/jitsi-call.h"
 
 #include <QDateTime>
+#include <QUuid>
 
 namespace workspace {
 
@@ -12,6 +13,13 @@ QVariantMap JitsiCallStore::buildActiveCall(const QVariantMap &payload) const
     QVariantMap active;
     active.insert(QStringLiteral("callKey"),
         createJitsiCallKey(payload.value(QStringLiteral("ownerKey")).toString(), meetingUrl));
+    // #846: the standalone call window's identity. The reference mints a fresh
+    // random uuid per opened call (workspace_ui e0194ffb
+    // jitsi-call.model.ts:80: crypto.randomUUID()), used by the shell for the
+    // single-window focus/refuse rules; unlike callKey it is short (36 chars,
+    // within the shell's 1..128 callId bound).
+    active.insert(QStringLiteral("callId"),
+        QUuid::createUuid().toString(QUuid::WithoutBraces));
     active.insert(QStringLiteral("meetingUrl"), meetingUrl);
     active.insert(QStringLiteral("locationName"), payload.value(QStringLiteral("locationName")));
     if (payload.contains(QStringLiteral("ownerKey")))
