@@ -216,3 +216,60 @@ locale (with `{{count}}` mapped to the Qt numerus form `%n`).
   (`qml6-module-qtwebengine` plus `qml6-module-qtwebchannel` for the channel)
   is bundled with the call-window feature packaging; where it is absent the
   embed Loader errors inertly and the live-handshake case self-skips.
+
+## Re-baseline: standalone OS call window (#846)
+
+Status: supersedes the embedded-shell geometry contract above for call
+presentation. Measured from `workspace_ui` at
+`e0194ffb` (`packages/electron/src/jitsi-call-window.ts`, 343 lines,
+`jitsi-call-window.contract.ts`), i.e. after upstream commit `dea86db`
+("feat: open desktop Jitsi calls in a separate window (#424)"). The reference
+now opens desktop Jitsi calls in a SEPARATE top-level OS window owned by the
+main process, not in an in-page modal shell.
+
+Window shell (`jitsi-call-window.ts:236-249`):
+- Size 1000x720, minimum 400x300, title = application name, background
+  `#1B1B1D`, created hidden (`show: false`) with the menu bar auto-hidden.
+- Hidden until loaded: `loadURL` races a 15 s timeout
+  (`WINDOW_LOAD_TIMEOUT_MS`, :11) and an early `closed` event; the window is
+  shown only on successful load, destroyed on timeout (:161-186).
+- Load failure or timeout returns `false` to the caller (no window survives).
+
+Payload contract (`readPayload`, :40-90; `jitsi-call-window.contract.ts`):
+- `callId` non-empty and <= 128 chars; `meetingUrl` <= 8192 chars, http(s)
+  only, no userinfo, non-empty path; `locationName`/`displayName` truncated to
+  256; `startWithVideoMuted` boolean; `language` exactly `ru` or `en`;
+  optional `theme = {mode: light|dark, paletteId <= 128}` - an invalid theme
+  is dropped, an invalid payload rejects the open outright.
+- Participants list (`readParticipants`, :93-101): at most 1000 entries, each
+  just a displayName truncated to 256.
+
+Single-window rules (`ipcMain.handle(open)`, :213-232):
+- One active call window per app. Re-open with the same owner+callId focuses
+  the existing window and returns its ready promise; a different callId (or
+  owner) while one is open throws "A different Jitsi call window is already
+  open". Closing clears the slot and releases screen-share state.
+
+IPC surface (`jitsi-call-window.contract.ts`, sender-checked with origin/main
+frame validation, :205-211 and :326-341):
+- `jitsi-call-window:open` (main -> shell, promise<boolean>),
+  `:focus` and `:close` (main or call window, callId-matched),
+  `:closed` (shell -> main, only if the window had actually loaded),
+  `:get-payload` (call window only), `:update-participants`
+  (call window -> main relays `:participants` {callId, participants}).
+
+Security posture (:120-155, :256-262, :264-278):
+- Dedicated session partition `jitsi-call-window` (:10) with CSP injected on
+  the shell page response only.
+- media / display-capture / fullscreen permission requests are granted only to
+  the meeting-origin subframe of the call window; all other senders denied.
+- Navigation lockdown: `will-navigate` prevented, main-frame redirects
+  prevented, any post-load main-frame navigation destroys the window;
+  `window.open` denied (safe URLs open in the OS browser); renderer crash
+  destroys the window.
+
+Native counterpart target: a `Window`/top-level QML surface opened by the
+call launch path (`NativeCallWebEngineView` content host), reproducing the
+geometry, hidden-until-loaded behaviour, single-window rules and the
+closed-announcement back to the main window; test extensions land in the
+`native-call` group plus `native-window` for the shell geometry.
