@@ -7,6 +7,19 @@
 - Fixed: retired AI topic-summary work is settled at a session change, so a summary reply from the previous session can no longer surface in the new one (issue #736).
 - Fixed: stale Zulip policy refresh replies are discarded after a confirmed save (issue #740).
 - Fixed: the integration settings dialog now shows suspended state, timestamps and health counters (issue #752).
+- Fixed: the restored window is framed with a palette edge outline and clamped back inside the screen work area, so a remembered window position can no longer push the composer below the screen edge (issues #720, #805).
+- Fixed: startup paints the chats saved in the local cache before the refresh chain settles, instead of holding a blank first frame while a slow session refresh settles (issues #789, #802).
+- Fixed: the notification-level segments in the topic context menu highlight on hover like the rest of the menu (issue #790).
+- Fixed: keyboard focus moves to the composer when a reply starts, and the caret is handed back to the composer after a mouse click on Send (issues #779, #782).
+- Fixed: the composer keeps your writing session when you switch topics in the sidebar, and stays reachable when the channel info drawer floats over the chat at a narrow window width (issues #780, #781).
+- Fixed: the media viewer keeps its controls bar visible while a control in it has keyboard focus, and the play/pause and mute glyphs gained hover and pressed feedback (issues #784, #793).
+- Fixed: Retry on a failed call embed re-creates the call view instead of stalling in the error state, and the Linux package now bundles the V8 startup snapshot the call renderer needs (issues #792, #804).
+- Fixed: a failed saved-history refresh surfaces one alert with one Retry action instead of a duplicate banner pair (issue #786).
+- Fixed: opening the About panel closes the account drawer layer first, so the App version row is reachable again, and auto read receipts now key off the account drawer's real state (issues #788, #791).
+- Fixed: a declined image-preview reservation can no longer evict previews that were already cached, reservation eviction is atomic with admission, and derived previews are only admitted against derived cache entries (issues #775, #803).
+- Fixed: warm topic preloads are fenced against history invalidation, so a late preload can no longer restore deleted messages, and retired preload slots are freed at a session renewal (issues #776, #777).
+- Fixed: the integration settings entry shows pressed-state feedback (issue #794).
+- Fixed: the provider limit fields in the integration settings dialog no longer hit a binding loop when a saved draft loads; the write-back follows your own edits only (issue #816).
 
 The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
 
