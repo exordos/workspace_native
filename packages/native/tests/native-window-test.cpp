@@ -28008,6 +28008,148 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
 
+    // Issue #840: leaving the Common settings tab while its save is in flight
+    // and coming back must not strand the tab. The gated reload (the "gates"
+    // op slot is held by the save) may not un-prove values it never fetched,
+    // and a successful endpoint read may not erase the gates save failure.
+    void channelTopicSummaryTabReturnDuringPendingSaveKeepsRetry()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        std::function<void()> releaseGatesPut;
+        std::function<void()> releaseEndpointGet;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            if (request.method == "PUT" && path.contains("/topic_summary_settings/")) {
+                Response response{QJsonObject{{"error", QStringLiteral("boom")}}, 503};
+                response.defer = [&releaseGatesPut](std::function<void()> send) {
+                    releaseGatesPut = std::move(send);
+                };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/")) {
+                Response response{QJsonArray{endpointDto}};
+                response.defer = [&releaseEndpointGet](std::function<void()> send) {
+                    releaseEndpointGet = std::move(send);
+                };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog && dialog->property("visible").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(scene.controller.property("topicSummaryGatesLoaded").toBool());
+        // Flip the local switch and start the save; hold the PUT response.
+        click(scene.window, visibleItem("channelTopicSummaryGatesProject"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releaseGatesPut);
+        // Visit LLM endpoints (GET held as well) and return to Common settings
+        // while both requests are still in flight (the issue reproduction).
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(releaseEndpointGet);
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        // The held save fails: its band shows on the Common settings tab.
+        releaseGatesPut();
+        QTRY_VERIFY(scene.controller.property("topicSummarySettingsStatus").toString()
+                       == QStringLiteral("error"));
+        const QStringList gatesAttributed{QStringLiteral("gates")};
+        QCOMPARE(scene.controller.property("topicSummarySettingsErrorOps").toStringList(),
+                 gatesAttributed);
+        // Now the unrelated endpoint GET succeeds. It must NOT erase the
+        // Common settings failure, and the tab must not sit locked: the
+        // gated reload proved nothing, so the draft stays editable with an
+        // enabled retry while nothing is in flight anymore (#840).
+        releaseEndpointGet();
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        QVERIFY(visibleItem("channelTopicSummaryGatesError"));
+        QVERIFY(scene.controller.property("topicSummaryGatesLoaded").toBool());
+        QVERIFY(!scene.controller.property("topicSummarySettingsBusy").toBool());
+        QVERIFY(visibleItem("channelTopicSummaryGatesProject")->property("enabled").toBool());
+        QVERIFY(visibleItem("channelTopicSummarySave")->property("enabled").toBool());
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // Issue #840, success variant: the same tab round-trip during a pending
+    // save that SUCCEEDS must also leave the tab editable once the save
+    // settles (the gated reload may not strand the verified flag).
+    void channelTopicSummaryTabReturnDuringPendingSaveRecoversOnSuccess()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject savedDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", true}};
+        const QJsonArray endpointList{QJsonObject{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}}};
+        std::function<void()> releaseGatesPut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            if (request.method == "PUT" && path.contains("/topic_summary_settings/")) {
+                Response response{savedDto};
+                response.defer = [&releaseGatesPut](std::function<void()> send) {
+                    releaseGatesPut = std::move(send);
+                };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{endpointList};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(scene.controller.property("topicSummaryGatesLoaded").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryGatesProject"));
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releaseGatesPut);
+        // Round-trip through LLM endpoints and back while the save is held.
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        // The save succeeds: the tab shows its confirmation and stays usable.
+        releaseGatesPut();
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        QVERIFY(scene.controller.property("topicSummaryGatesLoaded").toBool());
+        QVERIFY(visibleItem("channelTopicSummaryGatesProject")->property("enabled").toBool());
+        QTest::keyClick(scene.window, Qt::Key_Escape);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
