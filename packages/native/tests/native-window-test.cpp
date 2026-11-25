@@ -28152,6 +28152,132 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
 
+    // #838: the six numeric endpoint settings are pre-filled, so a
+    // placeholder-only name is invisible exactly when the admin is reviewing
+    // saved values - two penalty fields both reading "0" were indistinguishable
+    // (reference NumberField renders a persistent FormField label for every
+    // input). Every numeric row must carry a visible localized label plus a
+    // distinct accessible name before focus and while populated, in both the
+    // edit and the create form, and the range must stay associated as hint text.
+    void channelTopicSummaryEndpointNumericFieldsKeepVisibleLabels()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+
+        struct NumericCase { const char *key; const char *label; const char *value; };
+        // Values below are what the DTO/defaults render into the fields; the
+        // penalties intentionally both stay "0" (the reported collision).
+        const NumericCase cases[] = {
+            {"priority", "Priority", "100"},
+            {"temperature", "Temperature", "0.2"},
+            {"max_output_tokens", "Output token limit", "512"},
+            {"top_p", "Top P", "1"},
+            {"presence_penalty", "Presence penalty", "0"},
+            {"frequency_penalty", "Frequency penalty", "0"},
+        };
+        // Witness loop: collect every deviation, fail once (a mid-loop QCOMPARE
+        // would hide all later rows behind the first leak).
+        const auto checkForm = [&]() {
+            QStringList problems;
+            QStringList accessibleNames;
+            for (const auto &c : cases) {
+                const QString labelName =
+                    QStringLiteral("channelTopicSummaryLabel-") + QLatin1String(c.key);
+                auto *label = visibleItem(labelName.toUtf8().constData());
+                if (!label) { problems << labelName + " is missing"; continue; }
+                if (!label->property("visible").toBool())
+                    problems << labelName + " is not visible";
+                const QString labelText = label->property("text").toString();
+                if (labelText != QString::fromUtf8(c.label))
+                    problems << labelName + " text=" + labelText;
+                const QString hintName =
+                    QStringLiteral("channelTopicSummaryHint-") + QLatin1String(c.key);
+                auto *hint = visibleItem(hintName.toUtf8().constData());
+                if (!hint || hint->property("text").toString().isEmpty())
+                    problems << hintName + " has no associated range text";
+                auto *field = visibleItem(
+                    (QStringLiteral("channelTopicSummaryField-")
+                     + QLatin1String(c.key)).toUtf8().constData());
+                if (!field) { problems << labelName + " has no field"; continue; }
+                if (field->property("text").toString() != QLatin1String(c.value))
+                    problems << QString::fromUtf8(c.key)
+                             + " value=" + field->property("text").toString();
+                QAccessibleInterface *iface = QAccessible::queryAccessibleInterface(field);
+                const QString accessible =
+                    iface ? iface->text(QAccessible::Name) : QString();
+                if (accessible != labelText)
+                    problems << QString::fromUtf8(c.key) + " accessible=" + accessible;
+                accessibleNames << accessible;
+            }
+            QCOMPARE(problems, QStringList());
+            // The reported collision: both penalty rows read "0", so their
+            // accessible names must differ.
+            QVERIFY(accessibleNames.at(4) != accessibleNames.at(5));
+        };
+
+        // Pass 1: existing endpoint, fully populated, nothing focused or typed.
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        checkForm();
+        // Reachability at the supported window size: the last label sits under
+        // the fold only if the scroller overflows; scrolling must expose it.
+        auto *scroll = visibleItem("channelTopicSummaryEndpointsScroll");
+        QVERIFY(scroll);
+        auto *scrollItem = qobject_cast<QQuickItem *>(scroll);
+        QVERIFY(scrollItem);
+        const double maxY = scroll->property("contentHeight").toDouble()
+            - scroll->property("height").toDouble();
+        if (maxY > 0) {
+            // exordy finding 4692982541: the reachability must come from
+            // SCROLLING the content, not from translating the Flickable itself
+            // (setY on the viewport leaves contentY - and the label position
+            // inside the content - untouched, so the coordinate check proves
+            // nothing). Drive contentY and restore it after the check.
+            scrollItem->setProperty("contentY", maxY);
+            QTRY_COMPARE(scrollItem->property("contentY").toDouble(), maxY);
+            QTest::qWait(120);
+            auto *lastLabel = visibleItem("channelTopicSummaryLabel-frequency_penalty");
+            QVERIFY(lastLabel);
+            const QPointF top = lastLabel->mapToItem(scrollItem, QPointF(0, 0));
+            QVERIFY2(top.y() + lastLabel->height() > 0 && top.y() < scrollItem->height(),
+                qPrintable(QStringLiteral("frequency label y=%1 viewport=%2")
+                    .arg(top.y()).arg(scrollItem->height())));
+            scrollItem->setProperty("contentY", 0);
+            QTest::qWait(80);
+        }
+
+        // Pass 2: the create form (defaults pre-filled) keeps the same labels.
+        click(scene.window, visibleItem("channelTopicSummarySettingsClose"));
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointAdd"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        checkForm();
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
