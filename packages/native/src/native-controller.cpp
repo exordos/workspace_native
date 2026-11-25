@@ -621,6 +621,15 @@ void NativeController::fetchChatAuthority(const QString &stream, quint64 epoch, 
 }
 
 void NativeController::requestChatKey(const QString &keyUuid) { startChatRequest(keyUuid, false, false); }
+
+void NativeController::requestSessionRenewal()
+{
+    // Issue #836: only the degraded resume state may retry; a healthy or
+    // signed-out session has nothing to renew through this path.
+    if (!m_session->renewalUnavailable()) return;
+    m_session->requestRefresh();
+}
+
 void NativeController::checkChatKeyRequest(const QString &keyUuid) { startChatRequest(keyUuid, true, false); }
 void NativeController::retryChatKeyRequest(const QString &keyUuid) { startChatRequest(keyUuid, true, true); }
 
@@ -10710,6 +10719,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // the token/introspect chain, so the shell paints from cache immediately.
     connect(session, &Session::startupIdentityResolved, this,
             &NativeController::openCacheForStartupIdentity);
+    // Issue #836: the degraded renewal state drives the cache shell's
+    // recovery banner, so its transitions announce through stateChanged.
+    connect(session, &Session::renewalUnavailableChanged, this,
+            [this] { emit stateChanged(); });
     m_mentionIndexRetry.setSingleShot(true);
     connect(&m_mentionIndexRetry, &QTimer::timeout, this, &NativeController::loadMentionIndex);
     m_poll.setInterval(15000);

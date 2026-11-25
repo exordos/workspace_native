@@ -13733,8 +13733,12 @@ component NativeMentionChip: Item {
         x: 8
         y: 8
         z: 10
-        visible: root.controller.authenticated && root.controller.cacheStale || root.controller.startupCacheMode && root.controller.cacheStale
-        width: Math.min(Math.max(0, messageList.width - 16), Math.ceil(cacheStatus.implicitWidth) + 20 + (cacheActivity.visible ? 22 : 0))
+        // Issue #836: a degraded resume (transient renewal failure) keeps the
+        // shell and must announce itself even when the cached rows are fresh.
+        visible: root.controller.authenticated && root.controller.cacheStale
+            || root.controller.startupCacheMode
+               && (root.controller.cacheStale || root.controller.sessionRenewalUnavailable)
+        width: Math.min(Math.max(0, messageList.width - 16), Math.ceil(cacheStatus.implicitWidth) + 20 + (cacheActivity.visible ? 22 : 0) + (cacheRetryButton.visible ? Math.ceil(cacheRetryButton.implicitWidth) + 8 : 0))
         height: 26
         radius: 13
         readonly property color surface: root.colors["bg-elevated"]
@@ -13754,6 +13758,18 @@ component NativeMentionChip: Item {
                 palette.dark: root.colors.accent
                 Layout.preferredWidth: 14
                 Layout.preferredHeight: 14
+            }
+            Button {
+                id: cacheRetryButton
+                objectName: "cacheRetryButton"
+                // Issue #836: usable retry for a degraded saved-account resume.
+                visible: root.controller.startupCacheMode && root.controller.sessionRenewalUnavailable
+                text: qsTr("Retry")
+                font.pixelSize: 12
+                padding: 2
+                Layout.preferredWidth: visible ? implicitWidth : 0
+                Layout.alignment: Qt.AlignVCenter
+                onClicked: root.controller.requestSessionRenewal()
             }
             Text {
                 id: cacheStatus

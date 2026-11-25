@@ -165,6 +165,9 @@ void Session::clearMemory()
     m_refreshFailures = 0;
     m_refreshInFlight = false;
     m_ready = false;
+    // Issue #836: the degraded-renewal flag belongs to the cleared session.
+    const bool hadRenewalFlag = m_renewalUnavailable;
+    m_renewalUnavailable = false;
     m_refreshToken.fill('\0');
     m_refreshToken.clear();
     m_savedAccountId.clear();
@@ -178,6 +181,8 @@ void Session::clearMemory()
     m_projects.clear();
     m_api->clearSession();
     emit busyChanged(false);
+    if (hadRenewalFlag)
+        emit renewalUnavailableChanged();
     emit signedOut();
 }
 
@@ -601,6 +606,19 @@ void Session::refreshProject()
                 emit error(tr("The connection was interrupted while renewing your session. Retrying shortly."));
                 return;
             }
+            // Issue #836: a temporary outage during a saved-account resume
+            // must not drop the cache-first shell to the sign-in screen.
+            // Only an invalid or mismatched identity may clear the session;
+            // here the credential is kept for an explicit retry and the
+            // degraded state is exposed through renewalUnavailable.
+            if (!m_ready && transient && !m_savedAccountId.isEmpty()) {
+                if (!m_renewalUnavailable) {
+                    m_renewalUnavailable = true;
+                    emit renewalUnavailableChanged();
+                }
+                emit busyChanged(false);
+                return;
+            }
             const auto error = result.data.toObject().value("error").toString();
             if (result.status == 401 || result.status == 403 || error == "invalid_grant")
                 invalidateSavedAccount();
@@ -618,6 +636,20 @@ void Session::refreshProject()
             if (!identity.ok() || !isUuid(user)
                 || json.value("project_id").toString().toLower() != m_project
                 || (!m_user.isEmpty() && m_user != user)) {
+                // Issue #836: the same transient rule as the token leg - a
+                // temporary introspect outage during a saved-account resume
+                // keeps the cache-first shell and allows an explicit retry.
+                const bool identityTransient = identity.status == 0 || identity.status == 408
+                    || identity.status == 429 || identity.status >= 500;
+                if (!identity.ok() && identityTransient && !m_savedAccountId.isEmpty()) {
+                    m_refreshInFlight = false;
+                    if (!m_renewalUnavailable) {
+                        m_renewalUnavailable = true;
+                        emit renewalUnavailableChanged();
+                    }
+                    emit busyChanged(false);
+                    return;
+                }
                 if (identity.ok() || identity.status == 401 || identity.status == 403)
                     invalidateSavedAccount();
                 fail(tr("The server did not confirm the selected user and project."));
@@ -633,6 +665,11 @@ void Session::refreshProject()
             m_publicProfile = publicIdentityProfile(json.value("user_info").toObject(), user, m_login);
             m_ready = true;
             m_refreshInFlight = false;
+            // Issue #836: the renewal completed - leave the degraded state.
+            if (m_renewalUnavailable) {
+                m_renewalUnavailable = false;
+                emit renewalUnavailableChanged();
+            }
             rememberVerifiedSession();
             emit busyChanged(false);
             emit authenticated();

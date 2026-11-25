@@ -14,6 +14,10 @@ class Session final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool otpRequired READ otpRequired NOTIFY otpChallengeChanged)
     Q_PROPERTY(bool otpRejected READ otpRejected NOTIFY otpChallengeChanged)
+    // Issue #836: a transient renewal failure during a saved-account resume
+    // keeps the cache-first shell instead of dropping to sign-in; the flag
+    // exposes the degraded state and gates the manual retry.
+    Q_PROPERTY(bool renewalUnavailable READ renewalUnavailable NOTIFY renewalUnavailableChanged)
 public:
     using RequestExecutor = std::function<void(const QByteArray &, const QString &,
         const QJsonValue &, const QUrlQuery &, ApiClient::Callback, bool,
@@ -57,6 +61,9 @@ public:
     QString project() const { return m_project; }
     QString user() const { return m_user; }
     bool ready() const { return m_ready; }
+    // Issue #836: transient renewal failure on a saved-account resume; see
+    // the renewalUnavailable property.
+    bool renewalUnavailable() const { return m_renewalUnavailable; }
     // Remaining access-credential lifetime in ms, -1 when nothing is verified
     // (issue #50 diagnostics session-remaining sub-line; same monotonic clock
     // as the refresh guard in session.cpp).
@@ -83,6 +90,8 @@ signals:
     void error(const QString &message);
     void busyChanged(bool busy);
     void savedAccountsChanged();
+    // Issue #836: the degraded-renewal flag changed.
+    void renewalUnavailableChanged();
 
 private:
     void invalidateOtpContext();
@@ -126,6 +135,7 @@ private:
     unsigned int m_refreshFailures = 0;
     bool m_refreshInFlight = false;
     bool m_ready = false;
+    bool m_renewalUnavailable = false;
 };
 
 }

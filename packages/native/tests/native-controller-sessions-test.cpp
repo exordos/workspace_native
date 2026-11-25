@@ -1461,6 +1461,100 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!controller.startupCacheMode(), 3000);
         QCOMPARE(controller.streams().size(), 1);
     }
+
+    // Issue #836: a temporary outage (503) on the renewal after the cached
+    // first paint must keep the saved-channel shell instead of dropping to
+    // the sign-in screen; the identity is remembered and an explicit retry
+    // completes the session without blanking the painted rows.
+    void transientResumeFailureKeepsSavedChats()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ControllerMemorySecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const QUrl server("https://startup-refresh-outage.invalid");
+        SavedAccount saved{SessionVault::accountId(server, projectId, userId), server,
+            projectId, userId, "alice", "Alpha"};
+        bool stored = false;
+        vault.save(saved, "outage-refresh", [&](const QString &error) {
+            QVERIFY2(error.isEmpty(), qPrintable("vault save: " + error)); stored = true; });
+        QTRY_VERIFY(stored);
+        const QString cachedStream = "55555555-5555-4555-8555-555555555555";
+        const QJsonObject streamDto{
+            {"uuid", cachedStream}, {"project_id", projectId}, {"user_uuid", userId},
+            {"owner", userId}, {"name", "Cached startup channel"}, {"description", ""},
+            {"role", "owner"}, {"notification_mode", "all_messages"}, {"source_name", "native"},
+            {"provider_uuid", QJsonValue::Null}, {"provider_identity", QJsonValue::Null},
+            {"invite_only", false}, {"announce", false}, {"private", false},
+            {"is_archived", false}, {"encryption", false},
+            {"current_encryption_key_uuid", QJsonValue::Null},
+            {"direct_user_uuid", QJsonValue::Null},
+            {"default_topic_uuid", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"},
+            {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+            {"last_message_uuid", QJsonValue::Null},
+            {"created_at", "2026-01-02T10:00:00Z"}, {"updated_at", "2026-01-02T10:00:00Z"}};
+        {
+            const auto savedAt = QDateTime::currentMSecsSinceEpoch() - NativeCache::Policy{}.ttlMs - 1000;
+            NativeCache seed(directory.path(), {}, true, [savedAt] { return savedAt; });
+            QVERIFY(seed.open(server, projectId, userId));
+            QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Streams, {}, {}, {}},
+                QJsonArray{streamDto}));
+        }
+        // Every renewal is held until the test answers it with a status.
+        std::function<void(int)> answerToken;
+        ApiClient api;
+        Session session(&api, nullptr, [&](const QByteArray &, const QString &path,
+            const QJsonValue &body, const QUrlQuery &, ApiClient::Callback done, bool,
+            const QMap<QByteArray, QByteArray> &) {
+            if (path.endsWith("/actions/get_token/invoke")
+                && body.toObject().value("grant_type") == QLatin1String("refresh_token")) {
+                const QString refreshToken = body.toObject().value("refresh_token").toString();
+                answerToken = [done, refreshToken](int status) {
+                    if (status == 200)
+                        done(ApiResult{QJsonObject{{"access_token", "renewed-token"},
+                            {"refresh_token", refreshToken}, {"expires_in", 3600}}, 200, {}, {}});
+                    else
+                        done(ApiResult{QJsonObject{}, status, {}, {}});
+                };
+                return;
+            }
+            if (path.contains("introspect")) {
+                done(ApiResult{QJsonObject{{"user_info",
+                    QJsonObject{{"uuid", userId}}}, {"project_id", projectId},
+                    {"otp_verified", true}, {"permissions", QJsonArray{}}}, 200, {}, {}});
+                return;
+            }
+            QTimer::singleShot(0, &api, [done] { done(ApiResult{QJsonArray{}, 404, {}, "unexpected"}); });
+        });
+        session.setVault(&vault);
+        NativeCacheService cache(directory.path(), {}, true);
+        NativeController controller(&api, &session);
+        controller.useCache(&cache);
+        controller.resumeSavedAccount(saved.id);
+        // The cached channel paints while the renewal request is in flight.
+        QTRY_VERIFY_WITH_TIMEOUT(controller.startupCacheMode(), 3000);
+        QTRY_VERIFY(([&]{ return static_cast<bool>(answerToken); })());
+        QVERIFY(!controller.authenticated());
+        // The outage answers: the shell, the rows and the saved identity all
+        // stay; the degraded state is exposed instead of a sign-out.
+        answerToken(503);
+        answerToken = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(controller.sessionRenewalUnavailable(), 3000);
+        QVERIFY(controller.startupCacheMode());
+        QCOMPARE(controller.streams().size(), 1);
+        QCOMPARE(controller.streams().first().toMap().value("id").toString(), cachedStream);
+        QVERIFY(!controller.authenticated());
+        QCOMPARE(session.savedAccounts().size(), 1);
+        // The recovery retry (the banner button's path) completes the session
+        // in place: the painted rows survive the handover, no sign-in flash.
+        controller.requestSessionRenewal();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return static_cast<bool>(answerToken); })(), 3000);
+        answerToken(200);
+        answerToken = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(controller.authenticated(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.startupCacheMode(), 3000);
+        QTRY_VERIFY(!controller.sessionRenewalUnavailable());
+        QCOMPARE(controller.streams().size(), 1);
+    }
 };
 
 QTEST_MAIN(ControllerSessionsTest)
