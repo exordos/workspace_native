@@ -19,6 +19,16 @@ Dialog {
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: Math.min(768, (parent ? parent.width : 768) - 32)
+    // Bug #832: unbounded, the popup measures its body from a ScrollView that
+    // contributes no implicit height while it waits for the policy reply,
+    // collapsing the dialog to header+footer with a zero-size viewport. Once
+    // the body is ready, bound the height the way the reference AppDialog
+    // does (max-h-[92vh] + scrollBody, manage-external-provider-dialog.ui.tsx)
+    // so the scroll viewport is real and the sections below the fold are
+    // reachable; loading/error states keep the compact implicit height.
+    height: admin.policyStatus === "ready"
+        ? Math.min((parent ? parent.height : 800) * 0.92, extBody.implicitHeight + 152)
+        : implicitHeight
     padding: 20
     visible: admin.dialogOpen
     onClosed: { dialog.confirming = false; admin.closeDialog() }
@@ -179,9 +189,16 @@ Dialog {
             id: extScroll
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: dialog.admin.policyStatus === "ready"
             clip: true
+            // Bug #832: the ScrollView must stay in the popup's layout even
+            // while the policy is loading. A child hidden at creation is
+            // skipped by QQuickLayout and never re-placed when it appears,
+            // leaving the viewport at 0x0 (the collapse). Gating the content
+            // column instead keeps the null-policy sections out of the tree
+            // while the scroller itself is always placed.
             ColumnLayout {
+                id: extBody
+                visible: dialog.admin.policyStatus === "ready"
                 width: extScroll.availableWidth
                 spacing: 16
 
