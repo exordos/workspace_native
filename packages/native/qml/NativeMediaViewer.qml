@@ -33,6 +33,28 @@ Popup {
     // activity and auto-hide 2.5 s into playback. The timer itself lives with
     // the media area; pokeControls() is the single seam that (re)arms it.
     property bool controlsShown: true
+    // Issue #784: keyboard focus inside the controls bar pins it open (a
+    // focused control with a hidden bar leaves the keyboard user without any
+    // visual feedback). Resolved through the window's active focus item so
+    // every focusable child - both glyphs and both sliders - is covered
+    // without per-control wiring.
+    readonly property Item activeFocusTarget: hostWindow ? hostWindow.activeFocusItem : null
+    readonly property bool controlsFocusWithin: {
+        // Walk up from the focused item (QQuickItem exposes no invokable
+        // ancestry test to QML) and stop at the bar or the focus scope.
+        for (let item = activeFocusTarget; item !== null; item = item.parent)
+            if (item === videoControls)
+                return true;
+        return false;
+    }
+    // Focusing in re-pins the bar; moving focus out restarts the countdown,
+    // so "moving focus elsewhere allows normal auto-hide" (#784 acceptance).
+    onControlsFocusWithinChanged: viewerRoot.pokeControls()
+    // Shared gate for the reveal Shortcuts: armed only while a ready video
+    // slot sits auto-hidden with focus outside the bar.
+    readonly property bool controlsRevealArmed: currentSlot.state === "ready"
+        && String(currentSlot.kind || "") === "video"
+        && !controlsShown && !controlsFocusWithin
     function pokeControls() {
         viewerRoot.controlsShown = true;
         controlsHideTimer.restart();
@@ -102,6 +124,24 @@ Popup {
         focus: true
         Accessible.role: Accessible.Dialog
         Accessible.name: qsTr("Media viewer")
+    }
+    // Issue #784: Qt's tab chain skips invisible items, so once the bar has
+    // auto-hidden the keyboard cannot reach it anymore. The first Tab or
+    // Shift+Tab press (enabled only while a ready video slot sits hidden with
+    // focus outside the bar) reveals the bar; the press is consumed as a
+    // reveal gesture only in that state, and the next Tab / Shift+Tab walks
+    // the focus chain normally onto the controls, where controlsFocusWithin
+    // keeps the bar open. Both directions need the gesture: the reverse chain
+    // skips invisible items exactly like the forward one (review round).
+    Shortcut {
+        enabled: viewerRoot.controlsRevealArmed
+        sequence: "Tab"
+        onActivated: viewerRoot.pokeControls()
+    }
+    Shortcut {
+        enabled: viewerRoot.controlsRevealArmed
+        sequence: "Shift+Tab"
+        onActivated: viewerRoot.pokeControls()
     }
 
     // Backdrop: fixed inset-0 z-modal bg-black/90 (media-viewer-backdrop.ui.tsx:56);
@@ -347,7 +387,7 @@ Popup {
             anchors.right: mediaVideo.right
             anchors.bottom: mediaVideo.bottom
             height: 56
-            visible: viewerRoot.controlsShown
+            visible: (viewerRoot.controlsShown || viewerRoot.controlsFocusWithin)
                 && viewerRoot.currentSlot.state === "ready"
                 && String(viewerRoot.currentSlot.kind || "") === "video"
             gradient: Gradient {

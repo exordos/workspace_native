@@ -48,6 +48,17 @@ rect, visible only while the slot is a ready video:
 - Auto-hide: while `playbackState === PlayingState` the bar hides 2.5 s after
   the last pointer movement over the video; any move or pause shows it
   (`Timer` + `HoverHandler` on the media area).
+- Keyboard focus (#784): active focus on any focusable child of the bar
+  (`mediaViewer-play`, `mediaViewer-seek`, `mediaViewer-mute`,
+  `mediaViewer-volume`) pins the bar open - the pin resolves through
+  `Window.activeFocusItem`, so no per-control wiring exists - and moving
+  focus out re-arms the countdown. Because Qt drops invisible items from the
+  tab chain, gated `Shortcut`s (enabled only while a ready video slot sits
+  hidden with focus outside the bar) consume the first Tab and Shift+Tab
+  presses to reveal the bar - the reverse chain skips invisible items exactly
+  like the forward one - and the next Tab / Shift+Tab walks onto its controls,
+  so keyboard users can reach the controls after an auto-hide in either
+  navigation direction.
 - Stop on close/switch: the viewer calls `videoPlayer.stop()` when the index
   changes and when the viewer closes (in addition to the source binding
   clearing, so the audio track is guaranteed silent).
