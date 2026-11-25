@@ -55,6 +55,7 @@ class NativeController final : public QObject {
     // flight. Leaving it flips back to the authenticated projection or to the
     // sign-in screen; cached rows are never blanked by the handover.
     Q_PROPERTY(bool startupCacheMode READ startupCacheMode NOTIFY stateChanged)
+    Q_PROPERTY(bool sessionRenewalUnavailable READ sessionRenewalUnavailable NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
     Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
@@ -340,6 +341,9 @@ public:
     Q_PROPERTY(quint64 secretKeyRevision READ secretKeyRevision NOTIFY secretKeysChanged)
     quint64 secretKeyRevision() const { return m_secretKeyRevision; }
     Q_INVOKABLE void requestChatKey(const QString &keyUuid = {});
+    // Issue #836: retries the session renewal after a transient failure on a
+    // saved-account resume (no-op outside the degraded state).
+    Q_INVOKABLE void requestSessionRenewal();
     Q_INVOKABLE void checkChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyStore();
@@ -387,6 +391,10 @@ public:
     bool applyRealtimeEvent(const QJsonObject &envelope);
     bool authenticated() const { return m_session->ready(); }
     bool startupCacheMode() const { return m_startupCacheMode; }
+    // Issue #836: forwards the session's degraded-renewal flag (transient
+    // failure while resuming a saved account) so the cache shell can show a
+    // recovery status and gate the manual retry.
+    bool sessionRenewalUnavailable() const { return m_session->renewalUnavailable(); }
     // Sidebar row previews and the reference relative-time label, measured in
     // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md; exposed for the QtTest contract cases.
     static QString summarizeRowPreview(const QString &plainText);
