@@ -46702,13 +46702,19 @@ private slots:
         };
         // ArrowDown enters from the input at the first filtered row, then walks
         // stream and topic rows in visual order (sidebar-workspace-search.
-        // lib.ts:29, e2e/sidebar.spec.ts:263-270).
+        // lib.ts:29, e2e/sidebar.spec.ts:263-270). Issue #847 contract
+        // (workspace_ui e0194ffb): the stream still has non-matching topics,
+        // so the search show-more control closes the ring
+        // (sidebar-topic-show-more.ui.tsx:49 marks it data-sidebar-search-item).
+        const QString moreName = QStringLiteral("searchShowMoreTopics-") + streamId;
         QTest::keyClick(window, Qt::Key_Down);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus(), 2000);
         QTest::keyClick(window, Qt::Key_Down);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA1)->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Down);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), moreName)->hasActiveFocus(), 2000);
         // Review finding on PR #639 (issue #628 acceptance: arrows cycle): the
         // index wraps at both ends of the filtered list (the reference
         // sidebar-workspace-search.lib.ts:29-32 leaves the edge focused; the
@@ -46716,23 +46722,25 @@ private slots:
         QTest::keyClick(window, Qt::Key_Down);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus(), 2000);
         QTest::keyClick(window, Qt::Key_Up);
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), moreName)->hasActiveFocus(), 2000);
         // Backwards walk keeps the visual order.
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Up);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA1)->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Up);
         QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId)->hasActiveFocus());
         // ArrowUp on the first row wraps to the last one.
         QTest::keyClick(window, Qt::Key_Up);
-        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), moreName)->hasActiveFocus(), 2000);
         // Modifier chords never navigate (:10-18).
         QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
         QTest::qWait(60);
-        QCOMPARE(focusName(), QStringLiteral("topic-") + topicA2);
+        QCOMPARE(focusName(), moreName);
         // ArrowUp re-enters from the input at the last row (:29, e2e:316-317).
         click(window, search); QTRY_VERIFY(search->hasActiveFocus());
         QTest::keyClick(window, Qt::Key_Up);
-        QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicA2)->hasActiveFocus());
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), moreName)->hasActiveFocus(), 2000);
         // Navigation keeps the query (e2e:293).
         QCOMPARE(window->property("sidebarQuery").toString(), QStringLiteral("alpha"));
     }
