@@ -317,6 +317,7 @@ Dialog {
             // ===== Tab 3: LLM endpoints =====
             Flickable {
                 id: endpointsTab
+                objectName: "channelTopicSummaryEndpointsScroll"
                 clip: true; contentWidth: width; boundsBehavior: Flickable.StopAtBounds
                 property string editingUuid: ""      // "" = not editing; "new" = create form
                 property var form: ({})
@@ -666,47 +667,97 @@ Dialog {
                                     : qsTr("Leave blank to keep the current write-only credential.")
                                 font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
+                        // #838: every numeric setting is pre-filled, so the name
+                        // must be a persistent label (reference NumberField's
+                        // FormField label, text-xs text-muted), never a
+                        // placeholder that vanishes under the value. The allowed
+                        // range, previously only in that placeholder, stays
+                        // associated with its field as hint text. Accessible.name
+                        // gives each input a distinct screen-reader name - the
+                        // two penalty fields both rendering "0" was the report.
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TextField { objectName: "channelTopicSummaryField-priority"; placeholderText: qsTr("Priority (0-1000000)")
+                            Text { objectName: "channelTopicSummaryLabel-priority"
+                                text: qsTr("Priority")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                            TextField { objectName: "channelTopicSummaryField-priority"
+                                Accessible.name: qsTr("Priority")
                                 Layout.fillWidth: true
                                 text: String(endpointsTab.field("priority", 100)); onTextChanged: endpointsTab.deferSetField("priority", text) }
                             FieldError { errorField: "priority" }
+                            Text { objectName: "channelTopicSummaryHint-priority"
+                                text: qsTr("Range: 0-1000000")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TextField { objectName: "channelTopicSummaryField-temperature"; placeholderText: qsTr("Temperature (0-2)")
+                            Text { objectName: "channelTopicSummaryLabel-temperature"
+                                text: qsTr("Temperature")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                            TextField { objectName: "channelTopicSummaryField-temperature"
+                                Accessible.name: qsTr("Temperature")
                                 Layout.fillWidth: true
                                 text: String(endpointsTab.field("temperature", 0.2)); onTextChanged: endpointsTab.deferSetField("temperature", text) }
                             FieldError { errorField: "temperature" }
+                            Text { objectName: "channelTopicSummaryHint-temperature"
+                                text: qsTr("Range: 0-2")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TextField { objectName: "channelTopicSummaryField-max_output_tokens"; placeholderText: qsTr("Max output tokens (1-32768)")
+                            Text { objectName: "channelTopicSummaryLabel-max_output_tokens"
+                                text: qsTr("Output token limit")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                            TextField { objectName: "channelTopicSummaryField-max_output_tokens"
+                                Accessible.name: qsTr("Output token limit")
                                 Layout.fillWidth: true
                                 text: String(endpointsTab.field("max_output_tokens", 512)); onTextChanged: endpointsTab.deferSetField("max_output_tokens", text) }
                             FieldError { errorField: "max_output_tokens" }
+                            Text { objectName: "channelTopicSummaryHint-max_output_tokens"
+                                text: qsTr("Range: 1-32768")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TextField { objectName: "channelTopicSummaryField-top_p"; placeholderText: qsTr("Top-p (0-1)")
+                            Text { objectName: "channelTopicSummaryLabel-top_p"
+                                text: qsTr("Top P")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                            TextField { objectName: "channelTopicSummaryField-top_p"
+                                Accessible.name: qsTr("Top P")
                                 Layout.fillWidth: true
                                 text: String(endpointsTab.field("top_p", 1)); onTextChanged: endpointsTab.deferSetField("top_p", text) }
                             FieldError { errorField: "top_p" }
+                            Text { objectName: "channelTopicSummaryHint-top_p"
+                                text: qsTr("Range: 0-1")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TextField { objectName: "channelTopicSummaryField-presence_penalty"; placeholderText: qsTr("Presence penalty (-2..2)")
+                            Text { objectName: "channelTopicSummaryLabel-presence_penalty"
+                                text: qsTr("Presence penalty")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                            TextField { objectName: "channelTopicSummaryField-presence_penalty"
+                                Accessible.name: qsTr("Presence penalty")
                                 Layout.fillWidth: true
                                 text: String(endpointsTab.field("presence_penalty", 0)); onTextChanged: endpointsTab.deferSetField("presence_penalty", text) }
                             FieldError { errorField: "presence_penalty" }
+                            Text { objectName: "channelTopicSummaryHint-presence_penalty"
+                                text: qsTr("Range: -2..2")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
                         ColumnLayout {
                             Layout.fillWidth: true; spacing: 2
-                            TextField { objectName: "channelTopicSummaryField-frequency_penalty"; placeholderText: qsTr("Frequency penalty (-2..2)")
+                            Text { objectName: "channelTopicSummaryLabel-frequency_penalty"
+                                text: qsTr("Frequency penalty")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
+                            TextField { objectName: "channelTopicSummaryField-frequency_penalty"
+                                Accessible.name: qsTr("Frequency penalty")
                                 Layout.fillWidth: true
                                 text: String(endpointsTab.field("frequency_penalty", 0)); onTextChanged: endpointsTab.deferSetField("frequency_penalty", text) }
                             FieldError { errorField: "frequency_penalty" }
+                            Text { objectName: "channelTopicSummaryHint-frequency_penalty"
+                                text: qsTr("Range: -2..2")
+                                font.pixelSize: 12; color: dlg.colors["text-muted"] }
                         }
                         SwitchRow { objectNameRow: "channelTopicSummaryField-enabled"; label: qsTr("Enabled")
                             Layout.columnSpan: 2

@@ -5711,6 +5711,50 @@
         <translation>Штраф за частоту (-2..2)</translation>
     </message>
     <message>
+        <source>Priority</source>
+        <translation>Приоритет</translation>
+    </message>
+    <message>
+        <source>Temperature</source>
+        <translation>Температура</translation>
+    </message>
+    <message>
+        <source>Output token limit</source>
+        <translation>Лимит выходных токенов</translation>
+    </message>
+    <message>
+        <source>Top P</source>
+        <translation>Top P</translation>
+    </message>
+    <message>
+        <source>Presence penalty</source>
+        <translation>Штраф за присутствие</translation>
+    </message>
+    <message>
+        <source>Frequency penalty</source>
+        <translation>Штраф за частоту</translation>
+    </message>
+    <message>
+        <source>Range: 0-1000000</source>
+        <translation>Диапазон: 0-1000000</translation>
+    </message>
+    <message>
+        <source>Range: 0-2</source>
+        <translation>Диапазон: 0-2</translation>
+    </message>
+    <message>
+        <source>Range: 1-32768</source>
+        <translation>Диапазон: 1-32768</translation>
+    </message>
+    <message>
+        <source>Range: 0-1</source>
+        <translation>Диапазон: 0-1</translation>
+    </message>
+    <message>
+        <source>Range: -2..2</source>
+        <translation>Диапазон: -2..2</translation>
+    </message>
+    <message>
         <source>Enabled</source>
         <translation>Включен</translation>
     </message>
