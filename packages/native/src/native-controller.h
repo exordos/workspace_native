@@ -2215,6 +2215,10 @@ private:
     // failures a bounded number of times, and memoizes only authoritative outcomes.
     static constexpr int rowPreviewNetworkBatch = 8;
     static constexpr int rowPreviewNetworkRetries = 2;
+    // #860: a server-side empty page is not the end of the story when a disk
+    // body may still be on its way - the miss earns this many delayed
+    // disk-stage re-reads before the quiet memo is finally stored.
+    static constexpr int rowPreviewLateDiskRetries = 2;
     void seedRowPreviewHydrationFromCatalog();
     void scheduleRowPreviewNetworkHydration();
     void pumpRowPreviewNetworkHydration();
@@ -2229,6 +2233,8 @@ private:
     QSet<QString> m_rowPreviewNetPending;
     QSet<QString> m_rowPreviewNetInFlight;
     QHash<QString, int> m_rowPreviewNetRetries;
+    // #860: per-uuid budget for the late disk re-reads a network negative buys.
+    QHash<QString, int> m_rowPreviewLateDiskRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit
     // verification, live update, deletion). A hydration read captures the revision when it
     // starts and discards its body when the revision has moved by completion, so an older
