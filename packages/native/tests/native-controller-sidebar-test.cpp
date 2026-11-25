@@ -894,6 +894,142 @@ private slots:
         QCOMPARE(emptyRow.value("previewText").toString(), QString{});
     }
 
+    // #866 review (exordy findings 1/3): the network stage batch bounds the TOTAL number of
+    // in-flight lookup requests, not just a per-pass start rate. A slow server must never
+    // accumulate one live request per unresolved uuid; the pump resumes as replies retire
+    // their in-flight slots, and every pointer still reaches its preview afterwards.
+    void sidebarPreviewNetworkStageCapsTotalInFlight()
+    {
+        Fixture test;
+        test.aggregateMessages = true;
+        QStringList pointers;
+        for (int i = 0; i < 12; ++i) // more than rowPreviewNetworkBatch (8)
+            pointers << QStringLiteral("88888888-8888-4888-8888-0000000000c%1").arg(i, 1, 16);
+        test.streams = [](const Request &request) {
+            if (request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.topics = [pointers](const Request &) {
+            QJsonArray rows;
+            for (int i = 0; i < pointers.size(); ++i)
+                rows.append(QJsonObject{{QStringLiteral("uuid"),
+                        QStringLiteral("77777777-7777-4777-7777-0000000000c%1").arg(i, 1, 16)},
+                    {"project_id", projectId}, {"stream_uuid", streamId},
+                    {"name", QStringLiteral("Topic %1").arg(i)}, {"is_done", false},
+                    {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                    {"passive_unread_count", 0}, {"last_message_uuid", pointers.at(i)},
+                    {"updated_at", "2026-01-02T10:00:05Z"}});
+            return Response{rows};
+        };
+        int netGets = 0;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        test.messages = [&, gates](const Request &request) {
+            const auto uuid = QUrlQuery(request.target).queryItemValue("uuid");
+            if (!uuid.isEmpty()) {
+                ++netGets;
+                Response held{QJsonArray{message(QStringLiteral("Body ") + uuid, uuid)}};
+                held.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return held;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(test.start());
+        // The client-side dispatch counter is the oracle: the mock's HTTP/1 connection
+        // pool (six per host) would mask an over-dispatch at the server, exactly the way
+        // a production HTTP/2 multiplexed connection would hide it.
+        QVERIFY(QTest::qWaitFor(
+            [&] { return test.controller.rowPreviewNetworkIssuedForTest() >= 8; }, 5000));
+        QTest::qWait(700); // immediate-reschedule would have started the tail within ms
+        QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 8); // total in-flight capped
+        // Drain: releasing replies frees slots and the pump resumes on completion -
+        // every pointer still reaches its lookup and its preview, nothing stalls.
+        QVERIFY(QTest::qWaitFor([&] {
+            while (!gates->empty()) {
+                const auto send = gates->back();
+                gates->pop_back();
+                send();
+            }
+            for (int i = 0; i < 12; ++i) {
+                bool ready = false;
+                for (const auto &row : std::as_const(test.controller).topics()) {
+                    const auto map = row.toMap();
+                    if (map.value("id").toString()
+                            == QStringLiteral("77777777-7777-4777-7777-0000000000c%1").arg(i, 1, 16)
+                        && !map.value("previewText").toString().isEmpty())
+                        ready = true;
+                }
+                if (!ready) return false;
+            }
+            return true;
+        }, 20000));
+        QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 12); // every pointer got its lookup
+    }
+
+    // #866 review (exordy finding 2): a transient failure must not become a sticky negative
+    // preview once the retry budget is spent. The row keeps the reference empty preview, but
+    // no memo is stored, so a later catalog accept can hydrate it after the server recovers.
+    void sidebarPreviewRecoversAfterTransientFailureBudget()
+    {
+        Fixture test;
+        test.aggregateMessages = true;
+        const auto pointer = QStringLiteral("88888888-8888-4888-8888-0000000000f1");
+        test.streams = [](const Request &request) {
+            if (request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.topics = [pointer](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Flaky pointer"}, {"is_done", false},
+                {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", pointer},
+                {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        int netGets = 0;
+        bool serverRecovered = false;
+        test.messages = [&, pointer](const Request &request) {
+            const auto uuid = QUrlQuery(request.target).queryItemValue("uuid");
+            if (!uuid.isEmpty()) {
+                ++netGets;
+                if (!serverRecovered)
+                    return Response{QJsonObject{{"detail", QStringLiteral("temporarily unavailable")}}, 503};
+                return Response{QJsonArray{message(QStringLiteral("Recovered body"), uuid)}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(test.start());
+        // One first attempt plus two backoff retries (rowPreviewNetworkRetries = 2).
+        QVERIFY(QTest::qWaitFor([&] { return netGets >= 3; }, 10000));
+        QTest::qWait(2500); // the budget is spent on attempt 3: no further attempts follow
+        QCOMPARE(netGets, 3);
+        // The server recovers. A catalog re-accept must offer the lookup again: an exhausted
+        // transient failure left no memo behind, so the row can still reach its preview.
+        serverRecovered = true;
+        test.controller.refresh();
+        QVERIFY(QTest::qWaitFor([&] { return netGets >= 4; }, 3000));
+        const auto previewOf = [&] {
+            for (const auto &row : std::as_const(test.controller).topics()) {
+                const auto map = row.toMap();
+                if (map.value("id").toString() == topicId) return map.value("previewText").toString();
+            }
+            return QString{};
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(previewOf() == QStringLiteral("Recovered body"), 3000);
+    }
+
     // A row whose last message is an E2EE payload the client cannot present previews as the
     // locked label branch (workspace_ui sidebar-workspace-message-preview.ui.tsx), so the
     // projection must not leak cipher text and must flag the row.
