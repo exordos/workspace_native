@@ -315,6 +315,10 @@ public:
     // #860: disables the network fallback stage of row-preview hydration (disk-only mode)
     // for traffic-pinned cases, mirroring setTopicPreloadEnabledForTest's per-case knob.
     void setRowPreviewNetworkEnabledForTest(bool enabled);
+    // Test-only dispatch counter (#866 review): how many preview lookups the network
+    // stage has actually dispatched. The mock's HTTP/1 connection pool cannot show an
+    // over-dispatch at the server, so the cap is observed at the client seam.
+    int rowPreviewNetworkIssuedForTest() const { return m_rowPreviewNetIssued; }
     // Issue #729 phase 2: the warm queue's throttle delay (429/5xx doubling,
     // bounded; cleared by a verified catalog commit).
     int topicPreloadBackoffMsForTest() const { return m_topicPreloadBackoffMs; }
@@ -2233,6 +2237,7 @@ private:
     QSet<QString> m_rowPreviewNetPending;
     QSet<QString> m_rowPreviewNetInFlight;
     QHash<QString, int> m_rowPreviewNetRetries;
+    int m_rowPreviewNetIssued = 0; // test-only dispatch counter (rowPreviewNetworkIssuedForTest)
     // #860: per-uuid budget for the late disk re-reads a network negative buys.
     QHash<QString, int> m_rowPreviewLateDiskRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit

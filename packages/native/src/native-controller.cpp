@@ -19786,21 +19786,32 @@ void NativeController::pumpRowPreviewNetworkHydration()
     const auto owner = creationOwnerKey();
     const auto cache = m_cache;
     const auto lease = m_cacheLease;
+    // #866 review: the batch bounds the TOTAL number of in-flight lookups, not just a
+    // per-pass start rate - an immediate reschedule would dispatch every pending uuid
+    // before any reply landed, so a slow or stalled server accumulated one live request
+    // per unresolved row. Dispatch only into free slots; replies resume this pump when
+    // they retire their slot (see the completion handler below).
+    const int freeSlots = rowPreviewNetworkBatch - m_rowPreviewNetInFlight.size();
+    if (freeSlots <= 0) return;
     int started = 0;
     const auto pending = m_rowPreviewNetPending.values();
     for (const auto &uuid : pending) {
-        if (started >= rowPreviewNetworkBatch) break;
+        if (started >= freeSlots) break;
         m_rowPreviewNetPending.remove(uuid);
         if (m_rowPreviews.contains(uuid) || m_rowPreviewNetInFlight.contains(uuid)
             || m_rowPreviewInFlight.contains(uuid)) continue;
         m_rowPreviewNetInFlight.insert(uuid);
         ++started;
+        ++m_rowPreviewNetIssued;
         const QPointer<NativeController> guard(this);
         const auto fence = m_rowPreviewFence.value(uuid);
         request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", uuid}},
             [this, guard, uuid, owner, fence, project, cache, lease](const ApiResult &result) {
             if (!guard) return;
             m_rowPreviewNetInFlight.remove(uuid);
+            // #866 review: the retiring slot is the pump's resume signal - the pending
+            // queue is never restarted by an eager reschedule while replies are in flight.
+            if (!m_rowPreviewNetPending.isEmpty()) scheduleRowPreviewNetworkHydration();
             // A reply that answers after the session or its owner changed belongs to nobody.
             if (!authenticated() || creationOwnerKey() != owner) return;
             if (m_rowPreviewFence.value(uuid) != fence) {
@@ -19819,10 +19830,12 @@ void NativeController::pumpRowPreviewNetworkHydration()
                         m_rowPreviewNetPending.insert(uuid);
                         scheduleRowPreviewNetworkHydration();
                     });
-                } else {
-                    storeRowPreview(uuid, RowPreview{}); // budget spent: quiet until catalog moves
-                    announceRowPreviewRows(uuid);
                 }
+                // #866 review: a spent budget must not memoize the miss. A transient
+                // failure was never an authoritative negative, and a sticky empty preview
+                // kept the catalog re-seed from ever hydrating the row (seeding skips
+                // memoized uuids). The row keeps the reference empty preview; a later
+                // catalog accept offers the lookup one fresh trial at a time.
                 return;
             }
             const QJsonArray rows = result.data.isArray() ? result.data.toArray() : QJsonArray{};
@@ -19855,7 +19868,8 @@ void NativeController::pumpRowPreviewNetworkHydration()
             announceRowPreviewRows(uuid);
         });
     }
-    if (!m_rowPreviewNetPending.isEmpty()) scheduleRowPreviewNetworkHydration();
+    // No eager self-reschedule here: when the loop stopped because the slots were full,
+    // the queue is resumed by the completion handler as replies retire their slots.
 }
 
 const Message *NativeController::replyTarget(const QString &id) const
