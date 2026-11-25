@@ -38,6 +38,12 @@ QString JitsiCallWindowController::allowPolicy()
     return QStringLiteral("camera; microphone; fullscreen; display-capture");
 }
 
+QString JitsiCallWindowController::standaloneBackgroundColor()
+{
+    // workspace_ui e0194ffb jitsi-call-window.ts:244.
+    return QStringLiteral("#1B1B1D");
+}
+
 JitsiCallWindowController::JitsiCallWindowController(QObject *parent) : QObject(parent)
 {
     // Focus-aware reconcile poll (jitsi-participant-count.hook.ts: start on
@@ -125,6 +131,7 @@ void JitsiCallWindowController::setPipBounds(const QRect &bounds)
 
 void JitsiCallWindowController::open(const QVariantMap &activeCall)
 {
+    const bool wasVisible = windowVisible();
     m_call = activeCall;
     const auto parsed = parseJitsiUrl(trimmed(m_call, QStringLiteral("meetingUrl")),
         m_call.value(QStringLiteral("meetUrl")).toString());
@@ -137,6 +144,9 @@ void JitsiCallWindowController::open(const QVariantMap &activeCall)
     m_fullscreen = false;
     m_permissionsGranted = false;
     m_participantCount = -1;
+    // #846: a fresh session starts hidden (the standalone window is shown
+    // only once the embed finished loading).
+    m_windowShown = false;
     m_embedState = m_roomName.isEmpty() ? InvalidUrl : Loading;
     m_pollTimer.stop();
     if (m_embedState == Loading)
@@ -150,17 +160,122 @@ void JitsiCallWindowController::open(const QVariantMap &activeCall)
     emit fullscreenChanged();
     emit participantCountChanged();
     emit textsChanged();
+    emit callIdChanged();
+    if (windowVisible() != wasVisible)
+        emit windowVisibilityChanged();
+}
+
+QString JitsiCallWindowController::callId() const
+{
+    // The store mints a uuid callId per active call (reference
+    // jitsi-call.model.ts:80); a direct open() payload without one falls back
+    // to the call key and then the meeting URL so the identity is stable and
+    // never empty while a call is open.
+    const auto explicitId = m_call.value(QStringLiteral("callId")).toString();
+    if (!explicitId.isEmpty())
+        return explicitId;
+    const auto callKey = m_call.value(QStringLiteral("callKey")).toString();
+    if (!callKey.isEmpty())
+        return callKey;
+    return m_call.value(QStringLiteral("meetingUrl")).toString();
+}
+
+QVariantMap JitsiCallWindowController::sanitizeShellPayload(const QVariantMap &payload,
+    QString *rejectReason)
+{
+    const auto reject = [rejectReason](const QString &reason) {
+        if (rejectReason)
+            *rejectReason = reason;
+        return QVariantMap();
+    };
+    const static QString badCallId = QStringLiteral(
+        "callId must be a non-empty string of at most 128 characters");
+    // callId (jitsi-call-window.ts:46-48): explicit id first, then the
+    // derived identity (same chain as callId()).
+    QString callId = payload.value(QStringLiteral("callId")).toString();
+    if (callId.isEmpty())
+        callId = payload.value(QStringLiteral("callKey")).toString();
+    if (callId.isEmpty())
+        callId = payload.value(QStringLiteral("meetingUrl")).toString();
+    if (callId.isEmpty() || callId.size() > kMaxCallIdLength)
+        return reject(badCallId);
+    const auto meetingUrl = payload.value(QStringLiteral("meetingUrl")).toString();
+    // readPayload treats an absent/blank meetingUrl as fatal; the native
+    // shell instead owns it in the InvalidUrl state (invalid-link notice),
+    // matching the shipped #263/#728 contract, so only the shape bounds of a
+    // PRESENT url are enforced here.
+    if (!meetingUrl.isEmpty()) {
+        if (meetingUrl.size() > kMaxMeetingUrlLength)
+            return reject(QStringLiteral("meetingUrl exceeds 8192 characters"));
+        const QUrl url(meetingUrl, QUrl::StrictMode);
+        auto path = url.path(QUrl::FullyEncoded);
+        path.remove(QLatin1Char('/'));
+        if ((url.scheme() != QLatin1String("https") && url.scheme() != QLatin1String("http"))
+            || !url.userName().isEmpty() || !url.password().isEmpty()
+            || path.isEmpty()) {
+            return reject(QStringLiteral(
+                "meetingUrl must be an http(s) URL without userinfo and with a non-empty path"));
+        }
+    }
+    QVariantMap sanitized = payload;
+    sanitized.insert(QStringLiteral("callId"), callId);
+    // locationName/displayName truncated to 256 (:81-84).
+    const auto locationName = payload.value(QStringLiteral("locationName")).toString();
+    sanitized.insert(QStringLiteral("locationName"), locationName.left(kMaxTextLength));
+    const auto displayName = payload.value(QStringLiteral("displayName")).toString();
+    sanitized.insert(QStringLiteral("displayName"), displayName.left(kMaxTextLength));
+    // Invalid theme is DROPPED, never a rejection (:77-80).
+    if (sanitized.contains(QStringLiteral("theme"))) {
+        const auto theme = sanitized.value(QStringLiteral("theme")).toMap();
+        const auto mode = theme.value(QStringLiteral("mode")).toString();
+        const auto paletteId = theme.value(QStringLiteral("paletteId")).toString();
+        if ((mode != QLatin1String("light") && mode != QLatin1String("dark"))
+            || paletteId.isEmpty() || paletteId.size() > kMaxPaletteIdLength) {
+            sanitized.remove(QStringLiteral("theme"));
+        }
+    }
+    return sanitized;
+}
+
+bool JitsiCallWindowController::requestStandaloneOpen(const QVariantMap &activeCall)
+{
+    QString reason;
+    const QVariantMap sanitized = sanitizeShellPayload(activeCall, &reason);
+    if (sanitized.isEmpty()) {
+        emit openRejected(reason);
+        return false;
+    }
+    if (m_mode != Closed) {
+        // Single-window rules (jitsi-call-window.ts:228-231): re-opening the
+        // same call focuses the existing window; a different callId is
+        // refused while a window is open and the live window is untouched.
+        if (sanitized.value(QStringLiteral("callId")).toString() == callId()) {
+            emit focusRequested();
+            return true;
+        }
+        emit openRejected(QStringLiteral("A different Jitsi call window is already open"));
+        return false;
+    }
+    open(sanitized);
+    return true;
 }
 
 void JitsiCallWindowController::close()
 {
     if (m_mode == Closed)
         return;
+    const bool wasVisible = windowVisible();
+    // #846: the ':closed' announcement to the main window happens only if the
+    // call window had actually loaded (reference loaded guard, the main-side
+    // call state / tray tooltip / sleep inhibit reset rides on it).
+    const bool wasLoaded = m_windowShown;
+    const QString closingCallId = callId();
     m_mode = Closed;
     m_embedState = Idle;
     m_permissionsGranted = false;
     m_participantCount = -1;
     m_fullscreen = false;
+    m_windowShown = false;
     m_pollTimer.stop();
     m_embedDeadlineTimer.stop();
     emit modeChanged();
@@ -171,12 +286,17 @@ void JitsiCallWindowController::close()
     emit participantCountChanged();
     emit textsChanged();
     emit closeRequested();
+    if (windowVisible() != wasVisible)
+        emit windowVisibilityChanged();
+    if (wasLoaded)
+        emit standaloneClosed(closingCallId);
 }
 
 void JitsiCallWindowController::toggleMinimize()
 {
     if (m_mode == Closed)
         return;
+    const bool wasVisible = windowVisible();
     if (m_mode == Expanded) {
         // Minimizing exits browser fullscreen first (reference toggleMinimized).
         if (m_fullscreen) {
@@ -190,6 +310,10 @@ void JitsiCallWindowController::toggleMinimize()
     emit modeChanged();
     emit boundsChanged();
     emit textsChanged();
+    // #846: the standalone surface only exists while expanded (minimize hands
+    // presentation to the PiP tool window), so the visibility gate flips.
+    if (windowVisible() != wasVisible)
+        emit windowVisibilityChanged();
 }
 
 void JitsiCallWindowController::toggleFullscreen()
@@ -221,7 +345,11 @@ void JitsiCallWindowController::apiLoadSucceeded()
         return;
     m_embedDeadlineTimer.stop();
     m_embedState = Ready;
+    // #846: the successful load is the exact moment the reference shows the
+    // standalone window (shown only after the page loaded).
+    m_windowShown = true;
     emit embedStateChanged();
+    emit windowVisibilityChanged();
     ensureEmbed();
     syncParticipantCount();
     // Reference handleApiReady: reconcile poll runs for the whole session at

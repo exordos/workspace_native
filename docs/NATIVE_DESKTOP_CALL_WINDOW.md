@@ -273,3 +273,28 @@ call launch path (`NativeCallWebEngineView` content host), reproducing the
 geometry, hidden-until-loaded behaviour, single-window rules and the
 closed-announcement back to the main window; test extensions land in the
 `native-call` group plus `native-window` for the shell geometry.
+
+Native mapping decisions (implemented in `JitsiCallWindowController`):
+- `callId`: `JitsiCallStore` mints a fresh uuid per active call, exactly like
+  the reference `jitsi-call.model.ts:80` (`crypto.randomUUID()`); the shell
+  validates 1..128 and falls back to `callKey`/`meetingUrl` for payloads
+  opened without one.
+- Payload bounds (`sanitizeShellPayload`): callId 1..128, meetingUrl <=8192,
+  http(s) only, no userinfo, non-empty path; `locationName`/`displayName`
+  truncated to 256; an invalid `theme` entry is dropped without rejecting the
+  open (reference `readPayload`, `jitsi-call-window.ts:40-90`). Two deliberate
+  deviations: a blank/absent meetingUrl is NOT refused at the boundary - the
+  shipped InvalidUrl state (invalid-link notice, #263/#728) owns unusable
+  links; `language` is not part of the native payload and defaults to the app
+  language (ru/en), so the reference's required-language check is a no-op
+  here.
+- Hidden-until-loaded: `windowVisible == (mode == Expanded && embedState ==
+  Ready)` with `windowVisibilityChanged`; the window load timeout replaces the
+  former 30 s native embed deadline with the reference 15 s
+  (`WINDOW_LOAD_TIMEOUT_MS`, :11).
+- Closed announcement: `standaloneClosed(callId)` fires only when the window
+  had actually loaded (reference `:closed` guard, :271-286); the main-window
+  reset (tray tooltip, sleep inhibit) rides on it per #86/#454.
+- Refused opens: a rejected payload also ends the stored call in
+  `NativeController` wiring, mirroring the reference behaviour where `open`
+  returning false leaves no window and the main side resets its call state.
