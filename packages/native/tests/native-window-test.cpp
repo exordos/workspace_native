@@ -25798,6 +25798,127 @@ mv -Tf "$root/.current-new" "$root/current"
             || !visibleItem("extProviderLimitsField-max_accounts"));
     }
 
+    // Issue #796 item 5: window driver for the admin "External integration
+    // settings" entry flow. The C++ model and a standalone dialog render were
+    // covered, but no window case probed the policy on menu expand, clicked
+    // the entry into the dialog, or drove the emergency-suspend confirm band.
+    // Pinned contract: menu expand runs the policy probe and the entry only
+    // surfaces on the granted reply; entry click opens the dialog; Suspend
+    // only arms the confirm band (zero requests); Cancel disarms silently;
+    // Confirm dispatches exactly one POST .../actions/suspend/invoke and the
+    // reply's emergency_suspended flips the controls to Resume;
+    // extProviderClose tears the dialog down.
+    void externalProviderDialogSuspendConfirmDispatchesOnceAndCancelStaysSilent()
+    {
+        ChannelInfoWindowScene scene;
+        const QString policy = "/api/workspace/v1/messenger/external_provider_policies/zulip";
+        QJsonObject dto{{"uuid", "77777777-7777-4777-8777-000000000007"},
+            {"provider", "zulip"},
+            {"created_at", "2026-01-02T10:00:00Z"},
+            {"updated_at", "2026-11-20T10:00:00Z"},
+            {"revision", 3}, {"enabled", true}, {"emergency_suspended", false},
+            {"limits", QJsonObject{{"max_accounts", 5},
+                {"max_selected_chats_per_account", 20}, {"max_file_bytes", 52428800}}},
+            {"custom_ca_bundle", QJsonValue::Null}};
+        int policyGets = 0;
+        QStringList writes;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path() == policy) {
+                ++policyGets;
+                return {dto, 200, 0, {{"ETag", "\"3\""}}};
+            }
+            if (request.method == "POST" && request.target.path() == policy + "/actions/suspend/invoke") {
+                writes << QStringLiteral("SUSPEND");
+                auto suspended = dto;
+                suspended["emergency_suspended"] = true;
+                suspended["revision"] = 4;
+                return {suspended, 200, 0, {{"ETag", "\"4\""}}};
+            }
+            return base(request);
+        };
+        auto restoreHandler = qScopeGuard([&] { scene.fixture.server.handler = base; });
+        // Probe-on-expand: opening the integrations section runs admin.probe()
+        // and the entry only surfaces once the granted policy reply lands.
+        click(scene.window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY(visibleItem("externalAccountsToggle"));
+        click(scene.window, visibleItem("externalAccountsToggle"));
+        QQuickItem *entry = nullptr;
+        QTRY_VERIFY(([&] { entry = visibleItem("externalProviderEntry"); return entry != nullptr; })());
+        QVERIFY(policyGets >= 1);
+        QCOMPARE(writes.size(), 0);
+        const QRectF bounds(QPointF{}, scene.window->size());
+        auto inWindow = [&](QQuickItem *item) {
+            return bounds.contains(item->mapRectToScene(QRectF(QPointF{}, item->size())));
+        };
+        if (!inWindow(entry)) {
+            auto *menuScroll = visibleItem("accountMenuScroll");
+            QVERIFY(menuScroll);
+            menuScroll->setProperty("contentY", menuScroll->property("contentY").toReal()
+                + entry->mapToItem(menuScroll, QPointF(0, 0)).y() - 24);
+            QTRY_VERIFY(inWindow(entry));
+        }
+        click(scene.window, entry);
+        QTRY_VERIFY(visibleItem("extProviderLimitsField-max_accounts"));
+        // The emergency controls live below the dialog fold; the ScrollView's
+        // flickable is the nearest scroller ancestor of a projected field.
+        QQuickItem *flick = nullptr;
+        for (auto *item = visibleItem("extProviderLimitsField-max_accounts")->parentItem();
+             item != nullptr; item = item->parentItem()) {
+            if (QString::fromLatin1(item->metaObject()->className()) == QLatin1String("QQuickFlickable")) {
+                flick = item;
+                break;
+            }
+        }
+        QVERIFY(flick);
+        auto ensureInWindow = [&](QQuickItem *item) {
+            if (inWindow(item))
+                return;
+            const auto top = item->mapToItem(flick, QPointF(0, 0)).y();
+            flick->setProperty("contentY", qMax(0.0,
+                flick->property("contentY").toReal() + top - 24.0));
+            QTRY_VERIFY(inWindow(item));
+        };
+        QQuickItem *suspendButton = nullptr;
+        QTRY_VERIFY(([&] { suspendButton = visibleItem("extProviderSuspend"); return suspendButton != nullptr; })());
+        ensureInWindow(suspendButton);
+        // Arming the confirm band must not touch the network.
+        click(scene.window, suspendButton);
+        QTRY_VERIFY(visibleItem("extProviderConfirmPanel"));
+        QCOMPARE(writes.size(), 0);
+        // Cancel disarms the band, still zero requests.
+        auto *cancelButton = visibleItem("extProviderSuspendCancel");
+        QVERIFY(cancelButton);
+        ensureInWindow(cancelButton);
+        click(scene.window, cancelButton);
+        QTRY_VERIFY(!visibleItem("extProviderConfirmPanel"));
+        QCOMPARE(writes.size(), 0);
+        // Re-arm and confirm: exactly one invoke, and the reply's
+        // emergency_suspended flips the controls to Resume.
+        QTRY_VERIFY(([&] { suspendButton = visibleItem("extProviderSuspend"); return suspendButton != nullptr; })());
+        ensureInWindow(suspendButton);
+        click(scene.window, suspendButton);
+        QTRY_VERIFY(visibleItem("extProviderConfirmPanel"));
+        auto *confirmButton = visibleItem("extProviderSuspendConfirm");
+        QVERIFY(confirmButton);
+        ensureInWindow(confirmButton);
+        click(scene.window, confirmButton);
+        const QStringList expectedWrites{QStringLiteral("SUSPEND")};
+        QTRY_COMPARE(writes, expectedWrites);
+        QTRY_VERIFY(!visibleItem("extProviderConfirmPanel"));
+        QQuickItem *resumeButton = nullptr;
+        QTRY_VERIFY(([&] { resumeButton = visibleItem("extProviderResume"); return resumeButton != nullptr; })());
+        QVERIFY(!visibleItem("extProviderSuspend"));
+        // Close (header row) tears the dialog down.
+        auto *closeButton = visibleItem("extProviderClose");
+        QVERIFY(closeButton);
+        ensureInWindow(closeButton);
+        click(scene.window, closeButton);
+        QTRY_VERIFY(!visibleItem("externalProviderDialog")
+            || !visibleItem("extProviderResume"));
+        QCOMPARE(writes, expectedWrites);
+    }
+
     // Reference: packages/web/src/widgets/right-panel/right-panel-workspace-info.ui.tsx (measured
     // h-12 w-12 = 48px, title text-sm = 14px font-medium, subline text-[11px]
     // text-secondary; blocks inside p-2 space-y-5 = 8px padding, 20px gaps)
