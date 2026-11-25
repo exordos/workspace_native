@@ -31,6 +31,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     archiveUsesExactHistoryAndCanonicalRestore
     channelTopicSummaryDialogEndpointEditDuringPendingSurvivesSaved
     durableComposerRestoresActualInputAcrossWindowAndControllerLifetimes
+    externalProviderDialogProjectsReadyDraftWithoutBindingLoop
     focusedTextWindowLosesFocusBeforeNativeSurfaceIsDestroyed
     folderRailRendersServerFoldersAndScopesTheSidebar
     forwardModalSendsSelectedBatchOnceAndClearsSelection
