@@ -31808,7 +31808,12 @@ private:
         QVERIFY(fixture.start(controller));
         QVariantMap call;
         call.insert(QStringLiteral("meetingUrl"), QStringLiteral("not a jitsi url"));
-        controller.callWindow()->open(call);
+        // Drive the production dispatch (store -> activeCallChanged wiring ->
+        // requestStandaloneOpen), not a direct open(): a sanitization refusal
+        // would clear the stored call and strand the notice in this fixture
+        // without any visible signal (re-review #849 finding 2).
+        controller.calls()->requestOpenCall(call);
+        QVERIFY(controller.calls()->hasActiveCall());
         QCOMPARE(controller.callWindow()->embedState(),
             int(JitsiCallWindowController::InvalidUrl));
         QQuickWindow *shell = nullptr;
@@ -31821,6 +31826,58 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->mode()
             == int(JitsiCallWindowController::Closed), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(standaloneCallWindow() == nullptr, 2000);
+    }
+
+    void callWindowExpandedKeepsMainWindowShortcutsAlive()
+    {
+        // Re-review #849 finding 1: the standalone call window no longer
+        // covers the main window, so expanded mode alone must not mute the
+        // main window's application shortcuts - the gate is FOCUS (reference:
+        // each Electron window scopes its own shortcut surface). While the
+        // main window is active the shortcut still fires; once the call shell
+        // has focus the main window's shortcut handler stands down.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; // no meet host: shell lands in InvalidUrl
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call-window shortcut teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(fixture.start(controller));
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), QStringLiteral("not a jitsi url"));
+        controller.calls()->requestOpenCall(call);
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QCOMPARE(controller.callWindow()->mode(), int(JitsiCallWindowController::Expanded));
+        const auto invokeShortcut = [window](const QString &action, bool activate) {
+            QVariant handled;
+            QMetaObject::invokeMethod(window, "handleAppShortcut", Q_RETURN_ARG(QVariant, handled),
+                Q_ARG(QVariant, action), Q_ARG(QVariant, activate));
+            return handled.toBool();
+        };
+        // The main window is the active window: an expanded call must not
+        // swallow its shortcuts. interface.sidebar toggles a plain property,
+        // so the effect is directly observable.
+        window->requestActivate();
+        QTRY_VERIFY_WITH_TIMEOUT(window->property("active").toBool(), 2000);
+        const bool sidebarBefore = window->property("shortcutSidebarVisible").toBool();
+        QVERIFY(invokeShortcut(QStringLiteral("interface.sidebar"), true));
+        QCOMPARE(window->property("shortcutSidebarVisible").toBool(), !sidebarBefore);
+        // Focus contract boundary: the decline-when-unfocused path is the
+        // shipped `!root.active` gate at the top of the handler (unchanged
+        // here); WM-side activation of the sibling shell is not observable
+        // as a per-window `active` flip on this Xvnc environment, so the
+        // deterministic pin is the finding itself: with the main window
+        // ACTIVE and an expanded call open, the shortcut still fires.
+        QVERIFY(window->property("active").toBool());
+        const bool sidebarAfterShell = window->property("shortcutSidebarVisible").toBool();
+        QCOMPARE(sidebarAfterShell, !sidebarBefore);
     }
 
     void callWindowEmbedHostIsCreatedWhileLoading()

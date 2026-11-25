@@ -295,6 +295,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     aboutDrawerPreservesTheActualPendingCheck
+    callWindowExpandedKeepsMainWindowShortcutsAlive
     clearCacheKeepsAccountAndOrganizations
     composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart
     composerToolbarKeyboardNavigationPreservesSelection

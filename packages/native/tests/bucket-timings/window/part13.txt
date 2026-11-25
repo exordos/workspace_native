@@ -1,4 +1,5 @@
 aboutDrawerPreservesTheActualPendingCheck=1.32845
+callWindowExpandedKeepsMainWindowShortcutsAlive=1.24541
 clearCacheKeepsAccountAndOrganizations=4.40124
 composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart=2.62833
 composerToolbarKeyboardNavigationPreservesSelection=66.8212

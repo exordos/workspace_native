@@ -534,6 +534,26 @@ private slots:
         QVERIFY(fixture.controller.callError().isEmpty());
     }
 
+    void malformedLinkDispatchKeepsStoredCallInInvalidUrlShell()
+    {
+        // Re-review #849 finding 2: dispatching a malformed link through the
+        // store must open the shell in its InvalidUrl state and KEEP the
+        // stored call. The old sanitization refused the payload before
+        // open(), so the activeCallChanged wiring ran closeCall() and the
+        // invalid-link notice (the unusable-link owner) never appeared.
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        QVariantMap payload;
+        payload.insert(QStringLiteral("meetingUrl"), QStringLiteral("not a jitsi url"));
+        fixture.controller.calls()->requestOpenCall(payload);
+        QTRY_VERIFY(fixture.controller.callWindow()->mode()
+            == JitsiCallWindowController::Expanded);
+        QVERIFY(fixture.controller.calls()->hasActiveCall());
+        QCOMPARE(int(fixture.controller.callWindow()->embedState()),
+            int(JitsiCallWindowController::InvalidUrl));
+        QVERIFY(fixture.controller.callError().isEmpty());
+    }
+
     void encryptedStreamSendsNoPlaintextCallUrl()
     {
         Fixture fixture;
