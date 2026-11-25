@@ -21561,7 +21561,13 @@ mv -Tf "$root/.current-new" "$root/current"
         if (checkCalls) {
             controller.incomingCall()->setAutoDeclineMs(600000);
             controller.incomingCall()->setRingIntervalMs(600000);
-            controller.calls()->ingestIncomingInvite(windowInvite());
+            // #846: the accept path parses the invite URL against the CALL's
+            // meetUrl; without it the session is InvalidUrl and the shell
+            // correctly stays hidden (nothing loadable to show).
+            auto invite = windowInvite();
+            invite.insert(QStringLiteral("meetUrl"),
+                QStringLiteral("https://meet.example.com/"));
+            controller.calls()->ingestIncomingInvite(invite);
             QTRY_VERIFY(controller.incomingCall()->visible());
             auto *toggle = visibleItem(content, "incomingCallVideoToggle"); QVERIFY(toggle);
             // Click the rendered control: finding the item alone would also
@@ -31780,6 +31786,43 @@ private:
 
     // Shared join preamble for the call-window review cases (same shape as
     // the sibling call cases: fresh fixture, controller and engine per test).
+    void callWindowInvalidLinkStaysVisibleWithTheNotice()
+    {
+        // Design doc: the shipped InvalidUrl state (invalid-link notice,
+        // #263/#728) owns unusable links. Hidden-until-loaded may not strand
+        // that owner: there is nothing to load, yet the shell must still show
+        // so the user can read the notice and close the session - the app
+        // window hosts no call chrome anymore.
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; // no meet host: nothing parseable
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Invalid-link call shell teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(fixture.start(controller));
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), QStringLiteral("not a jitsi url"));
+        controller.callWindow()->open(call);
+        QCOMPARE(controller.callWindow()->embedState(),
+            int(JitsiCallWindowController::InvalidUrl));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        auto *notice = visibleItem(shell->contentItem(), QStringLiteral("callWindowInvalidState"));
+        QVERIFY(notice);
+        QVERIFY(notice->property("visible").toBool());
+        QCOMPARE(notice->property("text").toString(), controller.callWindow()->stateText());
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowCloseButton")));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->mode()
+            == int(JitsiCallWindowController::Closed), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(standaloneCallWindow() == nullptr, 2000);
+    }
+
     void callWindowEmbedHostIsCreatedWhileLoading()
     {
         // Finding 1: a valid call must not stay on the loading screen forever
@@ -32573,7 +32616,12 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        // #846: the embed surface (and with it the callWindowEmbedLoader) is
+        // re-parented into the standalone call window as soon as the shell
+        // appears, so every seam of this case resolves inside that top-level.
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
@@ -32642,7 +32690,10 @@ private:
         }, 20000));
         QVERIFY(controller.callWindow()->embedUrl() != decoy.toString());
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::LoadFailed));
-        auto *retry = visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton"));
+        // The re-open spun up a fresh standalone instance; re-acquire it -
+        // the retry affordance renders inside the shell window now.
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        auto *retry = visibleItem(shell->contentItem(), QStringLiteral("callWindowRetryButton"));
         QVERIFY(retry);
 
         // Retry must re-point the live surface at the meeting URL (via the
@@ -32663,7 +32714,7 @@ private:
         // immediately, and once the old surface is gone any WebEngineView
         // under the Loader IS the replacement.
         QPointer<QObject> retiredView(engineView);
-        clickReadyItem(window, retry);
+        clickReadyItem(shell, retry);
         // #792: Retry re-instantiates the embed surface (the Loader briefly
         // holds its source empty so a failed import genuinely re-runs), so
         // the pre-retry wrapper points at a destroyed object and its stale

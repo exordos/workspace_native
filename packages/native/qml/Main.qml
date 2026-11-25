@@ -16706,6 +16706,10 @@ component NativeMentionChip: Item {
             // reference's destroy-on-failure (design doc, #846 re-baseline).
             visible: root.controller.callWindow.windowVisible
                 || root.controller.callWindow.embedState === 3 // LoadFailed
+                // InvalidUrl: the design doc lets the shipped invalid-link
+                // notice own unusable links, so the shell must show it (and
+                // its close affordance) even though nothing can load.
+                || root.controller.callWindow.embedState === 4 // InvalidUrl
             width: root.controller.callWindow.standaloneWidth
             height: root.controller.callWindow.standaloneHeight
             minimumWidth: root.controller.callWindow.standaloneMinWidth

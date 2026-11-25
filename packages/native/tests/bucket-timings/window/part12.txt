@@ -1,3 +1,4 @@
+callWindowInvalidLinkStaysVisibleWithTheNotice=1.36219
 channelTopicSummaryDialogSendsOnlyUserEditedEffortAfterRemotePromptUpdate=1.14606
 chatHeaderCountersRenderMembersAndOnline=0.725043
 composerPreviewShowsTheBodyItSends=10.3796

@@ -291,7 +291,10 @@ Native mapping decisions (implemented in `JitsiCallWindowController`):
 - Hidden-until-loaded: `windowVisible == (mode == Expanded && embedState ==
   Ready)` with `windowVisibilityChanged`; the window load timeout replaces the
   former 30 s native embed deadline with the reference 15 s
-  (`WINDOW_LOAD_TIMEOUT_MS`, :11).
+  (`WINDOW_LOAD_TIMEOUT_MS`, :11). A settled UNUSABLE verdict also keeps the
+  shell visible - `LoadFailed` so the retry affordance (#263) stays reachable,
+  `InvalidUrl` so the invalid-link notice and close affordance own the
+  unusable link (the app window hosts no call chrome to strand them in).
 - Closed announcement: `standaloneClosed(callId)` fires only when the window
   had actually loaded (reference `:closed` guard, :271-286); the main-window
   reset (tray tooltip, sleep inhibit) rides on it per #86/#454.
