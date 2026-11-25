@@ -546,6 +546,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_24
     attachmentCardTabTraversalReachesCardAndActivatesByKey
+    callWindowEmbedRetryReinstantiatesFailedLoader
     chatHeaderCounterCaptionFollowsSelectionInAccessibleTree
     composerFormattingDefaultsPreserveUtf16MultilineAndScroll
     composerFormattingDefaultsWrapSelectionAndSendCanonicalMarkdown
