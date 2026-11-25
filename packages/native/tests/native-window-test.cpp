@@ -14055,7 +14055,11 @@ mv -Tf "$root/.current-new" "$root/current"
             // The reference drawer does not close on press-outside; the
             // top-bar trigger toggles the account layer closed again.
             click(window, item(content, "accountMenuButton"));
-            QTRY_VERIFY(!item(content, "accountAppearanceAction"));
+            // #785: the persistent right drawer keeps its children mounted
+            // when closed, so the mount-based item() lookup would find the
+            // Appearance action forever. Closure must be proven by a
+            // visibility-aware lookup: still mounted, no longer visible.
+            QTRY_VERIFY(!visibleItem(content, "accountAppearanceAction"));
             QTest::mouseMove(window, QPoint(1100, 500));
             QVERIFY(window->grabWindow().save(darkScreenshot));
         }
