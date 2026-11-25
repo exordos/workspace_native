@@ -22184,6 +22184,19 @@ QString NativeController::topicSummaryTabPermission(const QString &tab) const
     return QStringLiteral("denied");
 }
 
+void NativeController::settleTopicSummaryLoadSuccess(const QString &family)
+{
+    // Issue #840: a successful read of one family proves nothing about the
+    // other family's failed write - keep a foreign live error so the failed
+    // tab keeps its band and retry story. The bands already filter on
+    // topicSummarySettingsErrorOps, so the reading tab still shows clean.
+    if (m_topicSummarySettingsStatus == QLatin1String("error")
+        && !m_topicSummarySettingsErrorOps.isEmpty()
+        && !m_topicSummarySettingsErrorOps.contains(family))
+        return;
+    setTopicSummaryStatus(QString());
+}
+
 void NativeController::loadTopicSummaryGates()
 {
     if (!authenticated() || !m_session->canManageSummaryGates()) {
@@ -22193,9 +22206,17 @@ void NativeController::loadTopicSummaryGates()
     // Review #708 finding 8: unverified gate values must never be editable or
     // saveable; the flag stays false until THIS dispatch succeeds. begin() emits
     // topicSummaryStateChanged below, so QML locks on this very transition.
+    // Issue #840: when the family slot is already busy (a save is in flight)
+    // the dispatch is never admitted, so it neither proves nor unproves
+    // anything - the flag must go back untouched, or the tab strands locked
+    // with no error and no retry once the save settles.
+    const bool verifiedBefore = m_topicSummaryGatesLoaded;
     m_topicSummaryGatesLoaded = false;
     const auto token = beginTopicSummaryOp("gates");
-    if (!token) return;
+    if (!token) {
+        m_topicSummaryGatesLoaded = verifiedBefore;
+        return;
+    }
     const auto owner = ownerKey();
     const auto path = messenger + "/topic_summary_settings/" + m_session->project();
     request("GET", path, {}, {}, [this, token, owner](const ApiResult &response) {
@@ -22216,7 +22237,7 @@ void NativeController::loadTopicSummaryGates()
         // with an unchanged status ("") must still re-notify, or QML drafts seeded
         // at dialog-open time never see the loaded values.
         emit topicSummaryStateChanged();
-        setTopicSummaryStatus("");
+        settleTopicSummaryLoadSuccess(QStringLiteral("gates"));
     });
 }
 
@@ -22280,7 +22301,7 @@ void NativeController::loadTopicSummaryEndpoints()
         // again (#755 finding 4670644138).
         m_topicSummaryCreateNeedsReconcile = false;
         emit topicSummaryStateChanged();
-        setTopicSummaryStatus("");
+        settleTopicSummaryLoadSuccess(QStringLiteral("endpoints"));
     });
 }
 
