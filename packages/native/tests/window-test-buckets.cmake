@@ -369,6 +369,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     bottomReadAnchorRepairsServerCounter
     captionAndPickedImageSendThenPaintOwnInlinePixels
     channelTopicSummaryDialogFailedGatesLoadKeepsSwitchesLocked
+    channelTopicSummaryEndpointNumericFieldsKeepVisibleLabels
     codeBlockCopyButtonWritesClipboardAndResetsFeedback
     composerTimePickerPreservesBothFallBackInstants
     diagnosticsNewPingCancelsPendingFeedbackReset
