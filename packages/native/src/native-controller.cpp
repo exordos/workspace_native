@@ -14431,9 +14431,84 @@ void NativeController::persistStreams()
 // Forward declaration for the direct-row status emoji display port (issue #96);
 // the definition lives next to the other row projection helpers below.
 
-QVariantList NativeController::streams() const
+// Issue #867 (subtask A): the per-row projection extracted from streams() so a
+// single-UUID lookup can build exactly one row instead of materializing (and,
+// through a QML reference sequence, re-materializing) the whole catalog.
+QVariantMap NativeController::streamRowMap(const Stream &stream) const
 {
     const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
+    const qint64 activityMicros = rowActivityMicros(stream.lastMessage, stream.updatedMicros);
+    const bool direct = stream.privateStream && isUuid(stream.directUser)
+        && stream.directUser != m_session->user();
+    auto row = QVariantMap{{"id", stream.uuid}, {"name", stream.name},
+        {"description", stream.description}, {"unread", stream.unread}, {"activeUnread", stream.activeUnread},
+        {"passiveUnread", stream.passiveUnread}, {"lastMessage", stream.lastMessage}, {"encrypted", stream.encrypted},
+        {"isDirect", direct},
+        {"peerId", stream.privateStream ? stream.directUser : QString{}},
+        {"displayName", stream.privateStream && isUuid(stream.directUser)
+            ? peerDisplayName(stream.directUser) : stream.name},
+        {"avatar", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
+            ? m_names.value(stream.directUser).avatar : QString{}},
+        {"presence", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
+            ? m_names.value(stream.directUser).presence : QString{}},
+        {"activityMicros", activityMicros},
+        {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}};
+    row.insert(rowPreviewFields(stream.lastMessage));
+    // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): the row state measured
+    // on the reference sidebar rows. The displayed counter is the
+    // resolveWorkspaceDisplayedUnread projection (messenger-notification-mode.lib.ts:
+    // 49-57): active unreads first, a gray passive-only variant otherwise. The
+    // mention flag is membership of the stream in the unread-mention index
+    // (messenger-sidebar.lib.ts:389). Direct status facts come from the partner user
+    // entity (sidebar-workspace.ui.tsx:430-433), trimmed, with the emoji filtered
+    // through the display port. pinned defaults false; the folder scope stamps it.
+    const bool unreadPassive = stream.activeUnread <= 0 && stream.passiveUnread > 0;
+    row["displayedUnread"] = stream.activeUnread > 0 ? stream.activeUnread
+        : unreadPassive ? stream.passiveUnread : 0;
+    row["unreadPassive"] = unreadPassive;
+    bool hasMention = false;
+    for (auto it = m_unreadMentions.constBegin(); it != m_unreadMentions.constEnd(); ++it)
+        if (it->stream == stream.uuid) { hasMention = true; break; }
+    row["hasMention"] = hasMention;
+    if (direct) {
+        const auto peer = m_names.constFind(stream.directUser);
+        row["statusEmoji"] = peer == m_names.constEnd()
+            ? QString{} : sidebarStatusEmojiDisplay(peer->statusEmoji);
+        row["statusText"] = peer == m_names.constEnd()
+            ? QString{} : peer->statusText.trimmed();
+    } else {
+        row["statusEmoji"] = QString{};
+        row["statusText"] = QString{};
+    }
+    row["pinned"] = false;
+    // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the row mute
+    // projection. The indicator rides the raw stream mode (visible when it is
+    // "muted"); the 0.7 dim rides isWorkspaceStreamFullyMuted, which is exactly
+    // the streamGroupRank mute rank (muted with no explicitly un-muted topic).
+    row["notificationMode"] = stream.notificationMode;
+    row["fullyMuted"] = streamGroupRank(stream) == 1;
+    // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md): same
+    // resolveAvatarBackgroundColor derivation as the drafts surface below
+    // in draftPage(); direct rows never carry a stream color.
+    row["avatarColor"] = !direct && stream.color
+        ? QString("#%1").arg(*stream.color, 6, 16, QLatin1Char('0')) : QString{};
+    return row;
+}
+
+QVariantMap NativeController::streamById(const QString &id) const
+{
+    if (id.isEmpty())
+        return {};
+    for (const auto &stream : m_streams) {
+        if (stream.uuid == id && !stream.archived)
+            return streamRowMap(stream);
+    }
+    return {};
+}
+
+QVariantList NativeController::streams() const
+{
+    ++m_streamsProjectionCount;
     QVector<const Stream *> ordered;
     for (const auto &stream : m_streams) {
         if (!stream.archived) { ordered.append(&stream); }
@@ -14468,64 +14543,8 @@ QVariantList NativeController::streams() const
         return activity.value(a->uuid) > activity.value(b->uuid);
     });
     QVariantList result;
-    for (const auto *entry : ordered) {
-        const auto &stream = *entry;
-        const bool direct = stream.privateStream && isUuid(stream.directUser)
-            && stream.directUser != m_session->user();
-        auto row = QVariantMap{{"id", stream.uuid}, {"name", stream.name},
-            {"description", stream.description}, {"unread", stream.unread}, {"activeUnread", stream.activeUnread},
-            {"passiveUnread", stream.passiveUnread}, {"lastMessage", stream.lastMessage}, {"encrypted", stream.encrypted},
-            {"isDirect", direct},
-            {"peerId", stream.privateStream ? stream.directUser : QString{}},
-            {"displayName", stream.privateStream && isUuid(stream.directUser)
-                ? peerDisplayName(stream.directUser) : stream.name},
-            {"avatar", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
-                ? m_names.value(stream.directUser).avatar : QString{}},
-            {"presence", avatarsOwned && stream.privateStream && isUuid(stream.directUser) && stream.directUser != m_session->user()
-                ? m_names.value(stream.directUser).presence : QString{}},
-            {"activityMicros", activity.value(stream.uuid)},
-            {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}};
-        row.insert(rowPreviewFields(stream.lastMessage));
-        // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): the row state measured
-        // on the reference sidebar rows. The displayed counter is the
-        // resolveWorkspaceDisplayedUnread projection (messenger-notification-mode.lib.ts:
-        // 49-57): active unreads first, a gray passive-only variant otherwise. The
-        // mention flag is membership of the stream in the unread-mention index
-        // (messenger-sidebar.lib.ts:389). Direct status facts come from the partner user
-        // entity (sidebar-workspace.ui.tsx:430-433), trimmed, with the emoji filtered
-        // through the display port. pinned defaults false; the folder scope stamps it.
-        const bool unreadPassive = stream.activeUnread <= 0 && stream.passiveUnread > 0;
-        row["displayedUnread"] = stream.activeUnread > 0 ? stream.activeUnread
-            : unreadPassive ? stream.passiveUnread : 0;
-        row["unreadPassive"] = unreadPassive;
-        bool hasMention = false;
-        for (auto it = m_unreadMentions.constBegin(); it != m_unreadMentions.constEnd(); ++it)
-            if (it->stream == stream.uuid) { hasMention = true; break; }
-        row["hasMention"] = hasMention;
-        if (direct) {
-            const auto peer = m_names.constFind(stream.directUser);
-            row["statusEmoji"] = peer == m_names.constEnd()
-                ? QString{} : sidebarStatusEmojiDisplay(peer->statusEmoji);
-            row["statusText"] = peer == m_names.constEnd()
-                ? QString{} : peer->statusText.trimmed();
-        } else {
-            row["statusEmoji"] = QString{};
-            row["statusText"] = QString{};
-        }
-        row["pinned"] = false;
-        // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the row mute
-        // projection. The indicator rides the raw stream mode (visible when it is
-        // "muted"); the 0.7 dim rides isWorkspaceStreamFullyMuted, which is exactly
-        // the streamGroupRank mute rank (muted with no explicitly un-muted topic).
-        row["notificationMode"] = stream.notificationMode;
-        row["fullyMuted"] = streamGroupRank(stream) == 1;
-        // Issue #176 (docs/NATIVE_DESKTOP_SIDEBAR_STREAM_AVATARS.md): same
-        // resolveAvatarBackgroundColor derivation as the drafts surface below
-        // in draftPage(); direct rows never carry a stream color.
-        row["avatarColor"] = !direct && stream.color
-            ? QString("#%1").arg(*stream.color, 6, 16, QLatin1Char('0')) : QString{};
-        result.append(row);
-    }
+    for (const auto *entry : ordered)
+        result.append(streamRowMap(*entry));
     return result;
 }
 
