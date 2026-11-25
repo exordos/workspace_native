@@ -6,3 +6,16 @@ __pycache__/
 /*.log
 /err.txt
 /Testing/
+
+# scratch leaked by local lane runs
+/run-*.sh
+/run-*.xml
+/runlog-*
+/body.md
+/pr-body-*.md
+/pr-note-*.md
+/reply-*.md
+packages/native/build-*.log
+packages/native/cfg-*.log
+packages/native/witness-*
+packages/native/neigh*.*
