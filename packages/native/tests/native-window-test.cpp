@@ -12877,10 +12877,12 @@ mv -Tf "$root/.current-new" "$root/current"
                 QCOMPARE(more()->property("text").toString(), locale == "en" ? QString("Hide extra topics") : QString::fromUtf8("Скрыть лишние темы"));
                 click(window, more()); QTRY_VERIFY(!topic(3) && !topic(5));
             } else {
-                // Explicit navigation keeps only the target stream expanded.
+                // Issue #859 contract: a route commit only ensures the target
+                // stream; Support's explicit expansion survives the navigation,
+                // so its topics stay visible (only a chevron collapse removes it).
                 click(window, visibleItem(window->contentItem(), "stream-" + streamId));
                 QTRY_COMPARE(controller.selectedStream(), streamId);
-                QTRY_VERIFY(!visibleItem(window->contentItem(), "topic-" + secondTopicId));
+                QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
                 QTRY_VERIFY(controller.topicsComplete());
                 controller.selectTopic(ids[4]);
                 QTRY_COMPARE(controller.selectedTopic(), ids[4]);
@@ -13104,6 +13106,14 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, visibleItem(window->contentItem(), "stream-" + otherStream));
         QTRY_VERIFY(controller.selectedStream() == otherStream && controller.topicsComplete());
         if (holdBackground) { (*held)(); *held = {}; QTest::qWait(250); }
+        // Issue #859: the route commits above keep Engineering expanded (only an
+        // explicit chevron collapse removes a stream), so the first chevron hit
+        // collapses the row; removing and re-adding it is what proves the
+        // re-expansion re-reads the catalog revision instead of replaying the
+        // released rev-1 reply.
+        hoverFirst(); QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "topic-" + topicId));
         hoverFirst(); QTRY_VERIFY(visibleItem(window->contentItem(), "expandTopics-" + streamId));
         click(window, visibleItem(window->contentItem(), "expandTopics-" + streamId));
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
