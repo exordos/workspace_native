@@ -96,6 +96,7 @@
              sidebar.allFoldersResults + sidebar.noMatchesInFolder reference keys. -->
         <message><source>All folders</source><translation>Все папки</translation></message>
         <message><source>No matches in this folder</source><translation>В этой папке совпадений нет</translation></message>
+        <message><source>Other topics</source><translation>Остальные темы</translation></message>
         <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>

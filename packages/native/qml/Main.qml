@@ -934,6 +934,10 @@ ApplicationWindow {
     readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
     onNormalizedSidebarQueryChanged: {
         root.controller.setSidebarSearchQuery(normalizedSidebarQuery)
+        // Issue #847 (reference WorkspaceSidebarSearchTopics state is keyed
+        // on the normalized query): expansion of the search topic section is
+        // presentation state only and resets with the query.
+        root.sidebarSearchTopicExpanded = ({})
         // PR #639 finding 4652076279: a query change invalidates every
         // pending focus retry queued for the previous search.
         ++root.sidebarSearchFocusSession
@@ -5123,6 +5127,32 @@ component NativeMentionChip: Item {
         return !(modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier))
     }
 
+    // Issue #847 (workspace_ui e0194ffb, WorkspaceSidebarSearchTopics): a
+    // search section lists the title-matching topics and, while the stream
+    // still has non-matching topics, a show-more control; expanding appends
+    // the non-matching tail after the "Other topics" separator row. The
+    // expanded state is per-stream presentation state only (reference: the
+    // component's local useState keyed on the normalized query).
+    property var sidebarSearchTopicExpanded: ({})
+    function setSidebarSearchTopicExpanded(stream, expanded) {
+        const next = {}
+        for (const key in root.sidebarSearchTopicExpanded)
+            next[key] = root.sidebarSearchTopicExpanded[key]
+        next[String(stream)] = expanded
+        root.sidebarSearchTopicExpanded = next
+    }
+    function sidebarSearchHiddenTail(stream) {
+        if (!Boolean(root.sidebarSearchTopicExpanded[String(stream.id)]))
+            return []
+        const state = root.controller.sidebarTopicState(String(stream.id), true)
+        const rows = state.rows || []
+        const matched = {}
+        const matching = stream.searchTopics || []
+        for (let index = 0; index < matching.length; ++index)
+            matched[String(matching[index].id)] = true
+        return rows.filter(row => !matched[String(row.id)])
+    }
+
     // Issue #648 (PR #639 fix round): the arrow ring is built from the
     // filtered model, not from realized delegate items - rows below the fold
     // may not be incubated at all, while the reference querySelectorAll sees
@@ -5143,6 +5173,17 @@ component NativeMentionChip: Item {
             const topics = stream.searchTopics || []
             for (let topic = 0; topic < topics.length; ++topic)
                 targets.push({row: row, objectName: "topic-" + topics[topic].id})
+            // Issue #847: the reference ring walks the results DOM, so an
+            // expanded section keeps the non-matching tail rows and the
+            // show-more control in order after the matches
+            // (sidebar-workspace.ui.tsx:341, sidebar-topic-show-more.ui.tsx:49).
+            const tail = root.sidebarSearchHiddenTail(stream)
+            for (let topic = 0; topic < tail.length; ++topic)
+                targets.push({row: row, objectName: "topic-" + tail[topic].id})
+            const topicState = root.controller.sidebarTopicState(String(stream.id), false)
+            if (Boolean(topicState.known)
+                && Number(topicState.count || 0) - topics.length > 0)
+                targets.push({row: row, objectName: "searchShowMoreTopics-" + stream.id})
         }
         return targets
     }
@@ -6257,6 +6298,26 @@ component NativeMentionChip: Item {
                     readonly property string nextAction: hiddenUnfinished > 0 ? "more"
                         : hiddenCompleted > 0 ? "completed" : visibleCount > collapsedCount ? "collapse" : ""
                     readonly property int hiddenCount: nextAction === "more" ? hiddenUnfinished : hiddenCompleted
+                    // Issue #847: search-mode topic section projection (reference
+                    // WorkspaceSidebarSearchTopics): matches first, non-matching
+                    // tail only after expand, separator before the first tail row.
+                    readonly property int searchMatchingCount:
+                        root.normalizedSidebarQuery.length ? (modelData.searchTopics || []).length : 0
+                    readonly property bool searchTopicsExpanded:
+                        Boolean(root.sidebarSearchTopicExpanded[modelData.id])
+                    readonly property int searchHiddenCount: sidebarTopicState.known
+                        ? Math.max(0, Number(sidebarTopicState.count || 0) - searchMatchingCount) : 0
+                    function searchTopicRows() {
+                        const rows = (modelData.searchTopics || []).slice()
+                        const tail = root.sidebarSearchHiddenTail(modelData)
+                        if (tail.length) {
+                            if (rows.length)
+                                rows.push({searchOtherTopics: true})
+                            for (let index = 0; index < tail.length; ++index)
+                                rows.push(tail[index])
+                        }
+                        return rows
+                    }
                     readonly property string previewBody: root.sidebarPreviewBody(modelData)
                     readonly property string previewSenderLabel: {
                         const sender = String(modelData.previewSender || "")
@@ -6729,18 +6790,65 @@ component NativeMentionChip: Item {
                     Repeater {
                         id: sidebarTopicRepeater
                         model: root.normalizedSidebarQuery.length
-                            ? (streamDelegate.modelData.searchTopics || [])
+                            ? streamDelegate.searchTopicRows()
                             : streamDelegate.expanded ? streamDelegate.allTopics.slice(0, streamDelegate.visibleCount) : []
-                        delegate: NativeButton {
-                            id: topicButton
+                        delegate: Column {
+                            id: topicDelegate
                             required property var modelData
+                            width: streamList.width
+                            spacing: 0
+                            // The focus restore after show-more targets the
+                            // realized delegate item; the button is the only
+                            // focusable child, so it is the explicit target.
+                            property Item focusTarget: topicButton
+                            readonly property bool searchOtherTopicsSeparator:
+                                Boolean(modelData && modelData.searchOtherTopics)
+                            // Issue #847 "Other topics" separator (reference
+                            // sidebar-workspace.ui.tsx:314-328: role=separator,
+                            // aria-label sidebar.otherTopics, px-2 py-1.5 with a
+                            // muted label followed by a trailing hairline
+                            // border-subtle at 70 percent).
+                            Row {
+                                objectName: "sidebarSearchOtherTopicsSeparator"
+                                visible: topicDelegate.searchOtherTopicsSeparator
+                                width: topicDelegate.width
+                                height: 25
+                                leftPadding: 8
+                                rightPadding: 8
+                                topPadding: 6
+                                bottomPadding: 6
+                                spacing: 8
+                                Accessible.role: Accessible.Separator
+                                Accessible.name: qsTr("Other topics")
+                                readonly property real labelWidth: otherTopicsLabel.implicitWidth
+                                Text {
+                                    id: otherTopicsLabel
+                                    y: (parent.height - height) / 2
+                                    text: qsTr("Other topics")
+                                    textFormat: Text.PlainText
+                                    color: root.colors["text-muted"]
+                                    font.pixelSize: 12
+                                }
+                                Rectangle {
+                                    y: (parent.height - 1) / 2
+                                    width: parent.width - parent.leftPadding - parent.rightPadding
+                                        - parent.spacing - parent.labelWidth
+                                    height: 1
+                                    color: root.colors["border-subtle"]
+                                    opacity: 0.7
+                                }
+                            }
+                            NativeButton {
+                            id: topicButton
+                            readonly property var modelData: topicDelegate.modelData
+                            visible: !topicDelegate.searchOtherTopicsSeparator
+                            objectName: topicDelegate.searchOtherTopicsSeparator ? "" : "topic-" + modelData.id
                             readonly property string previewBody: root.sidebarPreviewBody(modelData)
                             readonly property string previewSenderLabel: {
                                 const sender = String(modelData.previewSender || "")
                                 return sender.length && previewBody.length ? sender + ": " : ""
                             }
                             colors: root.colors
-                            objectName: "topic-" + modelData.id
                             width: streamList.width
                             // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md):
                             // effectively-muted topic rows (per-topic mute, or default
@@ -6945,6 +7053,7 @@ component NativeMentionChip: Item {
                                     font.pixelSize: 12
                                 }
                             }
+                            }
                         }
                     }
                     NativeButton {
@@ -6988,8 +7097,64 @@ component NativeMentionChip: Item {
                                 action === "more" ? "unfinished" : action === "completed" ? "all" : "collapsed");
                             if (action !== "collapse") Qt.callLater(function() {
                                 const nextTopic = sidebarTopicRepeater.itemAt(priorCount);
-                                if (nextTopic) nextTopic.forceActiveFocus(Qt.TabFocusReason);
+                                const target = nextTopic && nextTopic.focusTarget ? nextTopic.focusTarget : nextTopic;
+                                if (target) target.forceActiveFocus(Qt.TabFocusReason);
                             });
+                        }
+                    }
+                    // Issue #847 (reference WorkspaceSidebarSearchTopics +
+                    // SidebarTopicShowMoreButton): in search mode the stream
+                    // offers the same show-more control whenever it still has
+                    // non-matching topics; expanding appends the tail behind
+                    // the "Other topics" separator.
+                    NativeButton {
+                        id: searchShowMoreTopics
+                        objectName: "searchShowMoreTopics-" + streamDelegate.modelData.id
+                        visible: root.normalizedSidebarQuery.length > 0
+                            && streamDelegate.searchHiddenCount > 0
+                        width: streamList.width
+                        height: visible ? (streamDelegate.compactDensity ? 32 : 36) : 0
+                        colors: root.colors
+                        text: streamDelegate.searchTopicsExpanded ? qsTr("Hide extra topics")
+                            : qsTr("Show more topics (%1)").arg(streamDelegate.searchHiddenCount)
+                        Accessible.name: text
+                        padding: 0
+                        background: Rectangle {
+                            color: searchShowMoreTopics.hovered ? root.colors["sidebar-item-hover"] : "transparent"
+                            border.width: searchShowMoreTopics.visualFocus ? 1 : 0
+                            border.color: root.colors.accent
+                        }
+                        contentItem: Item {
+                            Text {
+                                x: streamDelegate.compactDensity ? 35 : 39
+                                width: parent.width - 70; height: parent.height
+                                text: searchShowMoreTopics.text; textFormat: Text.PlainText
+                                color: root.colors["text-primary"]; font.pixelSize: 14; font.weight: Font.Medium
+                                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                            }
+                            NativeIconButton {
+                                anchors.right: parent.right; anchors.rightMargin: 8; anchors.verticalCenter: parent.verticalCenter
+                                width: 16; height: 16; glyphSize: 16
+                                colors: root.colors; asset: "chevron-down.svg"
+                                rotation: streamDelegate.searchTopicsExpanded ? 180 : 0
+                                enabled: false; opacity: 1; Accessible.ignored: true
+                                icon.color: root.colors["text-primary"]
+                            }
+                        }
+                        onClicked: root.setSidebarSearchTopicExpanded(streamDelegate.modelData.id,
+                            !streamDelegate.searchTopicsExpanded)
+                        // Issue #847: the reference marks the control
+                        // data-sidebar-search-item, so the arrow ring walks
+                        // through it like any other result row.
+                        Keys.onDownPressed: event => {
+                            if (root.sidebarSearchArrowAllowed(event.modifiers)
+                                && root.moveSidebarSearchFocus(searchShowMoreTopics, 1))
+                                event.accepted = true
+                        }
+                        Keys.onUpPressed: event => {
+                            if (root.sidebarSearchArrowAllowed(event.modifiers)
+                                && root.moveSidebarSearchFocus(searchShowMoreTopics, -1))
+                                event.accepted = true
                         }
                     }
                 }
