@@ -235,6 +235,63 @@ private slots:
         QVERIFY(fixture.controller.sidebarTopicState(streamId, true).value("rows").toList().isEmpty());
     }
 
+    // Issue #859 subtask 1: a route commit only ensures the selected stream's
+    // row is expanded; the other explicitly expanded (chevron) streams must
+    // survive the commit and stay hydration-eligible. Only an explicit toggle
+    // removes a member. #95's per-stream toggles own the expanded set.
+    void sidebarRouteCommitPreservesOtherExpandedStreams()
+    {
+        Fixture fixture; QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("expansion-route.ini"));
+        QStringList ids; QJsonArray catalog;
+        for (int i = 0; i < 3; ++i) {
+            const auto id = QString("95000000-0000-4000-8000-%1").arg(i + 1, 12, 10, QLatin1Char('0'));
+            ids.append(id); catalog.append(inboxStream(id, QString("Stream %1").arg(i), 0, 0, 0));
+        }
+        fixture.controller.usePreferences(&preferences);
+        fixture.streams = [catalog](const Request &) { return Response{catalog}; };
+        const auto topicFor = [](const QString &stream) {
+            return QString("96000000-0000-4000-8000-%1").arg(stream.right(12));
+        };
+        fixture.topics = [topicFor](const Request &request) {
+            const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+            return Response{QJsonArray{inboxTopic(topicFor(stream), stream, "Planning", 0, 0, 0)}};
+        };
+        loginInbox(fixture, 3);
+        // Chevron-expand A and B explicitly; C stays collapsed.
+        fixture.controller.toggleSidebarStream(ids[0]);
+        fixture.controller.toggleSidebarStream(ids[1]);
+        QTRY_VERIFY(fixture.controller.expandedSidebarStreams().contains(ids[1]));
+
+        // Committing a route to B must not replace the expanded set: A stays.
+        fixture.controller.selectStream(ids[1]);
+        QTRY_VERIFY(fixture.controller.selectedStream() == ids[1] && !fixture.controller.busy());
+        QVERIFY2(fixture.controller.expandedSidebarStreams().contains(ids[0]),
+            "a route commit must keep the other explicitly expanded streams open");
+        QVERIFY(fixture.controller.expandedSidebarStreams().contains(ids[1]));
+        QVERIFY(!fixture.controller.expandedSidebarStreams().contains(ids[2]));
+        QCOMPARE(fixture.controller.selectedStream(), ids[1]);
+
+        // A topic-route commit inside B keeps A expanded as well.
+        QTRY_VERIFY(fixture.controller.topicsComplete());
+        fixture.controller.selectTopic(topicFor(ids[1]));
+        QTRY_VERIFY(fixture.controller.selectedTopic() == topicFor(ids[1]));
+        QVERIFY2(fixture.controller.expandedSidebarStreams().contains(ids[0]),
+            "a topic route commit must keep the other explicitly expanded streams open");
+        QVERIFY(fixture.controller.expandedSidebarStreams().contains(ids[1]));
+
+        // An explicit collapse removes exactly its own member.
+        fixture.controller.toggleSidebarStream(ids[0]);
+        QVERIFY(!fixture.controller.expandedSidebarStreams().contains(ids[0]));
+        QVERIFY(fixture.controller.expandedSidebarStreams().contains(ids[1]));
+        QVERIFY(!fixture.controller.expandedSidebarStreams().contains(ids[2]));
+
+        // The persisted set follows the same contract (restart restore).
+        const QStringList persisted = {ids[1]};
+        QCOMPARE(preferences.loadExpandedStreams(conversationPreferenceOwner(fixture.server.origin())), persisted);
+        fixture.controller.logout();
+    }
+
     void sidebarExpansionUsesLatestSelectedCatalog_data()
     {
         QTest::addColumn<bool>("holdBackground");
