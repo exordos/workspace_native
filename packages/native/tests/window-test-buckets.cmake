@@ -8,6 +8,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_1
     idleSectionChipShowsReferenceHoverBorder
     loginLinkedOrganizationDiscoversOnlyAKnownOrigin
     loginProjectStepSingleProjectIsPreselected
+    mediaViewerTransportGlyphsTintOnHoverAndPress
     messageTimeChipOpensReadOnlyTimestampPanel
     messageUpdatesRespectTheVisibleScrollPosition
     missingSavedConversationShowsTheInboxWithoutAnError
