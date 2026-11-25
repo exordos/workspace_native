@@ -21572,9 +21572,16 @@ mv -Tf "$root/.current-new" "$root/current"
             click(window, visibleItem(content, "incomingCallAcceptButton"));
             QTRY_VERIFY(controller.calls()->hasActiveCall());
             QTRY_COMPARE(controller.callWindow()->mode(), int(JitsiCallWindowController::Expanded));
-            QTRY_VERIFY(visibleItem(content, "callWindowCloseButton"));
-            click(window, visibleItem(content, "callWindowCloseButton"));
+            // #846: the expanded call presents in its own top-level window
+            // (shown only once the load settles) - the app window no longer
+            // hosts any call chrome, so the close affordance lives in the shell.
+            controller.callWindow()->apiLoadSucceeded();
+            QQuickWindow *shell = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+            QTRY_VERIFY(visibleItem(shell->contentItem(), "callWindowCloseButton"));
+            click(shell, visibleItem(shell->contentItem(), "callWindowCloseButton"));
             QTRY_VERIFY(!controller.calls()->hasActiveCall());
+            QTRY_VERIFY_WITH_TIMEOUT(standaloneCallWindow() == nullptr, 2000);
             QVERIFY2(viewer->open(), "Answering and closing a call discarded the open media gallery");
             QCOMPARE(controller.draft(), draft);
             QTest::keyClick(window, Qt::Key_Escape); QTRY_VERIFY(!viewer->open());
