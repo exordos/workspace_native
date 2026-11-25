@@ -474,15 +474,19 @@ Dialog {
                 readonly property bool hasChanges: {
                     if (editingUuid === "new") return form && Object.keys(form).length > 0
                     const src = form || ({})
-                    // exordy finding 4692802566: while this endpoint's save is in
-                    // flight the pending-diff oracle is the DISPATCHED values -
-                    // what the held request is about to persist - not the pre-save
-                    // baseline. A revert typed during flight diverges from the
-                    // stale value the server will store, so it must stay marked
-                    // unsaved. The in-flight guard is busy-scoped and session-
-                    // scoped: on failure (busy drops, dispatchRevision stays) and
-                    // after a close/reopen the baseline comparison resumes.
+                    // exordy findings 4692802566 + 4693183527: while THIS
+                    // endpoint's own save is in flight the pending-diff oracle is
+                    // the DISPATCHED values - what the held request is about to
+                    // persist - not the pre-save baseline. A revert typed during
+                    // flight diverges from the stale value the server will store,
+                    // so it must stay marked unsaved. The guard is tied to the
+                    // endpoint's own dispatch (pendingOp scope + session + the
+                    // retired identity): a FAILED save retires the identity in
+                    // the state-changed handler below, so a later unrelated busy
+                    // op never reopens the comparison onto the failed payload,
+                    // and after close/reopen the baseline comparison resumes.
                     const inFlight = controller.topicSummarySettingsBusy
+                        && dlg.pendingOp === "endpoint"
                         && dispatchRevision !== -1 && dispatchSession === draftSession
                     const cmp = inFlight ? dispatchValues : editBaseline
                     for (const key in src) {
@@ -953,7 +957,20 @@ Dialog {
                 }
                 dlg.pendingOp = ""
             }
-            else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }
+            else if (s === "error") {
+                // exordy finding 4693183527: the failed request retires its
+                // dispatch identity. The draft survives for retry and equals
+                // the failed payload exactly - keeping the identity alive let a
+                // later, unrelated busy op reopen the in-flight comparison and
+                // read the pending draft as saved.
+                if (dlg.pendingOp === "endpoint"
+                    && endpointsTab.dispatchSession === endpointsTab.draftSession) {
+                    endpointsTab.dispatchRevision = -1
+                    endpointsTab.dispatchUuid = ""
+                    endpointsTab.dispatchSession = -1
+                }
+                if (controller.topicSummarySettingsError === "forbidden") dlg.tabs = allowedTabs()
+            }
             // A seeded draft predates the on-demand GET: when the gates DTO lands
             // (map populated, no op in flight, no error) and nobody flipped a
             // switch yet, adopt the server values instead of showing the stale
