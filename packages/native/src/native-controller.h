@@ -312,6 +312,9 @@ public:
     bool hasPreparedTopicSlice(const QString &topicUuid) const;
     void setTopicPreloadIntervalMsForTest(int ms);
     void setTopicPreloadEnabledForTest(bool enabled);
+    // #860: disables the network fallback stage of row-preview hydration (disk-only mode)
+    // for traffic-pinned cases, mirroring setTopicPreloadEnabledForTest's per-case knob.
+    void setRowPreviewNetworkEnabledForTest(bool enabled);
     // Issue #729 phase 2: the warm queue's throttle delay (429/5xx doubling,
     // bounded; cleared by a verified catalog commit).
     int topicPreloadBackoffMsForTest() const { return m_topicPreloadBackoffMs; }
@@ -2206,12 +2209,26 @@ private:
     // paths and the sign-out reset mutate these fields, always on the GUI thread.
     static constexpr int rowPreviewCacheLimit = 512;
     static constexpr int rowPreviewHydrationBatch = 8;
+    // #860: a disk miss is not an authoritative negative - the reference falls through to the
+    // project-scoped messages lookup during bootstrap (messenger-last-messages-loader.lib.ts
+    // L96-129). The network stage is bounded per tick like the disk pump, retries transient
+    // failures a bounded number of times, and memoizes only authoritative outcomes.
+    static constexpr int rowPreviewNetworkBatch = 8;
+    static constexpr int rowPreviewNetworkRetries = 2;
+    void seedRowPreviewHydrationFromCatalog();
+    void scheduleRowPreviewNetworkHydration();
+    void pumpRowPreviewNetworkHydration();
     QHash<QString, QString> m_visibleEncryptedPreviewStates;
     mutable QHash<QString, RowPreview> m_rowPreviews;
     mutable QQueue<QString> m_rowPreviewOrder;
     mutable QSet<QString> m_rowPreviewPending;
     mutable QSet<QString> m_rowPreviewInFlight;
     mutable bool m_rowPreviewPumpQueued = false;
+    mutable bool m_rowPreviewNetworkEnabled = true;
+    mutable bool m_rowPreviewNetworkPumpQueued = false;
+    QSet<QString> m_rowPreviewNetPending;
+    QSet<QString> m_rowPreviewNetInFlight;
+    QHash<QString, int> m_rowPreviewNetRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit
     // verification, live update, deletion). A hydration read captures the revision when it
     // starts and discards its body when the revision has moved by completion, so an older
