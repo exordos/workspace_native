@@ -349,8 +349,14 @@ FocusScope {
             const recentPerMinute = Number(websocket.recentEventsPerMinute || 0);
             if (recentPerMinute > 0)
                 lines.push(String(Math.round(recentPerMinute)) + " / min");
-            const failures = Array.isArray(websocket.recentFailures) ? websocket.recentFailures : [];
-            if (failures.length > 0)
+            // A dataset built in C++ carries recentFailures as a QVariantList;
+            // QML converts it to a sequence proxy that has .length and indexing
+            // but is NOT a JS array (Array.isArray is false). Counting length
+            // accepts both shapes; an Array.isArray guard silently drops the
+            // failure row for every C++-built snapshot (witnessed by
+            // diagnosticsRealtimeCardAppendsWebsocketRowsAndSuppressesDisabled).
+            const failures = websocket.recentFailures;
+            if (failures && Number(failures.length || 0) > 0)
                 lines.push(String(failures[0].reason || "") + " ("
                     + String(Number(failures[0].closeCode || 0)) + ")");
         }

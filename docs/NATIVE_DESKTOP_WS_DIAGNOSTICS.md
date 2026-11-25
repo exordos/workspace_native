@@ -81,7 +81,10 @@ oldest dropped). The ledger is not thread-safe; the realtime client is
 single-threaded, same as its callers.
 
 `NativeController::diagnosticsSnapshot()` inserts the dataset under
-`"websocket"`; `NativeDiagnosticsPage.qml` renders it as a dedicated card.
+`"websocket"`; `NativeDiagnosticsPage.qml` appends it as extra rows to the
+Realtime card's line block - `state · endpoint`, the rounded per-minute event
+rate when non-zero, and the most recent failure as `reason (closeCode)` -
+suppressed entirely while the state is `disabled` (no dedicated card).
 
 ## Tests
 
@@ -96,3 +99,8 @@ single-threaded, same as its callers.
 - `tests/native-controller-diagnostics-test.cpp`
   - `websocketDatasetIsSummaryOnly`: dataset present with the documented key
     set and no payload-bearing keys; disabled shape without realtime.
+- `tests/native-window-test.cpp`
+  - `diagnosticsRealtimeCardAppendsWebsocketRowsAndSuppressesDisabled`: an
+    injected snapshot with a `websocket` dataset renders the state/endpoint,
+    rounded per-minute and `reason (closeCode)` rows on the Realtime card;
+    the rows vanish when the dataset is absent or the state is `disabled`.

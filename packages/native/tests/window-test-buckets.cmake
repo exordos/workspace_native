@@ -296,6 +296,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     composerMentionPopupInsertsUrnsAndKeepsFrecencyAcrossRestart
     composerToolbarKeyboardNavigationPreservesSelection
     diagnosticsMemoryPanelTableScrollsHorizontallyWithoutOverflow
+    diagnosticsRealtimeCardAppendsWebsocketRowsAndSuppressesDisabled
     disclosureChevronsUseSharedSvgFamily
     fullscreenExitDetachDuringGatePersistsUserMoveMadeDuringTheGate
     fullscreenExitMidTransitionSaveKeepsSavedNormalBounds
