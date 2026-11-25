@@ -228,6 +228,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_10
     attachmentCardMalformedNameEscapeStillProjectsEveryCard
     callWindowShellExpandsMinimizesAndRestoresPiP
     channelTopicSummaryDialogFailedEndpointSaveKeepsForm
+    channelTopicSummaryEndpointRevertedEditClearsUnsavedMarker
     diagnosticsMemoryPanelUnavailableReplacesMetrics
     directChatRecoveryRemainsInTheKeyboardFocusLoop
     draftsMentionsSidebarNavigationKeepsOnePageActive
@@ -253,6 +254,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
     channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable
+    channelTopicSummaryEndpointRevertDuringInFlightSaveKeepsUnsavedMarker
     channelTopicSummaryTabReturnDuringPendingSaveRecoversOnSuccess
     composerEmojiAppendsUnicodeAndSendsFromTheActualMain
     composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement
@@ -434,6 +436,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_17
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_18
     accountLayerSurvivesSectionSwitch
     activityStarredErrorAndEmptyStates
+    channelTopicSummaryEndpointSaveSurvivesConcurrentGatesError
     diagnosticsPingSettlesAcrossApiGenerationChange
     lastConversationRestoresInANewActualMainAfterSettingsReopen
     licensesExternalLinkHandsOffToTheBrowser

@@ -963,7 +963,14 @@ Dialog {
                 // the failed payload exactly - keeping the identity alive let a
                 // later, unrelated busy op reopen the in-flight comparison and
                 // read the pending draft as saved.
+                // exordy finding 4693632013: retire ONLY when the error names
+                // this endpoint's own operation family. pendingOp is the last
+                // DISPATCHED op, not the error's producer: a gates GET failing
+                // while the endpoint save is in flight must leave the identity
+                // intact, or the save's own late success cannot rebase the
+                // draft and the dialog shows "Unsaved changes" forever.
                 if (dlg.pendingOp === "endpoint"
+                    && controller.topicSummarySettingsErrorOps.includes("endpoints")
                     && endpointsTab.dispatchSession === endpointsTab.draftSession) {
                     endpointsTab.dispatchRevision = -1
                     endpointsTab.dispatchUuid = ""
