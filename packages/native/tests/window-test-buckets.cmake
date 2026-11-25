@@ -388,6 +388,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     scrollNearTopAutoLoadsOlderPages
     shortcutSettingsSearchRecordingAndHelp
     sidebarChannelOffersTopicCreationWithoutChangingSelection
+    sidebarSearchShowMoreRevealsOtherTopicsSeparator
     topicContextMenuConcurrentSameActionKeepsBothNotices
     topicContextMenuReopenDuringInFlightActionStillSurfacesFailure
     workspaceMeetingUrlMessageRendersCallCardAndJoins
@@ -457,6 +458,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
     resolvedTopicReopensThroughTheVisibleMenu
     sidebarSearchArrowsScrollThroughOffscreenResults
     sidebarSearchEscapeDiscardsSavedFocusOnAnyCancel
+    sidebarSearchRendersFolderSectionSeparatorAndNoMatchesStatus
     topicContextMenuRenameInterruptedByRenewalLeavesTheFormUsable
     wheelAngleStepAtAnEdgeIsNotConsumedWhenTheListCannotMove
     windowProfileCallChipDisabledForEncryptedDmWithoutKeyReady

@@ -48775,6 +48775,261 @@ private slots:
         QTest::qWait(100);
         QVERIFY2(!focusedComposer(), "cancelled topic press must not leave a writing session that steals focus");
     }
+
+    // Issue #847 render contracts for the two sidebar-search marker rows
+    // (workspace_ui e0194ffb sidebar-workspace.ui.tsx:659-689,314-328). The
+    // controller projection (section order, dedup, marker placement) is pinned
+    // in native-controller-inbox-test; these cases pin the RENDERED rows:
+    // the "All folders" separator between the local and global search sections
+    // (and the muted no-matches status when the local section is empty), plus
+    // the "Other topics" separator ahead of the non-matching tail revealed by
+    // the search-mode show-more control. Oracles: objectName + visibility per
+    // locale, the fixed row heights from the reference, the accessible names
+    // from the deployed translation catalog, and y-ordering against the
+    // surrounding rows.
+    void sidebarSearchRendersFolderSectionSeparatorAndNoMatchesStatus_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void sidebarSearchRendersFolderSectionSeparatorAndNoMatchesStatus()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const QString beta = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString gamma = QStringLiteral("7d7d7d7d-7d7d-4d7d-8d7d-7d7d7d7d7d7d");
+        const QString custom = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        const QString allFolder = QStringLiteral("00000000-0000-0000-0000-000000000000");
+        const QJsonArray folders{
+            QJsonObject{{"uuid", allFolder}, {"title", "All chats"}, {"system_type", "all"},
+                {"unread_count", 0}, {"background_color_value", 0}},
+            QJsonObject{{"uuid", custom}, {"title", "Design"}, {"system_type", "created"},
+                {"unread_count", 0}, {"background_color_value", 0},
+                {"folder_items", QJsonArray{QJsonObject{{"stream_uuid", streamId}},
+                    QJsonObject{{"stream_uuid", gamma}}}}}};
+        const auto alpha = windowChannel(streamId, "Alpha Needle");
+        const auto betaStream = windowChannel(beta, "Beta Needle");
+        const auto gammaStream = windowChannel(gamma, "Gamma Needle");
+        auto direct = windowChannel(windowDirectId(), "Private conversation");
+        direct["private"] = true; direct["direct_user_uuid"] = channelPeer;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/folders/")) return {folders};
+            if (request.method == "GET" && path.endsWith("/streams/"))
+                return {QJsonArray{alpha, betaStream, gammaStream, direct}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (stream == streamId)
+                    return {QJsonArray{windowChannelTopic(topicId, streamId, "Alpha General")}};
+                if (stream == beta)
+                    return {QJsonArray{windowChannelTopic(
+                        "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9c9c", beta, "Beta General")}};
+                if (stream == gamma)
+                    return {QJsonArray{windowChannelTopic(
+                        "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9b9b", gamma, "Gamma General")}};
+                return {QJsonArray{windowChannelTopic(channelDefault, windowDirectId(), "General")}};
+            }
+            if (request.method == "GET" && path.endsWith("/stream_topics/" + topicId))
+                return {windowChannelTopic(topicId, streamId, "Alpha General")};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-search-folders.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto teardown = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Folder section separator teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-search", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 4);
+        // Synthesized system slots + the one server folder (same count the
+        // inbox projection pins).
+        QTRY_COMPARE_WITH_TIMEOUT(controller.folders().size(), 4, 4000);
+        const auto accessibleName = [](QQuickItem *target) {
+            for (auto *child : target->children())
+                if (!child->inherits("QQuickItem") && child->metaObject()->indexOfProperty("name") != -1)
+                    return child->property("name").toString();
+            return QString{};
+        };
+        const auto rowY = [](QQuickItem *item) { return item->mapToScene(QPointF(0, 0)).y(); };
+        const auto type = [&](const QByteArray &text) {
+            for (const auto key : text) QTest::keyClick(window, key);
+        };
+        auto *search = visibleItem(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        controller.selectFolder(custom);
+        QTRY_COMPARE(controller.selectedFolder(), custom);
+        const QString allName = locale == "ru"
+            ? QStringLiteral("Все папки") : QStringLiteral("All folders");
+        const QString noMatches = locale == "ru"
+            ? QStringLiteral("В этой папке совпадений нет")
+            : QStringLiteral("No matches in this folder");
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        type("needle");
+        const auto localRow = [&] { return visibleItem(window->contentItem(), "stream-" + streamId); };
+        const auto gammaRow = [&] { return visibleItem(window->contentItem(), "stream-" + gamma); };
+        const auto betaRow = [&] { return visibleItem(window->contentItem(), "stream-" + beta); };
+        const auto separator = [&] { return visibleItem(window->contentItem(), "sidebarSearchAllFoldersSeparator"); };
+        const auto status = [&] { return visibleItem(window->contentItem(), "sidebarSearchNoMatchesStatus"); };
+        QTRY_VERIFY_WITH_TIMEOUT((localRow() && gammaRow() && betaRow() && separator()), 4000);
+        QVERIFY(!status());
+        QCOMPARE(separator()->height(), 28.0);
+        QCOMPARE(accessibleName(separator()), allName);
+        // Marker rows rebuild the Repeater: re-evaluate y-order until layout lands.
+        const auto sectionOrder = [&] {
+            auto *local = localRow();
+            auto *gamma1 = gammaRow();
+            auto *beta1 = betaRow();
+            auto *sep = separator();
+            return local && gamma1 && beta1 && sep
+                && rowY(local) < rowY(gamma1)
+                && rowY(gamma1) < rowY(sep)
+                && rowY(sep) < rowY(beta1);
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(sectionOrder(), 2000);
+        // Global-only matches: the status line replaces the separator.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!separator());
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        type("beta");
+        QTRY_VERIFY_WITH_TIMEOUT((betaRow() && status()), 4000);
+        QVERIFY(!separator());
+        QCOMPARE(status()->property("text").toString(), noMatches);
+        QTRY_VERIFY_WITH_TIMEOUT((status() && betaRow()
+            && rowY(status()) < rowY(betaRow())), 2000);
+        // The "all" slot has no local/global split: no marker rows at all.
+        controller.selectFolder(allFolder);
+        QTRY_COMPARE(controller.selectedFolder(), allFolder);
+        QTRY_VERIFY(betaRow());
+        QVERIFY(!separator()); QVERIFY(!status());
+    }
+
+    // Issue #847 render pin for the "Other topics" separator (reference
+    // sidebar-workspace.ui.tsx:314-328): expanding the search-mode show-more
+    // control appends the non-matching topic tail behind a 25 px separator row
+    // carrying the localized accessible name, positioned between the last
+    // matching topic and the first tail row; collapsing removes both.
+    void sidebarSearchShowMoreRevealsOtherTopicsSeparator_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QString("en") << QString("light");
+        QTest::newRow("ru-dark") << QString("ru") << QString("dark");
+    }
+
+    void sidebarSearchShowMoreRevealsOtherTopicsSeparator()
+    {
+        QFETCH(QString, locale); QFETCH(QString, mode);
+        WindowChannelFixture fixture;
+        const QString tailOne = QStringLiteral("9a9a9a9a-9a9a-4a9a-8a9a-9a9a9a9a9a9a");
+        const QString tailTwo = QStringLiteral("98989898-9898-4999-8999-989898989898");
+        const auto alpha = windowChannel(streamId, "Alpha");
+        auto direct = windowChannel(windowDirectId(), "Private conversation");
+        direct["private"] = true; direct["direct_user_uuid"] = channelPeer;
+        const auto planOne = windowChannelTopic(topicId, streamId, "Planning alpha");
+        auto planTwo = windowChannelTopic(secondTopicId, streamId, "Planning beta");
+        planTwo["is_default"] = false;
+        auto tailA = windowChannelTopic(tailOne, streamId, "Random one");
+        tailA["is_default"] = false;
+        auto tailB = windowChannelTopic(tailTwo, streamId, "Random two");
+        tailB["is_default"] = false;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/"))
+                return {QJsonArray{alpha, direct}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                if (stream == streamId) return {QJsonArray{planOne, planTwo, tailA, tailB}};
+                return {QJsonArray{windowChannelTopic(channelDefault, windowDirectId(), "General")}};
+            }
+            if (request.method == "GET" && path.endsWith("/stream_topics/" + topicId))
+                return {planOne};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("sidebar-search-showmore.ini"));
+        preferences.setLocale(locale); preferences.setMode(mode);
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto teardown = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Other topics separator teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-search", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        // Topic state must be verified for the show-more count: open the stream.
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.busy() && controller.topics().size() == 4);
+        const auto accessibleName = [](QQuickItem *target) {
+            for (auto *child : target->children())
+                if (!child->inherits("QQuickItem") && child->metaObject()->indexOfProperty("name") != -1)
+                    return child->property("name").toString();
+            return QString{};
+        };
+        const auto topicRow = [&](const QString &id) {
+            return visibleItem(window->contentItem(), "topic-" + id);
+        };
+        const auto separator = [&] {
+            return visibleItem(window->contentItem(), "sidebarSearchOtherTopicsSeparator");
+        };
+        const QString moreName = QStringLiteral("searchShowMoreTopics-") + streamId;
+        const auto showText = locale == "ru"
+            ? QStringLiteral("Показать ещё темы (2)") : QStringLiteral("Show more topics (2)");
+        const QString hideText = locale == "ru"
+            ? QStringLiteral("Скрыть лишние темы") : QStringLiteral("Hide extra topics");
+        const QString otherText = locale == "ru"
+            ? QStringLiteral("Остальные темы") : QStringLiteral("Other topics");
+        auto *search = visibleItem(window->contentItem(), "sidebarSearch"); QVERIFY(search);
+        click(window, search); QTRY_VERIFY(search->hasActiveFocus());
+        for (const auto key : QByteArray("planning")) QTest::keyClick(window, key);
+        QTRY_VERIFY_WITH_TIMEOUT((topicRow(topicId) && topicRow(secondTopicId)), 4000);
+        QVERIFY(!topicRow(tailOne));
+        QVERIFY(!topicRow(tailTwo));
+        QVERIFY(!separator());
+        QQuickItem *showMore = nullptr;
+        QTRY_VERIFY(([&] { showMore = visibleItem(window->contentItem(), moreName); return showMore != nullptr; })());
+        QCOMPARE(showMore->property("text").toString(), showText);
+        click(window, showMore);
+        QTRY_VERIFY_WITH_TIMEOUT((separator() && topicRow(tailOne) && topicRow(tailTwo)), 4000);
+        auto *sepItem = separator();
+        QCOMPARE(sepItem->height(), 25.0);
+        QVERIFY(sepItem->width() > 0);
+        QCOMPARE(accessibleName(sepItem), otherText);
+        // Expanding resets the Repeater model: every delegate is re-incubated
+        // and isVisible() flips true one polish pass BEFORE the positioner has
+        // placed the fresh columns - re-evaluate the y-order until layout lands.
+        const auto orderLanded = [&] {
+            auto *plan = topicRow(secondTopicId);
+            auto *sep = separator();
+            auto *tailA = topicRow(tailOne);
+            auto *tailB = topicRow(tailTwo);
+            return plan && sep && tailA && tailB
+                && plan->mapToScene(QPointF(0, 0)).y() < sep->mapToScene(QPointF(0, 0)).y()
+                && sep->mapToScene(QPointF(0, 0)).y() < tailA->mapToScene(QPointF(0, 0)).y()
+                && tailA->mapToScene(QPointF(0, 0)).y() < tailB->mapToScene(QPointF(0, 0)).y();
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(orderLanded(), 2000);
+        QCOMPARE(showMore->property("text").toString(), hideText);
+        // Collapsing drops the separator and the tail together.
+        click(window, showMore);
+        QTRY_VERIFY(!separator());
+        QVERIFY(!topicRow(tailOne));
+        QVERIFY(!topicRow(tailTwo));
+    }
 };
 
 
