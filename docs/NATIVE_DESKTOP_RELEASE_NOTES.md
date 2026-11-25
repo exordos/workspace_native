@@ -1,3 +1,14 @@
+# Workspace Native 0.50.0 - Linux development preview
+
+- New: the expanded call now lives in its own standalone OS window. Enlarging a call opens a separate window with its own window controls, and malformed or unusable call links route through the InvalidUrl shell instead of stranding the call surface (issue #846).
+- New: sidebar search that spans folders now splits its results into local and global sections with named separator rows, and the global section grows through an "Other topics" show-more that reveals focus onto the first newly visible topic (issue #847).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.49.3 to 0.50.0](https://github.com/exordos/workspace_native/compare/0.49.3...0.50.0)
+
+---
+
 # Workspace Native 0.49.3 - Linux development preview
 
 - Fixed: the LLM endpoint settings form is readable when filled in. Each of the six numeric endpoint fields now shows a persistent localized label above the input; previously they named themselves only through placeholder text, which disappears once a value is set, so a populated form showed six unlabelled inputs and the two penalty fields simply read 0. Each field's allowed range moved to hint text under it, matching the sibling switch rows (issue #838).
