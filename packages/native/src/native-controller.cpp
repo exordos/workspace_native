@@ -15228,10 +15228,12 @@ QVariantList NativeController::sidebarStreams() const
     auto scoped = all;
     const auto effective = selectedFolder();
     QSet<QString> pinnedStreams;
+    bool folderScoped = false;
     for (const auto &row : m_folders) {
         if (row.uuid != effective) continue;
         // All and synthesized slots carry no server membership: no filter.
         if (!row.synthesized && row.systemType != QStringLiteral("all")) {
+            folderScoped = true;
             scoped.clear();
             for (const auto &value : all)
                 if (row.streamIds.contains(value.toMap().value("id").toString())) scoped.append(value);
@@ -15250,35 +15252,61 @@ QVariantList NativeController::sidebarStreams() const
     }
     if (m_sidebarSearchQuery.isEmpty()) return scoped;
     const auto matches = [this](const QString &text) { return text.toLower().contains(m_sidebarSearchQuery); };
-    QVariantList result;
-    for (const auto &value : scoped) {
-        auto row = value.toMap();
-        const auto id = row.value("id").toString();
-        bool matched = matches(row.value("name").toString()) || matches(row.value("displayName").toString());
-        QVariantList matchingTopics;
-        if (row.value("isDirect").toBool()) {
-            // The verified catalog defines the pair; directory data only supplies
-            // presentation fields and never grants access to another conversation.
-            if (m_channelDirectoryOwner == creationOwnerKey())
-                for (const auto &user : {row.value("peerId").toString(), m_session->user()}) {
-                    const auto presentation = m_names.value(user);
-                    matched |= matches(presentation.name) || matches(presentation.email);
+    // Issue #847 (workspace_ui e0194ffb sidebar-workspace-search.lib.ts
+    // projectWorkspaceSidebarSearch + sidebar-workspace.ui.tsx:659-689): inside
+    // a server folder the query projects a local section (folder-scoped, stable
+    // order), then an "All folders" separator - or the muted no-matches status
+    // line when the local section is empty - then the global section from the
+    // full catalog order deduplicated by stream id. The "all"/synthesized slots
+    // have no local/global split: every match renders as one global section
+    // with no marker rows. Marker rows carry no id, so stream-only consumers
+    // (objectNames, sidebarSearchTargets) skip them.
+    const auto projectSection = [&](const QVariantList &source) {
+        QVariantList section;
+        for (const auto &value : source) {
+            auto row = value.toMap();
+            const auto id = row.value("id").toString();
+            bool matched = matches(row.value("name").toString()) || matches(row.value("displayName").toString());
+            QVariantList matchingTopics;
+            if (row.value("isDirect").toBool()) {
+                // The verified catalog defines the pair; directory data only supplies
+                // presentation fields and never grants access to another conversation.
+                if (m_channelDirectoryOwner == creationOwnerKey())
+                    for (const auto &user : {row.value("peerId").toString(), m_session->user()}) {
+                        const auto presentation = m_names.value(user);
+                        matched |= matches(presentation.name) || matches(presentation.email);
+                    }
+            } else {
+                const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
+                    [&id](const Stream &entry) { return entry.uuid == id; });
+                const auto topics = id == m_stream && m_topicsVerified ? m_topics : m_inboxTopics.value(id);
+                for (const auto &topic : topicRows(topics, stream == m_streams.cend() ? nullptr : &*stream)) {
+                    const auto name = topic.toMap().value("name").toString();
+                    if (matches(name.startsWith('#') ? name : "#" + name)) matchingTopics.append(topic);
                 }
-        } else {
-            const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
-                [&id](const Stream &entry) { return entry.uuid == id; });
-            const auto topics = id == m_stream && m_topicsVerified ? m_topics : m_inboxTopics.value(id);
-            for (const auto &topic : topicRows(topics, stream == m_streams.cend() ? nullptr : &*stream)) {
-                const auto name = topic.toMap().value("name").toString();
-                if (matches(name.startsWith('#') ? name : "#" + name)) matchingTopics.append(topic);
+                matched |= !matchingTopics.isEmpty();
             }
-            matched |= !matchingTopics.isEmpty();
+            if (matched) {
+                row.insert("searchTopics", matchingTopics);
+                section.append(row);
+            }
         }
-        if (matched) {
-            row.insert("searchTopics", matchingTopics);
-            result.append(row);
-        }
-    }
+        return section;
+    };
+    if (!folderScoped) return projectSection(all);
+    const auto local = projectSection(scoped);
+    QSet<QString> localIds;
+    for (const auto &value : local) localIds.insert(value.toMap().value("id").toString());
+    QVariantList global;
+    for (const auto &value : projectSection(all))
+        if (!localIds.contains(value.toMap().value("id").toString())) global.append(value);
+    QVariantList result;
+    for (const auto &value : local) result.append(value);
+    if (local.isEmpty() && !global.isEmpty())
+        result.append(QVariantMap{{QStringLiteral("searchStatus"), QStringLiteral("noMatchesInFolder")}});
+    else if (!local.isEmpty() && !global.isEmpty())
+        result.append(QVariantMap{{QStringLiteral("searchSeparator"), QStringLiteral("allFolders")}});
+    for (const auto &value : global) result.append(value);
     return result;
 }
 
