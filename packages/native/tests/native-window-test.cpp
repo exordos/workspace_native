@@ -25928,10 +25928,16 @@ mv -Tf "$root/.current-new" "$root/current"
         QQuickItem *resumeButton = nullptr;
         QTRY_VERIFY(([&] { resumeButton = visibleItem("extProviderResume"); return resumeButton != nullptr; })());
         QVERIFY(!visibleItem("extProviderSuspend"));
-        // Close (header row) tears the dialog down.
+        // Close (header row) tears the dialog down. The header lives ABOVE
+        // the scroller viewport (Bug #832 probe: its center maps to a
+        // negative viewport y), so scrolling cannot move it; the bounded
+        // popup keeps it inside the window, which is the click contract here.
         auto *closeButton = visibleItem("extProviderClose");
         QVERIFY(closeButton);
-        ensureInWindow(closeButton);
+        QTRY_VERIFY(([&] {
+            return bounds.contains(
+                closeButton->mapRectToScene(QRectF(QPointF{}, closeButton->size())));
+        })());
         click(scene.window, closeButton);
         QTRY_VERIFY(!visibleItem("externalProviderDialog")
             || !visibleItem("extProviderResume"));
