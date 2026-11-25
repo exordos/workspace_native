@@ -612,6 +612,12 @@ void Session::refreshProject()
             // here the credential is kept for an explicit retry and the
             // degraded state is exposed through renewalUnavailable.
             if (!m_ready && transient && !m_savedAccountId.isEmpty()) {
+                // Review finding (#836 round 1): the resume waits for a manual
+                // retry, so no timer may keep the credential lifecycle alive -
+                // a scheduled renewal or the expiry timer would drop the shell.
+                m_refreshTimer.stop();
+                m_expiryTimer.stop();
+                m_accessExpiresAt = 0;
                 if (!m_renewalUnavailable) {
                     m_renewalUnavailable = true;
                     emit renewalUnavailableChanged();
@@ -639,10 +645,17 @@ void Session::refreshProject()
                 // Issue #836: the same transient rule as the token leg - a
                 // temporary introspect outage during a saved-account resume
                 // keeps the cache-first shell and allows an explicit retry.
+                // Review findings (#836 round 1): only a NOT-ready resume may
+                // degrade - a renewal that fails after the session was ready
+                // keeps its pre-existing fail() contract; and the unverified
+                // replacement token must not keep its timers running.
                 const bool identityTransient = identity.status == 0 || identity.status == 408
                     || identity.status == 429 || identity.status >= 500;
-                if (!identity.ok() && identityTransient && !m_savedAccountId.isEmpty()) {
+                if (!m_ready && !identity.ok() && identityTransient && !m_savedAccountId.isEmpty()) {
                     m_refreshInFlight = false;
+                    m_refreshTimer.stop();
+                    m_expiryTimer.stop();
+                    m_accessExpiresAt = 0;
                     if (!m_renewalUnavailable) {
                         m_renewalUnavailable = true;
                         emit renewalUnavailableChanged();
