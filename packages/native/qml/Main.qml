@@ -1341,12 +1341,21 @@ ApplicationWindow {
         const stream = currentStream(streamMenuTarget);
         return root.controller.authenticated && stream && (!root.controller.topicCreationBusy && root.controller.canCreateTopicIn(streamMenuTarget) || root.controller.topicCreationStream === streamMenuTarget && (root.controller.topicCreationBusy || root.controller.topicCreationUncertain));
     }
+    // Issue #867 fix round: the streamById rewire removed the implicit
+    // `controller.streams` dependency every binding call site used to acquire
+    // through the reference traversal. QML tracks property reads, not Q_INVOKABLE
+    // calls, so a binding that resolves one row through currentStream() must
+    // depend on this ticket instead; it ticks in onStreamsChanged below, which is
+    // exactly the invalidation the traversal used to provide, for free.
+    property int streamsCatalogTick: 0
     function currentStream(id) {
         // Issue #867: never traverse the computed `streams` reference sequence
         // here - every element access re-reads the whole projection. streamById
         // builds exactly one row; an empty/unknown target resolves to null.
         if (!id)
             return null;
+        if (root.streamsCatalogTick < 0)
+            return null; // ticket read: binds this call site to catalog writes
         const stream = root.controller.streamById(id);
         return stream && Object.keys(stream).length ? stream : null;
     }
@@ -2020,6 +2029,7 @@ component NativeMentionChip: Item {
             root.syncArchiveRequests();
         }
         function onStreamsChanged() {
+            root.streamsCatalogTick++;
             root.validateStreamUi();
             root.validateGlobalTopicUi();
         }
