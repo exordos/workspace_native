@@ -49005,6 +49005,17 @@ private slots:
         QCOMPARE(showMore->property("text").toString(), showText);
         click(window, showMore);
         QTRY_VERIFY_WITH_TIMEOUT((separator() && topicRow(tailOne) && topicRow(tailTwo)), 4000);
+        // PR #850 review finding: revealing focuses the first newly visible
+        // row, the same contract the non-search show-more already enforces
+        // (docs/NATIVE_DESKTOP_SIDEBAR_TOPIC_EXPANSION.md:18 and
+        // sidebarExpansionPersistsAndRevealsTopics asserts topic(3) focus).
+        // The tail head sits behind the "Other topics" separator, so it is
+        // the first newly revealed topic. Re-fetch inside the wait: expanding
+        // resets the Repeater and fresh delegates incubate asynchronously.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *tailFirst = topicRow(tailOne);
+            return tailFirst && tailFirst->hasActiveFocus();
+        })(), 4000);
         auto *sepItem = separator();
         QCOMPARE(sepItem->height(), 25.0);
         QVERIFY(sepItem->width() > 0);

@@ -5153,6 +5153,40 @@ component NativeMentionChip: Item {
         return rows.filter(row => !matched[String(row.id)])
     }
 
+    // Issue #847 (PR #850 review): expanding the search show-more reveals the
+    // non-matching tail and must focus the first newly revealed topic, the
+    // same contract the non-search reveal enforces (docs/
+    // NATIVE_DESKTOP_SIDEBAR_TOPIC_EXPANSION.md: "Revealing focuses the first
+    // newly visible topic"; non-search precedent: the showMoreTopics handler
+    // focuses sidebarTopicRepeater.itemAt(priorCount)). Collapsing keeps the
+    // control focused, also like the non-search path. focusSidebarSearchTarget
+    // owns the incubation retry, scroll-into-view and the session guard that
+    // cancels a stale claim when the query changes underneath (PR #639
+    // finding 4652076279), so a freshly reset Repeater cannot defeat it.
+    function revealSidebarSearchTopics(stream) {
+        const streamKey = String(stream.id)
+        const expanding = !Boolean(root.sidebarSearchTopicExpanded[streamKey])
+        root.setSidebarSearchTopicExpanded(stream.id, expanding)
+        if (!expanding)
+            return
+        const tail = root.sidebarSearchHiddenTail(stream)
+        if (!tail.length)
+            return
+        let row = -1
+        const streams = root.controller.sidebarStreams
+        for (let index = 0; index < streams.length; ++index) {
+            if (streams[index] && String(streams[index].id) === streamKey) {
+                row = index
+                break
+            }
+        }
+        if (row < 0)
+            return
+        root.focusSidebarSearchTarget({row: row,
+            objectName: "topic-" + String(tail[0].id),
+            session: root.sidebarSearchFocusSession}, 1, 0)
+    }
+
     // Issue #648 (PR #639 fix round): the arrow ring is built from the
     // filtered model, not from realized delegate items - rows below the fold
     // may not be incubated at all, while the reference querySelectorAll sees
@@ -7141,8 +7175,7 @@ component NativeMentionChip: Item {
                                 icon.color: root.colors["text-primary"]
                             }
                         }
-                        onClicked: root.setSidebarSearchTopicExpanded(streamDelegate.modelData.id,
-                            !streamDelegate.searchTopicsExpanded)
+                        onClicked: root.revealSidebarSearchTopics(streamDelegate.modelData)
                         // Issue #847: the reference marks the control
                         // data-sidebar-search-item, so the arrow ring walks
                         // through it like any other result row.
