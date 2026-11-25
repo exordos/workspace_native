@@ -40474,6 +40474,98 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsSnapshotPre"), 4000);
     }
 
+    // Issue #796 item 4 (witness for 8e78b103): the #668 websocket dataset is
+    // NOT a dedicated card - NativeDiagnosticsPage appends its rows to the
+    // Realtime card line block (state + endpoint, per-minute rate, most recent
+    // failure) and suppresses them while the transport is `disabled` or the
+    // dataset is absent. docs/NATIVE_DESKTOP_WS_DIAGNOSTICS.md is aligned to
+    // this layout in the same commit. Driving the case RED-first also exposed a
+    // REAL defect: recentFailures reaches QML as a QVariantList sequence proxy
+    // (has .length, but Array.isArray is false), so the shipped Array.isArray
+    // guard silently dropped the failure row for every real snapshot; the QML
+    // now counts .length and this case asserts the rendered row. Injection
+    // seam: the card Repeater follows page.cards, which QML rebuilds only in
+    // refresh(), so the test drives the same snapshot+cards writes refresh()
+    // performs (the status-pill matrix precedent).
+    void diagnosticsRealtimeCardAppendsWebsocketRowsAndSuppressesDisabled()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        ApiClient api(nullptr,true); Session session(&api); NativeController controller(&api,&session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        WindowOwnStatusFixture fixture; QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine; loadNativeUi(engine,&controller,&preferences);
+        auto *window=qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close=qScopeGuard([&engine,guard=QPointer<QQuickWindow>(window)]{
+            if(guard&&!closeIncubatedTestWindow(engine,guard.data()))QTest::qFail("WS diagnostics teardown",__FILE__,__LINE__);});
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section()==QStringLiteral("diagnostics"), 4000);
+        auto *page=visibleItem("nativeDiagnosticsPage"); QVERIFY(page);
+        // The card Repeater follows page.cards, which QML rebuilds only inside
+        // refresh(); assigning page.snapshot alone would leave it stale. Drive
+        // the same two writes refresh() performs, with the injected data:
+        // assign the snapshot, run the page's own buildCards(), write it back.
+        auto injectSnapshot = [page](const QVariantMap &snapshot) {
+            page->setProperty("snapshot", snapshot);
+            QVariant cards;
+            QMetaObject::invokeMethod(page, "buildCards", Q_RETURN_ARG(QVariant, cards));
+            page->setProperty("cards", cards);
+        };
+        auto realtimeLines = [] {
+            QStringList texts;
+            for (int index = 0; index < 12; ++index) {
+                auto *line = visibleItem(QStringLiteral("diagnosticsCardLine-realtime-%1").arg(index));
+                if (!line) break;
+                texts << line->property("text").toString();
+            }
+            return texts;
+        };
+        QVariantMap realtime;
+        realtime.insert(QStringLiteral("online"), true);
+        realtime.insert(QStringLiteral("windowVisible"), true);
+        realtime.insert(QStringLiteral("stats"), QVariantMap{{QStringLiteral("eventsReceivedCount"), 3}});
+        QVariantMap snapshot;
+        snapshot.insert(QStringLiteral("realtime"), realtime);
+        const QString baseLine = QStringLiteral("Events received: 3");
+        const QString presenceLine = QStringLiteral("online \u00b7 Window visible");
+        const QStringList suppressed {baseLine, presenceLine};
+        // No websocket dataset: the Realtime card keeps only its base lines.
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            injectSnapshot(snapshot);
+            return realtimeLines() == suppressed;
+        })(), 4000);
+        // Enabled transport: the three rows appear in document order after the
+        // base lines - "state · endpoint", rounded per-minute rate, failure
+        // with close code (all raw telemetry, untranslated by design).
+        QVariantMap websocket;
+        websocket.insert(QStringLiteral("state"), QStringLiteral("connected"));
+        websocket.insert(QStringLiteral("endpoint"),
+            QStringLiteral("ws://127.0.0.1:9/api/workspace/v1/events/ws"));
+        websocket.insert(QStringLiteral("recentEventsPerMinute"), 7.5);
+        websocket.insert(QStringLiteral("recentFailures"), QVariantList{
+            QVariantMap{{QStringLiteral("reason"), QStringLiteral("handshake timeout")},
+                        {QStringLiteral("closeCode"), 4410}}});
+        snapshot.insert(QStringLiteral("websocket"), websocket);
+        const QStringList extended {baseLine, presenceLine,
+            QStringLiteral("connected \u00b7 ws://127.0.0.1:9/api/workspace/v1/events/ws"),
+            QStringLiteral("8 / min"), QStringLiteral("handshake timeout (4410)")};
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            injectSnapshot(snapshot);
+            return realtimeLines() == extended;
+        })(), 4000);
+        // Disabled transport: the dataset stays in the snapshot but renders
+        // nothing beyond the base lines.
+        websocket.insert(QStringLiteral("state"), QStringLiteral("disabled"));
+        snapshot.insert(QStringLiteral("websocket"), websocket);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            injectSnapshot(snapshot);
+            return realtimeLines() == suppressed;
+        })(), 4000);
+    }
+
     // Issue #52 (docs/NATIVE_DESKTOP_DIAGNOSTICS_PAGE.md, "Memory panel"):
     // the panel renders reference-formatted value cards, a progress bar whose
     // fill width tracks used/limit, and the single-process table row. Data
