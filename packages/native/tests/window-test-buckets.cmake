@@ -273,6 +273,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     windowResizeHandOffReArmsForWheelAfterSendCapture
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
+    callWindowInvalidLinkStaysVisibleWithTheNotice
     channelTopicSummaryDialogSendsOnlyUserEditedEffortAfterRemotePromptUpdate
     chatHeaderCountersRenderMembersAndOnline
     composerPreviewShowsTheBodyItSends
