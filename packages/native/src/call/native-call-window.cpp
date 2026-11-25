@@ -214,23 +214,17 @@ QVariantMap JitsiCallWindowController::sanitizeShellPayload(const QVariantMap &p
     if (callId.isEmpty() || callId.size() > kMaxCallIdLength)
         return reject(badCallId);
     const auto meetingUrl = payload.value(QStringLiteral("meetingUrl")).toString();
-    // readPayload treats an absent/blank meetingUrl as fatal; the native
-    // shell instead owns it in the InvalidUrl state (invalid-link notice),
-    // matching the shipped #263/#728 contract, so only the shape bounds of a
-    // PRESENT url are enforced here.
-    if (!meetingUrl.isEmpty()) {
-        if (meetingUrl.size() > kMaxMeetingUrlLength)
-            return reject(QStringLiteral("meetingUrl exceeds 8192 characters"));
-        const QUrl url(meetingUrl, QUrl::StrictMode);
-        auto path = url.path(QUrl::FullyEncoded);
-        path.remove(QLatin1Char('/'));
-        if ((url.scheme() != QLatin1String("https") && url.scheme() != QLatin1String("http"))
-            || !url.userName().isEmpty() || !url.password().isEmpty()
-            || path.isEmpty()) {
-            return reject(QStringLiteral(
-                "meetingUrl must be an http(s) URL without userinfo and with a non-empty path"));
-        }
-    }
+    // Only the hard payload caps refuse the dispatch. A PRESENT but
+    // malformed meetingUrl is NOT rejected (re-review #849 finding 2):
+    // rejecting returned before the InvalidUrl presentation, so the
+    // activeCallChanged wiring cleared the stored call and the invalid-link
+    // notice - the shipped owner of unusable links (#263/#728) - had no
+    // surface. readPayload treats an absent/blank meetingUrl as fatal; the
+    // native shell instead owns it in the InvalidUrl state, so open() parses
+    // the URL and every unusable shape (bad scheme, userinfo, empty path)
+    // lands in InvalidUrl and presents the notice.
+    if (meetingUrl.size() > kMaxMeetingUrlLength)
+        return reject(QStringLiteral("meetingUrl exceeds 8192 characters"));
     QVariantMap sanitized = payload;
     sanitized.insert(QStringLiteral("callId"), callId);
     // locationName/displayName truncated to 256 (:81-84).

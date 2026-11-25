@@ -325,5 +325,7 @@ surface and the tests pin ONE copy of the reference numbers.
   the single embed surface (finding 2) never loses its host; a zero-size
   orphan slot absorbs only the swap frame.
 - Because the call no longer covers the main window, the media-viewer
-  suppression while Expanded was removed; the app-shortcut guard keys on
-  `mode == Expanded` instead of the deleted scrim.
+  suppression while Expanded was removed; the app-shortcut guard relies on
+  the main window's `active` focus gate instead of the deleted scrim
+  (re-review #849 finding 1): an expanded call never mutes the main
+  window's shortcuts while that window is the active window.

@@ -1550,18 +1550,47 @@ private slots:
         QCOMPARE(shell.callId(), QStringLiteral("https://meet.jit.si/Room-Y"));
     }
 
+    void standaloneMalformedUrlOpensShellInInvalidUrlState()
+    {
+        // Re-review #849 finding 2: a malformed non-empty link must reach the
+        // InvalidUrl presentation through the dispatch entry point - the
+        // invalid-link notice is the unusable-link owner - not an
+        // openRejected that leaves the main side to strand the stored call.
+        JitsiCallWindowController shell;
+        QSignalSpy rejectSpy(&shell, &JitsiCallWindowController::openRejected);
+        QVariantMap call;
+        call.insert(QStringLiteral("meetingUrl"), QStringLiteral("ftp://meet.jit.si/Room-X"));
+        QVERIFY(shell.requestStandaloneOpen(call));
+        QCOMPARE(rejectSpy.count(), 0);
+        QCOMPARE(shell.mode(), JitsiCallWindowController::Expanded);
+        QCOMPARE(int(shell.embedState()), int(JitsiCallWindowController::InvalidUrl));
+        // The single-window slot rule still guards the live shell: a
+        // different callId stays refused while it is open.
+        QVariantMap other;
+        other.insert(QStringLiteral("meetingUrl"),
+            QStringLiteral("https://evil@meet.jit.si/Room-Y"));
+        QVERIFY(!shell.requestStandaloneOpen(other));
+        QCOMPARE(rejectSpy.count(), 1);
+        QCOMPARE(shell.mode(), JitsiCallWindowController::Expanded);
+    }
+
     void standalonePayloadBoundsEnforced_data()
     {
         QTest::addColumn<QString>("payloadKind");
         QTest::addColumn<bool>("accepted");
         // callId bound (jitsi-call-window.ts:46-48).
         QTest::newRow("callId-too-long") << QStringLiteral("long-call-id") << false;
-        // meetingUrl shape (:66-75): userinfo, missing path, wrong scheme,
-        // the 8192 cap.
-        QTest::newRow("userinfo") << QStringLiteral("userinfo") << false;
-        QTest::newRow("no-path") << QStringLiteral("no-path") << false;
-        QTest::newRow("bad-scheme") << QStringLiteral("bad-scheme") << false;
+        // The hard caps stay refused (:66-75): the 8192 meetingUrl cap.
         QTest::newRow("url-too-long") << QStringLiteral("url-too-long") << false;
+        // A PRESENT but malformed meetingUrl is NOT refused (re-review #849
+        // finding 2): rejecting it returned before the InvalidUrl
+        // presentation, so the stored call was cleared and the invalid-link
+        // notice never showed. The shell owns unusable links (#263/#728):
+        // userinfo, missing path and wrong scheme pass sanitization and
+        // open() lands them in InvalidUrl.
+        QTest::newRow("userinfo") << QStringLiteral("userinfo") << true;
+        QTest::newRow("no-path") << QStringLiteral("no-path") << true;
+        QTest::newRow("bad-scheme") << QStringLiteral("bad-scheme") << true;
         // An absent meetingUrl is NOT refused here: the shell's InvalidUrl
         // state owns unusable links (shipped #263/#728 contract).
         QTest::newRow("blank-meeting-url") << QStringLiteral("blank-meeting-url") << true;

@@ -4850,8 +4850,13 @@ component NativeMentionChip: Item {
             if (activate) shortcutPopup.item.close();
             return true;
         }
+        // Re-review #849 finding 1: the standalone call window is a separate
+        // OS window, not a cover. While it has focus the main window is not
+        // active, so the !root.active gate above already mutes this window's
+        // shortcuts; expanded call mode must NOT mute them while the main
+        // window is the active window (reference: each Electron window
+        // scopes its own shortcut surface).
         if (root.Overlay.overlay.visible || root.controller.mediaViewer.open
-                || root.controller.callWindow.mode === 1 // standalone call window is foreground
                 || incomingCallOverlayItem.visible || (root.activeFocusItem && root.activeFocusItem.inputMethodComposing)) return false;
         if (action.startsWith("composer.")) {
             if (!composerText.formattingAllowed || composerMentionPopup.visible) return false;
