@@ -15,3 +15,4 @@ rightDrawerShellMatchesReferenceGeometry=0.849636
 sidebarChatActionsCompleteFromMenu=40.3464
 startupDirectoryDoesNotPopulateHiddenPickers=4.97752
 updaterActualMainShowsAndExecutesTheDownloadAndInstallActions=1.2757
+windowNarrowAppearanceDrawerKeepsCoveredMessagesUnread=2.2667

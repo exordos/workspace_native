@@ -8041,7 +8041,14 @@ component NativeMentionChip: Item {
                 property string unreadAnchorId: ""
                 property bool unreadDividerDismissed: false
                 readonly property int unreadCount: messageSnapshot.filter(row => !row.read).length
-                readonly property bool readActive: openingApplied && !anchorTransitionLayer.visible && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation                && visible && width > 0 && height > 0 && !rightDrawer.accountRootVisible && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
+                // Issue #839: the auto read paths follow coverage, not just the
+                // account-root screen (#791): at a narrow width any open right
+                // drawer floats over the conversation (narrowDrawerOverlay,
+                // #726), so while it covers the surface no automatic
+                // read_up_to boundary may advance. A docked drawer keeps
+                // reading because the column reserves its margin there and
+                // nothing is covered.
+                readonly property bool readActive: openingApplied && !anchorTransitionLayer.visible && root.controller.conversationOpening.ready && root.active && root.visible && root.visibility !== Window.Minimized && root.controller.authenticated && !root.controller.busy && !root.controller.cacheStale && !positioning && root.controller.hasConversation                && visible && width > 0 && height > 0 && !rightDrawer.accountRootVisible && !(rightDrawer.visible && root.narrowDrawerOverlay && conversation.visible) && !ownStatusDialog.visible && !aboutDrawer.visible && !messageMenu.visible && !reopenTopicMenu.visible && !streamMenu.visible && !chatActionDialog.visible && !createTopicDialog.visible && !createChatDialog.visible && !deleteDialog.visible && !outgoingDiscard.visible && !clipboardFilesDialog.visible && !referenceNotice.visible && !attachmentPicker.visible && !attachmentSaveDialog.visible && !reactionPicker.visible && !forwardDialog.visible && !root.controller.mediaViewer.open
                 function routeKey() {
                     return serviceScope();
                 }
