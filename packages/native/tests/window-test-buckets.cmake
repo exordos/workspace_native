@@ -247,6 +247,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     composerEmojiAppendsUnicodeAndSendsFromTheActualMain
     composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement
     composerShiftEnterContinuesAndExitsMarkdownLists
+    externalProviderDialogSuspendConfirmDispatchesOnceAndCancelStaysSilent
     f11TogglesFullScreenAndRestoresThePreviousNormalGeometry
     globalChannelCreationUsesVerifiedHttp
     loginProjectStepZeroProjectsBlocksTheStep
