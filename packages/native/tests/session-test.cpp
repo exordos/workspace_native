@@ -394,6 +394,21 @@ private slots:
         QSignalSpy failures(&session, &Session::error);
         QSignalSpy ready(&session, &Session::authenticated);
         session.resumeCurrentAccount();
+        if (mode == QLatin1String("offline")) {
+            // Issue #836 changed this row's contract: an offline startup
+            // resume is transient, so the session degrades (renewalUnavailable)
+            // instead of reporting a renewal failure. The no-auto-loop and
+            // no-account-switch parts of the contract stay pinned.
+            QTRY_VERIFY(session.renewalUnavailable());
+            QVERIFY(!session.ready());
+            QCOMPARE(ready.size(), 0);
+            const auto idleCount = transport.requests.size();
+            QTest::qWait(500); // no timer may fire an automatic renewal
+            QCOMPARE(transport.requests.size(), idleCount);
+            QVERIFY(backend.values.contains(other.id));
+            QCOMPARE(vault.currentAccountId(), saved.id);
+            return;
+        }
         QTRY_VERIFY(!failures.isEmpty());
         QVERIFY(!session.ready());
         QCOMPARE(ready.size(), 0);
@@ -479,16 +494,20 @@ private slots:
         session.setVault(&vault);
         QSignalSpy failures(&session, &Session::error);
         session.resumeSavedAccount(saved.id);
-        QTRY_VERIFY(!failures.isEmpty());
+        // Issue #836: the offline resume degrades instead of reporting a
+        // renewal failure; the saved identity and its credential stay intact.
+        QTRY_VERIFY(session.renewalUnavailable());
         QVERIFY(!session.ready());
+        QCOMPARE(failures.size(), 0);
         QCOMPARE(vault.accounts().size(), 1);
         QCOMPARE(backend.values.value(saved.id), QByteArray("synthetic-saved-refresh"));
         session.login(QUrl("https://another.example"), "other-user", "synthetic-password");
-        QTRY_COMPARE(failures.size(), 2);
+        QTRY_COMPARE(failures.size(), 1);
         QCOMPARE(vault.accounts().size(), 1);
         transport.offline = false;
         session.resumeSavedAccount(saved.id);
         QTRY_VERIFY(session.ready());
+        QTRY_VERIFY(!session.renewalUnavailable());
         QCOMPARE(vault.accounts().size(), 1);
     }
 
