@@ -21,6 +21,8 @@
 - Fixed: the integration settings entry shows pressed-state feedback (issue #794).
 - Fixed: the provider limit fields in the integration settings dialog no longer hit a binding loop when a saved draft loads; the write-back follows your own edits only (issue #816).
 - Fixed: the topic-summary dialog footer now marks unsaved edits over a stale Saved confirmation, and a failed save reports its error on the tab it belongs to instead of every open tab (issue #795).
+- Fixed: the external provider settings dialog stays bounded inside the window and scrollable, so the suspend confirm band and the lower fields remain reachable (issue #832).
+- Fixed: a failed realtime connection now shows an explicit failure row on the Diagnostics realtime card instead of staying silently unreported (issues #796, #835).
 
 The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
 
