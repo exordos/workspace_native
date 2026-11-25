@@ -474,9 +474,20 @@ Dialog {
                 readonly property bool hasChanges: {
                     if (editingUuid === "new") return form && Object.keys(form).length > 0
                     const src = form || ({})
+                    // exordy finding 4692802566: while this endpoint's save is in
+                    // flight the pending-diff oracle is the DISPATCHED values -
+                    // what the held request is about to persist - not the pre-save
+                    // baseline. A revert typed during flight diverges from the
+                    // stale value the server will store, so it must stay marked
+                    // unsaved. The in-flight guard is busy-scoped and session-
+                    // scoped: on failure (busy drops, dispatchRevision stays) and
+                    // after a close/reopen the baseline comparison resumes.
+                    const inFlight = controller.topicSummarySettingsBusy
+                        && dispatchRevision !== -1 && dispatchSession === draftSession
+                    const cmp = inFlight ? dispatchValues : editBaseline
                     for (const key in src) {
                         if (key === "api_key") { if (String(src.api_key || "").length > 0) return true; continue }
-                        if (String(src[key]) !== String(editBaseline[key])) return true
+                        if (String(src[key]) !== String(cmp[key])) return true
                     }
                     return false
                 }

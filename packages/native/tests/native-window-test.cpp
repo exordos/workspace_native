@@ -29776,6 +29776,70 @@ NativeAvatarImage {
         QTRY_COMPARE(dialog->property("footerStatus").toString(), QString());
     }
 
+    // exordy finding 4692802566 [medium]: reverting a field while the endpoint's
+    // save is still in flight must NOT clear the unsaved marker. While the PUT
+    // is pending the row's truth is the DISPATCHED value - the pending request
+    // persists the pre-revert value - so a revert typed during flight diverges
+    // from what the server is about to store and still needs saving. The edit
+    // path therefore compares against dispatchValues while the op is in flight;
+    // after the success rebases the baseline the re-applied edit stays unsaved.
+    void channelTopicSummaryEndpointRevertDuringInFlightSaveKeepsUnsavedMarker()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        std::function<void()> releasePut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response{endpointDto};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        QCOMPARE(original, QStringLiteral("Synthetic GPT"));
+        name->setProperty("text", original + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the PUT reached the server and is held: op in flight
+        // Revert WHILE in flight: the pre-save baseline is not the oracle while a
+        // request is pending, so the yellow marker must stay visible.
+        name->setProperty("text", original);
+        QTest::qWait(50); // the setField write-back runs on callLater
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        // Let the save settle: the success rebases the baseline onto the DISPATCHED
+        // (pre-revert) name, so the reverted form still diverges and the marker
+        // survives the "saved" echo (dirty outranks saved, #795).
+        releasePut();
+        releasePut = nullptr;
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
