@@ -97,6 +97,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     anchorJumpSkeletonPreview
     attachmentCardShowsVerifiedFileNameNotTheMessageLabel
     channelTopicSummaryDialogEndpointDeleteConfirmDispatchesAndCancelRestores
+    channelTopicSummaryTabReturnDuringPendingSaveKeepsRetry
     codeCopyButtonAppearsInMediaSplitBody
     corruptHeicFallsBackToFileCardAndDisplayErrorSlotWithDownload
     directAndChannelRecoveryRestoresTheLastViewedUnresolvedTab
@@ -245,6 +246,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
     channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable
+    channelTopicSummaryTabReturnDuringPendingSaveRecoversOnSuccess
     composerEmojiAppendsUnicodeAndSendsFromTheActualMain
     composerFormattingDefaultsFenceSynchronousRouteAndOwnerReplacement
     composerShiftEnterContinuesAndExitsMarkdownLists

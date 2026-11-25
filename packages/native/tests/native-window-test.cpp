@@ -28079,7 +28079,9 @@ mv -Tf "$root/.current-new" "$root/current"
         // gated reload proved nothing, so the draft stays editable with an
         // enabled retry while nothing is in flight anymore (#840).
         releaseEndpointGet();
-        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        // Arrival oracle at controller level: the endpoint rows live on the
+        // hidden endpoints tab and never render while Common settings is shown.
+        QTRY_VERIFY(scene.controller.property("topicSummaryEndpoints").toList().size() == 1);
         QVERIFY(visibleItem("channelTopicSummaryGatesError"));
         QVERIFY(scene.controller.property("topicSummaryGatesLoaded").toBool());
         QVERIFY(!scene.controller.property("topicSummarySettingsBusy").toBool());

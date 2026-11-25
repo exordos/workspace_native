@@ -2825,6 +2825,9 @@ private:
     // op was retired stays attributed (finding 4687482019).
     void setTopicSummaryStatusOps(const QString &status, const QString &error,
         const QStringList &errorOps);
+    // Issue #840: a successful load of one family must not erase a live error
+    // belonging to the other family (the bands filter on the ops ledger).
+    void settleTopicSummaryLoadSuccess(const QString &family);
     QHash<QString, quint64> m_topicSummaryOps;
     quint64 m_topicSummaryToken = 0;
     QVariantMap m_topicSummaryGates;
