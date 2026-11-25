@@ -195,6 +195,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_9
     anchorOverlayOwnsOnlyItsVisibleConversation
     archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable
+    channelTopicSummaryDialogEffortPickSendsFieldAndClosesOnSuccess
     chatPickerUsesPresenceAndStatusOnBothTabs
     clipboardFilePathsRequireConfirmationBeforeUpload
     closedTopicPromptPreservesTheDraftThroughRealtimeReopen
@@ -437,6 +438,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
     activationRestoresFullScreenAndF11ExitsWithoutOverwritingSavedBounds
     callWindowEmbedIgnoresTransportEventsFromChildFrames
     callsRecentEmptyStateMatchesReferenceContract
+    channelTopicSummaryUseDefaultPromptSendsNullAndClosesOnSuccess
     chatBackgroundTracksMessageViewportAcrossLayoutChanges
     composerAcceptsClipboardImagesAndFileDrops
     composerHeightFollowsContentDragKeyboardAndFullHeight
@@ -489,6 +491,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_21
     channelTopicSummaryDialogCreateEditDuringPendingSavesAsUpdate
+    channelTopicSummaryProviderDefaultEffortSendsNull
     diagnosticsAdvancedToggleScrollsOnPixelDeltaWheel
     directHeaderPartnerBlockKeyboardActivates
     directHeaderPartnerBlockOpensPeerProfile

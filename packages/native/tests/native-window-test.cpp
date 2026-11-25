@@ -26851,6 +26851,152 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
     }
 
+    // Issue #796 item 2: the "Use default prompt" button end-to-end. Clicking
+    // it clears the draft and marks it default (promptIsDefault), so the invoke
+    // carries the null summary_system_prompt that clears a custom prompt on
+    // the server (reference: empty prompt = app default). The confirmed reply
+    // closes the dialog on its own - no Escape (onChannelTopicActionFinished).
+    void channelTopicSummaryUseDefaultPromptSendsNullAndClosesOnSuccess()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        auto item = windowChannelTopic(topicId, streamId, "General");
+        item["kind"] = QStringLiteral("topic.updated");
+        item["summary_enabled"] = true;
+        item["summary_system_prompt"] = QStringLiteral("Original prompt");
+        item["summary_reasoning_effort"] = QStringLiteral("low");
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+            {"uuid", QStringLiteral("8b7d0000-0000-4000-8000-000000000001")},
+            {"project_id", projectId}, {"user_uuid", userId}, {"payload", item}}));
+        QList<QJsonObject> saveBodies;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/set_summary_prompt/invoke")) {
+                saveBodies.append(request.body);
+                // The server settles the invoke with the UPDATED topic row:
+                // the controller accepts the write only when the echo parses
+                // back to this topic (native-controller.cpp:4558), and only
+                // an accepted write lets the dialog close on success.
+                auto echo = item;
+                for (const auto &key : request.body.keys()) {
+                    const auto value = request.body.value(key);
+                    if (value.isNull()) echo.remove(key);
+                    else echo[key] = value;
+                }
+                return {echo, 200};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        // The row starts with a custom prompt: the button alone arms Save.
+        QVERIFY(!visibleItem("channelTopicSummarySave")->property("enabled").toBool());
+        click(scene.window, visibleItem("channelTopicSummaryUseDefaultPrompt"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save && save->property("enabled").toBool());
+        click(scene.window, save);
+        QTRY_COMPARE(saveBodies.size(), 1);
+        const QJsonObject expected{{"summary_system_prompt", QJsonValue::Null}};
+        QCOMPARE(saveBodies.at(0), expected);
+        // Close-on-success: the confirmed invoke closes the dialog itself.
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // Issue #796 item 2: a plain (non-racing) effort pick sends the effort
+    // field alone and closes the dialog on the confirmed reply. The pick goes
+    // through the combo's activated seam - the same signal a real selection
+    // emits - and the patch must not carry prompt or enabled keys.
+    void channelTopicSummaryDialogEffortPickSendsFieldAndClosesOnSuccess()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        auto item = windowChannelTopic(topicId, streamId, "General");
+        item["kind"] = QStringLiteral("topic.updated");
+        item["summary_enabled"] = true;
+        item["summary_system_prompt"] = QStringLiteral("Original prompt");
+        item["summary_reasoning_effort"] = QStringLiteral("low");
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+            {"uuid", QStringLiteral("8b7d0000-0000-4000-8000-000000000002")},
+            {"project_id", projectId}, {"user_uuid", userId}, {"payload", item}}));
+        QList<QJsonObject> saveBodies;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/set_summary_prompt/invoke")) {
+                saveBodies.append(request.body);
+                // Settled with the updated row (see the first #796 item 2 case).
+                auto echo = item;
+                for (const auto &key : request.body.keys()) {
+                    const auto value = request.body.value(key);
+                    if (value.isNull()) echo.remove(key);
+                    else echo[key] = value;
+                }
+                return {echo, 200};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *effort = visibleItem("channelTopicSummaryReasoning");
+        QVERIFY(effort);
+        QMetaObject::invokeMethod(effort, "activated", Q_ARG(int, 5)); // "high"
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save && save->property("enabled").toBool());
+        click(scene.window, save);
+        QTRY_COMPARE(saveBodies.size(), 1);
+        const QJsonObject expected{{"summary_reasoning_effort", QStringLiteral("high")}};
+        QCOMPARE(saveBodies.at(0), expected);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
+    // Issue #796 item 2: picking "Provider default" in the effort box clears
+    // the field - the patch seam routes the empty pick as a null
+    // summary_reasoning_effort through the panel's onTopicConfigRequested
+    // handler (NativeTopicSummary.qml), distinct from an absent (unedited) key.
+    void channelTopicSummaryProviderDefaultEffortSendsNull()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"));
+        auto item = windowChannelTopic(topicId, streamId, "General");
+        item["kind"] = QStringLiteral("topic.updated");
+        item["summary_enabled"] = true;
+        item["summary_system_prompt"] = QStringLiteral("Original prompt");
+        item["summary_reasoning_effort"] = QStringLiteral("low");
+        QVERIFY(scene.controller.applyRealtimeEvent(QJsonObject{
+            {"uuid", QStringLiteral("8b7d0000-0000-4000-8000-000000000003")},
+            {"project_id", projectId}, {"user_uuid", userId}, {"payload", item}}));
+        QList<QJsonObject> saveBodies;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "POST" && request.target.path().endsWith("/set_summary_prompt/invoke")) {
+                saveBodies.append(request.body);
+                // Settled with the updated row (see the first #796 item 2 case).
+                auto echo = item;
+                for (const auto &key : request.body.keys()) {
+                    const auto value = request.body.value(key);
+                    if (value.isNull()) echo.remove(key);
+                    else echo[key] = value;
+                }
+                return {echo, 200};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
+        auto *effort = visibleItem("channelTopicSummaryReasoning");
+        QVERIFY(effort);
+        QMetaObject::invokeMethod(effort, "activated", Q_ARG(int, 0)); // "" = provider default
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save && save->property("enabled").toBool());
+        click(scene.window, save);
+        QTRY_COMPARE(saveBodies.size(), 1);
+        const QJsonObject expected{{"summary_reasoning_effort", QJsonValue::Null}};
+        QCOMPARE(saveBodies.at(0), expected);
+        QTRY_VERIFY(!visibleItem("channelTopicSummarySettingsTitle"));
+    }
+
     // ===== Issue #635 review fix round (exo-review, PR #708 head a08c1b7) =====
 
     // Finding 1 [high]: the StackLayout pages fixed children by the FILTERED tab
