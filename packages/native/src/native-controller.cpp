@@ -7198,6 +7198,7 @@ void NativeController::closeCache()
     m_rowPreviewNetPending.clear();
     m_rowPreviewNetInFlight.clear();
     m_rowPreviewNetRetries.clear();
+    m_rowPreviewLateDiskRetries.clear();
     const auto lease = m_cacheLease;
     m_cacheLease = {};
     if (m_cache && m_cache->lease().owner == lease.owner
@@ -12926,6 +12927,7 @@ void NativeController::reset()
     m_rowPreviewNetPending.clear();
     m_rowPreviewNetInFlight.clear();
     m_rowPreviewNetRetries.clear();
+    m_rowPreviewLateDiskRetries.clear();
     m_rowPreviewFence.clear();
     m_nextRowPreviewFence = 0;
     m_viewerDirectoryName.clear();
@@ -19731,7 +19733,11 @@ void NativeController::setRowPreviewNetworkEnabledForTest(bool enabled)
     // Per-case traffic-pin knob (#860), same usage as setTopicPreloadEnabledForTest:
     // traffic-pinned cases that enumerate preview lookups run the disk-only shape.
     m_rowPreviewNetworkEnabled = enabled;
-    if (!enabled) { m_rowPreviewNetPending.clear(); m_rowPreviewNetRetries.clear(); }
+    if (!enabled) {
+        m_rowPreviewNetPending.clear();
+        m_rowPreviewNetRetries.clear();
+        m_rowPreviewLateDiskRetries.clear();
+    }
 }
 
 void NativeController::seedRowPreviewHydrationFromCatalog()
@@ -19831,6 +19837,18 @@ void NativeController::pumpRowPreviewNetworkHydration()
                 // Best-effort owner-scoped disk fill, mirroring the reference cache write:
                 // the next cold start hydrates from disk without a network lookup.
                 if (cache && cache->available()) cache->putMessageBody(lease, canonical);
+            } else if (cache && m_rowPreviewLateDiskRetries.value(uuid) < rowPreviewLateDiskRetries) {
+                // #860: the server does not hold this message, but a disk body may still be
+                // on its way (sidebarPreviewsHydrateFromTheCacheAsynchronously: the cache
+                // write races the lookup). The negative must not memoize over a late write,
+                // so the miss buys a bounded number of delayed disk re-reads first.
+                ++m_rowPreviewLateDiskRetries[uuid];
+                QTimer::singleShot(1000, this, [this, uuid] {
+                    if (!authenticated() || m_rowPreviews.contains(uuid)) return;
+                    if (m_rowPreviewInFlight.contains(uuid)) return;
+                    m_rowPreviewPending.insert(uuid);
+                    scheduleRowPreviewHydration();
+                });
             } else {
                 storeRowPreview(uuid, RowPreview{}); // authoritative empty page: memo the miss
             }

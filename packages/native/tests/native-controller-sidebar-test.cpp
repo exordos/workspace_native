@@ -2825,6 +2825,11 @@ private slots:
         auto &c = fixture.controller;
         c.setTopicPreloadEnabledForTest(true);
         c.setTopicPreloadIntervalMsForTest(30);
+        // #860: this case pins the warm sweep's yield rule against the mock's
+        // /messages/ handler; the network preview stage rides the same handler
+        // (its uuid lookups carry no topic_uuid and land in the held page),
+        // so the case runs the disk-only preview shape.
+        c.setRowPreviewNetworkEnabledForTest(false);
         c.login(fixture.server.origin().toString(), "user", "password", "");
         QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
         QTRY_COMPARE(c.streams().size(), 1);
