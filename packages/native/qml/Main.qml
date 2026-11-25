@@ -1342,10 +1342,13 @@ ApplicationWindow {
         return root.controller.authenticated && stream && (!root.controller.topicCreationBusy && root.controller.canCreateTopicIn(streamMenuTarget) || root.controller.topicCreationStream === streamMenuTarget && (root.controller.topicCreationBusy || root.controller.topicCreationUncertain));
     }
     function currentStream(id) {
-        for (const stream of root.controller.streams)
-            if (stream.id === id)
-                return stream;
-        return null;
+        // Issue #867: never traverse the computed `streams` reference sequence
+        // here - every element access re-reads the whole projection. streamById
+        // builds exactly one row; an empty/unknown target resolves to null.
+        if (!id)
+            return null;
+        const stream = root.controller.streamById(id);
+        return stream && Object.keys(stream).length ? stream : null;
     }
     function currentRoute() {
         return root.controller.selectedStream + "/" + root.controller.selectedTopic;

@@ -66,9 +66,11 @@ Item {
         return null
     }
     function resolveStream() {
-        for (const stream of controller.streams)
-            if (String(stream.id) === targetStream) return stream
-        return null
+        // Issue #867: cheap single-row lookup; traversing controller.streams
+        // here rebuilt the entire catalog on every binding re-evaluation.
+        if (!targetStream.length) return null
+        const stream = controller.streamById(targetStream)
+        return stream && Object.keys(stream).length ? stream : null
     }
     function rowUnread() {
         const row = block.topicRow

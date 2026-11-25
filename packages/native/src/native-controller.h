@@ -177,6 +177,8 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList cachedSearchResults READ cachedSearchResults NOTIFY cachedSearchChanged)
     Q_PROPERTY(QString cachedSearchState READ cachedSearchState NOTIFY cachedSearchChanged)
     Q_PROPERTY(QVariantList streams READ streams NOTIFY streamsChanged)
+    // Issue #867: projection-count seam for the regression tests (no NOTIFY).
+    Q_PROPERTY(int streamsProjectionCountForTest READ streamsProjectionCountForTest)
     // Issue #83: folder rail (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md). The rail
     // rows, the effective folder selection and the folder-scoped sidebar
     // projection over the stream catalog.
@@ -495,6 +497,15 @@ public:
     Q_INVOKABLE void clearCachedSearch();
     Q_INVOKABLE bool openCachedSearchResult(const QString &id);
     QVariantList streams() const;
+    // Issue #867 (subtask A): resolve one stream row by UUID without building
+    // the computed catalog; QML single-ID lookups must not traverse the
+    // reference sequence (each element access re-reads the backing property).
+    // Returns an empty map for an unknown or archived id; the caller early-
+    // returns on an empty target.
+    Q_INVOKABLE QVariantMap streamById(const QString &id) const;
+    // Issue #867 test-only oracle: how many full streams() projections ran.
+    // Intentionally has no NOTIFY - nothing in QML may bind to it.
+    int streamsProjectionCountForTest() const { return m_streamsProjectionCount; }
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
     QVariantMap sidebarCatalogState() const;
@@ -2130,6 +2141,9 @@ private:
     void announceRowPreviewRows(const QString &uuid);
     quint64 bumpRowPreviewFence(const QString &uuid);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
+    // Issue #867 (subtask A): single-row projection shared by streams() and
+    // streamById(); building one row must never cost the whole catalog.
+    QVariantMap streamRowMap(const Stream &stream) const;
     // Issue #718 (docs/NATIVE_DESKTOP_PARITY.md): sidebar sort keys are recorded
     // when a message is first seen, so a row keeps its position when its
     // last-message pointer's row leaves the active window on a route change.
@@ -2234,6 +2248,9 @@ private:
     QStringList m_directoryUserOrder;
     QVariantMap m_mentionSelfChoice;
     QString m_channelDirectoryOwner;
+    // Issue #867: counts full streams() projection builds for the regression
+    // tests; mutable because the counted getter is const.
+    mutable int m_streamsProjectionCount = 0;
     bool m_channelDirectoryValid = false;
     QHash<QString, DirectChat> m_directChats;
     quint64 m_nextDirectChat = 0, m_directTrust = 0;

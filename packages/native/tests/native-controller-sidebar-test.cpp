@@ -3071,6 +3071,66 @@ private slots:
         QCOMPARE(unreadOf(workUuid), 0);
         QVERIFY2(railChanged.size() >= 1, "the folder rail must re-notify when a confirmed read moves its counts");
     }
+
+    // Issue #867 (subtask A): resolving one stream row by UUID must never build
+    // the full catalog projection. QML used to traverse the computed `streams`
+    // reference sequence per lookup and Qt re-read the backing property on each
+    // element access (0.49.3 profile: 301/901/1801 projection builds per single
+    // lookup for 100/300/600 rows). The counter seam pins streamById() to zero
+    // full projections regardless of catalog size.
+    void streamLookupsStayOutsideTheFullProjection_data()
+    {
+        QTest::addColumn<int>("rows");
+        QTest::newRow("small") << 20;
+        QTest::newRow("large") << 100;
+    }
+
+    void streamLookupsStayOutsideTheFullProjection()
+    {
+        QFETCH(int, rows);
+        Fixture test;
+        const auto uuidOf = [](int index) {
+            return QStringLiteral("11111111-1111-4111-8111-%1")
+                .arg(index, 12, 10, QLatin1Char('0'));
+        };
+        const auto streamRow = [&](int index) {
+            return QJsonObject{{"uuid", uuidOf(index)}, {"project_id", projectId},
+                {"name", QStringLiteral("Stream %1").arg(index)},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", QJsonValue::Null},
+                {"updated_at", QStringLiteral("2026-01-01T10:00:00Z")}};
+        };
+        test.streams = [&](const Request &) {
+            QJsonArray catalog;
+            for (int index = 0; index < rows; ++index)
+                catalog.append(streamRow(index));
+            return Response{catalog};
+        };
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return test.controller.projects().size() == 1; }, 2000)) { QFAIL("project list"); return; }
+        test.controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return test.controller.streams().size() == rows; }, 4000)) { QFAIL("stream list"); return; }
+        // One row of the lookup result must equal the row streams() publishes:
+        // the single-row path may not drop preview, context-key or ordering inputs.
+        const auto sample = uuidOf(rows - 1);
+        QVariantMap expected;
+        for (const auto &entry : test.controller.streams()) {
+            const auto row = entry.toMap();
+            if (row.value(QStringLiteral("id")).toString() == sample)
+                expected = row;
+        }
+        QVERIFY(!expected.isEmpty());
+        QCOMPARE(test.controller.streamById(sample), expected);
+        const int baseline = test.controller.streamsProjectionCountForTest();
+        for (int index = 0; index < rows; ++index) {
+            const auto row = test.controller.streamById(uuidOf(index));
+            QVERIFY2(!row.isEmpty(), qPrintable(uuidOf(index)));
+            QCOMPARE(row.value(QStringLiteral("id")).toString(), uuidOf(index));
+        }
+        QVERIFY(test.controller.streamById(QStringLiteral("missing-stream-id")).isEmpty());
+        QVERIFY(test.controller.streamById(QString()).isEmpty());
+        QCOMPARE(test.controller.streamsProjectionCountForTest(), baseline);
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)
