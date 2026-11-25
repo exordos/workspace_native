@@ -1,3 +1,14 @@
+# Workspace Native 0.49.2 - Linux development preview
+
+- Fixed: a chat that is visually covered by the narrow drawer is no longer marked read behind your back; automatic read receipts resume as soon as the conversation is visible again (issue #839).
+- Fixed: switching tabs in the AI summary dialog while a save is in flight no longer strands the Common settings tab, and a load success is reported only for the settings family it belongs to (issue #840).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.49.1 to 0.49.2](https://github.com/exordos/workspace_native/compare/0.49.1...0.49.2)
+
+---
+
 # Workspace Native 0.49.1 - Linux development preview
 
 - Fixed: a transient renewal failure no longer signs you out. When a saved-account resume hits a temporary server error or timeout on the token or introspect leg, the app keeps its locally cached chat shell and shows the failure status with a Retry action that renews in place, instead of dropping to the sign-in screen (issue #836).
