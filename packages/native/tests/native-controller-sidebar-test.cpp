@@ -1,3 +1,4 @@
+#include <QUrlQuery>
 #include "support/native-test-harness.h"
 #include "support/controller-chat-creation-fixtures.h"
 #include "support/controller-navigation-fixtures.h"
@@ -801,6 +802,96 @@ private slots:
         const auto streamRow = test.controller.streams().first().toMap();
         QCOMPARE(streamRow.value("previewText").toString(), expected);
         QCOMPARE(streamRow.value("rowTime").toString(), topicRow.value("rowTime").toString());
+    }
+
+    // #860: catalog accept hydrates previews and row times for every row (inactive streams and
+    // read history included) before the first projection, regardless of the catalog's misleading
+    // updated_at. The reference primes the sidebar during bootstrap and loads the last-message
+    // uuids in bounded, deduplicated chunks via GET /messages/?uuid=
+    // (messenger-bootstrap.lib.ts L285-329, messenger-last-messages-loader.lib.ts L96-129).
+    void sidebarCatalogHydratesPreviewsBeforeFirstProjection()
+    {
+        Fixture test;
+        test.aggregateMessages = true; // route GET /messages/?uuid= to this handler (#quote-lookup convention)
+        const auto mStream = QStringLiteral("88888888-8888-4888-8888-0000000000d1");
+        const auto mRead = QStringLiteral("88888888-8888-4888-8888-0000000000d2");
+        int streamCatalogGets = 0;
+        QStringList lookedUp;
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/")) {
+                ++streamCatalogGets;
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", mStream}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            }
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", mStream}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.topics = [&](const Request &) {
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                    {"name", "Read history"}, {"is_done", false}, {"is_default", false},
+                    {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", mRead}, {"updated_at", "2026-01-02T10:00:05Z"}},
+                QJsonObject{{"uuid", QStringLiteral("77777777-7777-4777-7777-0000000000e1")},
+                    {"project_id", projectId}, {"stream_uuid", streamId},
+                    {"name", "Empty topic"}, {"is_done", false}, {"is_default", false},
+                    {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}},
+                QJsonObject{{"uuid", QStringLiteral("77777777-7777-4777-7777-0000000000e2")},
+                    {"project_id", projectId}, {"stream_uuid", streamId},
+                    {"name", "Shared pointer"}, {"is_done", false}, {"is_default", false},
+                    {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", mStream}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        test.messages = [&](const Request &request) {
+            const auto uuid = QUrlQuery(request.target).queryItemValue("uuid");
+            if (!uuid.isEmpty()) {
+                lookedUp.append(uuid);
+                if (uuid == mStream || uuid == mRead) {
+                    auto row = message(uuid == mStream ? QStringLiteral("Stream body")
+                                                       : QStringLiteral("Old read body"), uuid);
+                    row["created_at"] = uuid == mRead
+                        ? QStringLiteral("2025-08-02T10:00:05.000Z")
+                        : QStringLiteral("2026-01-02T10:00:05.000Z");
+                    return Response{QJsonArray{row}};
+                }
+                return Response{QJsonArray{}};
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(test.start());
+        // The catalog is accepted (the list handler fired) but not one row has been projected
+        // yet: background hydration must already have issued the deduplicated lookups for the
+        // unresolved pointers (mStream once - the sharing topic must not double-fetch - and mRead).
+        QVERIFY(QTest::qWaitFor([&] { return streamCatalogGets >= 1; }, 2000));
+        QVERIFY(QTest::qWaitFor([&] { return lookedUp.size() >= 2; }, 3000));
+        // First projection: hydration completes in the background - no topic was ever opened.
+        QTRY_VERIFY_WITH_TIMEOUT(!test.controller.topics().isEmpty(), 2000);
+        const auto topicRowOf = [&](const QString &id) {
+            for (const auto &row : std::as_const(test.controller).topics())
+                if (row.toMap().value("id").toString() == id) return row.toMap();
+            return QVariantMap{};
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(!topicRowOf(topicId).value("previewText").toString().isEmpty(), 3000);
+        const QSet<QString> unique{lookedUp.cbegin(), lookedUp.cend()};
+        QCOMPARE(unique.size(), lookedUp.size()); // dedup: the sharing topic never double-fetches
+        QVERIFY2(lookedUp.contains(mStream), qPrintable(lookedUp.join(",")));
+        QVERIFY2(lookedUp.contains(mRead), qPrintable(lookedUp.join(",")));
+        const auto readRow = topicRowOf(topicId);
+        QCOMPARE(readRow.value("previewText").toString(), QStringLiteral("Old read body"));
+        QCOMPARE(readRow.value("previewState").toString(), QStringLiteral("ready"));
+        const auto expectedTime = NativeController::formatRowTime(
+            QDateTime(QDate(2025, 8, 2), QTime(10, 0, 5), Qt::UTC), QLocale::system(),
+            QDate::currentDate(), QStringLiteral("Yesterday"));
+        QCOMPARE(readRow.value("rowTime").toString(), expectedTime);
+        const auto streamRow = test.controller.streams().first().toMap();
+        QCOMPARE(streamRow.value("previewText").toString(), QStringLiteral("Stream body"));
+        const auto emptyRow = topicRowOf(QStringLiteral("77777777-7777-4777-7777-0000000000e1"));
+        QCOMPARE(emptyRow.value("previewText").toString(), QString{});
     }
 
     // A row whose last message is an E2EE payload the client cannot present previews as the

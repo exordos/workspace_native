@@ -7194,6 +7194,10 @@ void NativeController::closeCache()
     // Row-preview lookups belong to the discarded lease, not to whatever opens next.
     m_rowPreviewPending.clear();
     m_rowPreviewInFlight.clear();
+    // #860: the network stage belongs to the discarded session too.
+    m_rowPreviewNetPending.clear();
+    m_rowPreviewNetInFlight.clear();
+    m_rowPreviewNetRetries.clear();
     const auto lease = m_cacheLease;
     m_cacheLease = {};
     if (m_cache && m_cache->lease().owner == lease.owner
@@ -9490,6 +9494,8 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             topics.append(it.value());
         }
         m_inboxTopics.insert(streamUuid, topics);
+        // #860: a background (inactive-stream) catalog accept is still a catalog accept.
+        seedRowPreviewHydrationFromCatalog();
         if (authoritative) m_inboxStaleTopics.remove(streamUuid);
         else m_inboxStaleTopics.insert(streamUuid);
         // Issue #729 phase 2: a newly hydrated unread catalog is a batch of
@@ -12916,6 +12922,10 @@ void NativeController::reset()
     m_preparedSwapActive = false;
     if (m_topicPreloadTimer) m_topicPreloadTimer->stop();
     m_rowPreviewInFlight.clear();
+    // #860: drop network-stage bookkeeping with the rest of the preview state.
+    m_rowPreviewNetPending.clear();
+    m_rowPreviewNetInFlight.clear();
+    m_rowPreviewNetRetries.clear();
     m_rowPreviewFence.clear();
     m_nextRowPreviewFence = 0;
     m_viewerDirectoryName.clear();
@@ -16838,6 +16848,9 @@ void NativeController::reloadSnapshot()
         if (!chatGuard) return false;
         m_streams = streams;
         m_catalogVerified = authoritative;
+        // #860: catalog accept is the reference's prime point - hydrate previews for every
+        // row (rendered or not) instead of waiting for the first projection to ask.
+        seedRowPreviewHydrationFromCatalog();
         if (authoritative) m_sidebarError.clear(); // issue #100: fresh catalog clears the card
         emit streamsChanged();
         emit callCryptoStateChanged(); // catalog encryption rows moved
@@ -17071,6 +17084,8 @@ void NativeController::loadTopics()
             topics.append(*topic);
         }
         m_topics = topics;
+        // #860: accepted topic pointers join the bounded preview hydration immediately.
+        seedRowPreviewHydrationFromCatalog();
         // A verified foreground catalog supersedes an older sidebar snapshot;
         // its revision fences an already-running background revalidation.
         if (authoritative && (m_inboxTopics.contains(m_stream) || m_inboxHydrating.contains(m_stream))) {
@@ -19648,7 +19663,17 @@ void NativeController::pumpRowPreviewHydration()
     if (m_rowPreviewPending.isEmpty()) return;
     // Without an available cache there is nothing to read; the rows keep the reference empty
     // preview and the pending marks are released so a later cache attach can try again.
-    if (!authenticated() || !m_cache || !m_cache->available()) { m_rowPreviewPending.clear(); return; }
+    if (!authenticated() || !m_cache || !m_cache->available()) {
+        // #860: with no cache attached the disk stage has nothing to read; catalog candidates
+        // still proceed to the network stage so every row reaches its preview.
+        if (m_rowPreviewNetworkEnabled && authenticated()) {
+            for (const auto &uuid : std::as_const(m_rowPreviewPending))
+                if (!m_rowPreviews.contains(uuid)) m_rowPreviewNetPending.insert(uuid);
+            scheduleRowPreviewNetworkHydration();
+        }
+        m_rowPreviewPending.clear();
+        return;
+    }
     const auto owner = creationOwnerKey();
     const auto cache = m_cache;
     const auto lease = m_cacheLease;
@@ -19677,6 +19702,13 @@ void NativeController::pumpRowPreviewHydration()
             } else if (const auto parsed = body ? parseMessage(body->row, m_session->project()) : std::nullopt;
                        parsed && parsed->uuid == uuid) {
                 storeRowPreview(uuid, rowPreviewOf(*parsed));
+            } else if (!body && m_rowPreviewNetworkEnabled) {
+                // #860: a disk miss is not an authoritative negative - the reference falls
+                // through to the messages lookup (messenger-last-messages-loader.lib.ts
+                // L96-129), so the uuid waits in the retryable network stage instead of
+                // memoizing a miss that outlives its retry window.
+                m_rowPreviewNetPending.insert(uuid);
+                scheduleRowPreviewNetworkHydration();
             } else {
                 storeRowPreview(uuid, RowPreview{}); // negative lookup: projections stay quiet
             }
@@ -19692,6 +19724,120 @@ void NativeController::pumpRowPreviewHydration()
     // A bounded pass leaves the remainder queued for the next tick, so every row of a large
     // sidebar still reaches its eventual preview without a burst of disk reads.
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
+}
+
+void NativeController::setRowPreviewNetworkEnabledForTest(bool enabled)
+{
+    // Per-case traffic-pin knob (#860), same usage as setTopicPreloadEnabledForTest:
+    // traffic-pinned cases that enumerate preview lookups run the disk-only shape.
+    m_rowPreviewNetworkEnabled = enabled;
+    if (!enabled) { m_rowPreviewNetPending.clear(); m_rowPreviewNetRetries.clear(); }
+}
+
+void NativeController::seedRowPreviewHydrationFromCatalog()
+{
+    // #860: the reference primes the sidebar's last-message data for EVERY row on catalog
+    // accept, not only the rendered ones (messenger-bootstrap.lib.ts L285-329,
+    // messenger-last-messages-loader.lib.ts L96-129). Pointers are deduplicated, resolved
+    // memos are skipped, and everything enters through the existing bounded pumps so a
+    // large catalog trickles instead of bursting.
+    const auto queue = [this](const QString &uuid) {
+        if (uuid.isEmpty() || m_rowPreviews.contains(uuid)
+            || m_rowPreviewInFlight.contains(uuid) || m_rowPreviewPending.contains(uuid)
+            || m_rowPreviewNetInFlight.contains(uuid)) return;
+        m_rowPreviewPending.insert(uuid);
+    };
+    for (const auto &stream : std::as_const(m_streams)) {
+        if (stream.archived) continue;
+        queue(stream.lastMessage);
+        const auto inbox = m_inboxTopics.constFind(stream.uuid);
+        if (inbox != m_inboxTopics.constEnd())
+            for (const auto &topic : *inbox) queue(topic.lastMessage);
+    }
+    for (const auto &topic : std::as_const(m_topics)) queue(topic.lastMessage);
+    if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
+}
+
+void NativeController::scheduleRowPreviewNetworkHydration()
+{
+    if (m_rowPreviewNetworkPumpQueued) return;
+    m_rowPreviewNetworkPumpQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_rowPreviewNetworkPumpQueued = false;
+        pumpRowPreviewNetworkHydration();
+    });
+}
+
+void NativeController::pumpRowPreviewNetworkHydration()
+{
+    if (m_rowPreviewNetPending.isEmpty()) return;
+    if (!authenticated() || !m_rowPreviewNetworkEnabled) {
+        m_rowPreviewNetPending.clear();
+        m_rowPreviewNetRetries.clear();
+        return;
+    }
+    const auto project = m_session->project();
+    const auto owner = creationOwnerKey();
+    const auto cache = m_cache;
+    const auto lease = m_cacheLease;
+    int started = 0;
+    const auto pending = m_rowPreviewNetPending.values();
+    for (const auto &uuid : pending) {
+        if (started >= rowPreviewNetworkBatch) break;
+        m_rowPreviewNetPending.remove(uuid);
+        if (m_rowPreviews.contains(uuid) || m_rowPreviewNetInFlight.contains(uuid)
+            || m_rowPreviewInFlight.contains(uuid)) continue;
+        m_rowPreviewNetInFlight.insert(uuid);
+        ++started;
+        const QPointer<NativeController> guard(this);
+        const auto fence = m_rowPreviewFence.value(uuid);
+        request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", uuid}},
+            [this, guard, uuid, owner, fence, project, cache, lease](const ApiResult &result) {
+            if (!guard) return;
+            m_rowPreviewNetInFlight.remove(uuid);
+            // A reply that answers after the session or its owner changed belongs to nobody.
+            if (!authenticated() || creationOwnerKey() != owner) return;
+            if (m_rowPreviewFence.value(uuid) != fence) {
+                // The payload moved (edit/delete) while this lookup was in flight; the payload
+                // path owns the memo now - notify the rows so they re-project from it.
+                announceRowPreviewRows(uuid);
+                return;
+            }
+            if (!result.ok()) {
+                // #860: a transient failure stays retryable - bounded re-queues with a backoff
+                // instead of a sticky negative memo that outlives the retry window.
+                if (m_rowPreviewNetRetries.value(uuid) < rowPreviewNetworkRetries) {
+                    ++m_rowPreviewNetRetries[uuid];
+                    QTimer::singleShot(2000, this, [this, uuid] {
+                        if (!authenticated() || m_rowPreviews.contains(uuid)) return;
+                        m_rowPreviewNetPending.insert(uuid);
+                        scheduleRowPreviewNetworkHydration();
+                    });
+                } else {
+                    storeRowPreview(uuid, RowPreview{}); // budget spent: quiet until catalog moves
+                    announceRowPreviewRows(uuid);
+                }
+                return;
+            }
+            const QJsonArray rows = result.data.isArray() ? result.data.toArray() : QJsonArray{};
+            std::optional<Message> parsed;
+            QJsonObject canonical;
+            for (const auto &value : rows) {
+                const auto candidate = parseMessage(value.toObject(), project);
+                if (candidate && candidate->uuid == uuid) { parsed = candidate; canonical = value.toObject(); break; }
+            }
+            if (parsed) {
+                storeRowPreview(uuid, rowPreviewOf(*parsed));
+                // Best-effort owner-scoped disk fill, mirroring the reference cache write:
+                // the next cold start hydrates from disk without a network lookup.
+                if (cache && cache->available()) cache->putMessageBody(lease, canonical);
+            } else {
+                storeRowPreview(uuid, RowPreview{}); // authoritative empty page: memo the miss
+            }
+            announceRowPreviewRows(uuid);
+        });
+    }
+    if (!m_rowPreviewNetPending.isEmpty()) scheduleRowPreviewNetworkHydration();
 }
 
 const Message *NativeController::replyTarget(const QString &id) const
