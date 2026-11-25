@@ -4850,7 +4850,8 @@ component NativeMentionChip: Item {
             if (activate) shortcutPopup.item.close();
             return true;
         }
-        if (root.Overlay.overlay.visible || root.controller.mediaViewer.open || callWindowOverlayItem.visible
+        if (root.Overlay.overlay.visible || root.controller.mediaViewer.open
+                || root.controller.callWindow.mode === 1 // standalone call window is foreground
                 || incomingCallOverlayItem.visible || (root.activeFocusItem && root.activeFocusItem.inputMethodComposing)) return false;
         if (action.startsWith("composer.")) {
             if (!composerText.formattingAllowed || composerMentionPopup.visible) return false;
@@ -16494,10 +16495,10 @@ component NativeMentionChip: Item {
     NativeMediaViewer {
         viewer: root.controller.mediaViewer
         colors: root.colors
-        // Calls keep precedence over media. Suspend only the popup surface,
-        // preserving the gallery and its composer/read guards until return.
+        // Calls keep precedence over media only while an invite is pending.
+        // #846: an expanded call lives in its own OS window now, so it no
+        // longer covers the gallery and never suspends it.
         visible: viewer.open && !root.controller.incomingCall.visible
-            && root.controller.callWindow.mode !== 1 // Expanded
         onRequestDownload: (uuid) => {
             root.downloadOwner = root.controller.ownerKey;
             root.downloadId = uuid;
@@ -16520,71 +16521,22 @@ component NativeMentionChip: Item {
         if (controller)
             controller.callWindow.setViewportSize(Qt.size(root.width, root.height))
     }
-    // #162 finding 4: the shell's fullscreen control drives the real window
-    // (the native counterpart of the reference browser-fullscreen on the call
-    // modal), and a window-side exit (WM shortcut / Esc) syncs the controller
-    // state back so the button label and glyph never go stale.
-    // 0 == Window.Automatic: the enum is not resolvable in a root-Window
-    // property initializer, so keep the plain value here.
-    property int callRestoreVisibility: 0
-    function syncCallFullscreenFromWindow() {
-        if (controller && controller.callWindow.fullscreen
-                && visibility !== Window.FullScreen)
-            controller.callWindow.syncFullscreen(false)
-    }
-    onVisibilityChanged: root.syncCallFullscreenFromWindow()
-    Connections {
-        target: root.controller.callWindow
-        enabled: root.controller !== undefined && root.controller !== null
-        function onFullscreenChanged() {
-            if (root.controller.callWindow.fullscreen) {
-                if (root.visibility !== Window.FullScreen) {
-                    root.callRestoreVisibility = root.visibility
-                    root.visibility = Window.FullScreen
-                }
-            } else if (root.visibility === Window.FullScreen) {
-                root.visibility = root.callRestoreVisibility
-            }
-        }
-    }
-    Item {
-        id: callWindowOverlayItem
-        objectName: "callWindowOverlay"
-        anchors.fill: parent
-        z: 1000
-        visible: root.controller.callWindow.mode === 1 // Expanded
-        Rectangle {
-            // Scrim: clicking it dismisses to PiP, never ends the call
-            // (handleOpenChange maps an expanded dismiss to minimize).
-            objectName: "callWindowScrim"
-            anchors.fill: parent
-            color: Qt.alpha("#000000", 0.45)
-            MouseArea {
-                anchors.fill: parent
-                onClicked: root.controller.callWindow.requestDismiss()
-            }
-        }
-        Item {
-            objectName: "callWindowExpandedHost"
-            x: root.controller.callWindow.bounds.x
-            y: root.controller.callWindow.bounds.y
-            width: root.controller.callWindow.bounds.width
-            height: root.controller.callWindow.bounds.height
-            NativeCallWindow {
-                id: callWindowExpandedShell
-                objectName: "callWindowExpanded"
-                anchors.fill: parent
-                colors: root.colors
-                controller: root.controller.callWindow
-                pipMode: false
-            }
-        }
-        Shortcut {
-            sequence: "Escape"
-            enabled: callWindowOverlayItem.visible
-            onActivated: root.controller.callWindow.requestDismiss()
-        }
-    }
+    // #162 finding 4 (re-homed by #846): the shell's fullscreen control drives
+    // the STANDALONE call window now (the reference BrowserWindow owns its own
+    // fullscreen state), so the sync wiring lives on callStandaloneComponent.
+    // #846: expanded mode presents as a top-level OS call window (reference
+    // jitsi-call-window.ts:236-249 - 1000x720, min 400x300, background
+    // #1B1B1D, title = application name, created hidden and shown only after
+    // a successful load). Qt does not instantiate Window elements nested in a
+    // Window's content, so the surface is created on demand from
+    // callStandaloneComponent below - the same pattern that already replaces
+    // the old in-app scrim.
+    property var callStandaloneEmbedHost: null
+    property var callStandaloneInstance: null
+    // Zero-size fallback host: reachable only for the single frame of a
+    // surface swap between the standalone window and the PiP window, never
+    // while a surface is live (the create-before-release order below).
+    Item { id: callEmbedOrphanHost; width: 0; height: 0 }
     Item {
         id: incomingCallOverlayItem
         objectName: "incomingCallOverlay"
@@ -16666,8 +16618,12 @@ component NativeMentionChip: Item {
             // The live handshake's C++ counterpart (finding 5, round 4).
             item.bridge = root.controller.embedBridge
         }
+        // #846 host priority: the PiP surface wins while minimized, the
+        // standalone call window while expanded; the orphan slot is only the
+        // one-frame swap fallback.
         parent: root.callPipEmbedHost !== null ? root.callPipEmbedHost
-            : callWindowExpandedShell.embedHost
+            : (root.callStandaloneEmbedHost !== null ? root.callStandaloneEmbedHost
+                                                     : callEmbedOrphanHost)
         anchors.fill: parent
     }
     Connections {
@@ -16678,24 +16634,137 @@ component NativeMentionChip: Item {
             callEmbedRetryReloadTimer.restart()
         }
     }
-    // The PiP surface is a separate frameless tool window: Qt does not
-    // instantiate Window elements nested in a Window's content, so it is
-    // created when the shell minimizes and destroyed when it expands or ends.
+    // The call surfaces are separate windows: Qt does not instantiate Window
+    // elements nested in a Window's content, so the expanded (standalone OS
+    // call window, #846) and the frameless PiP tool windows are created on
+    // their mode edge and destroyed when the mode leaves them. One handler
+    // owns both so the swap order is guaranteed: the INCOMING surface is
+    // created (and offers its embed host) before the OUTGOING surface is
+    // released, so the single embed surface never loses its host mid-swap.
     property var callPipInstance: null
     Connections {
         target: root.controller.callWindow
         function onModeChanged() {
-            const minimized = root.controller.callWindow.mode === 2
-            if (minimized && root.callPipInstance === null)
-                root.callPipInstance = callPipComponent.createObject(root)
-            else if (!minimized && root.callPipInstance !== null) {
-                const previous = root.callPipInstance
-                // Hand the single embed surface back to the expanded shell
-                // before the PiP window (its former host) goes away.
-                root.callPipEmbedHost = null
-                root.callPipInstance = null
-                previous.visible = false
-                previous.destroy()
+            const mode = root.controller.callWindow.mode
+            if (mode === 1) { // Expanded: standalone call window in, PiP out
+                if (root.callStandaloneInstance === null)
+                    root.callStandaloneInstance = callStandaloneComponent.createObject(root)
+                if (root.callPipInstance !== null) {
+                    const previous = root.callPipInstance
+                    root.callPipEmbedHost = null
+                    root.callPipInstance = null
+                    previous.visible = false
+                    previous.destroy()
+                }
+            } else if (mode === 2) { // Minimized: PiP in, standalone out
+                if (root.callPipInstance === null)
+                    root.callPipInstance = callPipComponent.createObject(root)
+                if (root.callStandaloneInstance !== null) {
+                    const previous = root.callStandaloneInstance
+                    root.callStandaloneEmbedHost = null
+                    root.callStandaloneInstance = null
+                    previous.visible = false
+                    previous.destroy()
+                }
+            } else { // Closed: no surface survives
+                if (root.callStandaloneInstance !== null) {
+                    const previous = root.callStandaloneInstance
+                    root.callStandaloneEmbedHost = null
+                    root.callStandaloneInstance = null
+                    previous.visible = false
+                    previous.destroy()
+                }
+                if (root.callPipInstance !== null) {
+                    const previous = root.callPipInstance
+                    root.callPipEmbedHost = null
+                    root.callPipInstance = null
+                    previous.visible = false
+                    previous.destroy()
+                }
+            }
+        }
+        // Same-callId re-open (reference focus path, jitsi-call-window.ts
+        // :213-232): raise and activate the live standalone window.
+        function onFocusRequested() {
+            const surface = root.callStandaloneInstance
+            if (surface !== null && surface.visible) {
+                surface.raise()
+                surface.requestActivate()
+            }
+        }
+    }
+    Component {
+        id: callStandaloneComponent
+        Window {
+            id: callStandaloneWindow
+            objectName: "callWindowStandaloneWindow"
+            // Reference BrowserWindow (jitsi-call-window.ts:236-247): fixed
+            // shell size and background, created hidden (show: false) and
+            // shown only on a successful load (:161-186). A settled LoadFailed
+            // keeps the window visible so the shipped retry affordance (#263)
+            // stays reachable - the documented native deviation from the
+            // reference's destroy-on-failure (design doc, #846 re-baseline).
+            visible: root.controller.callWindow.windowVisible
+                || root.controller.callWindow.embedState === 3 // LoadFailed
+            width: root.controller.callWindow.standaloneWidth
+            height: root.controller.callWindow.standaloneHeight
+            minimumWidth: root.controller.callWindow.standaloneMinWidth
+            minimumHeight: root.controller.callWindow.standaloneMinHeight
+            title: root.controller.callWindow.standaloneTitle
+            color: root.controller.callWindow.standaloneBackground
+            // #162 finding 4 re-homed: fullscreen lives on this window now;
+            // the controller flips it and a WM-side exit syncs back.
+            // 0 == Window.Automatic (the enum is not resolvable in a property
+            // initializer), same convention as the old main-window wiring.
+            property int restoreVisibility: 0
+            function syncFullscreenFromWindow() {
+                if (root.controller.callWindow.fullscreen
+                        && callStandaloneWindow.visibility !== Window.FullScreen)
+                    root.controller.callWindow.syncFullscreen(false)
+            }
+            onVisibilityChanged: callStandaloneWindow.syncFullscreenFromWindow()
+            Connections {
+                target: root.controller.callWindow
+                function onFullscreenChanged() {
+                    if (root.controller.callWindow.fullscreen) {
+                        if (callStandaloneWindow.visibility !== Window.FullScreen) {
+                            callStandaloneWindow.restoreVisibility = callStandaloneWindow.visibility
+                            callStandaloneWindow.visibility = Window.FullScreen
+                        }
+                    } else if (callStandaloneWindow.visibility === Window.FullScreen) {
+                        callStandaloneWindow.visibility = callStandaloneWindow.restoreVisibility
+                    }
+                }
+            }
+            // WM close dismisses to the PiP surface and never ends a live call
+            // (the scrim's dismiss semantics preserved on the new surface).
+            // Deferred one tick: dismissing synchronously inside onClosing
+            // would destroy this window while the close event is unwinding.
+            onClosing: (close) => {
+                close.accepted = true
+                if (root.controller.callWindow.mode === 1)
+                    Qt.callLater(() => root.controller.callWindow.requestDismiss())
+            }
+            Component.onCompleted: {
+                raise()
+                // The single embed surface follows the presentation here.
+                root.callStandaloneEmbedHost = callStandaloneShell.embedHost
+            }
+            Component.onDestruction: {
+                if (root.callStandaloneEmbedHost === callStandaloneShell.embedHost)
+                    root.callStandaloneEmbedHost = null
+            }
+            NativeCallWindow {
+                id: callStandaloneShell
+                objectName: "callWindowExpanded"
+                anchors.fill: parent
+                colors: root.colors
+                controller: root.controller.callWindow
+                pipMode: false
+            }
+            Shortcut {
+                sequence: "Escape"
+                onActivated: root.controller.callWindow.requestDismiss()
             }
         }
     }

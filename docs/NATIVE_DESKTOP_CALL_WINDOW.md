@@ -298,3 +298,29 @@ Native mapping decisions (implemented in `JitsiCallWindowController`):
 - Refused opens: a rejected payload also ends the stored call in
   `NativeController` wiring, mirroring the reference behaviour where `open`
   returning false leaves no window and the main side resets its call state.
+
+Presentation (implemented): the expanded call presents as a top-level QML
+`Window` (`callWindowStandaloneWindow`, created on the mode edge from
+`callStandaloneComponent` because Qt does not instantiate nested Windows
+inside window content). Shell bindings come from the controller properties
+`standaloneWidth/Height/MinWidth/MinHeight/Background/Title`, so the QML
+surface and the tests pin ONE copy of the reference numbers.
+- Hidden-until-loaded: `visible: windowVisible || embedState == LoadFailed`.
+  The LoadFailed term is a second documented deviation from the reference
+  (which destroys the window on failure): the shipped retry affordance
+  (#263/#250/#792) must stay reachable, so the window survives to show it.
+  A Loading window simply stays hidden, exactly like the reference `show:false`.
+- WM close intercepts to `requestDismiss()` (deferred one tick so the window
+  is not destroyed while its close event unwinds) and Escape inside the call
+  window keeps the scrim-era dismiss-to-PiP semantics; neither ends a call.
+- Fullscreen (#162 finding 4) re-homed from the main window onto the call
+  window (the reference BrowserWindow owns its own fullscreen state); the
+  main-window visibility wiring was removed.
+- Same-callId re-open focuses the live window via `focusRequested` (raise +
+  activate). Surface swaps (expand <-> PiP) are driven by ONE mode handler
+  that creates the incoming surface before releasing the outgoing one, so
+  the single embed surface (finding 2) never loses its host; a zero-size
+  orphan slot absorbs only the swap frame.
+- Because the call no longer covers the main window, the media-viewer
+  suppression while Expanded was removed; the app-shortcut guard keys on
+  `mode == Expanded` instead of the deleted scrim.

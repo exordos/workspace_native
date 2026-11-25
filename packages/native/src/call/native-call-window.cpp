@@ -3,6 +3,7 @@
 #include "call/display-capture-policy.h"
 #include "call/jitsi-call.h"
 
+#include <QCoreApplication>
 #include <QUrl>
 
 namespace workspace {
@@ -42,6 +43,19 @@ QString JitsiCallWindowController::standaloneBackgroundColor()
 {
     // workspace_ui e0194ffb jitsi-call-window.ts:244.
     return QStringLiteral("#1B1B1D");
+}
+
+QString JitsiCallWindowController::standaloneBackground() const
+{
+    return standaloneBackgroundColor();
+}
+
+QString JitsiCallWindowController::standaloneTitle() const
+{
+    // options.appName in the reference BrowserWindow construction; the same
+    // application-name fallback the notifications layer uses.
+    const auto name = QCoreApplication::applicationName();
+    return name.isEmpty() ? QStringLiteral("Exordos Workspace") : name;
 }
 
 JitsiCallWindowController::JitsiCallWindowController(QObject *parent) : QObject(parent)

@@ -31277,6 +31277,19 @@ private:
         QVERIFY(controller.replyMessageId().isEmpty());
     }
 
+    // #846: the expanded call presents as a top-level OS window (reference
+    // workspace_ui e0194ffb jitsi-call-window.ts BrowserWindow). The handle is
+    // the top-level itself: it exists from mode==Expanded and stays hidden
+    // until the load settles (windowVisible), like the reference show:false.
+    static QQuickWindow *standaloneCallWindow()
+    {
+        for (auto *candidate : QGuiApplication::topLevelWindows())
+            if (auto *top = qobject_cast<QQuickWindow *>(candidate))
+                if (top->objectName() == QLatin1String("callWindowStandaloneWindow"))
+                    return top;
+        return nullptr;
+    }
+
     void callWindowShellExpandsMinimizesAndRestoresPiP_data()
     {
         QTest::addColumn<QString>("locale");
@@ -31304,37 +31317,47 @@ private:
         // The call snapshots the default PiP bounds when the user joins.
         QTRY_COMPARE(controller.callWindow()->bounds(), QRect(32, 32, 1216, 736));
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
-        // Join from the card: the store opens the shell expanded in a scrim.
+        // Join from the card: the store opens the standalone call window.
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
-        auto *surface = visibleItem(window->contentItem(), QStringLiteral("callWindowSurface"));
+        // #846: the scrim era is over - nothing call-related renders inside
+        // the app window anymore.
+        QVERIFY(!item(window->contentItem(), QStringLiteral("callWindowScrim")));
+        // The standalone surface exists immediately but stays hidden until the
+        // load settles (reference show:false + show-on-load, :161-186).
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        QVERIFY(!shell->isVisible());
+        QVERIFY(!controller.callWindow()->windowVisible());
+        // Deliver the successful-load verdict (the real embed target is
+        // unreachable in the sandbox; the reference races the same load).
+        controller.callWindow()->apiLoadSucceeded();
+        QVERIFY(controller.callWindow()->windowVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        // Reference BrowserWindow shell (jitsi-call-window.ts:236-247).
+        QCOMPARE(shell->width(), 1000);
+        QCOMPARE(shell->height(), 720);
+        QCOMPARE(shell->minimumWidth(), 400);
+        QCOMPARE(shell->minimumHeight(), 300);
+        QCOMPARE(shell->color(), QColor(QStringLiteral("#1B1B1D")));
+        QCOMPARE(shell->title(), controller.callWindow()->standaloneTitle());
+        // The shell fills the window edge to edge.
+        auto *surface = visibleItem(shell->contentItem(), QStringLiteral("callWindowSurface"));
         QVERIFY(surface);
-        // Expanded bounds at the 1280x800 desktop viewport: inset 32 px
-        // (the 1440x900 golden lives in the native-native-call suite).
-        QCOMPARE(surface->mapToScene(QPointF{}), QPointF(32, 32));
-        QCOMPARE(surface->width(), qreal(1216));
-        QCOMPARE(surface->height(), qreal(736));
-        auto *title = item(window->contentItem(), QStringLiteral("callWindowTitleText"));
+        QCOMPARE(surface->mapToScene(QPointF{}), QPointF(0, 0));
+        QCOMPARE(surface->width(), qreal(1000));
+        QCOMPARE(surface->height(), qreal(720));
+        auto *title = item(shell->contentItem(), QStringLiteral("callWindowTitleText"));
         QVERIFY(title);
         QCOMPARE(title->property("text").toString(), locale == QStringLiteral("ru")
             ? QString::fromUtf8("Позвонить - workspace-call-room")
             : QStringLiteral("Call - workspace-call-room"));
-        // API-not-loaded state renders the localized loading text.
-        auto *state = item(window->contentItem(), QStringLiteral("callWindowLoadingState"));
-        QVERIFY(state && state->isVisible());
-        QCOMPARE(item(window->contentItem(), QStringLiteral("callWindowSurface"))->isEnabled(), true);
-        for (auto *child : state->childItems())
-            if (!child->property("text").toString().isEmpty()) {
-                QCOMPARE(child->property("text").toString(), locale == QStringLiteral("ru")
-                    ? QString::fromUtf8("Загрузка клиента звонков…")
-                    : QStringLiteral("Loading call client…"));
-            }
         // Minimize: the frameless PiP surface takes the default 320x220
-        // anchor 20 px from the viewport bottom-right (940,560 here). The
-        // PiP window is created on minimize and destroyed on expand/closed,
-        // so every cycle re-acquires it (a held pointer would dangle).
-        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        // anchor 20 px from the viewport bottom-right (940,560 here). Both
+        // surfaces are created/destroyed on their mode edge, so every cycle
+        // re-acquires them (a held pointer would dangle).
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         auto findPip = [] {
             for (auto *candidate : QGuiApplication::topLevelWindows())
                 if (auto *top = qobject_cast<QQuickWindow *>(candidate))
@@ -31357,34 +31380,43 @@ private:
             QVERIFY(visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         };
         auto *pip = waitForPip();
+        // The standalone surface is released the moment PiP takes over.
+        QTRY_VERIFY_WITH_TIMEOUT(standaloneCallWindow() == nullptr, 2000);
         // Default PiP is viewport-relative (940,560 at this viewport) mapped
         // through the window's screen position (#162 finding 6).
         assertPipBounds(pip, QRect(window->x() + 940, window->y() + 560, 320, 220));
-        QVERIFY(!visibleItem(window->contentItem(), QStringLiteral("callWindowScrim")));
         // User move/resize lands in the controller and is remembered across
         // two full minimize/expand cycles.
         controller.callWindow()->setPipBounds(QRect(120, 90, 400, 300));
         QTRY_COMPARE_WITH_TIMEOUT(QRect(pip->x(), pip->y(), pip->width(), pip->height()),
             QRect(120, 90, 400, 300), 2000);
-        // Cycle 1: expand through the PiP chevron (destroys that surface),
-        // then Escape minimizes a fresh PiP with the remembered bounds.
+        // Cycle 1: expand through the PiP chevron (destroys that surface).
+        // The embed is still Ready, so the recreated standalone window shows
+        // at once - hidden-until-loaded gates each load verdict, and the
+        // settled Ready verdict survives the swap.
         click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), QStringLiteral("callWindowSurface")), 2000);
-        QTest::keyClick(window, Qt::Key_Escape);
-        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem(window->contentItem(), QStringLiteral("callWindowSurface")), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        // Escape inside the call window dismisses to PiP (the scrim's
+        // outside-click semantics moved onto the window itself).
+        shell->requestActivate(); QTest::qWait(200);
+        QTest::keyClick(shell, Qt::Key_Escape);
         pip = waitForPip();
         assertPipBounds(pip, QRect(120, 90, 400, 300));
         // Cycle 2: expand, then minimize again from the expanded chevron.
         click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
-        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), QStringLiteral("callWindowSurface")), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         pip = waitForPip();
         assertPipBounds(pip, QRect(120, 90, 400, 300));
         // Only close (or readyToClose) ends the live call.
         controller.callWindow()->readyToClose();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(findPip() == nullptr, 2000);
-        QCOMPARE(controller.callWindow()->embedCreations(), 0);
+        QVERIFY(standaloneCallWindow() == nullptr);
+        // The successful-load verdict created the one embed surface.
+        QCOMPARE(controller.callWindow()->embedCreations(), 1);
     }
 
     // --- Issue #163 incoming invite UI (docs/NATIVE_DESKTOP_INCOMING_CALL_UI.md) ---
@@ -31766,7 +31798,12 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(),
             int(JitsiCallWindowController::Loading));
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        // #846: the embed host lives on the standalone call window now, and
+        // the window is still hidden while Loading (hidden-until-loaded).
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        QVERIFY(!shell->isVisible());
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         // The loader activates on Loading: creation of the embed surface is
         // what produces the load events, so it can never be gated on them.
@@ -31823,6 +31860,9 @@ private:
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
+        // #846: the hidden standalone call window already hosts the embed.
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
 
         // Run the view's callback in the app's own QML engine/context, on the
         // same object the Loader hands to the view as its `controller`.
@@ -31844,7 +31884,7 @@ private:
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Ready));
         QCOMPARE(controller.callWindow()->embedCreations(), 1);
-        auto *loading = item(window->contentItem(), QStringLiteral("callWindowLoadingState"));
+        auto *loading = item(shell->contentItem(), QStringLiteral("callWindowLoadingState"));
         QVERIFY(loading && !loading->isVisible());
 
         // The failure branch is the same QML call site: re-open, report a
@@ -31858,7 +31898,12 @@ private:
         qmlCall(QStringLiteral("nativeController.callWindow.apiLoadFailed()"), &error);
         QVERIFY2(error.isEmpty(), qPrintable(error));
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::LoadFailed));
-        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
+        // #846: the re-opened window stays visible for a settled LoadFailed
+        // so the shipped retry affordance (#263) stays reachable. The close
+        // destroyed the previous surface, so this re-acquires the handle.
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowRetryButton")));
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
     }
 
@@ -31887,7 +31932,9 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000))
@@ -31899,8 +31946,11 @@ private:
         // Only the Loader's own onStatusChanged can make this transition.
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 2000);
-        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowErrorState")));
-        QVERIFY(visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
+        // #846: a settled LoadFailed makes the standalone window visible.
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        QVERIFY(visibleItem(shell->contentItem(), QStringLiteral("callWindowErrorState")));
+        QVERIFY(visibleItem(shell->contentItem(), QStringLiteral("callWindowRetryButton")));
         controller.callWindow()->close();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
     }
@@ -31932,7 +31982,9 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000))
@@ -31956,7 +32008,10 @@ private:
         }
         QVERIFY(statusSignal >= 0);
         QSignalSpy statusSpy(loader, meta->method(statusSignal));
-        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton")));
+        // #846: LoadFailed keeps the standalone window visible for Retry.
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowRetryButton")));
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         // A genuine retry destroys the failed item and instantiates afresh:
         // status Error -> Null -> Error means at least two transitions.
@@ -32002,7 +32057,9 @@ private:
             controller.meetHost() == fixture.server.origin().toString(), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         // The handshake is only observable where the WebEngine embed surface
@@ -32018,7 +32075,7 @@ private:
         QCOMPARE(controller.callWindow()->participantCount(), 2);
         QTRY_COMPARE_WITH_TIMEOUT(controller.embedBridge()->liveRoster(),
             QStringList({QStringLiteral("Self"), QStringLiteral("Grace")}), 5000);
-        auto *subtitle = item(window->contentItem(), QStringLiteral("callWindowSubtitleText"));
+        auto *subtitle = item(shell->contentItem(), QStringLiteral("callWindowSubtitleText"));
         QVERIFY(subtitle);
         QTRY_VERIFY_WITH_TIMEOUT(subtitle->isVisible(), 5000);
         QCOMPARE(subtitle->property("text").toString(), QStringLiteral("2 participants"));
@@ -32060,7 +32117,9 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
@@ -32109,7 +32168,9 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
@@ -32153,21 +32214,30 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *button = visibleItem(window->contentItem(), QStringLiteral("callWindowFullscreenButton"));
+        // #846: fullscreen belongs to the standalone call window now (the
+        // reference BrowserWindow owns its own fullscreen state).
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        auto *button = visibleItem(shell->contentItem(), QStringLiteral("callWindowFullscreenButton"));
         QVERIFY(button);
-        click(window, button);
+        click(shell, button);
         QCOMPARE(controller.callWindow()->fullscreen(), true);
-        QTRY_VERIFY_WITH_TIMEOUT(window->visibility() == QWindow::FullScreen, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->visibility() == QWindow::FullScreen, 2000);
+        // The app window keeps its own state: only the call window went
+        // fullscreen, unlike the old in-app scrim.
+        QVERIFY(window->visibility() != QWindow::FullScreen);
         // Exiting through the control restores the previous window state.
-        click(window, button);
+        click(shell, button);
         QCOMPARE(controller.callWindow()->fullscreen(), false);
-        QTRY_VERIFY_WITH_TIMEOUT(window->visibility() != QWindow::FullScreen, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->visibility() != QWindow::FullScreen, 2000);
         // Leaving fullscreen externally (WM/Esc) syncs the controller state
         // and emits fullscreenChanged exactly once.
-        click(window, button);
-        QTRY_VERIFY_WITH_TIMEOUT(window->visibility() == QWindow::FullScreen, 2000);
+        click(shell, button);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->visibility() == QWindow::FullScreen, 2000);
         QSignalSpy spy(controller.callWindow(), &JitsiCallWindowController::fullscreenChanged);
-        window->showNormal();
+        shell->showNormal();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.callWindow()->fullscreen(), 2000);
         QCOMPARE(spy.count(), 1);
     }
@@ -32199,7 +32269,13 @@ private:
         QTRY_COMPARE(controller.callWindow()->bounds(), JitsiCallWindowController::expandedBounds(QSize(1100, 700)));
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        // #846: the shell opens hidden; settle the load so the surface and
+        // its minimize control become reachable.
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         QQuickWindow *pip = nullptr;
         if (!QTest::qWaitFor([&pip] {
                 for (auto *candidate : QGuiApplication::topLevelWindows())
@@ -32239,6 +32315,10 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
         std::function<int(QQuickItem *)> activeEmbedLoaders =
             [&activeEmbedLoaders](QQuickItem *root) -> int {
             int total = (root->objectName() == QLatin1String("callWindowEmbedLoader")
@@ -32247,10 +32327,13 @@ private:
                 total += activeEmbedLoaders(child);
             return total;
         };
-        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(window->contentItem()) == 1, 2000);
+        // #846: expanded, the single active loader lives in the standalone
+        // call window; the app window holds none.
+        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(shell->contentItem()) == 1, 2000);
+        QCOMPARE(activeEmbedLoaders(window->contentItem()), 0);
         // Minimize: the single embed surface moves into the PiP window; the
         // app window must hold none while minimized.
-        click(window, visibleItem(window->contentItem(), QStringLiteral("callWindowMinimizeButton")));
+        click(shell, visibleItem(shell->contentItem(), QStringLiteral("callWindowMinimizeButton")));
         QQuickWindow *pip = nullptr;
         if (!QTest::qWaitFor([&pip] {
                 for (auto *candidate : QGuiApplication::topLevelWindows())
@@ -32264,10 +32347,12 @@ private:
         QPointer<QQuickWindow> pipGuard(pip);
         QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(pip->contentItem()) == 1, 2000);
         QCOMPARE(activeEmbedLoaders(window->contentItem()), 0);
-        // Expand: the same surface moves back into the app window; the PiP
-        // window (with no embed of its own left inside) is destroyed.
+        // Expand: the same surface moves back into the RECREATED standalone
+        // window; the PiP window (with no embed of its own left inside) is
+        // destroyed.
         click(pip, visibleItem(pip->contentItem(), QStringLiteral("callWindowMinimizeButton")));
-        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(window->contentItem()) == 1, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(activeEmbedLoaders(shell->contentItem()) == 1, 2000);
         QTRY_VERIFY_WITH_TIMEOUT(pipGuard.isNull() || !pipGuard->isVisible(), 2000);
         controller.callWindow()->readyToClose();
         QTRY_VERIFY_WITH_TIMEOUT(!controller.calls()->hasActiveCall(), 2000);
@@ -32310,7 +32395,9 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)
@@ -32320,7 +32407,9 @@ private:
         // the controller must leave Loading for Ready without any C++ poke.
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::Ready), 20000);
-        auto *loading = item(window->contentItem(), QStringLiteral("callWindowLoadingState"));
+        // #846: Ready shows the window and the loading state is gone.
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        auto *loading = item(shell->contentItem(), QStringLiteral("callWindowLoadingState"));
         QVERIFY(loading && !loading->isVisible());
 
         // A meeting host that drops the connection must drive the view's
@@ -32332,14 +32421,17 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::LoadFailed), 20000);
-        auto *retry = visibleItem(window->contentItem(), QStringLiteral("callWindowRetryButton"));
+        // #846: the re-opened call window shows its failure for Retry.
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr && shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        auto *retry = visibleItem(shell->contentItem(), QStringLiteral("callWindowRetryButton"));
         QVERIFY(retry);
         // Retry re-requests the meeting URL through the live embed surface
         // (#263: the Loader stays active across LoadFailed so the single
         // surface survives every phase) and the now-serving host reaches
         // Ready.
         fixture.breakMeetingLoads = 0;
-        click(window, retry);
+        click(shell, retry);
         QCOMPARE(controller.callWindow()->embedState(), int(JitsiCallWindowController::Loading));
         QTRY_VERIFY_WITH_TIMEOUT(controller.callWindow()->embedState()
             == int(JitsiCallWindowController::Ready), 20000);
@@ -32393,7 +32485,9 @@ private:
         QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == fixture.server.origin().toString(), 2000);
         clickCallCard(window);
         QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
-        auto *loader = item(window->contentItem(), QStringLiteral("callWindowEmbedLoader"));
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        auto *loader = item(shell->contentItem(), QStringLiteral("callWindowEmbedLoader"));
         QVERIFY(loader);
         QTRY_VERIFY_WITH_TIMEOUT(loader->property("active").toBool(), 2000);
         if (!QTest::qWaitFor([&loader] { return loader->property("status").toInt() != 2; }, 5000)

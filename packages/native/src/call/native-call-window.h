@@ -48,6 +48,14 @@ class JitsiCallWindowController final : public QObject {
     // "expanded and the embed finished loading".
     Q_PROPERTY(QString callId READ callId NOTIFY callIdChanged)
     Q_PROPERTY(bool windowVisible READ windowVisible NOTIFY windowVisibilityChanged)
+    // #846: the shell constants the standalone QML Window binds directly, so
+    // the presentation and the tests pin ONE copy of the reference numbers.
+    Q_PROPERTY(int standaloneWidth READ standaloneWidth CONSTANT)
+    Q_PROPERTY(int standaloneHeight READ standaloneHeight CONSTANT)
+    Q_PROPERTY(int standaloneMinWidth READ standaloneMinWidth CONSTANT)
+    Q_PROPERTY(int standaloneMinHeight READ standaloneMinHeight CONSTANT)
+    Q_PROPERTY(QString standaloneBackground READ standaloneBackground CONSTANT)
+    Q_PROPERTY(QString standaloneTitle READ standaloneTitle CONSTANT)
 public:
     enum Mode { Closed = 0, Expanded = 1, Minimized = 2 };
     Q_ENUM(Mode)
@@ -108,6 +116,13 @@ public:
     // the meeting URL so the identity is never empty while a call is open.
     QString callId() const;
     bool windowVisible() const { return m_mode == Expanded && m_embedState == Ready; }
+    int standaloneWidth() const { return kStandaloneWidth; }
+    int standaloneHeight() const { return kStandaloneHeight; }
+    int standaloneMinWidth() const { return kStandaloneMinWidth; }
+    int standaloneMinHeight() const { return kStandaloneMinHeight; }
+    QString standaloneBackground() const;
+    // BrowserWindow title (jitsi-call-window.ts:242): the application name.
+    QString standaloneTitle() const;
     QRect bounds() const;
     int embedState() const { return m_embedState; }
     int embedCreations() const { return m_embedCreations; }
