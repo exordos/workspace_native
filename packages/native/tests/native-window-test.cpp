@@ -36340,6 +36340,73 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(list->property("readActive").toBool());
     }
 
+    // Issue #839: at a narrow width the right drawer floats over the
+    // conversation (narrowDrawerOverlay, #726). The account root pauses
+    // automatic read activity (#791), but switching to the Appearance screen
+    // inside the same still-covering drawer used to resume it, so messages the
+    // user never saw received a read_up_to receipt. The read gate must follow
+    // coverage: suspend while any open drawer overlays the conversation, while
+    // a docked drawer at a normal width must keep reading visible messages.
+    void windowNarrowAppearanceDrawerKeepsCoveredMessagesUnread()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("cover-gate.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *list = view("messageList"); QVERIFY(list);
+        QTRY_VERIFY(list->property("readActive").toBool());
+        auto *drawer = item(window->contentItem(), "nativeRightDrawer"); QVERIFY(drawer);
+        // Narrow float mode, the repro's 702 x 716 logical pixels.
+        window->resize(702, 716);
+        QTRY_VERIFY_WITH_TIMEOUT(window->property("narrowDrawerOverlay").toBool(), 5000);
+        QTRY_VERIFY(list->property("readActive").toBool());
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeRightDrawerShell"), 5000);
+        QVERIFY(drawer->property("accountRootVisible").toBool());
+        QVERIFY(!list->property("readActive").toBool());
+        click(window, view("accountAppearanceAction"));
+        QTRY_COMPARE(drawer->property("currentAccountScreen").toString(),
+                     QStringLiteral("appearance"));
+        QVERIFY(!drawer->property("accountRootVisible").toBool());
+        // Cover geometry contract: the drawer floats INSIDE the conversation
+        // column at this width - its left edge is left of the message list's
+        // right edge, so the covered messages cannot be on screen.
+        auto *drawerShell = view("nativeRightDrawerShell"); QVERIFY(drawerShell);
+        const qreal drawerLeft = drawerShell->mapToScene(QPointF(0, 0)).x();
+        const qreal listRight = list->mapToScene(QPointF(list->width(), 0)).x();
+        QVERIFY2(drawerLeft < listRight,
+                 qPrintable(QStringLiteral("drawer left %1 vs list right %2")
+                            .arg(drawerLeft).arg(listRight)));
+        QTRY_VERIFY(!controller.busy());
+        QTest::qWait(500);
+        QVERIFY(!list->property("readActive").toBool());
+        // Closing the drawer uncovers the conversation and reading resumes.
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+        QTRY_VERIFY(list->property("readActive").toBool());
+        // Acceptance: a docked drawer at a normal width does not block reading.
+        window->resize(1440, 900);
+        QTRY_VERIFY_WITH_TIMEOUT(!window->property("narrowDrawerOverlay").toBool(), 5000);
+        click(window, view("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("nativeRightDrawerShell"), 5000);
+        QVERIFY(drawer->property("accountRootVisible").toBool());
+        click(window, view("accountAppearanceAction"));
+        QTRY_COMPARE(drawer->property("currentAccountScreen").toString(),
+                     QStringLiteral("appearance"));
+        QTRY_VERIFY(list->property("readActive").toBool());
+        click(window, view("nativeRightDrawerClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("nativeRightDrawerShell"), 5000);
+    }
+
     // Issue #724: the signed-in account entry opens the Account page inside the
     // right drawer instead of the removed floating popup (reference
     // right-panel-user-menu.ui.tsx at e0194ff, docs/NATIVE_DESKTOP_ACCOUNT_DRAWER.md).

@@ -611,6 +611,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_26
     sidebarChatActionsCompleteFromMenu
     startupDirectoryDoesNotPopulateHiddenPickers
     updaterActualMainShowsAndExecutesTheDownloadAndInstallActions
+    windowNarrowAppearanceDrawerKeepsCoveredMessagesUnread
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     activityPanelExpandedListTogglesRoutesAndDisabledFavorites
