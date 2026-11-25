@@ -1,6 +1,7 @@
 #include "support/native-test-harness.h"
 #include "support/controller-identity-fixtures.h"
 #include "support/controller-mention-fixtures.h"
+#include "support/controller-folder-fixtures.h"
 
 class ControllerInboxTest final : public NativeControllerTestHarness {
     Q_OBJECT
@@ -578,6 +579,65 @@ private slots:
         QCOMPARE(fixture.controller.sidebarStreams().size(), 1);
         fixture.controller.logout(); QTRY_VERIFY(!fixture.controller.authenticated());
         QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+    }
+
+    // Issue #847 (workspace_ui e0194ffb sidebar-workspace-search.lib.ts,
+    // sidebar-workspace.ui.tsx:659-689): a query inside a server folder projects
+    // the local matches first, then an "All folders" separator (or the muted
+    // no-matches-in-folder status line when the local section is empty), then
+    // the global matches deduplicated by stream. The "all" system folder has
+    // no local/global split at all, and a query with no matches keeps the list
+    // truly empty so the empty state renders.
+    void sidebarSearchProjectsCrossFolderSectionsAndSeparators()
+    {
+        Fixture fixture;
+        const QString custom = QStringLiteral("9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f");
+        const QString beta = QStringLiteral("8e8e8e8e-8e8e-4e8e-8e8e-8e8e8e8e8e8e");
+        const QString gamma = QStringLiteral("7d7d7d7d-7d7d-4d7d-8d7d-7d7d7d7d7d7d");
+        fixture.folders = [=](const Request &) { return Response{QJsonArray{
+            folderRailFolder(custom, "Design", "created", 0, 0,
+                QJsonArray{folderRailItem(streamId), folderRailItem(gamma)})}}; };
+        fixture.streams = [=](const Request &) { return Response{QJsonArray{
+            inboxStream(streamId, "Alpha Needle", 0, 0, 0),
+            inboxStream(beta, "Beta Needle", 0, 0, 0),
+            inboxStream(gamma, "Gamma Needle", 0, 0, 0)}}; };
+        loginInbox(fixture, 3);
+        // Folder membership arrives asynchronously (same contract the folder
+        // rail tests wait on): synthesized system trio + the custom folder.
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.folders().size(), 4, 4000);
+        // Default "all" folder: flat projection, never any marker row.
+        fixture.controller.setSidebarSearchQuery("needle");
+        const QStringList flatRows{streamId, beta, gamma};
+        QCOMPARE(sidebarRowIds(fixture.controller.sidebarStreams()), flatRows);
+        // Server folder: local section, all-folders separator, global tail
+        // deduplicated against the local section.
+        fixture.controller.selectFolder(custom);
+        auto rows = fixture.controller.sidebarStreams();
+        QCOMPARE(rows.size(), 4);
+        const QVariantList localRows{rows.at(0), rows.at(1)};
+        const QStringList localIds{streamId, gamma};
+        QCOMPARE(sidebarRowIds(localRows), localIds);
+        QCOMPARE(rows.at(2).toMap().value("searchSeparator").toString(), QString("allFolders"));
+        QVERIFY(!rows.at(2).toMap().contains("id"));
+        QCOMPARE(rows.at(3).toMap().value("id").toString(), beta);
+        // Global-only matches: the status line replaces the separator.
+        fixture.controller.setSidebarSearchQuery("beta");
+        rows = fixture.controller.sidebarStreams();
+        QCOMPARE(rows.size(), 2);
+        QCOMPARE(rows.at(0).toMap().value("searchStatus").toString(), QString("noMatchesInFolder"));
+        QCOMPARE(rows.at(1).toMap().value("id").toString(), beta);
+        // Local-only matches: no marker rows at all.
+        fixture.controller.setSidebarSearchQuery("gamma");
+        rows = fixture.controller.sidebarStreams();
+        QCOMPARE(rows.size(), 1);
+        QCOMPARE(rows.at(0).toMap().value("id").toString(), gamma);
+        // Nothing matches: the list stays truly empty (empty state renders).
+        fixture.controller.setSidebarSearchQuery("nothing");
+        QVERIFY(fixture.controller.sidebarStreams().isEmpty());
+        // Clearing the query restores the ordinary folder sidebar.
+        fixture.controller.setSidebarSearchQuery("");
+        const QStringList folderRows{streamId, gamma};
+        QCOMPARE(sidebarRowIds(fixture.controller.sidebarStreams()), folderRows);
     }
 
     void inboxGroupsDirectAndChannelsExcludingPassiveTraffic()
