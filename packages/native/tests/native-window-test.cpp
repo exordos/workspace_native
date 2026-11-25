@@ -25872,12 +25872,31 @@ mv -Tf "$root/.current-new" "$root/current"
         }
         QVERIFY(flick);
         auto ensureInWindow = [&](QQuickItem *item) {
-            if (inWindow(item))
-                return;
-            const auto top = item->mapToItem(flick, QPointF(0, 0)).y();
-            flick->setProperty("contentY", qMax(0.0,
-                flick->property("contentY").toReal() + top - 24.0));
-            QTRY_VERIFY(inWindow(item));
+            // Same physical-viewport recipe as clickAccountMenuControl: the
+            // click point must be inside the scroller's clip AND a frame must
+            // have been painted after the last contentY move.
+            QSignalSpy painted(scene.window, &QQuickWindow::frameSwapped);
+            scene.window->update();
+            QTRY_VERIFY(([&] {
+                if (!item->isEnabled() || !item->isVisible())
+                    return false;
+                const auto center = item->mapToItem(flick,
+                    QPointF(item->width() / 2, item->height() / 2));
+                if (!flick->contains(center)) {
+                    const auto top = flick->property("contentY").toReal();
+                    const auto bottom = qMax(0.0,
+                        flick->property("contentHeight").toReal() - flick->height());
+                    const auto next = qBound(0.0,
+                        top + center.y() - flick->height() / 2.0, bottom);
+                    if (qAbs(next - top) > 0.5) {
+                        flick->setProperty("contentY", next);
+                        painted.clear();
+                        scene.window->update();
+                    }
+                    return false;
+                }
+                return !painted.isEmpty();
+            })());
         };
         QQuickItem *suspendButton = nullptr;
         QTRY_VERIFY(([&] { suspendButton = visibleItem("extProviderSuspend"); return suspendButton != nullptr; })());
