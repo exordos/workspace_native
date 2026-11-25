@@ -96,6 +96,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_5
     activityStarredShortFirstPageAutoLoadsNextMarker
     anchorJumpSkeletonPreview
     attachmentCardShowsVerifiedFileNameNotTheMessageLabel
+    channelTopicSummaryDialogEndpointDeleteConfirmDispatchesAndCancelRestores
     codeCopyButtonAppearsInMediaSplitBody
     corruptHeicFallsBackToFileCardAndDisplayErrorSlotWithDownload
     directAndChannelRecoveryRestoresTheLastViewedUnresolvedTab
