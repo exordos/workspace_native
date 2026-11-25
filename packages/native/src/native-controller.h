@@ -2724,8 +2724,12 @@ public:
     QString callError() const { return m_callError; }
     // The reference renders the header call action only when the Workspace
     // meet host is configured (chat-page-workspace.ui.tsx:4100).
+    // Issue #857: a call is addressed to a concrete topic (the meeting-URL
+    // message is a topic-scoped POST), and the reference only ever opens a
+    // conversation on a concrete topic. The no-topic aggregate view has no
+    // address to call into, so the gate stays closed there.
     bool canStartCall() const
-    { return authenticated() && hasConversation() && !topicClosed() && !m_meetHost.isEmpty(); }
+    { return authenticated() && hasConversation() && !m_topic.isEmpty() && !topicClosed() && !m_meetHost.isEmpty(); }
     Q_INVOKABLE void startCall();
     // Issue #164 DM call bridge (docs/NATIVE_DESKTOP_DM_CALL_BRIDGE.md): the
     // bridge store (pending partner + active-call descriptor), the profile Call

@@ -240,6 +240,33 @@ private slots:
         QVERIFY(configured.controller.canStartCall());
     }
 
+    // Issue #857: the no-topic aggregate view has no concrete topic for a call
+    // to address, so the header gate stays closed and startCall sends nothing
+    // (the reference only ever opens a conversation on a concrete topic).
+    void headerCallGateClosedInNoTopicAggregateView()
+    {
+        Fixture fixture;
+        fixture.serverSettings = [](const Request &) { return callMeetSettings(); };
+        QVERIFY(fixture.start());
+        QTRY_VERIFY(fixture.controller.canStartCall()); // a concrete topic: the gate is open
+        int posts = 0;
+        fixture.messages = [&posts](const Request &request) {
+            if (request.method == "POST") ++posts;
+            return Response{QJsonArray{}};
+        };
+        fixture.controller.selectStream(streamId); // the chat-list row: the aggregate view
+        QTRY_VERIFY(!fixture.controller.busy());
+        QCOMPARE(fixture.controller.conversationKind(), QStringLiteral("stream"));
+        QVERIFY(!fixture.controller.canStartCall());
+        fixture.controller.startCall();
+        QTest::qWait(150);
+        QCOMPARE(posts, 0); // refused before anything reaches the server
+        // Opening a concrete topic re-opens the gate for the same stream.
+        fixture.controller.selectTopic(topicId);
+        QTRY_VERIFY(fixture.controller.canStartCall());
+        QCOMPARE(posts, 0);
+    }
+
     void startCallPostsMeetingUrlBeforeOpening()
     {
         Fixture fixture;

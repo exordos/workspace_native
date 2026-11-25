@@ -31079,6 +31079,44 @@ private:
         }
     }
 
+    // Issue #857: the no-topic aggregate view (a chat-list stream row opened
+    // without picking a topic sub-row) must not offer a call it cannot address:
+    // the meeting-URL message is a topic-scoped POST and the reference only
+    // ever lands on a concrete topic. The header action stays hidden until a
+    // topic is opened.
+    void aggregateViewHidesHeaderCallButton()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Aggregate call header teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        controller.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QVERIFY(QTest::qWaitFor([&] { return controller.projects().size() == 1; }, 2000));
+        controller.openProject(projectId);
+        QVERIFY(QTest::qWaitFor([&] { return controller.streams().size() == 1; }, 2000));
+        controller.selectStream(streamId); // stay on the aggregate view: no selectTopic
+        QVERIFY(QTest::qWaitFor([&] { return !controller.topics().isEmpty(); }, 2000));
+        QVERIFY(QTest::qWaitFor([&] { return !controller.busy(); }, 2000));
+        QCOMPARE(controller.conversationKind(), QStringLiteral("stream"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        // The meet host is configured - only the missing topic hides the action.
+        QVERIFY(!controller.canStartCall());
+        QVERIFY(!visibleItem(window->contentItem(), QStringLiteral("headerCallButton")));
+        // Opening a concrete topic brings the header call action back.
+        controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.canStartCall(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), QStringLiteral("headerCallButton")), 2000);
+    }
+
     void meetingCardsShowOneTimestampBesideParticipants_data()
     {
         QTest::addColumn<bool>("own");
