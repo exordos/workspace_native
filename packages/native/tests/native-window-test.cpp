@@ -128,6 +128,43 @@ static void clickCurrentItem(QQuickWindow *window, const QString &name)
     clickReadyItem(window, item(window->contentItem(), name));
 }
 
+// Issue #796 item 2 (exo-review finding on PR #834): combo witnesses must
+// select through the visible popup, never emit activated() directly - a broken
+// popup or a drifted option label has to fail the case. Open the box with a
+// real mouse click, find the option row BY ITS VISIBLE LABEL and click it.
+static void pickComboOption(QQuickWindow *window, QQuickItem *combo, const QString &label)
+{
+    QVERIFY(combo);
+    click(window, combo);
+    QObject *list = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        auto *popup = combo->property("popup").value<QObject *>();
+        list = popup && popup->property("visible").toBool()
+            ? popup->property("contentItem").value<QObject *>() : nullptr;
+        return list != nullptr;
+    })(), 3000);
+    QQuickItem *row = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        row = nullptr;
+        for (int index = 0; index < 12; ++index) {
+            QQuickItem *candidate = nullptr;
+            QMetaObject::invokeMethod(list, "itemAtIndex",
+                Q_RETURN_ARG(QQuickItem *, candidate), Q_ARG(int, index));
+            if (!candidate)
+                continue;
+            QString text = candidate->property("text").toString();
+            if (text.isEmpty()) {
+                auto *content = candidate->property("contentItem").value<QQuickItem *>();
+                text = content ? content->property("text").toString() : QString();
+            }
+            if (text == label) { row = candidate; break; }
+        }
+        return row != nullptr;
+    })(), 3000);
+    QVERIFY(row->isVisible());
+    click(window, row);
+}
+
 static int itemCountWithPrefix(QQuickItem *root, const QString &prefix)
 {
     int count = root->objectName().startsWith(prefix);
@@ -26905,8 +26942,8 @@ mv -Tf "$root/.current-new" "$root/current"
 
     // Issue #796 item 2: a plain (non-racing) effort pick sends the effort
     // field alone and closes the dialog on the confirmed reply. The pick goes
-    // through the combo's activated seam - the same signal a real selection
-    // emits - and the patch must not carry prompt or enabled keys.
+    // through the visible combo popup (exordy finding on PR #834: no direct
+    // activated() emission), and the patch must not carry prompt or enabled keys.
     void channelTopicSummaryDialogEffortPickSendsFieldAndClosesOnSuccess()
     {
         ChannelInfoWindowScene scene(true,
@@ -26940,7 +26977,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
         auto *effort = visibleItem("channelTopicSummaryReasoning");
         QVERIFY(effort);
-        QMetaObject::invokeMethod(effort, "activated", Q_ARG(int, 5)); // "high"
+        pickComboOption(scene.window, effort, QStringLiteral("high"));
         auto *save = visibleItem("channelTopicSummarySave");
         QVERIFY(save && save->property("enabled").toBool());
         click(scene.window, save);
@@ -26987,7 +27024,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("channelTopicSummarySettingsTitle"));
         auto *effort = visibleItem("channelTopicSummaryReasoning");
         QVERIFY(effort);
-        QMetaObject::invokeMethod(effort, "activated", Q_ARG(int, 0)); // "" = provider default
+        // The first row is labelled "Provider default" and maps to "" (exordy
+        // finding on PR #834: the pick must go through the visible popup).
+        pickComboOption(scene.window, effort, QStringLiteral("Provider default"));
         auto *save = visibleItem("channelTopicSummarySave");
         QVERIFY(save && save->property("enabled").toBool());
         click(scene.window, save);
