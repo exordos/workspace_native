@@ -7414,9 +7414,21 @@ private slots:
             auto *wanted = encryptedUiItem(window, "topic-" + topicId);
             auto *other = encryptedUiItem(window, "topic-" + secondTopicId);
             auto *stream = encryptedUiItem(window, "stream-" + direct);
-            if (!wanted || !other || !stream || wanted->window() != window || other->window() != window
-                || stream->window() != window || wanted->parentItem() != other->parentItem()
-                || wanted->parentItem() != stream->parentItem()) return false;
+            // Issue #847: topic rows may be wrapped by a per-row delegate item
+            // (search separator support), so exact sibling identity is too
+            // strict. The contract is unchanged: every row shares one ancestor
+            // (the sidebar list) and keeps a separate placed cell.
+            QQuickItem *column = nullptr;
+            for (auto *p = wanted; p && !column; p = p->parentItem())
+                for (auto *q = other; q; q = q->parentItem())
+                    if (q == p) { column = q; break; }
+            QQuickItem *streamColumn = nullptr;
+            for (auto *p = wanted; p && !streamColumn; p = p->parentItem())
+                for (auto *q = stream; q; q = q->parentItem())
+                    if (q == p) { streamColumn = q; break; }
+            if (!wanted || !other || !stream || !column || !streamColumn
+                || wanted->window() != window || other->window() != window
+                || stream->window() != window) return false;
             const auto rect = [](QQuickItem *item) { return item->mapRectToScene(QRectF(QPointF{}, item->size())); };
             const auto a = rect(wanted), b = rect(other), header = rect(stream);
             if (a.isEmpty() || b.isEmpty() || header.isEmpty() || a.intersects(b)
