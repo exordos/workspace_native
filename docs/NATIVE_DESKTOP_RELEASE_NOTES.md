@@ -20,6 +20,7 @@
 - Fixed: warm topic preloads are fenced against history invalidation, so a late preload can no longer restore deleted messages, and retired preload slots are freed at a session renewal (issues #776, #777).
 - Fixed: the integration settings entry shows pressed-state feedback (issue #794).
 - Fixed: the provider limit fields in the integration settings dialog no longer hit a binding loop when a saved draft loads; the write-back follows your own edits only (issue #816).
+- Fixed: the topic-summary dialog footer now marks unsaved edits over a stale Saved confirmation, and a failed save reports its error on the tab it belongs to instead of every open tab (issue #795).
 
 The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
 
