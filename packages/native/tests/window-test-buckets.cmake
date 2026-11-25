@@ -228,6 +228,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_10
     attachmentCardMalformedNameEscapeStillProjectsEveryCard
     callWindowShellExpandsMinimizesAndRestoresPiP
     channelTopicSummaryDialogFailedEndpointSaveKeepsForm
+    channelTopicSummaryEndpointRevertedEditClearsUnsavedMarker
     diagnosticsMemoryPanelUnavailableReplacesMetrics
     directChatRecoveryRemainsInTheKeyboardFocusLoop
     draftsMentionsSidebarNavigationKeepsOnePageActive

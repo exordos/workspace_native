@@ -394,8 +394,14 @@ Dialog {
                 readonly property bool editing: editingUuid.length > 0
                 // Opening an edit/delete confirmation is NOT a draft change:
                 // dirty counts only setField mutations after the session's start
-                // mark (finding 4687482010).
+                // mark (finding 4687482010). #837: the counter alone also ticks
+                // when a mutation is REVERTED, so an edit draft that matches its
+                // baseline again must not read as unsaved - the footer follows
+                // the same content divergence the Save gate uses. The create
+                // form keeps the revision semantics: it has no saved baseline to
+                // diverge from and its Save never disables on revert.
                 readonly property bool dirty: editing && formRevision !== draftStartRevision
+                    && (editingUuid === "new" || hasChanges)
                 // Mutable numeric fields with the reference bounds
                 // (topic-summary-endpoints.lib.ts validateInteger/validateNumber ranges).
                 readonly property var numberRules: ({

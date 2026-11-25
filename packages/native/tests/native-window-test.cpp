@@ -29723,6 +29723,59 @@ NativeAvatarImage {
         checkForm();
     }
 
+    // #837: restoring an edited endpoint field to its original value must clear
+    // the unsaved marker. The endpoints-tab dirty read used the raw revision
+    // counter, which ticks for the change AND its reversal, so the yellow
+    // warning stayed visible next to a Save button the field-vs-baseline gate
+    // had already disabled: a warning to save a draft with nothing to submit.
+    void channelTopicSummaryEndpointRevertedEditClearsUnsavedMarker()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        // Opening an unchanged edit is not a draft change (#795).
+        QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        QCOMPARE(original, QStringLiteral("Synthetic GPT"));
+        name->setProperty("text", original + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save);
+        QVERIFY(save->property("enabled").toBool());
+        // Backspace the extra character back out: the field equals the baseline
+        // again, nothing is left to submit, so the warning must disappear with
+        // the Save gate instead of outranking it.
+        name->setProperty("text", original);
+        QTRY_VERIFY(!save->property("enabled").toBool());
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QString());
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
