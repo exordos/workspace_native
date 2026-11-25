@@ -570,6 +570,8 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_25
     activityStarredScrollPaginationFollowsMarkerAndRearm
     calendarSectionUnavailableCardMatchesReferenceContract
     channelFormExplainsLoadingAndCreateFailure
+    channelTopicSummaryGatesErrorStaysOutOfEndpointsBand
+    channelTopicSummarySavedFooterYieldsToNewEdits
     composerToolPopoversUseTheCurrentDraft
     editQuotedMessageShowsTheQuoteChipOverTheComposer
     feedPageHidesConversationAndOwnsContentWidth
