@@ -5134,6 +5134,11 @@ component NativeMentionChip: Item {
         const streams = root.controller.sidebarStreams
         for (let row = 0; row < streams.length; ++row) {
             const stream = streams[row]
+            // #847: separator/status marker rows carry no id and are never
+            // focusable (reference: the ring is built from
+            // [data-sidebar-search-item] rows only).
+            if (!stream || !stream.id)
+                continue
             targets.push({row: row, objectName: "stream-" + stream.id})
             const topics = stream.searchTopics || []
             for (let topic = 0; topic < topics.length; ++topic)
@@ -6204,6 +6209,17 @@ component NativeMentionChip: Item {
                 delegate: Column {
                     id: streamDelegate
                     required property var modelData
+                    // Issue #847 (workspace_ui e0194ffb sidebar-workspace.ui.tsx:659-689):
+                    // the projection inserts id-less marker rows between the local and
+                    // the global search section - a separator row (label between two
+                    // hairlines, aria-label sidebar.allFoldersResults) or the muted
+                    // no-matches status line. They replace the ordinary stream row.
+                    readonly property bool searchAllFoldersSeparator:
+                        String(modelData.searchSeparator || "") === "allFolders"
+                    readonly property bool searchNoMatchesStatus:
+                        String(modelData.searchStatus || "") === "noMatchesInFolder"
+                    readonly property bool searchMarker:
+                        searchAllFoldersSeparator || searchNoMatchesStatus
                     // Issue #102 (docs/NATIVE_DESKTOP_CHAT_LIST_DENSITY.md): the two
                     // persisted reference settings drive the row ladder and the click
                     // target; section 1.1/1.2 of the design doc holds the measurements.
@@ -6248,8 +6264,62 @@ component NativeMentionChip: Item {
                     }
                     width: streamList.width
                     spacing: 2
+                    // #847: All-folders separator row (reference role="separator",
+                    // aria-label sidebar.allFoldersResults; hairline/label/hairline,
+                    // px-2 pb-1 pt-3 with a 13 px label row = 28 px total) and the
+                    // muted no-matches-in-folder status line (px-2 py-2 text-xs).
+                    Row {
+                        objectName: "sidebarSearchAllFoldersSeparator"
+                        visible: streamDelegate.searchAllFoldersSeparator
+                        width: streamDelegate.width
+                        height: 28
+                        leftPadding: 8
+                        rightPadding: 8
+                        spacing: 8
+                        topPadding: 12
+                        bottomPadding: 4
+                        Accessible.role: Accessible.Separator
+                        Accessible.name: qsTr("All folders")
+                        readonly property real labelWidth: separatorLabel.implicitWidth
+                        Rectangle {
+                            y: (parent.height - parent.topPadding - parent.bottomPadding) / 2 + parent.topPadding - 1
+                            width: (parent.width - parent.leftPadding - parent.rightPadding
+                                - parent.spacing * 2 - parent.labelWidth) / 2
+                            height: 1
+                            color: root.colors["border-subtle"]
+                            opacity: 0.7
+                        }
+                        Text {
+                            id: separatorLabel
+                            y: (parent.height - parent.topPadding - parent.bottomPadding) / 2 + parent.topPadding - height / 2
+                            text: qsTr("All folders")
+                            color: root.colors["text-muted"]
+                            font.pixelSize: 12
+                        }
+                        Rectangle {
+                            y: (parent.height - parent.topPadding - parent.bottomPadding) / 2 + parent.topPadding - 1
+                            width: (parent.width - parent.leftPadding - parent.rightPadding
+                                - parent.spacing * 2 - parent.labelWidth) / 2
+                            height: 1
+                            color: root.colors["border-subtle"]
+                            opacity: 0.7
+                        }
+                    }
+                    Text {
+                        objectName: "sidebarSearchNoMatchesStatus"
+                        visible: streamDelegate.searchNoMatchesStatus
+                        Accessible.role: Accessible.StaticText
+                        text: qsTr("No matches in this folder")
+                        color: root.colors["text-muted"]
+                        font.pixelSize: 12
+                        leftPadding: 8
+                        rightPadding: 8
+                        topPadding: 8
+                        bottomPadding: 8
+                    }
                     NativeButton {
                         id: streamButton
+                        visible: !streamDelegate.searchMarker
                         colors: root.colors
                         objectName: "stream-" + streamDelegate.modelData.id
                         width: parent.width

@@ -92,6 +92,10 @@
         <message><source>Handed off to browser</source><translation>Передано браузеру</translation></message>
         <message><source>Cancelled</source><translation>Отменено</translation></message>
         <message><source>Folder list</source><translation>Список папок</translation></message>
+        <!-- Issue #847 cross-folder search sections (docs/NATIVE_DESKTOP_SIDEBAR_SEARCH.md):
+             sidebar.allFoldersResults + sidebar.noMatchesInFolder reference keys. -->
+        <message><source>All folders</source><translation>Все папки</translation></message>
+        <message><source>No matches in this folder</source><translation>В этой папке совпадений нет</translation></message>
         <message><source>Report a problem</source><translation>Сообщить о проблеме</translation></message>
         <message><source>Search cached messages</source><translation>Поиск в сохранённых сообщениях</translation></message>
         <message>
