@@ -16268,6 +16268,122 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed=closeIncubatedTestWindow(engine,window);if(closed)closeBeforeEngine.dismiss();QVERIFY(closed);
     }
 
+    // Issue #872 (umbrella #854): a messagesChanged pass must rebind only the
+    // rows whose content actually changed. The reference keeps message rows
+    // stable because React reconciles by message uuid; the native list used to
+    // rebind every rendered row on every messagesChanged, which is the whole-row
+    // rebind behind the media flicker and scroll jump (#854). Redundant passes
+    // (own-send echo, read ledger, unrelated state) must not touch the rendered
+    // projection at all.
+    void messageProjectionRebindsOnlyAffectedRows_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("identical-relaunch") << QString("identical-relaunch");
+        QTest::newRow("own-send") << QString("own-send");
+    }
+
+    void messageProjectionRebindsOnlyAffectedRows()
+    {
+        QFETCH(QString, scenario);
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        QMap<int, QJsonObject> history;
+        for (int i = 0; i < 5; ++i) {
+            auto entry = message(QString("Rebind fixture %1").arg(i),
+                QString("82000000-0000-4000-8000-%1").arg(i, 12, 10, QLatin1Char('0')));
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(i).toString(Qt::ISODateWithMs);
+            history.insert(i, entry);
+        }
+        const auto stream = QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+            {"name", "Rebind fixture"}, {"encryption", false}, {"unread_count", 0},
+            {"active_unread_count", 0}, {"passive_unread_count", 0},
+            {"last_message_uuid", history.last().value("uuid")}};
+        const auto topic = QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+            {"stream_uuid", streamId}, {"name", "Rebind topic"}, {"unread_count", 0},
+            {"active_unread_count", 0}, {"passive_unread_count", 0},
+            {"last_message_uuid", history.last().value("uuid")}};
+        QJsonObject sent;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{stream}};
+            if (path.endsWith("/streams/" + streamId)) return Response{stream};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return Response{QJsonArray{topic}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topic};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("read") == "false")
+                    return Response{QJsonArray{}};
+                QJsonArray page;
+                for (const auto &entry : history) page.append(entry);
+                return Response{page};
+            }
+            if (path.endsWith("/messages/") && request.method == "POST") {
+                sent = message("Rebind probe", "82000000-0000-4000-8000-000000000099");
+                sent["payload"] = request.body.value("payload");
+                sent["created_at"] = QDateTime::fromString("2026-01-02T10:00:30.000Z", Qt::ISODateWithMs)
+                    .toString(Qt::ISODateWithMs);
+                history.insert(5, sent);
+                return Response{sent};
+            }
+            if (path.endsWith("/actions/read_up_to/invoke"))
+                return Response{history.first()};
+            if (!sent.isEmpty() && path.endsWith("/messages/" + sent.value("uuid").toString()))
+                return Response{sent};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        // Issue #718: this case pins exact projection traffic; keep the sweep out.
+        controller.setTopicPreloadEnabledForTest(false);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Rebind window did not settle creation before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), 5);
+        auto *list = item(window->contentItem(), "messageList");
+        QVERIFY(list);
+        QVERIFY(list->property("rowUpdateCountForTest").isValid());
+        const auto lastId = controller.messages().last().toMap().value("id").toString();
+        QTRY_VERIFY(item(window->contentItem(), "message-" + lastId));
+        QTest::qWait(400); // let the opening viewport chain settle
+        const auto rowUpdates = [list] { return list->property("rowUpdateCountForTest").toInt(); };
+        const int baseline = rowUpdates();
+        QVERIFY(baseline > 0); // the opening pass itself rendered rows
+        if (scenario == "identical-relaunch") {
+            // A redundant notification re-runs the projection pass with
+            // content-identical rows: zero row mutations may follow.
+            emit controller.messagesChanged();
+            QTest::qWait(400);
+            QCOMPARE(rowUpdates() - baseline, 0);
+        } else {
+            controller.setDraft(QStringLiteral("Rebind probe"));
+            controller.send();
+            QTRY_COMPARE(controller.messages().size(), 6);
+            QTest::qWait(400);
+            const int delta = rowUpdates() - baseline;
+            QVERIFY2(delta <= 3, qPrintable(QString("a single append rebound %1 rows").arg(delta)));
+        }
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss();
+        QVERIFY(closed);
+    }
+
     // docs/NATIVE_DESKTOP_AUTO_PAGING.md + docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md:
     // a wheel approaching the loaded top issues the older-page request with no
     // button click. The reference boundary is LOAD_MORE_THRESHOLD = 100 px

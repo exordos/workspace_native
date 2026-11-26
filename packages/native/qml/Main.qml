@@ -8004,6 +8004,11 @@ component NativeMentionChip: Item {
                     id: renderedMessages
                     dynamicRoles: true
                 }
+                // Issue #872 test seam: counts the row mutations actually applied
+                // to the rendered projection. Window cases pin that a
+                // messagesChanged pass rebinds only the rows whose content
+                // changed (reference React reconciles by message uuid).
+                property int rowUpdateCountForTest: 0
                 // View-only preferences follow actual UUIDs through split/merge.
                 // Controller remains the sole canonical history collection.
                 property var messageSnapshot: []
@@ -8600,12 +8605,14 @@ component NativeMentionChip: Item {
                             }
                         }
                         if (keepsSuffix) {
+                            rowUpdateCountForTest++;
                             renderedMessages.insert(0, projection.slice(0, added));
                             firstExisting = added;
                         }
                     }
                     for (let i = firstExisting; i < projection.length; ++i) {
                         if (i >= renderedMessages.count) {
+                            rowUpdateCountForTest++;
                             renderedMessages.append(projection.slice(i));
                             break;
                         }
@@ -8620,15 +8627,20 @@ component NativeMentionChip: Item {
                                 }
                             }
                             if (previous < 0) {
+                                rowUpdateCountForTest++;
                                 renderedMessages.insert(i, model);
                                 continue;
                             }
+                            rowUpdateCountForTest++;
                             renderedMessages.move(previous, i, 1);
                         }
+                        rowUpdateCountForTest++;
                         renderedMessages.set(i, model);
                     }
-                    if (renderedMessages.count > projection.length)
+                    if (renderedMessages.count > projection.length) {
+                        rowUpdateCountForTest++;
                         renderedMessages.remove(projection.length, renderedMessages.count - projection.length);
+                    }
                     const ticket = ++layoutTicket;
                     Qt.callLater(() => restoreViewport(ticket));
                 }
