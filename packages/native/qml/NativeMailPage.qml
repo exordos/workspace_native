@@ -78,13 +78,19 @@ Item {
                 Repeater {
                     id: folderList
                     objectName: "mailFolderList"
-                    model: page.mail ? page.mail.folders : []
+                    // Stable positional model (NativeFeedPage pattern): a
+                    // rebound Repeater keeps delegates and re-binds
+                    // modelData, so rows index the live list instead.
+                    model: page.mail
+                        ? Array.from({length: page.mail.folders.length}, function (_, i) { return i })
+                        : []
                     delegate: Rectangle {
                         id: folderRow
                         required property var modelData
+                        readonly property var row: (page.mail && page.mail.folders[Number(modelData)]) || ({})
                         readonly property bool active: page.mail
-                            && page.mail.folderId === modelData.id
-                        objectName: "mailFolderRow-" + modelData.id
+                            && page.mail.folderId === row.id
+                        objectName: "mailFolderRow-" + row.id
                         Layout.fillWidth: true
                         implicitHeight: 34
                         radius: 9
@@ -93,7 +99,7 @@ Item {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: page.mail.selectFolder(folderRow.modelData.id)
+                            onClicked: page.mail.selectFolder(folderRow.row.id)
                         }
                         RowLayout {
                             anchors.fill: parent
@@ -101,8 +107,9 @@ Item {
                             anchors.rightMargin: 10
                             spacing: 6
                             Text {
+                                objectName: "mailFolderTitle-" + folderRow.row.id
                                 Layout.fillWidth: true
-                                text: folderRow.modelData.title
+                                text: folderRow.row.title
                                 font.pixelSize: 13
                                 font.weight: folderRow.active ? Font.DemiBold : Font.Normal
                                 color: folderRow.active
@@ -111,13 +118,13 @@ Item {
                                 elide: Text.ElideRight
                             }
                             Text {
-                                objectName: "mailFolderUnread-" + folderRow.modelData.id
-                                visible: folderRow.modelData.unread > 0
-                                text: String(folderRow.modelData.unread)
+                                objectName: "mailFolderUnread-" + folderRow.row.id
+                                visible: folderRow.row.unread > 0
+                                text: String(folderRow.row.unread)
                                 font.pixelSize: 12
                                 font.weight: Font.DemiBold
                                 color: page.colors["on-accent"]
-                                Accessible.name: folderRow.modelData.title
+                                Accessible.name: folderRow.row.title
                             }
                         }
                     }
@@ -125,7 +132,7 @@ Item {
                 Item { Layout.fillHeight: true }
             }
             Rectangle {
-                width: 1
+                Layout.preferredWidth: 1
                 Layout.fillHeight: true
                 color: page.borderColor
             }
@@ -152,13 +159,16 @@ Item {
                         width: parent ? parent.width : 0
                         spacing: 8
                         Repeater {
-                            model: page.mail ? page.mail.messages : []
+                            model: page.mail
+                                ? Array.from({length: page.mail.messages.length}, function (_, i) { return i })
+                                : []
                             delegate: Rectangle {
                                 id: messageRow
                                 required property var modelData
+                                readonly property var row: (page.mail && page.mail.messages[Number(modelData)]) || ({})
                                 readonly property bool selected: page.mail
-                                    && page.mail.selectedMessageUuid === modelData.uuid
-                                objectName: "mailMessageRow-" + modelData.uuid
+                                    && page.mail.selectedMessageUuid === row.uuid
+                                objectName: "mailMessageRow-" + row.uuid
                                 Layout.fillWidth: true
                                 implicitHeight: messageColumn.implicitHeight + 20
                                 radius: 10
@@ -167,7 +177,7 @@ Item {
                                 MouseArea {
                                     anchors.fill: parent
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: page.mail.selectMessage(messageRow.modelData.uuid)
+                                    onClicked: page.mail.selectMessage(messageRow.row.uuid)
                                 }
                                 Column {
                                     id: messageColumn
@@ -179,33 +189,33 @@ Item {
                                         width: parent.width
                                         spacing: 6
                                         Text {
-                                            objectName: "mailMessageSender-" + messageRow.modelData.uuid
+                                            objectName: "mailMessageSender-" + messageRow.row.uuid
                                             Layout.fillWidth: true
-                                            text: messageRow.modelData.sender
+                                            text: messageRow.row.sender
                                             font.pixelSize: 12
                                             color: page.mutedColor
                                             elide: Text.ElideRight
                                         }
                                         Text {
-                                            objectName: "mailMessageTime-" + messageRow.modelData.uuid
-                                            text: messageRow.modelData.time
+                                            objectName: "mailMessageTime-" + messageRow.row.uuid
+                                            text: messageRow.row.time
                                             font.pixelSize: 11
                                             color: page.mutedColor
                                         }
                                     }
                                     Text {
-                                        objectName: "mailMessageSubject-" + messageRow.modelData.uuid
+                                        objectName: "mailMessageSubject-" + messageRow.row.uuid
                                         width: parent.width
-                                        text: messageRow.modelData.subject
+                                        text: messageRow.row.subject
                                         font.pixelSize: 14
                                         font.weight: Font.DemiBold
                                         color: page.textColor
                                         elide: Text.ElideRight
                                     }
                                     Text {
-                                        objectName: "mailMessageSnippet-" + messageRow.modelData.uuid
+                                        objectName: "mailMessageSnippet-" + messageRow.row.uuid
                                         width: parent.width
-                                        text: messageRow.modelData.snippet
+                                        text: messageRow.row.snippet
                                         font.pixelSize: 12
                                         color: page.mutedColor
                                         elide: Text.ElideRight
@@ -230,10 +240,11 @@ Item {
                         }
                     }
                 }
-                ColumnLayout {
+                Item {
                     objectName: "mailErrorState"
-                    anchors.centerIn: parent
-                    spacing: 10
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 10
                     Text {
                         Layout.alignment: Qt.AlignHCenter
                         text: qsTr("Couldn't load mail")
@@ -246,10 +257,11 @@ Item {
                         text: qsTr("Retry")
                         onClicked: if (page.mail) page.mail.refresh()
                     }
+                    }
                 }
             }
             Rectangle {
-                width: 1
+                Layout.preferredWidth: 1
                 Layout.fillHeight: true
                 color: page.borderColor
             }

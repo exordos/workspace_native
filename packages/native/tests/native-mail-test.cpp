@@ -5,7 +5,11 @@
 #include <QtTest>
 #include <QQmlComponent>
 #include <QQmlEngine>
+#include <QGuiApplication>
+#include <QHash>
 #include <QQuickItem>
+#include <QQuickStyle>
+#include <QQuickWindow>
 #include <QUrlQuery>
 #include <QVariant>
 
@@ -170,16 +174,23 @@ private slots:
                           QUrl::fromLocalFile(QStringLiteral(
                               WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeMailPage.qml")));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> object(component.create());
+        const QVariantMap initial {
+            {QStringLiteral("colors"), lightColors()},
+            {QStringLiteral("mail"), QVariant::fromValue(store)}};
+        QScopedPointer<QObject> object(component.createWithInitialProperties(initial));
         QVERIFY(object);
-        object->setProperty("colors", lightColors());
-        object->setProperty("mail", QVariant::fromValue(store));
         auto *page = qobject_cast<QQuickItem *>(object.data());
         QVERIFY(page);
+        // The Repeater only incubates delegates inside a window; the offscreen
+        // platform serves this headlessly.
+        QQuickWindow window;
+        window.resize(900, 700);
+        page->setParentItem(window.contentItem());
+        window.show();
         store->refresh();
         QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("ready"), 5000);
-        QTRY_VERIFY(item(page, "mailFolderRow-inbox"));
-        QVERIFY(textOf(page, "mailFolderRow-inbox").contains("Inbox"));
+QTRY_VERIFY(item(page, "mailFolderRow-inbox"));
+        QVERIFY(textOf(page, "mailFolderTitle-inbox").contains("Inbox"));
         QCOMPARE(textOf(page, "mailFolderUnread-inbox"), QStringLiteral("12"));
         QVERIFY(item(page, "mailMessageRow-mail-inbox-1"));
         QCOMPARE(textOf(page, "mailReaderTitle"), QStringLiteral("Select a message"));
@@ -258,5 +269,12 @@ private:
     bool slowInboxOnce = false;
 };
 
-QTEST_GUILESS_MAIN(NativeMailTest)
+int main(int argc, char **argv)
+{
+    QGuiApplication app(argc, argv);
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
+    NativeMailTest test;
+    return QTest::qExec(&test, argc, argv);
+}
+
 #include "native-mail-test.moc"
