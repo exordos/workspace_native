@@ -38593,6 +38593,23 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(view("mailFolderUnread-inbox")->property("text").toString(), QString("12"));
         // Inbox is the default selection: the fixture threads render.
         QTRY_VERIFY_WITH_TIMEOUT(view("mailMessageRow-mail-inbox-1"), 5000);
+        // 3-column grid 220px|1fr|1fr: the thread column gets an even split of
+        // the leftover (a content-hinted fillWidth starved it to a sliver).
+        // Freshly incubated delegates report non-zero size only after the next
+        // layout pass, so poll (re-fetching the items each round).
+        auto *sectionPage = view("mailSectionPage"); QVERIFY(sectionPage);
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *threadList = view("mailThreadColumn");
+            return threadList
+                && threadList->width() >= (sectionPage->width() - 224.0) / 2.0 - 64.0;
+        })()), 5000);
+        // The visible contract: thread cards actually paint at the column
+        // width (a collapsed ScrollView contentItem clipped them to pills).
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *threadRow = view("mailMessageRow-mail-inbox-1");
+            return threadRow
+                && threadRow->width() >= (sectionPage->width() - 224.0) / 2.0 - 84.0;
+        })()), 5000);
         QVERIFY(view("mailMessageRow-mail-inbox-2") && view("mailMessageRow-mail-inbox-3"));
         QCOMPARE(view("mailMessageSubject-mail-inbox-1")->property("text").toString(),
                  QString("Release 0.5.0 checks passed"));

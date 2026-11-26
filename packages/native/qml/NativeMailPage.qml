@@ -65,6 +65,8 @@ Item {
         }
 
         RowLayout {
+            id: columnsRow
+            objectName: "mailColumnsRow"
             Layout.fillWidth: true
             Layout.fillHeight: true
             spacing: 0
@@ -137,9 +139,16 @@ Item {
                 color: page.borderColor
             }
 
-            // Thread list column.
+            // Thread list column. The reference grid is 220px | 1fr | 1fr;
+            // Qt Quick Layouts has no fr units and the content hints (ScrollView
+            // minimum vs the reader's Text implicit) distribute greedily - the
+            // thread column collapsed to a 76 px sliver. Split the leftover
+            // explicitly: (row - 248 sidebar - 2 separators) / 2 per column.
             StackLayout {
+                objectName: "mailThreadColumn"
                 Layout.fillWidth: true
+                Layout.preferredWidth: Math.max(0, (columnsRow.width - 250) / 2)
+                Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 Layout.margins: 10
                 currentIndex: page.mail && page.mail.state === "loading" ? 0
@@ -268,9 +277,13 @@ Item {
             }
 
             // Reader placeholder column: subject + sender of the selected row
-            // and an empty-body note; the real reader is #880.
+            // and an empty-body note; the real reader is #880. preferredWidth 0
+            // matches the thread column so the leftover splits 1fr/1fr like
+            // the reference grid.
             ColumnLayout {
                 Layout.fillWidth: true
+                Layout.preferredWidth: Math.max(0, (columnsRow.width - 250) / 2)
+                Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 Layout.margins: 16
                 spacing: 8
