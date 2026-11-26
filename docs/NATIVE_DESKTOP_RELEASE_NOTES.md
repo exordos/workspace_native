@@ -1,3 +1,13 @@
+# Workspace Native 0.50.3 - Linux development preview
+
+- Fixed: inline images and videos in an open conversation stay painted while the client briefly retries media fetches during fast scrolling or a flaky link. Rows no longer blank out and flash back when a demand request is superseded mid-flight (issue #873, in the #854 media-stability line).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.50.2 to 0.50.3](https://github.com/exordos/workspace_native/compare/0.50.2...0.50.3)
+
+---
+
 # Workspace Native 0.50.2 - Linux development preview
 
 - Fixed: the workspace shell no longer locks up while the sidebar catalog refreshes. The stream and topic lists are no longer fully rebuilt for every element a list traversal touches - a path that could keep the GUI thread busy for seconds on large catalogs and made the window stop responding (issue #868, follow-up in the #863 responsiveness line).
