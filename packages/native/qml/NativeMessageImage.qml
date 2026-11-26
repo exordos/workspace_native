@@ -91,10 +91,13 @@ Item {
         // already leased and the view stays in demand (or only bodyActive
         // flapped while the attachment remains in bounds), keep the lease and
         // the published URL. Release+re-acquire of the same urn can expose a
-        // blank frame mid-restoration (#873).
+        // blank frame mid-restoration (#873). The hold may only extend demand
+        // the acquire path could have: a hidden view has no demand, so the
+        // visible check keeps a hidden image from pinning its lease and URL
+        // when loadActive stays true across the visibility change (#873 review).
         const sameLease = previous && previous.images === images && previous.reference === reference
             && Number(viewState.scope) === Number(images ? images.scopeRevision : 0)
-        if (sameLease && (loadActive || (demandHoldInView && images && reference.length > 0))) {
+        if (sameLease && visible && (loadActive || (demandHoldInView && images && reference.length > 0))) {
             updateState()
             return
         }
