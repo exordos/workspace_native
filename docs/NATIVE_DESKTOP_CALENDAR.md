@@ -69,10 +69,19 @@ All strings are new user-visible `qsTr` keys; they must be added to
 
 ## Data: deterministic mock adapter (UI phase)
 
-Live API is #852; this phase is fixtures only (issue scope). A
-`CalendarModel` (QAbstractListModel) on the controller is filled from
-`GET /calendar/events?from&to` responses; the window-test mock server serves
-fixed fixtures for a frozen reference date so cells are assertable. Events:
+Live API is #852; this phase is fixtures only (issue scope). The controller
+is filled from `GET /calendar/events?from&to` responses and exposes
+`calendarEvents` as a `QVariantList` projection with `stateChanged`
+announcements (the feed-page pattern of #38, `native-controller.cpp`).
+Amended during slice 2: a QAbstractListModel would only serve the agenda
+ListView - the week columns and month cells need random per-day access and
+would force a second index in JS anyway, so the list shape buys nothing in
+this phase. Late answers of a retired window are fenced by a monotonic
+version + owner guard exactly like `FeedState` (issue #356); a re-show of an
+already-loaded window is not re-fetched, so section re-entry is traffic-free
+and fixtures that never navigate to calendar see zero new requests. The
+window-test mock server serves fixed fixtures for a frozen reference date so
+cells are assertable. Events:
 `{uuid, day (YYYY-MM-DD), start, end, title, calendar (work|personal),
 colorToken}`. Loading/error drive the state cards; retry re-fetches the
 visible window.

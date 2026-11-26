@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 
 // Calendar section page shell (issue #881, Part of #851,
 // docs/NATIVE_DESKTOP_CALENDAR.md). UI phase: deterministic fixture data is
@@ -227,7 +228,7 @@ FocusScope {
                             Label {
                                 anchors.centerIn: parent
                                 text: miniCell.cellDate.getDate()
-                                color: miniCell.isSelected ? page.colors["text-invert"]
+                                color: miniCell.isSelected ? page.colors["on-accent"]
                                                            : (miniCell.inMonth ? page.colors["text-primary"]
                                                                               : page.colors["text-muted"])
                             }
