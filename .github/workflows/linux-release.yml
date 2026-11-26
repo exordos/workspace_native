@@ -40,6 +40,8 @@ jobs:
     outputs:
       reuse: ${{ steps.lookup.outputs.reuse }}
     steps:
+      - name: Check out the gate verdict script
+        uses: actions/checkout@v6
       - name: Wait for the master-push gate verdict on this commit
         id: lookup
         env:
@@ -52,28 +54,26 @@ jobs:
           reuse=false
           while :; do
             if gh api "repos/${GITHUB_REPOSITORY}/commits/${GATE_SHA}/check-runs?per_page=100" \
-                --jq '[.check_runs[]
-                      | select((.name == "package-linux" or .name == "full-gate-linux")
-                               and .check_suite.event == "push"
-                               and .check_suite.head_branch == "master")]' > check-runs.json; then
-              # Any completed non-success verdict blocks the release at once,
-              # before the timeout fallback: one red required check must never
-              # be outraced by the other check still running at the deadline.
-              red=$(jq '[.[] | select(.status == "completed" and .conclusion != "success")] | length' check-runs.json)
-              if [[ "${red}" -gt 0 ]]; then
+                > check-runs.json; then
+              # The decision lives in one script that is covered by a
+              # regression test (packages/native/tests/
+              # master-gate-verdict-test.py). Verdicts:
+              #   block = a matching master-push check completed non-success,
+              #           fail at once - one red must never be outraced;
+              #   wait  = keep polling. Reuse is only accepted once EVERY
+              #           matching run has completed: an older green pair
+              #           must not authorize publication while a newer
+              #           matching run (re-check, rerun, or a second master
+              #           push of the same sha) may still return red;
+              #   reuse = completed green verdicts for each required name.
+              verdict=$(python3 packages/native/scripts/master-gate-verdict.py \
+                  check-runs.json) || true
+              if [[ "${verdict}" == block ]]; then
                 echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
                 exit 1
               fi
-              # Reuse requires a successful verdict for EACH distinct required
-              # check name. Counting matching runs is not enough: two green
-              # check runs sharing one name would satisfy a count-based gate
-              # while the other required check never ran at all.
-              green_names=$(jq -r '[.[]
-                  | select(.status == "completed" and .conclusion == "success")
-                  | .name] | unique | .[]' check-runs.json)
-              if printf '%s\n' "${green_names}" | grep -qx 'package-linux' \
-                 && printf '%s\n' "${green_names}" | grep -qx 'full-gate-linux'; then
-                echo "The master-push gate on ${GATE_SHA} is green; publishing reuses its verdict."
+              if [[ "${verdict}" == reuse ]]; then
+                echo "The master-push gate on ${GATE_SHA} is green with no matching run still in flight; publishing reuses its verdict."
                 reuse=true
                 break
               fi
@@ -201,6 +201,7 @@ jobs:
           python3 packages/native/tests/matched-screenshot-acceptance-test.py -v
           python3 packages/native/tests/warm-navigation-benchmark-test.py -v
           python3 packages/native/tests/live-workspace-acceptance-test.py -v
+          python3 packages/native/tests/master-gate-verdict-test.py -v
 
       - name: Configure Release and installed runtime probe
         shell: bash
