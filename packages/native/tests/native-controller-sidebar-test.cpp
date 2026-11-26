@@ -1455,6 +1455,85 @@ private slots:
         QCOMPARE(projection.count(), 0); // no projection churn - the whole point of the seam
     }
 
+    // exordy finding on PR #866 (medium, head 05c10517): the catalog seed includes the
+    // inbox slot topics of inactive streams, but the announce scans only m_streams and
+    // m_topics - a memo completing an inbox-topic preview never announced the revision
+    // and the row stayed blank forever (the QML binding has no other re-evaluation).
+    void hydratedInboxTopicPreviewAnnouncesRevision()
+    {
+        Fixture test;
+        test.aggregateMessages = true; // the pump's GET /messages/?uuid= answers the empty page
+        const auto inboxStream = QStringLiteral("55555555-5555-4555-8555-666666666665");
+        const auto inboxTopic = QStringLiteral("77777777-7777-4777-8777-000000000d01");
+        const auto inboxLast = QStringLiteral("88888888-8888-4888-8888-000000000d01");
+        bool inboxFetched = false;
+        const auto streamRow = [](const QString &uuid, const QString &name, int activeUnread) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", activeUnread},
+                {"active_unread_count", activeUnread}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{streamRow(streamId, "Native channel", 0),
+                    streamRow(inboxStream, "Quiet archive", 1)}};
+            return Response{streamRow(streamId, "Native channel", 0)};
+        };
+        const auto inboxRow = QJsonObject{{"uuid", inboxTopic}, {"project_id", projectId},
+            {"stream_uuid", inboxStream}, {"name", "Archived topic"}, {"is_done", false},
+            {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+            {"passive_unread_count", 0}, {"last_message_uuid", QString(inboxLast)},
+            {"updated_at", "2026-01-02T10:00:05Z"}};
+        test.topics = [&](const Request &request) {
+            if (QUrlQuery(request.target).queryItemValue("stream_uuid") == inboxStream) {
+                inboxFetched = true;
+                return Response{QJsonArray{inboxRow}};
+            }
+            return Response{QJsonArray{
+                QJsonObject{{"uuid", topicId}, {"project_id", projectId}, {"stream_uuid", streamId},
+                    {"name", "First topic"}, {"is_done", false}, {"is_default", true},
+                    {"unread_count", 0}, {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}},
+                QJsonObject{{"uuid", QStringLiteral("44444444-4444-4444-8444-666666666666")},
+                    {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Second topic"},
+                    {"is_done", false}, {"is_default", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}},
+                QJsonObject{{"uuid", QStringLiteral("55555555-5555-4555-8555-666666666664")},
+                    {"project_id", projectId}, {"stream_uuid", streamId}, {"name", "Third topic"},
+                    {"is_done", false}, {"is_default", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        test.messages = [](const Request &) { return Response{QJsonArray{}}; };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        QTRY_COMPARE(test.controller.streams().size(), 2);
+        test.controller.showInbox(); // sweeps the activeUnread catalog and hydrates the slot
+        QVERIFY(QTest::qWaitFor([&] { return inboxFetched; }, 3000));
+        auto cached = message("Inbox topic preview body", inboxLast);
+        cached["user_uuid"] = userId;
+        QSignalSpy previews(&test.controller, &NativeController::previewChanged);
+        QSignalSpy projection(&test.controller, &NativeController::streamsChanged);
+        bool stored = false;
+        QVERIFY(cache.putMessageBody(cache.lease(), cached, &cache, [&stored](bool okay) { stored = okay; }));
+        QVERIFY(QTest::qWaitFor([&stored] { return stored; }, 2000));
+        // The memo reaches the store through the late-disk retry path (the server page is
+        // empty), so the readable preview itself is not the finding - the ANNOUNCEMENT is:
+        // without the inbox scan the revision never bumps and the bound row stays blank.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto text = test.controller.previewFields(inboxLast, test.controller.previewRevision())
+                .value("previewText").toString();
+            return text == QStringLiteral("Inbox topic preview body");
+        })(), 8000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return previews.count() >= 1; })(), 2000);
+        QCOMPARE(projection.count(), 0); // preview content never rebuilds the projection
+    }
+
     // exordy finding on PR #866 (medium): hydration learns the authoritative creation stamp
     // of a row's last message. When that stamp moves the projected activity order, the
     // sidebar must actually re-sort: the pump records the observed stamp in the same ledger
