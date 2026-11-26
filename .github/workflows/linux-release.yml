@@ -22,8 +22,65 @@ permissions:
   contents: write
 
 jobs:
+  master-gate-reuse:
+    # Tag publishing reuses the full-suite verdict of the master push on the
+    # same commit (process decision 2026-11-26). The tagged sha is the master
+    # tip, whose push pipeline runs the identical package-linux and
+    # full-gate-linux checks. Waiting for that verdict removes a duplicated
+    # full-suite run from the publish path without weakening it: a release
+    # still requires a green full gate on exactly the released sha. Without a
+    # complete green push verdict within the window the publish job falls back
+    # to running the full gate itself; a red push verdict blocks the release.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: read
+    timeout-minutes: 75
+    outputs:
+      reuse: ${{ steps.lookup.outputs.reuse }}
+    steps:
+      - name: Wait for the master-push gate verdict on this commit
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          deadline=$(( SECONDS + 3000 ))
+          reuse=false
+          while :; do
+            if gh api "repos/${GITHUB_REPOSITORY}/commits/${GATE_SHA}/check-runs?per_page=100" \
+                --jq '[.check_runs[]
+                      | select((.name == "package-linux" or .name == "full-gate-linux")
+                               and .check_suite.event == "push"
+                               and .check_suite.head_branch == "master")]' > check-runs.json; then
+              required=$(jq 'length' check-runs.json)
+              completed=$(jq '[.[] | select(.status == "completed")] | length' check-runs.json)
+              successful=$(jq '[.[] | select(.conclusion == "success")] | length' check-runs.json)
+              if [[ "${required}" -ge 2 && "${completed}" -eq "${required}" ]]; then
+                if [[ "${successful}" -eq "${required}" ]]; then
+                  echo "The master-push gate on ${GATE_SHA} is green; publishing reuses its verdict."
+                  reuse=true
+                else
+                  echo "::error::The master-push gate on ${GATE_SHA} is not green; refusing to publish this tag."
+                  exit 1
+                fi
+                break
+              fi
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "No complete master-push gate verdict within the window; the publish job runs the full gate itself."
+              break
+            fi
+            sleep 30
+          done
+          echo "reuse=${reuse}" >> "${GITHUB_OUTPUT}"
+
   package-linux:
-    if: github.event_name != 'pull_request' || github.base_ref == 'master'
+    needs: master-gate-reuse
+    if: ${{ always() && (needs.master-gate-reuse.result == 'success' || needs.master-gate-reuse.result == 'skipped') && (github.event_name != 'pull_request' || github.base_ref == 'master') }}
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
     timeout-minutes: 90
@@ -156,7 +213,7 @@ jobs:
           --output-on-failure --no-tests=error
 
       - name: Run the full release gate on Xvnc and Openbox
-        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        if: (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && needs.master-gate-reuse.outputs.reuse != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -173,6 +230,10 @@ jobs:
             trap 'kill "$system_bus_pid"' EXIT
           fi
           runuser -u cassi-native-ci -- bash packages/native/tests/full-linux-gate.sh build/linux-release
+
+      - name: Finish the release build when the push-gate verdict was reused
+        if: (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && needs.master-gate-reuse.outputs.reuse == 'true'
+        run: cmake --build build/linux-release --parallel "$(nproc)"
 
       - name: Package installed runtime
         shell: bash
