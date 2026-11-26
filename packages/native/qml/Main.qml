@@ -8418,8 +8418,14 @@ component NativeMentionChip: Item {
                     }
                 }
                 function continueOpening() {
+                    // Issue #874: a schedule that holds positioning under a saved
+                    // reading anchor whose row has not landed yet must NOT starve
+                    // the opening preparation - the lookup for that anchor is the
+                    // only thing that can end the hold, so the positioning gate is
+                    // lifted exactly while such a hold is pending.
                     if (openingApplied || displayedRoute !== routeKey() || !root.controller.messageHistoryReady
-                        || root.controller.busy || positioning)
+                        || root.controller.busy
+                        || (positioning && !(pendingViewport && pendingViewport.pendingSaved)))
                         return;
                     root.controller.prepareConversationOpening(openingPosition ? openingPosition.messageId : "");
                     if (!openingApplied && !positioning && root.controller.conversationOpening.ready)
@@ -8623,6 +8629,31 @@ component NativeMentionChip: Item {
                     const snapshot = sameRoute && pendingViewport ? pendingViewport : captureViewport();
                     if (!sameRoute)
                         snapshot.followTail = true;
+                    // Issue #874: re-entering a conversation that left scrolled
+                    // back used to pin every pre-opening schedule to the tail,
+                    // because the saved-position opening is only prepared one
+                    // loop turn later (continueOpening) - the list flashed
+                    // through the newest history slice to the tail and only
+                    // then jumped to the saved reading anchor. While this route
+                    // has a saved anchor and the opening has not been applied
+                    // yet, pin that anchor on every schedule instead: exactly
+                    // (offset included) once the row is on the loaded page, or
+                    // as a pending anchor resting at the top of the loaded
+                    // content while the slices are still arriving. The
+                    // resolved opening re-asserts the same anchor afterwards,
+                    // so the final placement is unchanged and the interim tail
+                    // passes disappear.
+                    if (!openingApplied && openingPosition
+                        && openingPosition.kind === "anchor"
+                        && !(opening.ready && root.controller.messageHistoryReady)) {
+                        const savedPresent = messageSnapshot.some(
+                            row => String(row.id) === openingPosition.messageId);
+                        snapshot.followTail = false;
+                        snapshot.anchorId = openingPosition.messageId;
+                        snapshot.center = false;
+                        snapshot.pendingSaved = !savedPresent;
+                        snapshot.offset = savedPresent ? openingPosition.offset : 0;
+                    }
                     if (!openingApplied && opening.ready && root.controller.messageHistoryReady) {
                         let target = String(opening.messageId || "");
                         const firstUnread = messageSnapshot.find(row => !row.read);
@@ -8786,6 +8817,9 @@ component NativeMentionChip: Item {
                     }
                     forceMeasuredLayout();
                     const snapshot = pendingViewport;
+                    // Issue #874: set when the schedule carried a pending saved
+                    // anchor whose row has not been rendered yet.
+                    let savedAnchorMissing = false;
                     if (snapshot.followTail) {
                         tailFollow = true;
                         positionViewAtEnd();
@@ -8810,6 +8844,15 @@ component NativeMentionChip: Item {
                             if (row && row.readBoundary)
                                 contentY += row.readBoundary.mapToItem(messageList, 0, 0).y
                                     - (snapshot.center ? (height - row.readBoundary.height) / 2 : snapshot.offset);
+                        } else if (snapshot.pendingSaved) {
+                            // Issue #874: the saved anchor row is not on the
+                            // loaded slice yet - rest at the top of the loaded
+                            // content (the direction the anchor resolves to)
+                            // instead of carrying the previous route's
+                            // scrollY, then settle exactly when the opening
+                            // re-asserts the anchor on the next pass.
+                            savedAnchorMissing = true;
+                            contentY = originY - topMargin;
                         } else {
                             contentY = snapshot.scrollY;
                         }
@@ -8817,6 +8860,22 @@ component NativeMentionChip: Item {
                     forceMeasuredLayout();
                     if (!finalPass) {
                         Qt.callLater(() => restoreViewport(ticket, true));
+                        return;
+                    }
+                    // Issue #874: a saved reading anchor that has not been
+                    // applied yet must not settle at an interim position while
+                    // the history slices are still arriving - keep the list
+                    // under positioning (a visible settle here would show the
+                    // wrong rows and mark visible reads there) and let the
+                    // refresh timer re-schedule the projection until the
+                    // anchor row lands or the opening decides otherwise.
+                    if (savedAnchorMissing && !openingApplied
+                        && !root.controller.conversationOpening.failed) {
+                        savedPositionRefreshTimer.restart();
+                        // Issue #874: the held schedule must still let the opening
+                        // be prepared (continueOpening) - the saved-anchor lookup
+                        // it dispatches is what ends this hold.
+                        Qt.callLater(continueOpening);
                         return;
                     }
                     pendingViewport = null;
@@ -9004,6 +9063,15 @@ component NativeMentionChip: Item {
                     id: visibleReadTimer
                     interval: 250
                     onTriggered: messageList.markVisibleRead()
+                }
+                Timer {
+                    // Issue #874: refresh the projection while a saved reading
+                    // anchor is held under positioning (see restoreViewport),
+                    // so the settle resumes as soon as the anchor row lands or
+                    // the opening resolves differently.
+                    id: savedPositionRefreshTimer
+                    interval: 100
+                    onTriggered: messageList.replaceMessages(messageList.messageSnapshot, true)
                 }
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded

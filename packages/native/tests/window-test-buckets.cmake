@@ -158,6 +158,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_7
     channelHeaderOpensInfoOverSettingsAndRestoresTheLayer
+    conversationTailAndReentryAnchorStaySteadyThroughUpdates
     diagnosticsLogViewerModalLongPayloadRemainsScrollable
     emptyMessageActionTargetDoesNotBuildMessageProjection
     failedQuoteMediaPreviewRestoresTheTextOnlyLayout
