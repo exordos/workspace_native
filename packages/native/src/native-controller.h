@@ -2192,6 +2192,14 @@ private:
     // pump tick no matter how many memos that tick stored (replaces the streamsChanged
     // announcements the preview paths used to fire).
     void schedulePreviewRevisionBump();
+    // exordy finding on PR #866 (medium): a hydration pump that learns the real created
+    // stamp of a row's last message must let it participate in the activity comparator.
+    // applyHydratedRowActivity records the stamp in the same ledger noteActivityMerge
+    // feeds and reports whether the projected order actually moved; that report gates one
+    // coalesced streamsChanged - the QML binding edge that re-reads the projection.
+    QVector<const Stream *> orderedStreamPointers() const;
+    bool applyHydratedRowActivity(const Message &message);
+    void scheduleStreamsReorderAnnounce();
     quint64 bumpRowPreviewFence(const QString &uuid);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
     // Issue #867 (subtask A): single-row projection shared by streams() and
@@ -2257,6 +2265,8 @@ private:
     // #866 review (finding 3): preview-only revision counter + coalesce flag.
     int m_previewRevision = 0;
     bool m_previewRevisionBumpQueued = false;
+    // exordy finding on PR #866: coalesce flag for the activity-reorder streamsChanged.
+    bool m_streamsReorderQueued = false;
     // #860: a disk miss is not an authoritative negative - the reference falls through to the
     // project-scoped messages lookup during bootstrap (messenger-last-messages-loader.lib.ts
     // L96-129). The network stage is bounded per tick like the disk pump, retries transient

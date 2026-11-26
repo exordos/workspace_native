@@ -14539,16 +14539,12 @@ QVariantMap NativeController::streamById(const QString &id) const
     return {};
 }
 
-QVariantList NativeController::streams() const
+QVector<const Stream *> NativeController::orderedStreamPointers() const
 {
-    // Issue #868 (design verdict): this getter MUST rebuild per read. The
-    // property is bound from QML, and a Qt 6.10 binding that was served a
-    // cached QVariant once never re-evaluates on the next NOTIFY again (the
-    // cached variant froze globalTopicUsesTypedHttpForEveryMetadataKind on
-    // four full-gate shards, PR #871). Getter-level projection caches are
-    // therefore only legal for internal C++ consumers, never for QML-bound
-    // reads like this one.
-    ++m_streamsProjectionCount;
+    // exordy finding on PR #866: the projected sidebar order, factored out of streams()
+    // so the preview pumps can re-evaluate the order after recording a hydrated activity
+    // stamp without materializing the row DTOs. streams() still rebuilds per read
+    // (issue #868 design verdict, see the comment on streams()).
     QVector<const Stream *> ordered;
     for (const auto &stream : m_streams) {
         if (!stream.archived) { ordered.append(&stream); }
@@ -14582,6 +14578,59 @@ QVariantList NativeController::streams() const
             return a->activeUnread > 0;
         return activity.value(a->uuid) > activity.value(b->uuid);
     });
+    return ordered;
+}
+
+bool NativeController::applyHydratedRowActivity(const Message &message)
+{
+    // exordy finding on PR #866: the hydration pumps learned a row's true last-message
+    // stamp but left it out of the activity ledger, so the projected order stayed pinned
+    // at the stale updated_at fallback. Record the stamp unconditionally (the next
+    // projection read must sort from it either way) and report ONLY when the projected
+    // order actually moved - a memo that agrees with the old key, or reorders nothing,
+    // must not cost the sidebar a projection rebuild (that is the whole point of the
+    // preview-only announcement seam).
+    if (message.uuid.isEmpty() || message.createdMicros <= 0) return false;
+    bool keyMoves = false;
+    for (const auto &stream : std::as_const(m_streams)) {
+        if (stream.archived || stream.lastMessage != message.uuid) continue;
+        if (rowActivityMicros(stream.lastMessage, stream.updatedMicros) != message.createdMicros) {
+            keyMoves = true;
+            break;
+        }
+    }
+    if (!keyMoves) return false;
+    QStringList orderBefore;
+    for (const auto *stream : orderedStreamPointers()) orderBefore << stream->uuid;
+    noteActivityTimestamps({message});
+    QStringList orderAfter;
+    for (const auto *stream : orderedStreamPointers()) orderAfter << stream->uuid;
+    return orderAfter != orderBefore;
+}
+
+void NativeController::scheduleStreamsReorderAnnounce()
+{
+    // Coalesced exactly like schedulePreviewRevisionBump: one streamsChanged per event
+    // loop pass no matter how many hydrated stamps moved the order in one pump batch.
+    if (m_streamsReorderQueued) return;
+    m_streamsReorderQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_streamsReorderQueued = false;
+        emit streamsChanged();
+    });
+}
+
+QVariantList NativeController::streams() const
+{
+    // Issue #868 (design verdict): this getter MUST rebuild per read. The
+    // property is bound from QML, and a Qt 6.10 binding that was served a
+    // cached QVariant once never re-evaluates on the next NOTIFY again (the
+    // cached variant froze globalTopicUsesTypedHttpForEveryMetadataKind on
+    // four full-gate shards, PR #871). Getter-level projection caches are
+    // therefore only legal for internal C++ consumers, never for QML-bound
+    // reads like this one.
+    ++m_streamsProjectionCount;
+    const auto ordered = orderedStreamPointers();
     QVariantList result;
     for (const auto *entry : ordered)
         result.append(streamRowMap(*entry));
@@ -19757,7 +19806,11 @@ void NativeController::pumpRowPreviewHydration()
                 // only, so they re-project from the fresh memo.
             } else if (const auto parsed = body ? parseMessage(body->row, m_session->project()) : std::nullopt;
                        parsed && parsed->uuid == uuid) {
+                // exordy finding on PR #866: same ledger write and reorder announcement
+                // as the network pump - a disk-hydrated stamp moves the sidebar too.
+                const bool reorder = applyHydratedRowActivity(*parsed);
                 storeRowPreview(uuid, rowPreviewOf(*parsed));
+                if (reorder) scheduleStreamsReorderAnnounce();
             } else if (!body && m_rowPreviewNetworkEnabled) {
                 // #860: a disk miss is not an authoritative negative - the reference falls
                 // through to the messages lookup (messenger-last-messages-loader.lib.ts
@@ -19974,10 +20027,14 @@ void NativeController::pumpRowPreviewNetworkHydration()
                 if (candidate && candidate->uuid == uuid) { parsed = candidate; canonical = value.toObject(); break; }
             }
             if (parsed) {
+                // exordy finding on PR #866: the learned stamp participates in the activity
+                // ledger now; a reorder of the projected order announces streamsChanged.
+                const bool reorder = applyHydratedRowActivity(*parsed);
                 storeRowPreview(uuid, rowPreviewOf(*parsed));
                 // Best-effort owner-scoped disk fill, mirroring the reference cache write:
                 // the next cold start hydrates from disk without a network lookup.
                 if (cache && cache->available()) cache->putMessageBody(lease, canonical);
+                if (reorder) scheduleStreamsReorderAnnounce();
             } else if (cache && m_rowPreviewLateDiskRetries.value(uuid) < rowPreviewLateDiskRetries) {
                 // #860: the server does not hold this message, but a disk body may still be
                 // on its way (sidebarPreviewsHydrateFromTheCacheAsynchronously: the cache
