@@ -7199,6 +7199,11 @@ void NativeController::closeCache()
     m_rowPreviewNetInFlight.clear();
     m_rowPreviewNetRetries.clear();
     m_rowPreviewLateDiskRetries.clear();
+    // #866 review: the queues and tokens belong to the discarded lease as well.
+    m_rowPreviewDiskQueue.clear();
+    m_rowPreviewNetQueue.clear();
+    m_rowPreviewDiskTokens.clear();
+    m_rowPreviewNetTokens.clear();
     const auto lease = m_cacheLease;
     m_cacheLease = {};
     if (m_cache && m_cache->lease().owner == lease.owner
@@ -12928,6 +12933,12 @@ void NativeController::reset()
     m_rowPreviewNetInFlight.clear();
     m_rowPreviewNetRetries.clear();
     m_rowPreviewLateDiskRetries.clear();
+    // #866 review: pending queues, tokens and the ownership map are session-scoped too.
+    m_rowPreviewDiskQueue.clear();
+    m_rowPreviewNetQueue.clear();
+    m_rowPreviewDiskTokens.clear();
+    m_rowPreviewNetTokens.clear();
+    m_rowPreviewStreamOf.clear();
     m_rowPreviewFence.clear();
     m_nextRowPreviewFence = 0;
     m_viewerDirectoryName.clear();
@@ -19220,6 +19231,7 @@ std::optional<NativeController::RowPreview> NativeController::rowPreview(const Q
     // through the cache, then re-emit the affected rows.
     if (!m_rowPreviewPending.contains(uuid) && !m_rowPreviewInFlight.contains(uuid)) {
         m_rowPreviewPending.insert(uuid);
+        m_rowPreviewDiskQueue.enqueue(uuid); // #866 review: keep the pump queue in sync
         scheduleRowPreviewHydration();
     }
     return std::nullopt;
@@ -19670,30 +19682,39 @@ void NativeController::pumpRowPreviewHydration()
         // still proceed to the network stage so every row reaches its preview.
         if (m_rowPreviewNetworkEnabled && authenticated()) {
             for (const auto &uuid : std::as_const(m_rowPreviewPending))
-                if (!m_rowPreviews.contains(uuid)) m_rowPreviewNetPending.insert(uuid);
-            scheduleRowPreviewNetworkHydration();
+                if (!m_rowPreviews.contains(uuid)) enqueueRowPreviewNet(uuid);
+            if (!m_rowPreviewNetQueue.isEmpty()) scheduleRowPreviewNetworkHydration();
         }
         m_rowPreviewPending.clear();
+        m_rowPreviewDiskQueue.clear();
         return;
     }
     const auto owner = creationOwnerKey();
     const auto cache = m_cache;
     const auto lease = m_cacheLease;
     int started = 0;
-    const auto pending = m_rowPreviewPending.values();
-    for (const auto &uuid : pending) {
-        if (started >= rowPreviewHydrationBatch) break;
-        m_rowPreviewPending.remove(uuid);
+    while (!m_rowPreviewDiskQueue.isEmpty() && started < rowPreviewHydrationBatch) {
+        // #866 review (exordy finding 2): foreground rows are picked ahead of hidden
+        // candidates at dispatch time, so an expansion that happens after the catalog
+        // seed still promotes its rows for every slot that has not been taken yet.
+        const auto uuid = takeRowPreviewCandidate(m_rowPreviewDiskQueue);
+        if (!m_rowPreviewPending.remove(uuid)) continue;
         if (m_rowPreviews.contains(uuid) || m_rowPreviewInFlight.contains(uuid)) continue;
         m_rowPreviewInFlight.insert(uuid);
+        const auto diskToken = ++m_rowPreviewDiskTokenSeq;
+        m_rowPreviewDiskTokens.insert(uuid, diskToken);
         ++started;
         const QPointer<NativeController> guard(this);
         // Issue #116: the read fence moves whenever the authoritative payload changes; a
         // body read that started before the move is older than the payload path's memo.
         const auto fence = m_rowPreviewFence.value(uuid);
-        cache->getMessageBody(lease, uuid, this, [this, guard, uuid, owner, fence](std::optional<NativeCache::MessageBody> body) {
+        cache->getMessageBody(lease, uuid, this, [this, guard, uuid, owner, fence, diskToken](std::optional<NativeCache::MessageBody> body) {
             if (!guard) return;
-            m_rowPreviewInFlight.remove(uuid);
+            // #866 review (exordy finding 1): retire only the marker this read still owns.
+            if (m_rowPreviewDiskTokens.value(uuid) == diskToken) {
+                m_rowPreviewDiskTokens.remove(uuid);
+                m_rowPreviewInFlight.remove(uuid);
+            }
             // A body that answers after the session or its owner changed belongs to nobody.
             if (!authenticated() || creationOwnerKey() != owner) return;
             if (m_rowPreviewFence.value(uuid) != fence) {
@@ -19709,7 +19730,7 @@ void NativeController::pumpRowPreviewHydration()
                 // through to the messages lookup (messenger-last-messages-loader.lib.ts
                 // L96-129), so the uuid waits in the retryable network stage instead of
                 // memoizing a miss that outlives its retry window.
-                m_rowPreviewNetPending.insert(uuid);
+                enqueueRowPreviewNet(uuid);
                 scheduleRowPreviewNetworkHydration();
             } else {
                 storeRowPreview(uuid, RowPreview{}); // negative lookup: projections stay quiet
@@ -19735,9 +19756,51 @@ void NativeController::setRowPreviewNetworkEnabledForTest(bool enabled)
     m_rowPreviewNetworkEnabled = enabled;
     if (!enabled) {
         m_rowPreviewNetPending.clear();
+        m_rowPreviewNetQueue.clear();
         m_rowPreviewNetRetries.clear();
         m_rowPreviewLateDiskRetries.clear();
     }
+}
+
+void NativeController::enqueueRowPreviewDisk(const QString &uuid)
+{
+    if (uuid.isEmpty() || m_rowPreviews.contains(uuid)
+        || m_rowPreviewInFlight.contains(uuid) || m_rowPreviewPending.contains(uuid)
+        || m_rowPreviewNetInFlight.contains(uuid) || m_rowPreviewNetPending.contains(uuid))
+        return;
+    m_rowPreviewPending.insert(uuid);
+    m_rowPreviewDiskQueue.enqueue(uuid);
+}
+
+void NativeController::enqueueRowPreviewNet(const QString &uuid)
+{
+    if (uuid.isEmpty() || m_rowPreviews.contains(uuid)
+        || m_rowPreviewNetInFlight.contains(uuid) || m_rowPreviewNetPending.contains(uuid))
+        return;
+    m_rowPreviewNetPending.insert(uuid);
+    m_rowPreviewNetQueue.enqueue(uuid);
+}
+
+bool NativeController::isRowPreviewForeground(const QString &uuid) const
+{
+    // #866 review (exordy finding 2): a preview pointer is foreground when its row is
+    // on screen - the open route's stream (with its topics) or an expanded sidebar
+    // stream. Everything else is a hidden catalog candidate.
+    const auto owner = m_rowPreviewStreamOf.value(uuid);
+    if (owner.isEmpty()) return false;
+    return owner == m_stream || m_expandedSidebarStreams.contains(owner);
+}
+
+QString NativeController::takeRowPreviewCandidate(QQueue<QString> &queue) const
+{
+    // Consume the first foreground candidate when one is queued, else the queue head.
+    for (int i = 0; i < queue.size(); ++i)
+        if (isRowPreviewForeground(queue.at(i))) {
+            const auto picked = queue.at(i);
+            queue.removeAt(i);
+            return picked;
+        }
+    return queue.dequeue();
 }
 
 void NativeController::seedRowPreviewHydrationFromCatalog()
@@ -19747,19 +19810,40 @@ void NativeController::seedRowPreviewHydrationFromCatalog()
     // messenger-last-messages-loader.lib.ts L96-129). Pointers are deduplicated, resolved
     // memos are skipped, and everything enters through the existing bounded pumps so a
     // large catalog trickles instead of bursting.
-    const auto queue = [this](const QString &uuid) {
-        if (uuid.isEmpty() || m_rowPreviews.contains(uuid)
-            || m_rowPreviewInFlight.contains(uuid) || m_rowPreviewPending.contains(uuid)
-            || m_rowPreviewNetInFlight.contains(uuid)) return;
-        m_rowPreviewPending.insert(uuid);
-    };
-    for (const auto &stream : std::as_const(m_streams)) {
-        if (stream.archived) continue;
-        queue(stream.lastMessage);
-        const auto inbox = m_inboxTopics.constFind(stream.uuid);
+    // #866 review (exordy finding 2): seeding enqueues in render order - the open route
+    // first, then the expanded streams, then the collapsed catalog remainder - and each
+    // pump slot re-checks foreground status at dispatch time, so visible and expanded
+    // rows never queue behind hidden candidates.
+    QSet<QString> visited;
+    const auto queue = [this](const QString &uuid) { enqueueRowPreviewDisk(uuid); };
+    const auto visitStream = [&](const QString &streamUuid) {
+        if (visited.contains(streamUuid)) return;
+        visited.insert(streamUuid);
+        for (const auto &stream : std::as_const(m_streams))
+            if (stream.uuid == streamUuid && stream.archived) return; // archived: not on the sidebar
+        for (const auto &stream : std::as_const(m_streams))
+            if (stream.uuid == streamUuid && !stream.archived) {
+                if (!stream.lastMessage.isEmpty()) {
+                    m_rowPreviewStreamOf.insert(stream.lastMessage, streamUuid);
+                    queue(stream.lastMessage);
+                }
+            }
+        const auto inbox = m_inboxTopics.constFind(streamUuid);
         if (inbox != m_inboxTopics.constEnd())
-            for (const auto &topic : *inbox) queue(topic.lastMessage);
-    }
+            for (const auto &topic : *inbox) {
+                m_rowPreviewStreamOf.insert(topic.lastMessage, streamUuid);
+                queue(topic.lastMessage);
+            }
+        for (const auto &topic : std::as_const(m_topics))
+            if (topic.stream == streamUuid) {
+                m_rowPreviewStreamOf.insert(topic.lastMessage, streamUuid);
+                queue(topic.lastMessage);
+            }
+    };
+    if (!m_stream.isEmpty()) visitStream(m_stream);
+    for (const auto &expanded : std::as_const(m_expandedSidebarStreams)) visitStream(expanded);
+    for (const auto &stream : std::as_const(m_streams)) visitStream(stream.uuid);
+    // Defensive remainder: pointers whose owning stream is not in the current list.
     for (const auto &topic : std::as_const(m_topics)) queue(topic.lastMessage);
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
@@ -19794,21 +19878,31 @@ void NativeController::pumpRowPreviewNetworkHydration()
     const int freeSlots = rowPreviewNetworkBatch - m_rowPreviewNetInFlight.size();
     if (freeSlots <= 0) return;
     int started = 0;
-    const auto pending = m_rowPreviewNetPending.values();
-    for (const auto &uuid : pending) {
-        if (started >= freeSlots) break;
-        m_rowPreviewNetPending.remove(uuid);
+    while (!m_rowPreviewNetQueue.isEmpty() && started < freeSlots) {
+        // #866 review (exordy finding 2): same foreground priority as the disk pump -
+        // the open route and every expanded sidebar stream hydrate before hidden rows.
+        const auto uuid = takeRowPreviewCandidate(m_rowPreviewNetQueue);
+        if (!m_rowPreviewNetPending.remove(uuid)) continue;
         if (m_rowPreviews.contains(uuid) || m_rowPreviewNetInFlight.contains(uuid)
             || m_rowPreviewInFlight.contains(uuid)) continue;
         m_rowPreviewNetInFlight.insert(uuid);
+        const auto netToken = ++m_rowPreviewNetTokenSeq;
+        m_rowPreviewNetTokens.insert(uuid, netToken);
         ++started;
         ++m_rowPreviewNetIssued;
         const QPointer<NativeController> guard(this);
         const auto fence = m_rowPreviewFence.value(uuid);
         request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", uuid}},
-            [this, guard, uuid, owner, fence, project, cache, lease](const ApiResult &result) {
+            [this, guard, uuid, owner, fence, project, cache, lease, netToken](const ApiResult &result) {
             if (!guard) return;
-            m_rowPreviewNetInFlight.remove(uuid);
+            // #866 review (exordy finding 1): a reply may only retire the in-flight marker
+            // its own request still owns. After a session change the uuid may already have
+            // a NEWER request in flight (re-seeded under the new owner); retiring by uuid
+            // alone would free that request's slot and let the cap dispatch a duplicate.
+            if (m_rowPreviewNetTokens.value(uuid) == netToken) {
+                m_rowPreviewNetTokens.remove(uuid);
+                m_rowPreviewNetInFlight.remove(uuid);
+            }
             // #866 review: the retiring slot is the pump's resume signal - the pending
             // queue is never restarted by an eager reschedule while replies are in flight.
             if (!m_rowPreviewNetPending.isEmpty()) scheduleRowPreviewNetworkHydration();
@@ -19827,7 +19921,7 @@ void NativeController::pumpRowPreviewNetworkHydration()
                     ++m_rowPreviewNetRetries[uuid];
                     QTimer::singleShot(2000, this, [this, uuid] {
                         if (!authenticated() || m_rowPreviews.contains(uuid)) return;
-                        m_rowPreviewNetPending.insert(uuid);
+                        enqueueRowPreviewNet(uuid);
                         scheduleRowPreviewNetworkHydration();
                     });
                 }
@@ -19859,7 +19953,7 @@ void NativeController::pumpRowPreviewNetworkHydration()
                 QTimer::singleShot(1000, this, [this, uuid] {
                     if (!authenticated() || m_rowPreviews.contains(uuid)) return;
                     if (m_rowPreviewInFlight.contains(uuid)) return;
-                    m_rowPreviewPending.insert(uuid);
+                    enqueueRowPreviewDisk(uuid);
                     scheduleRowPreviewHydration();
                 });
             } else {
