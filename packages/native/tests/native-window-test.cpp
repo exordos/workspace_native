@@ -13,6 +13,7 @@
 #include "message-images.h"
 #include "support/heif-test-fixtures.h"
 #include "workspace-reference.h"
+#include "gui-phase-trace.h"
 
 #include <functional>
 #include <algorithm>
@@ -50838,12 +50839,24 @@ private slots:
         QVERIFY2(spans.value("chat.row-application").toMap().value("count").toInt() >= 1,
                  qPrintable(QVariant(spans).toString()));
         bool nestedUnderScriptedStep = false;
+        const qint64 guiThread = trace.value("guiThreadId").toLongLong();
         const auto records = trace.value("records").toList();
         for (const auto &record : records) {
             const auto row = record.toMap();
-            if (row.value("name").toString() == QLatin1String("chat.open-topic")
-                && row.value("parent").toString() == QLatin1String("test.scripted-navigate"))
+            // Per-record thread identity (review finding): guiThreadId names
+            // only the first span's thread, so each record must carry its own.
+            QVERIFY2(row.contains(QStringLiteral("threadId")),
+                     qPrintable(QJsonDocument::fromVariant(row)
+                                    .toJson(QJsonDocument::Compact)));
+            const bool scriptedChild = row.value("name").toString() == QLatin1String("chat.open-topic")
+                && row.value("parent").toString() == QLatin1String("test.scripted-navigate");
+            if (scriptedChild)
+            {
+                // The scripted step runs on the GUI thread, so its child
+                // span must report that same thread id.
+                QCOMPARE(row.value("threadId").toLongLong(), guiThread);
                 nestedUnderScriptedStep = true;
+            }
         }
         QVERIFY2(nestedUnderScriptedStep, qPrintable(QVariant(records).toString()));
         // Sampler semantics (#855): a GUI-thread block of known length must be
@@ -50872,6 +50885,37 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
             stall.value("samples").toLongLong() > samplesAtFirstRead), 5000);
         qunsetenv("WORKSPACE_NATIVE_STALL_PROBE");
+    }
+
+    void guiStallSamplerCountsFirstGapBeforeFirstBeat()
+    {
+        // The constructor armed the elapsed clock before the beat timer, but
+        // the first beat only re-armed it and reported nothing, so startup
+        // work that blocked the GUI thread before the first beat could never
+        // reach the report. The first gap must be counted like any other.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString report = dir.filePath("stall.json");
+        GuiStallSampler sampler(report);
+        QTest::qSleep(260); // no event loop runs here: the first beat sees a >=260 ms gap
+        const auto readStall = [&report]() {
+            QFile file(report);
+            if (!file.open(QIODevice::ReadOnly)) return QVariantMap{};
+            return QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+        };
+        QVariantMap stall;
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(), stall.value("samples").toLongLong() >= 1), 5000);
+        // The flush cycle lags the beats by up to 500 ms: re-read until the
+        // flushed report shows the first gap.
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
+            stall.value("worst_gap_ms").toDouble() >= 200.0), 5000);
+        QVERIFY2(stall.value("worst_gap_ms").toDouble() >= 200.0,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+        QVERIFY2(stall.value("beats_over_50ms").toLongLong() >= 1,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+        // The mean divides by the counted gaps, so it stays plausible.
+        QVERIFY2(stall.value("mean_gap_ms").toDouble() > 0.0,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
     }
 
 };
