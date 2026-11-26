@@ -85,6 +85,22 @@ private slots:
         store->deleteLater();
         brokenFoldersOnce = false;
         slowInboxOnce = false;
+        missingMailEndpoints = false;
+    }
+
+    // exordy finding 4712325987: a real deployment has no /mail endpoints yet
+    // (#852 owns live integration), so opening Mail must show the sample
+    // mailbox compiled into the client instead of a dead error screen.
+    void missingEndpointsServeSampleMailbox()
+    {
+        missingMailEndpoints = true;
+        store->refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("ready"), 5000);
+        QCOMPARE(store->folders().size(), 6);
+        QCOMPARE(store->messages().size(), 3);
+        store->selectFolder(QStringLiteral("sent"));
+        QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("ready"), 5000);
+        QCOMPARE(store->messages().size(), 1);
     }
 
     void foldersLoadWithFixtureCounts()
@@ -214,6 +230,11 @@ private:
         Response response;
         const QString path = request.target.path();
         const QString folder = QUrlQuery(request.target.query()).queryItemValue("folder");
+        if (missingMailEndpoints
+            && (path == "/mail/folders" || path == "/mail/messages")) {
+            response.status = 404;
+            return response;
+        }
         if (path == "/mail/folders") {
             if (brokenFoldersOnce) {
                 brokenFoldersOnce = false;
@@ -274,6 +295,7 @@ private:
     MailStore *store = nullptr;
     bool brokenFoldersOnce = false;
     bool slowInboxOnce = false;
+    bool missingMailEndpoints = false;
 };
 
 int main(int argc, char **argv)

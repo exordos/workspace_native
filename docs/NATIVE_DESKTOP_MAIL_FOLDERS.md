@@ -75,11 +75,21 @@ consulted; the node id recorded by the issue is Mailbox and folders
   sender + "no body in mock phase" placeholder driven by the selected row -
   the full reader lands in the next subtask (#880).
 - States: `loading` (spinner rows), `ready`, `empty` folder state per folder,
-  `error` with a retry control re-invoking `refresh()`.
+  `error` with a retry control re-invoking `refresh()`. A deployment that does
+  not serve the two endpoints yet (HTTP 404 - the live mail API is #852) falls
+  back to the sample mailbox compiled into the client and reaches `ready`:
+  opening Mail in a production build shows the promised folders instead of a
+  dead error screen (fix round, exordy finding 4712325987). Real transport and
+  server failures (non-404) keep the `error` + retry path.
+- All server-supplied strings (folder title, sender, subject, snippet, time and
+  the reader title) render with `textFormat: Text.PlainText`, so HTML-shaped
+  content can never be interpreted as rich text or request remote images
+  (exordy finding 4712325992).
 - Fixtures: window tests answer the two endpoints from a deterministic mock
   scenario (six folders, Inbox unread 12 matching the placeholder, three
   inbox messages matching the placeholder senders/subjects/snippets, one
-  empty folder, one error folder).
+  empty folder, one error folder). The compiled-in sample mailbox mirrors the
+  window-test fixtures so both paths render the same contract.
 
 ## Test plan
 

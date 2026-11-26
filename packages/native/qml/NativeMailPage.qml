@@ -112,6 +112,7 @@ Item {
                                 objectName: "mailFolderTitle-" + folderRow.row.id
                                 Layout.fillWidth: true
                                 text: folderRow.row.title
+                                textFormat: Text.PlainText
                                 font.pixelSize: 13
                                 font.weight: folderRow.active ? Font.DemiBold : Font.Normal
                                 color: folderRow.active
@@ -201,6 +202,7 @@ Item {
                                             objectName: "mailMessageSender-" + messageRow.row.uuid
                                             Layout.fillWidth: true
                                             text: messageRow.row.sender
+                                            textFormat: Text.PlainText
                                             font.pixelSize: 12
                                             color: page.mutedColor
                                             elide: Text.ElideRight
@@ -208,6 +210,7 @@ Item {
                                         Text {
                                             objectName: "mailMessageTime-" + messageRow.row.uuid
                                             text: messageRow.row.time
+                                            textFormat: Text.PlainText
                                             font.pixelSize: 11
                                             color: page.mutedColor
                                         }
@@ -216,6 +219,7 @@ Item {
                                         objectName: "mailMessageSubject-" + messageRow.row.uuid
                                         width: parent.width
                                         text: messageRow.row.subject
+                                        textFormat: Text.PlainText
                                         font.pixelSize: 14
                                         font.weight: Font.DemiBold
                                         color: page.textColor
@@ -225,6 +229,7 @@ Item {
                                         objectName: "mailMessageSnippet-" + messageRow.row.uuid
                                         width: parent.width
                                         text: messageRow.row.snippet
+                                        textFormat: Text.PlainText
                                         font.pixelSize: 12
                                         color: page.mutedColor
                                         elide: Text.ElideRight
@@ -299,6 +304,7 @@ Item {
                     text: page.mail && page.mail.selectedMessageUuid
                         ? page.mail.messages.find(m => m.uuid === page.mail.selectedMessageUuid).subject
                         : qsTr("Select a message")
+                    textFormat: Text.PlainText
                     font.pixelSize: 18
                     color: page.textColor
                     elide: Text.ElideRight

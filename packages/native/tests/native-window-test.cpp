@@ -571,7 +571,7 @@ static QJsonArray mailFixtureMessages(const QString &folder)
                     "All pipelines are green and artifacts are ready.", "10:24"),
                 row("mail-inbox-2", "Product Team", "Demo agenda for Friday",
                     "Please review talking points before 15:00.", "09:02"),
-                row("mail-inbox-3", "Design", "Light theme polish proposal",
+                row("mail-inbox-3", "<i>Design</i>", "Light theme polish proposal",
                     "Attached updated spacing and color recommendations.", "Mon")};
     }
     if (folder == QLatin1String("sent"))
@@ -38617,6 +38617,21 @@ QTRY_VERIFY(create->property("enabled").toBool());
                  QString("Build Bot"));
         QCOMPARE(view("mailMessageTime-mail-inbox-1")->property("text").toString(),
                  QString("10:24"));
+        // exordy finding 4712325992: every server-supplied field renders as
+        // plain text, so HTML-shaped content cannot be parsed as rich text or
+        // request remote images. The fixture carries an HTML-shaped sender to
+        // prove the contract on real delegate text.
+        QCOMPARE(view("mailMessageSender-mail-inbox-3")->property("text").toString(),
+                 QString("<i>Design</i>"));
+        const QStringList plainFields{QStringLiteral("mailFolderTitle-inbox"),
+            QStringLiteral("mailMessageSender-mail-inbox-3"),
+            QStringLiteral("mailMessageTime-mail-inbox-1"),
+            QStringLiteral("mailMessageSubject-mail-inbox-1"),
+            QStringLiteral("mailMessageSnippet-mail-inbox-1")};
+        for (const QString &field : plainFields) {
+            auto *label = view(field); QVERIFY(label);
+            QCOMPARE(label->property("textFormat").toString(), QString("PlainText"));
+        }
         // The reader column names the missing selection before any row is picked.
         QCOMPARE(view("mailReaderTitle")->property("text").toString(),
             locale == QLatin1String("ru") ? QString::fromUtf8("Выберите сообщение")

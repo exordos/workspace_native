@@ -10,8 +10,11 @@ namespace workspace {
 // Mock-phase mail data for #879 (part of #851). Folders and message lists are
 // fetched through the session ApiClient; the UI-phase server contract is
 // GET /mail/folders and GET /mail/messages?folder=<id>. Live integration is
-// #852; until then only the window-test mock server serves these routes and a
-// real deployment lands in the adapter error state with a retry control.
+// #852; until then a deployment that does not serve those routes yet (HTTP 404)
+// falls back to the sample mailbox compiled into the client and reaches the
+// ready state, so opening Mail shows the promised folders instead of a dead
+// error screen (exordy finding 4712325987). Non-404 failures keep the error
+// state with a retry control.
 class MailStore final : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList folders READ folders NOTIFY mailChanged)

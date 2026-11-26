@@ -6,6 +6,69 @@
 
 namespace workspace {
 
+namespace {
+
+// Sample mailbox compiled into the client for the pre-#852 phase: a
+// deployment that does not serve /mail/* yet answers 404, and the Mail
+// section must show the promised folders instead of a dead error screen
+// (exordy finding 4712325987). Mirrors the window-test fixtures so both
+// paths render the same contract.
+QVariantList sampleFolders()
+{
+    return {QVariantMap{{QStringLiteral("id"), QStringLiteral("inbox")},
+                        {QStringLiteral("title"), QStringLiteral("Inbox")},
+                        {QStringLiteral("unread"), 12}},
+            QVariantMap{{QStringLiteral("id"), QStringLiteral("sent")},
+                        {QStringLiteral("title"), QStringLiteral("Sent")},
+                        {QStringLiteral("unread"), 0}},
+            QVariantMap{{QStringLiteral("id"), QStringLiteral("drafts")},
+                        {QStringLiteral("title"), QStringLiteral("Drafts")},
+                        {QStringLiteral("unread"), 3}},
+            QVariantMap{{QStringLiteral("id"), QStringLiteral("archive")},
+                        {QStringLiteral("title"), QStringLiteral("Archive")},
+                        {QStringLiteral("unread"), 0}},
+            QVariantMap{{QStringLiteral("id"), QStringLiteral("spam")},
+                        {QStringLiteral("title"), QStringLiteral("Spam")},
+                        {QStringLiteral("unread"), 1}},
+            QVariantMap{{QStringLiteral("id"), QStringLiteral("trash")},
+                        {QStringLiteral("title"), QStringLiteral("Trash")},
+                        {QStringLiteral("unread"), 0}}};
+}
+
+QVariantMap sampleMessage(const char *uuid, const char *sender, const char *subject,
+                          const char *snippet, const char *time, bool unread)
+{
+    return {{QStringLiteral("uuid"), QString::fromUtf8(uuid)},
+            {QStringLiteral("sender"), QString::fromUtf8(sender)},
+            {QStringLiteral("subject"), QString::fromUtf8(subject)},
+            {QStringLiteral("snippet"), QString::fromUtf8(snippet)},
+            {QStringLiteral("time"), QString::fromUtf8(time)},
+            {QStringLiteral("unread"), unread}};
+}
+
+QVariantList sampleMessages(const QString &folder)
+{
+    if (folder == QStringLiteral("inbox"))
+        return {sampleMessage("mail-inbox-1", "Build Bot",
+                              "Release 0.5.0 checks passed",
+                              "All pipelines are green and artifacts are ready.",
+                              "10:24", true),
+                sampleMessage("mail-inbox-2", "Product Team",
+                              "Demo agenda for Friday",
+                              "Please review talking points before 15:00.",
+                              "09:02", true),
+                sampleMessage("mail-inbox-3", "Design",
+                              "Light theme polish proposal",
+                              "Attached updated spacing and color recommendations.",
+                              "Mon", true)};
+    if (folder == QStringLiteral("sent"))
+        return {sampleMessage("mail-sent-1", "me", "Re: demo slot",
+                              "Works for me.", "Tue", false)};
+    return {};
+}
+
+} // namespace
+
 MailStore::MailStore(ApiClient *api, QObject *parent)
     : QObject(parent), m_api(api)
 {
@@ -21,6 +84,14 @@ void MailStore::refresh()
                    [self, token](const ApiResult &result) {
         if (!self || token != self->m_requestToken)
             return;
+        if (result.status == 404) {
+            // The endpoints do not ship with the server yet (#852 owns live
+            // integration): show the sample mailbox compiled into the client
+            // instead of a dead error screen the retry could never clear.
+            self->m_folders = sampleFolders();
+            self->loadMessages();
+            return;
+        }
         if (result.status != 200 || !result.data.isObject()) {
             self->m_state = QStringLiteral("error");
             emit self->mailChanged();
@@ -67,6 +138,14 @@ void MailStore::loadMessages()
                    [self, token, folder](const ApiResult &result) {
         if (!self || token != self->m_requestToken)
             return;
+        if (result.status == 404) {
+            if (self->m_folderId != folder)
+                return;
+            self->m_messages = sampleMessages(folder);
+            self->m_state = QStringLiteral("ready");
+            emit self->mailChanged();
+            return;
+        }
         if (result.status != 200 || !result.data.isObject()) {
             self->m_messages.clear();
             self->m_state = QStringLiteral("error");
