@@ -21787,6 +21787,87 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.draft() != draft);
     }
 
+    // #873 contract: a demand flap (transient viewport positioning, the
+    // history-ready boundary) must not drop an in-view lease. The old
+    // release+re-acquire cycle exposed an already-loaded attachment as a
+    // blank frame for the duration of the reacquire.
+    void inlineMediaDemandFlapKeepsPaintedAsset()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000c");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-00000000000c");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("demand-flap.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Demand flap window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
+        QTRY_VERIFY(photo());
+        QTRY_VERIFY(!photo()->property("imageUrl").toString().isEmpty());
+        QTRY_VERIFY(!photo()->property("leaseState").isNull());
+        const QString painted = photo()->property("imageUrl").toString();
+        // The hold oracle: the published URL must not be re-notified at all
+        // while demand flaps, because the same lease survives the flap. The
+        // released contract cleared the URL and republished it - a blank
+        // frame for a fully loaded asset.
+        QSignalSpy repaints(photo(), "imageUrlChanged");
+        QVERIFY(repaints.isValid());
+        photo()->setProperty("bodyActive", false);
+        for (int i = 0; i < 8; ++i) {
+            QTest::qWait(20);
+            QVERIFY2(!photo()->property("imageUrl").toString().isEmpty(),
+                "the in-view attachment went blank mid-flap");
+        }
+        photo()->setProperty("bodyActive", true);
+        QTest::qWait(120);
+        QCOMPARE(photo()->property("imageUrl").toString(), painted);
+        QVERIFY(!photo()->property("leaseState").isNull());
+        QStringList flashes;
+        for (const auto &call : repaints)
+            if (photo()->property("imageUrl").toString().isEmpty()) flashes.append("blank");
+        QVERIFY2(flashes.isEmpty(), "demand flap cleared the painted URL");
+        QCOMPARE(repaints.count(), 0);
+    }
+
     void mediaViewerOpensNavigatesAndClosesLikeTheReference()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());

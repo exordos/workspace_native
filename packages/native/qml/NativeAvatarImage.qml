@@ -25,6 +25,14 @@ Item {
         const ticket = ++refreshTicket
         if (ticket !== refreshTicket) return
         const previous = leaseState
+        // Same-owner stability (#873): a demand re-notification for the urn
+        // that is already leased must not clear the source and re-acquire -
+        // the clear+reload window is the avatar's blank flash.
+        if (previous && previous.images === images && previous.reference === reference
+                && visible && loadActive) {
+            updateUrl()
+            return
+        }
         leaseState = null
         updateUrl()
         if (previous) previous.images.release(previous.token)
@@ -45,7 +53,9 @@ Item {
     onImagesChanged: refresh()
     onReferenceChanged: refresh()
     onVisibleChanged: refresh()
-    onLoadActiveChanged: refresh()
+    // Defer like the message image does: a demand flap that resolves inside
+    // the same event-loop turn must not run a release+re-acquire pass (#873).
+    onLoadActiveChanged: Qt.callLater(refresh)
     Component.onCompleted: { initialized = true; refresh() }
     Component.onDestruction: {
         initialized = false

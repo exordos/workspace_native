@@ -49,6 +49,14 @@ Item {
     }
     readonly property bool loadActive: bodyActive && viewport
         && Number.isFinite(viewportY) && viewportY + height >= -640 && viewportY <= viewport.height + 640
+    // Transient viewport positioning (messageList.positioning during the
+    // viewport restoration) flips bodyActive off while the same attachment
+    // stays in view. Releasing the demand for that flap clears the published
+    // URL and shows a blank frame for an already loaded asset (#873). A hold
+    // still drops whenever visibility, owner/scope or the real bounds change.
+    readonly property bool demandActive: Boolean(viewport) && visible
+    readonly property bool demandHoldInView: demandActive && viewport
+        && Number.isFinite(viewportY) && viewportY + height >= -640 && viewportY <= viewport.height + 640
 
     function updateState() {
         const ticket = refreshTicket
@@ -79,6 +87,17 @@ Item {
         const ticket = ++refreshTicket
         if (ticket !== refreshTicket) return
         const previous = leaseState
+        // Same-owner stability: while the identical manager/reference/scope is
+        // already leased and the view stays in demand (or only bodyActive
+        // flapped while the attachment remains in bounds), keep the lease and
+        // the published URL. Release+re-acquire of the same urn can expose a
+        // blank frame mid-restoration (#873).
+        const sameLease = previous && previous.images === images && previous.reference === reference
+            && Number(viewState.scope) === Number(images ? images.scopeRevision : 0)
+        if (sameLease && (loadActive || (demandHoldInView && images && reference.length > 0))) {
+            updateState()
+            return
+        }
         leaseState = null
         if (ticket === refreshTicket) updateState()
         if (previous) previous.images.release(previous.token)
