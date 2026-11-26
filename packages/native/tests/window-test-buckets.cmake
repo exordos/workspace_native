@@ -83,6 +83,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_4
     composerEmojiKeepsHarmlessUsersButClosesOnRealRouteAndApiLifetime
     directChatRowsNavigateOnlyAfterVerifiedHttp
     globalNewChatStartsWithTheSourceDirectChatTab
+    inlineMediaDemandHoldReleasesWhenItLeavesBoundsMidFlap
     lateHeicDecodeCollapsesBubbleGeometryAndStillPaints
     mediaViewerOpensNavigatesAndClosesLikeTheReference
     messageTimeViewOpensWithoutApplicationServices
