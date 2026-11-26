@@ -13508,6 +13508,126 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(closed);
     }
 
+    void sidebarMoveFocusCarryYieldsToNavigationWithinSettleWindow()
+    {
+        // exordy finding (#866 round 2, thread 4708526165): focus must not be stolen
+        // "during the 500 ms after a row move". Measured on this tree: (a) navigation
+        // through the seams production actually uses - the keyboard ring and clicks
+        // target the row's NativeButton, never the delegate root - already sticks
+        // inside the window (segment A pins that); (b) the carry's re-aim only ever
+        // fires for focus landing on a delegate ROOT, which in production only Qt's
+        // own move-reparent fallback produces - that re-aim must survive until the
+        // churn is quiet (restoration was measured to land TWICE in a row: a churn
+        // pass follows the first restore, so clearing the carry on "restore complete"
+        // regresses finding 2). Segment B pins the remaining intent rule: real user
+        // input inside the window (a row click) cancels the carry outright, so any
+        // focus move after it sticks even at root level.
+        WindowChannelFixture fixture;
+        const QString otherStream = "a3000000-0000-4000-8000-000000000001";
+        const QString thirdStream = "a4000000-0000-4000-8000-000000000002";
+        const QString thirdTopicId = "44444444-4444-4444-8444-444444444444";
+        const QString previewUuid = "81000000-0000-4000-8000-000000000001";
+        const QString previewBody = QStringLiteral("In-window navigation preview");
+        auto first = windowChannel(streamId, "Engineering");
+        first["updated_at"] = QStringLiteral("2026-01-02T10:00:00Z");
+        auto second = windowChannel(otherStream, "Support");
+        second["last_message_uuid"] = previewUuid;
+        second["updated_at"] = QStringLiteral("2026-01-01T10:00:00Z");
+        const auto third = windowChannel(thirdStream, "Design");
+        const auto previewRow = QJsonObject{
+            {"uuid", previewUuid}, {"project_id", projectId}, {"author_uuid", userId},
+            {"stream_uuid", otherStream}, {"topic_uuid", secondTopicId}, {"revision", 1},
+            {"created_at", "2026-01-03T10:00:00.000Z"}, {"updated_at", "2026-01-03T10:00:00.000Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", previewBody}}}};
+        const auto fallback = fixture.server.handler;
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/"))
+                return {QJsonArray{first, second, third}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                const auto topic = id == streamId ? topicId : id == thirdStream ? thirdTopicId : secondTopicId;
+                return {QJsonArray{windowChannelTopic(topic, id, "Topic")}};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("uuid") == previewUuid) {
+                Response response{QJsonArray{previewRow}};
+                response.defer = [held](auto send) { *held = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("carry-nav.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Carry navigation teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-carry-nav", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 3);
+        auto *streamList = visibleItem("streamList"); QVERIFY(streamList);
+        auto *listContent = streamList->property("contentItem").value<QQuickItem *>(); QVERIFY(listContent);
+        // The focus carry re-aims delegate-ROOT focus events (the churn signature);
+        // the "stream-" handle lives on the row button, so climb to the root item.
+        const auto delegateRoot = [&](QQuickItem *inner) {
+            auto *node = inner;
+            while (node && node->parentItem() && node->parentItem() != listContent)
+                node = node->parentItem();
+            return node;
+        };
+        QPointer<QQuickItem> movedButton, movedRow, quietRow, clickButton;
+        QTRY_VERIFY_WITH_TIMEOUT((movedButton = visibleItem("stream-" + otherStream)) != nullptr, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT((quietRow = delegateRoot(visibleItem("stream-" + streamId))) != nullptr, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT((clickButton = visibleItem("stream-" + thirdStream)) != nullptr, 5000);
+        movedRow = delegateRoot(movedButton);
+        QVERIFY(movedRow && movedRow != quietRow);
+        movedRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(movedRow->hasActiveFocus());
+        QTRY_VERIFY(bool(*held)); // the lookup is in flight
+        (*held)(); *held = {};
+        // The re-rank move fires asynchronously behind the coalesced preview pump.
+        // Catch the armed carry while the settle window is open (armed at the move,
+        // 500 ms expiry re-armed by every churn restore).
+        QTRY_VERIFY_WITH_TIMEOUT(!streamList->property("sidebarFocusCarry").isNull(), 5000);
+        // The churn has quieted with the moved row holding focus (the original #866
+        // finding-2 guarantee). Every churn restore re-arms the settle window, so
+        // right after quiescence the carry is still live; if it had already expired
+        // this witness would be vacuous - assert it.
+        QTRY_VERIFY_WITH_TIMEOUT(movedRow->hasActiveFocus(), 5000);
+        QVERIFY2(!streamList->property("sidebarFocusCarry").isNull(),
+            "witness: the settle window must still be open after the churn");
+        // Segment A - production seam unchanged: keyboard-ring-style navigation to
+        // another row's BUTTON sticks inside the settle window (the ring and clicks
+        // never target the delegate root, so the carry never sees them). Synchronous
+        // asserts so the 500 ms window cannot expire mid-sequence.
+        clickButton->forceActiveFocus(Qt::TabFocusReason);
+        QCOMPARE(window->activeFocusItem(), clickButton.data());
+        QVERIFY2(!streamList->property("sidebarFocusCarry").isNull(),
+            "witness: button-seam navigation must not be what cancels the carry");
+        // Segment B - intent rule: a row CLICK inside the settle window is real
+        // navigation; the click handler cancels the carry outright, so even a
+        // root-level focus move right afterwards sticks onto its own target.
+        QTest::mouseClick(window, Qt::LeftButton, {},
+            clickButton->mapToScene(clickButton->boundingRect().center()).toPoint());
+        QVERIFY2(streamList->property("sidebarFocusCarry").isNull(),
+            "a row click inside the settle window must cancel the focus carry synchronously");
+        quietRow->forceActiveFocus(Qt::TabFocusReason);
+        QCOMPARE(window->activeFocusItem(), quietRow.data());
+        // And it sticks past the settle window: nothing may re-steal focus later.
+        QTest::qWait(800);
+        QVERIFY2(window->activeFocusItem() == quietRow,
+            "User input inside the settle window must cancel the move focus carry");
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss();
+        QVERIFY(closed);
+    }
+
     void sidebarHydrationKeepsFocusOnOtherStream()
     {
         WindowChannelFixture fixture;

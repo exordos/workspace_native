@@ -5310,6 +5310,8 @@ component NativeMentionChip: Item {
         const delegate = streamList.itemAtIndex(target.row)
         const item = delegate ? root.findSidebarSearchRow(delegate, target.objectName) : null
         if (item) {
+            // The ring moving is navigation intent (see the sidebar focus carry).
+            streamList.disarmFocusCarry()
             root.scrollSidebarSearchRowIntoView(item, step)
             item.forceActiveFocus(Qt.TabFocusReason)
             return true
@@ -6328,12 +6330,25 @@ component NativeMentionChip: Item {
                             sidebarAnchorSettle.stop()
                             root.sidebarScrollAnchor = null
                         }
+                        // Wheel is deliberate input too: a scroll during the settle
+                        // window means the user navigated, not the move churn.
+                        if (moved)
+                            streamList.disarmFocusCarry()
                     }
                 }
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                 }
                 property var sidebarFocusCarry: null
+                // Real user input inside the settle window is navigation intent: the
+                // next focus move belongs to the user, so the carry is cancelled
+                // outright (#866 round 2: focus must not be re-aimed after the user
+                // navigated). Row clicks, the search keyboard ring and wheel input
+                // call this before they move focus or selection.
+                function disarmFocusCarry() {
+                    sidebarFocusCarryExpiry.stop()
+                    streamList.sidebarFocusCarry = null
+                }
                 // exordy finding (#866): a completed move must not leave a live carry.
                 // The carry re-aims bubbled focus onto the pre-move item; left armed
                 // forever, the next focus navigation anywhere in the sidebar would be
@@ -6551,6 +6566,9 @@ component NativeMentionChip: Item {
                         horizontalPadding: streamDelegate.compactDensity ? 8 : 10
                         verticalPadding: streamDelegate.compactDensity ? 6 : 10
                         onClicked: {
+                            // A row click is user navigation intent: cancel any move
+                            // focus carry before the selection may move focus.
+                            streamList.disarmFocusCarry();
                             root.controller.closeDrafts();
                             // Reference sidebar-workspace.ui.tsx:455: the latestTopic body
                             // link is `stream.preview?.route ?? stream.route`; the native
