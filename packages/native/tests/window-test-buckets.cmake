@@ -522,6 +522,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_21
     rightDrawerPromotesExistingLayersInsteadOfDuplicating
     rightDrawerResetIsSkippedWithoutAuthenticatedSession
     sidebarHydrationKeepsFocusOnOtherStream
+    sidebarMoveFocusCarryYieldsToNavigationWithinSettleWindow
     sidebarSearchArrowsCycleFilteredResults
     windowChannelInfoNotificationBusyRecoversOnStreamSwitch
 )
