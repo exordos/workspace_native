@@ -35,6 +35,7 @@ public:
     // reopens for "Add server".
     void detach();
     void resumeSavedAccount(const QString &id);
+    void abandonStartupResume();
     void resumeCurrentAccount();
     // Removing a saved identity is asynchronous. The optional completion is
     // invoked with the secure-store error (empty on success) once the vault

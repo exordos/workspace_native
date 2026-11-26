@@ -347,6 +347,7 @@ public:
     // Issue #836: retries the session renewal after a transient failure on a
     // saved-account resume (no-op outside the degraded state).
     Q_INVOKABLE void requestSessionRenewal();
+    Q_INVOKABLE void abandonStartupResume();
     Q_INVOKABLE void checkChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyRequest(const QString &keyUuid);
     Q_INVOKABLE void retryChatKeyStore();

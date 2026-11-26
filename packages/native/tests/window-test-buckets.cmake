@@ -307,6 +307,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_13
     diagnosticsMemoryPanelTableScrollsHorizontallyWithoutOverflow
     diagnosticsRealtimeCardAppendsWebsocketRowsAndSuppressesDisabled
     disclosureChevronsUseSharedSvgFamily
+    emptyCacheStartupRenewalOutageKeepsSignInRecoverable
     fullscreenExitDetachDuringGatePersistsUserMoveMadeDuringTheGate
     fullscreenExitMidTransitionSaveKeepsSavedNormalBounds
     horizontalFolderRailDragScrollsAndSuppressesTheTrailingClick

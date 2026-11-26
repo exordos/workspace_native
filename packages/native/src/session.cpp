@@ -120,6 +120,16 @@ void Session::resumeSavedAccount(const QString &id)
     });
 }
 
+void Session::abandonStartupResume()
+{
+    // Issue #886: leaving a degraded saved-account resume (Add server / choose
+    // another account escape) drops the prepared attempt: the seeded project,
+    // the held credential context and the degraded flag must not survive into
+    // a fresh sign-in flow. Only the degraded state may be abandoned this way.
+    if (!m_renewalUnavailable) return;
+    clearMemory();
+}
+
 void Session::forgetSavedAccount(const QString &id, std::function<void(QString error)> done)
 {
     if (!m_vault) {

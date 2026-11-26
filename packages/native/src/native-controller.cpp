@@ -630,6 +630,13 @@ void NativeController::requestSessionRenewal()
     m_session->requestRefresh();
 }
 
+void NativeController::abandonStartupResume()
+{
+    // Issue #886: the sign-in surface exposes this as the Add server escape
+    // from a degraded startup resume; healthy/signed-out sessions are no-ops.
+    m_session->abandonStartupResume();
+}
+
 void NativeController::checkChatKeyRequest(const QString &keyUuid) { startChatRequest(keyUuid, true, false); }
 void NativeController::retryChatKeyRequest(const QString &keyUuid) { startChatRequest(keyUuid, true, true); }
 

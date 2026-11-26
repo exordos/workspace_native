@@ -857,6 +857,10 @@
             <translation>Показаны сохранённые чаты · Не удалось обновить</translation>
         </message>
         <message>
+            <source>The saved account could not reconnect because the service is temporarily unavailable.</source>
+            <translation>Не удалось переподключить сохранённый аккаунт, потому что сервис временно недоступен.</translation>
+        </message>
+        <message>
             <source>Save attachment</source>
             <translation>Сохранить вложение</translation>
         </message>
