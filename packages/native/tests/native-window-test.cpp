@@ -50859,6 +50859,10 @@ private slots:
         };
         QVariantMap stall;
         QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(), stall.value("samples").toLongLong() > 1), 5000);
+        // The report lags the beats by up to a flush cycle (500 ms): keep
+        // re-reading until the report has caught up past the qSleep block.
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
+            stall.value("worst_gap_ms").toDouble() >= 100.0), 5000);
         QVERIFY2(stall.value("worst_gap_ms").toDouble() >= 100.0,
                  qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
         QVERIFY(stall.value("beats_over_50ms").toLongLong() >= 1);
