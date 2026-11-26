@@ -13245,6 +13245,93 @@ mv -Tf "$root/.current-new" "$root/current"
         const bool closed = closeIncubatedTestWindow(engine, window); if (closed) close.dismiss(); QVERIFY(closed);
     }
 
+    void sidebarNetworkPreviewHydrationKeepsRowFocusAndClickTarget()
+    {
+        // #866 (finding 3 acceptance): with network preview hydration ENABLED - the shape
+        // production runs and the window harness previously had to pin off (e326bc59) -
+        // a preview arrival must reach the row through the narrow previewRevision
+        // projection only. The old streamsChanged announcement rebuilt the whole sidebar
+        // projection mid-interaction: rows were re-incubated under the user, so focused
+        // rows lost keyboard focus, click targets went stale and list positions drifted.
+        WindowChannelFixture fixture;
+        const QString otherStream = "a3000000-0000-4000-8000-000000000001";
+        const QString previewUuid = "81000000-0000-4000-8000-000000000001";
+        const QString previewBody = QStringLiteral("Hydrated network preview");
+        auto first = windowChannel(streamId, "Engineering");
+        first["last_message_uuid"] = previewUuid;
+        const auto second = windowChannel(otherStream, "Support");
+        const auto previewRow = QJsonObject{
+            {"uuid", previewUuid}, {"project_id", projectId}, {"author_uuid", userId},
+            {"stream_uuid", streamId}, {"topic_uuid", topicId}, {"revision", 1},
+            {"created_at", "2026-01-02T10:00:05.000Z"}, {"updated_at", "2026-01-02T10:00:05.000Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", previewBody}}}};
+        const auto fallback = fixture.server.handler;
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/"))
+                return {QJsonArray{first, second}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                return {QJsonArray{windowChannelTopic(id == streamId ? topicId : secondTopicId, id, "Topic")}};
+            }
+            // The row-preview uuid lookup (GET /messages/?project_id=..&uuid=..), held in
+            // flight so the reply lands while the sidebar is already under interaction.
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("uuid") == previewUuid) {
+                Response response{QJsonArray{previewRow}};
+                response.defer = [held](auto send) { *held = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("network-preview-hydration.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Network preview hydration teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-hydration", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        const auto previewText = [&]() {
+            const auto *item = visibleItem("streamPreviewText-" + streamId);
+            return item ? item->property("text").toString() : QString();
+        };
+        // Nothing arrived yet: the disk stage has no body for the uuid and the reply is held.
+        QVERIFY(previewText().isEmpty());
+        // An active interaction is in progress on the row that is about to receive a preview.
+        QPointer<QQuickItem> focusRow = visibleItem("stream-" + streamId); QVERIFY(focusRow);
+        QPointer<QQuickItem> clickRow = visibleItem("stream-" + otherStream); QVERIFY(clickRow);
+        focusRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(focusRow->hasActiveFocus());
+        auto *streamList = visibleItem("streamList"); QVERIFY(streamList);
+        const auto sceneBefore = focusRow->mapToScene(QPointF(0, 0));
+        const auto listYBefore = streamList->property("contentY").toDouble();
+        QTRY_VERIFY(bool(*held)); // the lookup is in flight
+        (*held)(); *held = {};
+        // The preview lands: text flips and the preview-only revision moves...
+        QTRY_COMPARE_WITH_TIMEOUT(previewText(), previewBody, 5000);
+        // ...and nothing else moved: the focused row is the same item instance at the same
+        // scene position, keyboard focus never left it, and the list kept its offset.
+        QVERIFY2(focusRow && focusRow->hasActiveFocus(),
+            "A network preview arrival must not re-incubate the focused sidebar row");
+        QCOMPARE(focusRow->mapToScene(QPointF(0, 0)), sceneBefore);
+        QCOMPARE(streamList->property("contentY").toDouble(), listYBefore);
+        // The click target under the user survived the arrival and still selects its stream.
+        QVERIFY(clickRow);
+        QTest::mouseClick(window, Qt::LeftButton, {},
+            clickRow->mapToScene(QPointF(20, clickRow->height() / 2)).toPoint());
+        QTRY_COMPARE(controller.selectedStream(), otherStream);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss();
+        QVERIFY(closed);
+    }
+
     void sidebarHydrationKeepsFocusOnOtherStream()
     {
         WindowChannelFixture fixture;
