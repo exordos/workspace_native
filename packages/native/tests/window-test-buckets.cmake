@@ -625,6 +625,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_26
     pollManagementMenuTracksActorAndState
     rightDrawerShellMatchesReferenceGeometry
     sidebarChatActionsCompleteFromMenu
+    sidebarHydrationReorderKeepsActiveSidebarDelegates
     startupDirectoryDoesNotPopulateHiddenPickers
     updaterActualMainShowsAndExecutesTheDownloadAndInstallActions
     windowNarrowAppearanceDrawerKeepsCoveredMessagesUnread
