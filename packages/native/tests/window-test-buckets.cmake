@@ -295,6 +295,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
     pollCreateDialogEnforcesServerLimits
     quoteThumbnailScopeResetKeepsOneCurrentLease
     receivedStandaloneImagePaintsBetweenTextAndCaption
+    sidebarMoveFocusCarryExpiresAfterSettle
     sidebarRowsRenderPreviewAndTime
     sourceConversationInsetsAndAvatarFallback
     startupCacheEmptyStoreKeepsSignInVisible

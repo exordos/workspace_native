@@ -13434,6 +13434,80 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(closed);
     }
 
+    void sidebarMoveFocusCarryExpiresAfterSettle()
+    {
+        // exordy finding (#866 round): a completed row move must not leave a live
+        // focus carry. The carry re-aims bubbled focus onto the pre-move item; if it
+        // stayed armed indefinitely, the next focus navigation anywhere in the
+        // sidebar would be forced back to the moved row. Once the move's relayout
+        // goes quiet the carry expires, so a LATER navigation sticks where the user
+        // put it.
+        WindowChannelFixture fixture;
+        const QString otherStream = "a3000000-0000-4000-8000-000000000001";
+        const QString previewUuid = "81000000-0000-4000-8000-000000000001";
+        const QString previewBody = QStringLiteral("Carry expiry preview");
+        auto first = windowChannel(streamId, "Engineering");
+        first["updated_at"] = QStringLiteral("2026-01-02T10:00:00Z");
+        auto second = windowChannel(otherStream, "Support");
+        second["last_message_uuid"] = previewUuid;
+        second["updated_at"] = QStringLiteral("2026-01-01T10:00:00Z");
+        const auto previewRow = QJsonObject{
+            {"uuid", previewUuid}, {"project_id", projectId}, {"author_uuid", userId},
+            {"stream_uuid", otherStream}, {"topic_uuid", secondTopicId}, {"revision", 1},
+            {"created_at", "2026-01-03T10:00:00.000Z"}, {"updated_at", "2026-01-03T10:00:00.000Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", previewBody}}}};
+        const auto fallback = fixture.server.handler;
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/"))
+                return {QJsonArray{first, second}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                return {QJsonArray{windowChannelTopic(id == streamId ? topicId : secondTopicId, id, "Topic")}};
+            }
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("uuid") == previewUuid) {
+                Response response{QJsonArray{previewRow}};
+                response.defer = [held](auto send) { *held = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("carry-expiry.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Carry expiry teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-carry", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        QPointer<QQuickItem> movedRow;
+        QPointer<QQuickItem> quietRow;
+        QTRY_VERIFY_WITH_TIMEOUT((movedRow = visibleItem("stream-" + otherStream)) != nullptr, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT((quietRow = visibleItem("stream-" + streamId)) != nullptr, 5000);
+        movedRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(movedRow->hasActiveFocus());
+        QTRY_VERIFY(bool(*held)); // the lookup is in flight
+        (*held)(); *held = {};
+        // The move lands and the carry restores focus to the moved row.
+        QTRY_VERIFY_WITH_TIMEOUT(movedRow->hasActiveFocus(), 5000);
+        // The relayout went quiet: the carry has expired (500 ms settle window).
+        QTest::qWait(1600);
+        // A later navigation must stick - an armed carry would force focus back to
+        // the moved row the moment this delegate root receives focus.
+        quietRow->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == quietRow, 1500);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss();
+        QVERIFY(closed);
+    }
+
     void sidebarHydrationKeepsFocusOnOtherStream()
     {
         WindowChannelFixture fixture;
