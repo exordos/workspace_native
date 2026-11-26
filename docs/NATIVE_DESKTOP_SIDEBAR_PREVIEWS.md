@@ -244,3 +244,23 @@ The stream and topic rows take their last message from the local store. A locked
 Previews derived from plaintext follow the currently authorized message presentation. The sidebar cache can remember the sender, timestamp and message kind after navigation. It can resolve the plaintext summary again when its owner opens the message.
 
 [Reference sidebar message presentation](https://github.com/exordos/workspace_ui/blob/230e02b8b0273dee556a406746d122180a68b3e7/packages/web/src/widgets/sidebar/sidebar-workspace-message-preview.ui.tsx#L13-L46)
+
+## Activity order from hydrated stamps (#861)
+
+The sidebar comparator (default **Last message** and **Unread first** modes) sorts
+from the activity ledger, not from the catalog `updated_at` drift: when a
+background preview hydration resolves a row's true last-message stamp, the stamp
+enters the same ledger `noteActivityMerge` feeds (`applyHydratedRowActivity`), so
+stream AND topic rows re-sort without opening any history. The projection order is
+diffed before and after the ledger write; only a genuine move costs a projection
+rebuild, announced as one coalesced `streamsChanged` (stream rows) or one
+coalesced `topicsChanged` (topic rows) per event-loop pass. `updated_at` stays a
+fallback only for rows whose pointer cannot be resolved at all. Unread-first,
+mute, completion and folder grouping ranks are preserved: the activity key only
+orders within the selected mode's groups, and ties keep the server order.
+Reference: `workspace_ui` `messenger-sidebar.lib.ts:234-268` (streams),
+`messenger-topic-list.lib.ts:129-150` (topics), cited by #853.
+
+Test plan addition: `native-controller-sidebar` case
+`sidebarTopicHydrationReordersActivityOrder` (defer-gated pump lookup on the
+misleading-`updated_at` fixture: fallback baseline, release, reorder, announcement).
