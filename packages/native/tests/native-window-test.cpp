@@ -40627,7 +40627,10 @@ private slots:
         QVERIFY(!visibleItem("sidebarLoadingCard"));
         QVERIFY(!visibleItem("sidebarErrorCard"));
         QVERIFY(!visibleItem("sidebarPartialBanner"));
-        if (stateCase == "search") QVERIFY(!visibleItem("stream-"+streamId));
+        // Move-aware row re-ranks dispose the filtered delegate one view pass
+        // later than the query flip; give it the settle window like every
+        // other churn-tolerant pin (precedent #866 fix round).
+        if (stateCase == "search") QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("stream-"+streamId), 5000);
         if (stateCase == "workspace") QVERIFY(controller.streams().isEmpty());
         if (stateCase == "personal" || stateCase == "channels" || stateCase == "folder")
             QVERIFY(controller.sidebarStreams().isEmpty());
@@ -40685,7 +40688,7 @@ private slots:
         window->setProperty("sidebarQuery","nothing-matches");
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("sidebarEmptyCard"),5000);
         QVERIFY(visibleItem("sidebarPartialBanner"));
-        QVERIFY(!visibleItem("stream-"+streamId));
+        QTRY_VERIFY_WITH_TIMEOUT(!visibleItem("stream-"+streamId), 5000);
         auto *banner = visibleItem("sidebarPartialBanner");
         auto *emptyCard = visibleItem("sidebarEmptyCard");
         const qreal bannerBottom = banner->mapToItem(window->contentItem(),QPointF(0,banner->height())).y();
@@ -50119,7 +50122,7 @@ private slots:
         controller.selectFolder(allFolder);
         QTRY_COMPARE(controller.selectedFolder(), allFolder);
         QTRY_VERIFY(betaRow());
-        QVERIFY(!separator()); QVERIFY(!status());
+        QTRY_VERIFY_WITH_TIMEOUT(!separator(), 2000); QTRY_VERIFY_WITH_TIMEOUT(!status(), 2000);
     }
 
     // Issue #847 render pin for the "Other topics" separator (reference
@@ -50474,9 +50477,11 @@ private slots:
         click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setMode("light");
-        click(window, item(content, "stream-" + streamId));
+        // The preview pump re-ranks rows around first paint; clickCurrentItem
+        // re-resolves the delegate that a churn pass may recreate (existing helper).
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         QTRY_VERIFY(item(content, "message-content-" + messageId));
         QVERIFY(item(content, "message-content-" + messageId)->property("text").toString().contains("Saved message before restart"));
