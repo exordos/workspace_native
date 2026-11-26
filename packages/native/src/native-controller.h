@@ -179,6 +179,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList streams READ streams NOTIFY streamsChanged)
     // Issue #867: projection-count seam for the regression tests (no NOTIFY).
     Q_PROPERTY(int streamsProjectionCountForTest READ streamsProjectionCountForTest)
+    Q_PROPERTY(int topicsProjectionCountForTest READ topicsProjectionCountForTest)
     // Issue #83: folder rail (docs/NATIVE_DESKTOP_FOLDERS_RAIL.md). The rail
     // rows, the effective folder selection and the folder-scoped sidebar
     // projection over the stream catalog.
@@ -506,6 +507,9 @@ public:
     // Issue #867 test-only oracle: how many full streams() projections ran.
     // Intentionally has no NOTIFY - nothing in QML may bind to it.
     int streamsProjectionCountForTest() const { return m_streamsProjectionCount; }
+    // Issue #868 test-only oracle: how many full topics() projections ran.
+    // Intentionally has no NOTIFY - nothing in QML may bind to it.
+    int topicsProjectionCountForTest() const { return m_topicsProjectionCount; }
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
     QVariantMap sidebarCatalogState() const;
@@ -2251,6 +2255,8 @@ private:
     // Issue #867: counts full streams() projection builds for the regression
     // tests; mutable because the counted getter is const.
     mutable int m_streamsProjectionCount = 0;
+    // Issue #868: same oracle for the topics() projection (see above).
+    mutable int m_topicsProjectionCount = 0;
     bool m_channelDirectoryValid = false;
     QHash<QString, DirectChat> m_directChats;
     quint64 m_nextDirectChat = 0, m_directTrust = 0;

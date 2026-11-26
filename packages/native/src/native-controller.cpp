@@ -14508,6 +14508,13 @@ QVariantMap NativeController::streamById(const QString &id) const
 
 QVariantList NativeController::streams() const
 {
+    // Issue #868 (design verdict): this getter MUST rebuild per read. The
+    // property is bound from QML, and a Qt 6.10 binding that was served a
+    // cached QVariant once never re-evaluates on the next NOTIFY again (the
+    // cached variant froze globalTopicUsesTypedHttpForEveryMetadataKind on
+    // four full-gate shards, PR #871). Getter-level projection caches are
+    // therefore only legal for internal C++ consumers, never for QML-bound
+    // reads like this one.
     ++m_streamsProjectionCount;
     QVector<const Stream *> ordered;
     for (const auto &stream : m_streams) {
@@ -15405,6 +15412,9 @@ QVariantMap NativeController::sidebarCatalogState() const
 
 QVariantList NativeController::topics() const
 {
+    // Issue #868 (design verdict): rebuild per read, same binding-liveness
+    // contract as streams() above.
+    ++m_topicsProjectionCount;
     return topicRows(m_topics, currentStream());
 }
 
