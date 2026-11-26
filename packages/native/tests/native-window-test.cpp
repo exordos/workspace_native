@@ -30000,6 +30000,91 @@ NativeAvatarImage {
         QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
     }
 
+    // exordy finding 4693632013, round 5: the endpoint-tab reload (controller
+    // ledger key "endpoints") is a DIFFERENT operation from the in-flight save
+    // (key "endpoint-<uuid>") but both failures attribute to the same error
+    // family. The read failure must not retire the in-flight save's dispatch
+    // identity: the save's late success then cannot rebase the draft and the
+    // footer would claim "Unsaved changes" forever for values the server
+    // accepted. The tab strip is never busy-gated, so this interleaving is
+    // exactly what a user reaches by visiting Common settings and back.
+    void channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        auto updated = endpointDto;
+        updated["name"] = QStringLiteral("Synthetic GPTx");
+        std::function<void()> releasePut;
+        std::function<void()> releaseRead;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response{updated};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/")) {
+                if (releasePut) { // the save is in flight: this GET is the tab reload
+                    Response response{QJsonObject{{"detail", "synthetic outage"}}, 503};
+                    response.defer = [&releaseRead](std::function<void()> send) { releaseRead = std::move(send); };
+                    return response;
+                }
+                return Response{QJsonArray{endpointDto}};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        name->setProperty("text", name->property("text").toString() + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the endpoint save is in flight, held by the mock
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(releaseRead);
+        releaseRead();
+        releaseRead = nullptr;
+        QTRY_VERIFY(scene.controller.property("topicSummarySettingsStatus").toString()
+                       == QStringLiteral("error"));
+        QVERIFY(scene.controller.property("topicSummarySettingsErrorOps").toStringList()
+                    .contains(QStringLiteral("endpoints")));
+        // The errored-op oracle added with the fix: the failed request's own ledger
+        // key. For this read it is "endpoints" - never an "endpoint-<uuid>" save key.
+        QCOMPARE(scene.controller.property("topicSummarySettingsErrorKey").toString(),
+                 QStringLiteral("endpoints"));
+        // The save is still unsettled: the footer must not claim saved.
+        QVERIFY(dialog->property("footerStatus").toString() != QStringLiteral("saved"));
+        // The save's own success must rebase the draft - impossible if the read
+        // error retired the dispatch identity through the family-only gate.
+        releasePut();
+        releasePut = nullptr;
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
