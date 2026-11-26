@@ -1,3 +1,16 @@
+# Workspace Native 0.50.4 - Linux development preview
+
+- Sidebar stream rows now hydrate their last-message preview and timestamp in the background as the catalog is accepted: previews appear after sign-in without opening a conversation, re-ranked rows keep selection, scroll position and keyboard focus across moves, folder switches and search (issue #860).
+- Fixed: the saved reading anchor survives conversation re-entry - returning to a topic jumps back to the saved position instead of the bottom of the history (issue #874).
+- Fixed: the saved-account retry stays reachable when startup has no cached chats, so sign-in recovery no longer needs a manual restart (issue #886).
+- Fixed: the standalone call window is raised when joining a call that is already open (issue #890).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.50.3 to 0.50.4](https://github.com/exordos/workspace_native/compare/0.50.3...0.50.4)
+
+---
+
 # Workspace Native 0.50.3 - Linux development preview
 
 - Fixed: inline images and videos in an open conversation stay painted while the client briefly retries media fetches during fast scrolling or a flaky link. Rows no longer blank out and flash back when a demand request is superseded mid-flight (issue #873, in the #854 media-stability line).
