@@ -319,6 +319,10 @@ public:
     // stage has actually dispatched. The mock's HTTP/1 connection pool cannot show an
     // over-dispatch at the server, so the cap is observed at the client seam.
     int rowPreviewNetworkIssuedForTest() const { return m_rowPreviewNetIssued; }
+    // #866 review (exordy finding 1): how many preview lookups are counted in-flight now.
+    // The stale-session oracle: a reply from a retired session must leave the NEWER
+    // request's marker in place, so a re-catalog can never re-dispatch the uuid.
+    int rowPreviewNetworkInFlightForTest() const { return m_rowPreviewNetInFlight.size(); }
     // Issue #729 phase 2: the warm queue's throttle delay (429/5xx doubling,
     // bounded; cleared by a verified catalog commit).
     int topicPreloadBackoffMsForTest() const { return m_topicPreloadBackoffMs; }
@@ -2226,6 +2230,24 @@ private:
     void seedRowPreviewHydrationFromCatalog();
     void scheduleRowPreviewNetworkHydration();
     void pumpRowPreviewNetworkHydration();
+    // #866 review (exordy finding 2): the pumps consume their pending queues in a
+    // foreground-priority order - pointers belonging to the open route or to an
+    // expanded sidebar stream are dispatched ahead of hidden catalog candidates.
+    void enqueueRowPreviewDisk(const QString &uuid);
+    void enqueueRowPreviewNet(const QString &uuid);
+    bool isRowPreviewForeground(const QString &uuid) const;
+    QString takeRowPreviewCandidate(QQueue<QString> &queue) const;
+    // #866 review (exordy finding 1): every in-flight lookup carries a token; only the
+    // request that still owns the uuid's marker may retire it, so a reply from a retired
+    // session can never free a newer request's in-flight slot.
+    quint64 m_rowPreviewDiskTokenSeq = 0;
+    QHash<QString, quint64> m_rowPreviewDiskTokens;
+    quint64 m_rowPreviewNetTokenSeq = 0;
+    QHash<QString, quint64> m_rowPreviewNetTokens;
+    mutable QQueue<QString> m_rowPreviewDiskQueue; // mutable: rowPreview() feeds it from a const read
+    QQueue<QString> m_rowPreviewNetQueue;
+    // uuid -> owning stream uuid, filled by the catalog seed; drives the foreground pick.
+    QHash<QString, QString> m_rowPreviewStreamOf;
     QHash<QString, QString> m_visibleEncryptedPreviewStates;
     mutable QHash<QString, RowPreview> m_rowPreviews;
     mutable QQueue<QString> m_rowPreviewOrder;

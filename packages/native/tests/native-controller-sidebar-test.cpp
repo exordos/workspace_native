@@ -1185,6 +1185,81 @@ private slots:
         QVERIFY(!rowOf(direct).value("pinned").toBool());
     }
 
+    // #866 review (exordy finding 1): a reply from a retired session may not retire the
+    // in-flight marker of a NEWER request for the same uuid. The lookup is dispatched in
+    // session one, held; the session is replaced (new user) and the catalog re-seeds the
+    // pointer into a second request; the stale first reply lands after. The newer slot
+    // must survive: a re-catalog in the new session must not see the uuid as free and
+    // dispatch a duplicate while the new request is still in flight.
+    void sidebarPreviewStaleReplyCannotRetireNewSessionSlot()
+    {
+        Fixture test;
+        test.aggregateMessages = true;
+        const auto pointer = QStringLiteral("88888888-8888-4888-8888-0000000000d1");
+        test.streams = [](const Request &request) {
+            if (request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.topics = [pointer](const Request &) {
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Stale slot probe"}, {"is_done", false},
+                {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", pointer},
+                {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        test.messages = [gates](const Request &request) {
+            const auto uuid = QUrlQuery(request.target).queryItemValue("uuid");
+            if (!uuid.isEmpty()) {
+                Response held{QJsonArray{message(QStringLiteral("Body ") + uuid, uuid)}};
+                held.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+                return held;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(test.start());
+        QVERIFY(QTest::qWaitFor(
+            [&] { return test.controller.rowPreviewNetworkIssuedForTest() >= 1; }, 5000));
+        QTest::qWait(300);
+        QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 1);
+        QCOMPARE(gates->size(), size_t(1));
+        // Session swap while the first reply is still held; the new session re-seeds the
+        // same pointer and dispatches a second request under the new owner.
+        test.controller.logout();
+        test.controller.login(test.server.origin().toString(), "second-user", "password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        QVERIFY(QTest::qWaitFor(
+            [&] { return test.controller.rowPreviewNetworkIssuedForTest() >= 2; }, 5000));
+        QTest::qWait(300);
+        QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 2);
+        QCOMPARE(gates->size(), size_t(2));
+        // The stale first-session reply arrives now: it must not retire the slot the second
+        // request owns. The marker of the newer request survives; a re-catalog inside the
+        // second session then sees the uuid busy and dispatches no duplicate.
+        { const auto send = gates->at(0); send(); }
+        QTest::qWait(400);
+        QCOMPARE(test.controller.rowPreviewNetworkInFlightForTest(), 1); // newer slot intact
+        test.controller.openProject(projectId);
+        QTest::qWait(700);
+        QCOMPARE(test.controller.rowPreviewNetworkInFlightForTest(), 1);
+        QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 2); // no duplicate dispatch
+        for (size_t i = 1; i < gates->size(); ++i) { const auto send = gates->at(i); send(); }
+        QTest::qWait(400);
+    }
+
+    // #866 review (exordy finding 2): the pumps consume foreground rows first - the
+    // open route's stream (with its topics) and every expanded sidebar stream are
+    // dispatched ahead of hidden catalog candidates, both at seed time and at every
+    // slot hand-off (isRowPreviewForeground/takeRowPreviewCandidate in the controller).
+
     // docs/NATIVE_DESKTOP_SIDEBAR_PREVIEWS.md section 2: a row whose last message the client
     // does not hold in memory is filled asynchronously from the disk cache by the bounded
     // pump, and the projection re-emits once the body resolves. This is the same best-effort
