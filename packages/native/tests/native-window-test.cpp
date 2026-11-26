@@ -15033,16 +15033,7 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *wantedTopic = item(window->contentItem(), "topic-" + topicId);
         auto *otherTopic = item(window->contentItem(), "topic-" + secondTopicId);
         auto *streamRow = item(window->contentItem(), "stream-" + streamId);
-        QTRY_VERIFY_WITH_TIMEOUT(([&] {
-            auto *w = item(window->contentItem(), "topic-" + topicId);
-            auto *o = item(window->contentItem(), "topic-" + secondTopicId);
-            auto *s = item(window->contentItem(), "stream-" + streamId);
-            if (w && w == wantedTopic && o && o == otherTopic && s && s == streamRow)
-                return true;
-            wantedTopic = w; otherTopic = o; streamRow = s;
-            return false;
-        })(), 4000);
-        QVERIFY(wantedTopic && otherTopic && streamRow);
+        QTRY_VERIFY(wantedTopic && otherTopic && streamRow);
         const auto reactionTopicReady = [&] {
             // Issue #847: sidebar topic rows can be wrapped by a per-row
             // delegate item (the search "Other topics" separator support), so
@@ -15066,6 +15057,31 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY2(reactionTopicReady(), "Topic rows must occupy separate placed cells before mouse input");
         QSignalSpy reactionInputFrame(window, &QQuickWindow::frameSwapped);
         window->update(); QTRY_VERIFY(!reactionInputFrame.isEmpty()); QVERIFY(reactionTopicReady());
+        // exordy :4712834896 - a single-pass identity check can pass before any
+        // re-rank churn has begun. Settle across view updates instead: re-resolve
+        // the rows once per event-loop pass and require four consecutive passes
+        // where the same live instances are present and visible; any recreation
+        // re-captures the handles and restarts the streak. Only then are the
+        // spy targets and geometry captures below armed, so no wait between the
+        // last verified pass and click() can leave them stale.
+        int settledPasses = 0;
+        const qint64 settleDeadline = QDateTime::currentMSecsSinceEpoch() + 6000;
+        while (settledPasses < 4) {
+            QTest::qWait(50);
+            auto *w = item(window->contentItem(), "topic-" + topicId);
+            auto *o = item(window->contentItem(), "topic-" + secondTopicId);
+            auto *s = item(window->contentItem(), "stream-" + streamId);
+            if (w && w == wantedTopic && o && o == otherTopic && s && s == streamRow
+                && w->isVisible() && o->isVisible() && s->isVisible()) {
+                ++settledPasses;
+            } else {
+                settledPasses = 0;
+                wantedTopic = w; otherTopic = o; streamRow = s;
+            }
+            if (settledPasses < 4 && QDateTime::currentMSecsSinceEpoch() > settleDeadline)
+                QFAIL("Sidebar rows kept being recreated before the reaction spies were armed");
+        }
+        QVERIFY(wantedTopic && otherTopic && streamRow);
         QSignalSpy wantedClicked(wantedTopic, SIGNAL(clicked())), otherClicked(otherTopic, SIGNAL(clicked()));
         QVERIFY(wantedClicked.isValid() && otherClicked.isValid());
         click(window, wantedTopic);
