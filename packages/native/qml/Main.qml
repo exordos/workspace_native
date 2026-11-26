@@ -8418,8 +8418,14 @@ component NativeMentionChip: Item {
                     }
                 }
                 function continueOpening() {
+                    // Issue #874: a schedule that holds positioning under a saved
+                    // reading anchor whose row has not landed yet must NOT starve
+                    // the opening preparation - the lookup for that anchor is the
+                    // only thing that can end the hold, so the positioning gate is
+                    // lifted exactly while such a hold is pending.
                     if (openingApplied || displayedRoute !== routeKey() || !root.controller.messageHistoryReady
-                        || root.controller.busy || positioning)
+                        || root.controller.busy
+                        || (positioning && !(pendingViewport && pendingViewport.pendingSaved)))
                         return;
                     root.controller.prepareConversationOpening(openingPosition ? openingPosition.messageId : "");
                     if (!openingApplied && !positioning && root.controller.conversationOpening.ready)
@@ -8866,6 +8872,10 @@ component NativeMentionChip: Item {
                     if (savedAnchorMissing && !openingApplied
                         && !root.controller.conversationOpening.failed) {
                         savedPositionRefreshTimer.restart();
+                        // Issue #874: the held schedule must still let the opening
+                        // be prepared (continueOpening) - the saved-anchor lookup
+                        // it dispatches is what ends this hold.
+                        Qt.callLater(continueOpening);
                         return;
                     }
                     pendingViewport = null;
