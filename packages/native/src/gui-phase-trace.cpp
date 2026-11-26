@@ -141,6 +141,11 @@ void GuiPhaseTrace::endSpan(qint64 id)
 
 GuiPhaseSpan::GuiPhaseSpan(const char *name)
 {
+    // Inert-telemetry contract: a disabled recorder must not convert the span
+    // name at all - the disabled path pays one relaxed bool read and nothing
+    // else (exordy finding on PR #898). beginSpan keeps its own check for the
+    // QML beginSpan seam, which receives an already-converted QString.
+    if (!GuiPhaseTrace::instance().isEnabled()) return;
     m_id = GuiPhaseTrace::instance().beginSpan(QString::fromLatin1(name));
 }
 
