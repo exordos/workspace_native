@@ -252,11 +252,19 @@ FocusScope {
                         required property var modelData
                         text: modelData.label
                         checked: page.activeCalendars.indexOf(modelData.key) >= 0
-                        onCheckedChanged: {
+                        // onToggled, NOT onCheckedChanged: the checked binding reads
+                        // activeCalendars, so a data-driven re-check that wrote the
+                        // array back (as onCheckedChanged did) re-entered the binding
+                        // and Qt froze the projection with "Binding loop detected for
+                        // property checked" (CI #904: the warning poisoned every
+                        // window case in the shard). Only user toggles mutate the
+                        // filter now, and only on a real membership change.
+                        onToggled: {
                             const cur = page.activeCalendars.slice();
                             const idx = cur.indexOf(modelData.key);
                             if (checked && idx < 0) cur.push(modelData.key);
-                            if (!checked && idx >= 0) cur.splice(idx, 1);
+                            else if (!checked && idx >= 0) cur.splice(idx, 1);
+                            else return;
                             page.activeCalendars = cur;
                         }
                     }

@@ -318,9 +318,15 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
     // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): events
     // for the visible window, fetched from GET /calendar/events?from&to.
-    Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY stateChanged)
-    Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY stateChanged)
-    Q_PROPERTY(bool calendarError READ calendarError NOTIFY stateChanged)
+    // Calendar state carries its own NOTIFY (issue #881, #89 lesson): the fetch
+    // fires while Main.qml's `visible: section === "calendar"` binding is still
+    // being evaluated (page onVisibleChanged -> refreshWindow -> request), and a
+    // stateChanged emission here re-dirtied the section dependency mid-evaluation
+    // - Qt raised "Binding loop detected for property visible" and the warning
+    // poisoned every window case in the shard. Notify only what calendar changed.
+    Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY calendarChanged)
+    Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY calendarChanged)
+    Q_PROPERTY(bool calendarError READ calendarError NOTIFY calendarChanged)
     // Activity panel (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md): open/closed
     // state persisted per workspace session, plus the compact-rail counts.
     // Counts use -1 for "not known yet" (the reference null): no badge renders.
@@ -1192,6 +1198,7 @@ signals:
     void sessionLogChanged();
     void supportScopeChanged();
     void stateChanged();
+    void calendarChanged();
     void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();

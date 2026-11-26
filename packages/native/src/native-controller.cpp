@@ -8973,7 +8973,7 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
     QUrlQuery query;
     query.addQueryItem("from", from);
     query.addQueryItem("to", to);
-    emit stateChanged();
+    emit calendarChanged();
     request("GET", messenger + "/calendar/events", {}, query,
         [this, version, owner](const ApiResult &result) {
         if (version != m_calendar.version || owner != creationOwnerKey())
@@ -8982,7 +8982,7 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         if (!result.ok() || !result.data.isArray()) {
             m_calendar.loading = false;
             m_calendar.error = true;
-            emit stateChanged();
+            emit calendarChanged();
             return;
         }
         QVariantList events;
@@ -9002,7 +9002,7 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         m_calendar.hasLoaded = true;
         m_calendar.loading = false;
         m_calendar.error = false;
-        emit stateChanged();
+        emit calendarChanged();
     });
 }
 
