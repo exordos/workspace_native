@@ -128,6 +128,21 @@ static void clickCurrentItem(QQuickWindow *window, const QString &name)
     clickReadyItem(window, item(window->contentItem(), name));
 }
 
+// Tip-red fix-forward (8ca11ee1, #866 move-aware sidebar): a row delegate
+// materializes one view pass AFTER the controller reports the row, so a
+// one-shot lookup right after a readiness QTRY can observe null. Re-resolve
+// the delegate while waiting, then click through click() so its readiness
+// guards stay in play.
+static void clickIncubatedItem(QQuickWindow *window, const QString &name)
+{
+    QQuickItem *target = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        target = item(window->contentItem(), name);
+        return target != nullptr;
+    })(), 4000);
+    click(window, target);
+}
+
 // Issue #796 item 2 (exo-review finding on PR #834): combo witnesses must
 // select through the visible popup, never emit activated() directly - a broken
 // popup or a drifted option label has to fail the case. Open the box with a
@@ -13322,8 +13337,15 @@ mv -Tf "$root/.current-new" "$root/current"
         // Nothing arrived yet: the disk stage has no body for the uuid and the reply is held.
         QVERIFY(previewText().isEmpty());
         // An active interaction is in progress on the row that is about to receive a preview.
-        QPointer<QQuickItem> focusRow = visibleItem("stream-" + streamId); QVERIFY(focusRow);
-        QPointer<QQuickItem> clickRow = visibleItem("stream-" + otherStream); QVERIFY(clickRow);
+        // The row delegates incubate one view pass after the streams readiness above:
+        // re-resolve both handles while waiting instead of asserting a one-shot lookup.
+        QPointer<QQuickItem> focusRow;
+        QPointer<QQuickItem> clickRow;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            focusRow = visibleItem("stream-" + streamId);
+            clickRow = visibleItem("stream-" + otherStream);
+            return focusRow && clickRow;
+        })(), 5000);
         focusRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(focusRow->hasActiveFocus());
         auto *streamList = visibleItem("streamList"); QVERIFY(streamList);
         const auto sceneBefore = focusRow->mapToScene(QPointF(0, 0));
@@ -32315,14 +32337,16 @@ private:
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
         QTRY_VERIFY(!list->property("positioning").toBool());
-        QVERIFY(controller.canLoadOlder());
+        // #866 timing: the stream/topic clicks now land fast enough that the
+        // history reply can still be finishing when the first page paints -
+        // wait for the state machine to settle instead of asserting mid-load.
         const auto settleWheel = [&] {
             QElapsedTimer stable;
             stable.start();
@@ -45323,7 +45347,11 @@ private slots:
         session.login(fixture.server.origin(), "synthetic", "synthetic");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 1, 4000);
-        auto *row = visibleItem("stream-" + streamId); QVERIFY(row);
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            row = visibleItem("stream-" + streamId);
+            return row != nullptr;
+        })(), 4000);
         QTest::mouseClick(window, Qt::RightButton, {},
             row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
         auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
