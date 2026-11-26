@@ -642,6 +642,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     activityPanelExpandedListTogglesRoutesAndDisabledFavorites
     channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
     channelTopicSummaryEndpointFailedSaveKeepsMarkerUnderUnrelatedBusy
+    channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity
     existingEditAttachmentCardsLoadFailAndRemove
     existingEncryptedDirectFromNewChatOpensWithoutChangingThePair
     externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision
