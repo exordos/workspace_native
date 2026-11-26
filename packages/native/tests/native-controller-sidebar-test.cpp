@@ -3836,6 +3836,63 @@ private slots:
             test.controller.topics();
         QCOMPARE(test.controller.topicsProjectionCountForTest(), topicsBaseline + 4);
     }
+
+    // #866 fix round (finding on 1f77ced0): a projection that INSERTS a new row in
+    // front of surviving rows that simultaneously re-rank must not duplicate or
+    // crash. The move pass may not index the raw target before excluding the
+    // insertions: for [A, B] -> [X, B, A] it left the survivors unordered, the
+    // insertion pass then duplicated B, and the content pass read past the
+    // projection. Survivors must be ordered against the target's surviving keys
+    // first, only then may new rows be inserted.
+    void sidebarModelOrdersSurvivorsBeforeInsertingNewRows()
+    {
+        Fixture test;
+        const auto streamB = QStringLiteral("88888888-8888-4888-8888-0000000008b0");
+        const auto streamX = QStringLiteral("88888888-8888-4888-8888-0000000008c0");
+        const auto dto = [](const QString &id, const QString &name, const QString &stamp) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"updated_at", stamp}};
+        };
+        const auto firstList = QJsonArray{dto(streamId, "Alpha", "2026-01-02T10:00:00Z"),
+            dto(streamB, "Beta", "2026-01-01T10:00:00Z")};
+        const auto secondList = QJsonArray{dto(streamX, "Delta", "2026-01-04T10:00:00Z"),
+            dto(streamB, "Beta", "2026-01-03T10:00:00Z"),
+            dto(streamId, "Alpha", "2026-01-02T10:00:00Z")};
+        bool refreshed = false;
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{refreshed ? secondList : firstList};
+            return Response{firstList.first().toObject()};
+        };
+        QVERIFY(test.start({}, 2));
+        auto *model = test.controller.sidebarStreamListModel(); QVERIFY(model);
+        const auto rowKeys = [model] {
+            QStringList keys;
+            for (int i = 0; i < model->rowCount(); ++i)
+                keys << model->streamIdAt(i);
+            return keys;
+        };
+        const auto projectionKeys = [&test] {
+            QStringList keys;
+            for (const auto &value : test.controller.sidebarStreams())
+                keys << value.toMap().value(QStringLiteral("id")).toString();
+            return keys;
+        };
+        QCOMPARE(rowKeys(), projectionKeys());
+        const QStringList expectedFirst{streamId, streamB};
+        QCOMPARE(rowKeys(), expectedFirst);
+        // One announcement moves the projection [A, B] -> [X, B, A]: X (newest)
+        // is inserted at the head while B overtakes A.
+        refreshed = true;
+        test.controller.refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(test.controller.streams().size(), 3, 5000);
+        // The diff survived the combined insert+reorder: no duplicated survivor,
+        // no dropped row, and the model order equals the projection order.
+        QCOMPARE(rowKeys(), projectionKeys());
+        const QStringList expectedSwap{streamX, streamB, streamId};
+        QCOMPARE(rowKeys(), expectedSwap);
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)
