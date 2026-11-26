@@ -373,6 +373,14 @@ public:
     // deterministic (swap-on-ready itself is unaffected - slices remembered
     // from real navigation keep working).
     bool hasPreparedTopicSlice(const QString &topicUuid) const;
+    // Issue #893 (#855 subtask 1): GUI-thread phase attribution seam.
+    // Recording is disabled by default (inert telemetry); reset enables it.
+    Q_INVOKABLE void resetGuiPhaseTraceForTest();
+    Q_INVOKABLE QVariantMap guiPhaseTraceForTest() const;
+    // Begin/end pair used by QML instrumentation sites (no-op unless enabled).
+    Q_INVOKABLE qint64 beginGuiPhaseSpan(const QString &name);
+    Q_INVOKABLE void endGuiPhaseSpan(qint64 id);
+
     void setTopicPreloadIntervalMsForTest(int ms);
     void setTopicPreloadEnabledForTest(bool enabled);
     // #860: disables the network fallback stage of row-preview hydration (disk-only mode)
