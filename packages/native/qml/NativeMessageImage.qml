@@ -126,6 +126,12 @@ Item {
     // identical (acquire is already asynchronous) while the write-back no
     // longer lands inside the notify.
     onLoadActiveChanged: Qt.callLater(refresh)
+    // The hold must also drop when geometry alone moves a leased view out of
+    // bounds while bodyActive stays false: loadActive is false before and
+    // after such a move and never notifies, so only a demandHoldInView pass
+    // releases the demand back to the bounded manager (#873 review). Deferred
+    // for the same binding-loop reason as the loadActive handler.
+    onDemandHoldInViewChanged: Qt.callLater(refresh)
     Component.onCompleted: { initialized = true; refresh() }
     Component.onDestruction: {
         initialized = false

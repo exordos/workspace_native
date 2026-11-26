@@ -21864,6 +21864,79 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(repaints.count(), 0);
     }
 
+    // #873 review contract: the in-view hold must still drop when the real
+    // bounds move an already-leased view out of the viewport while bodyActive
+    // stays false. loadActive cannot notify in that state, so without a
+    // demandHoldInView-triggered refresh the demand stays pinned off-screen
+    // forever and starves the bounded manager.
+    void inlineMediaDemandHoldReleasesWhenItLeavesBoundsMidFlap()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000d");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-00000000000d");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("demand-hold-release.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Demand hold release window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
+        QTRY_VERIFY(photo());
+        QTRY_VERIFY(!photo()->property("imageUrl").toString().isEmpty());
+        QTRY_VERIFY(!photo()->property("leaseState").isNull());
+        // Enter the transient flap state: the lease is held for the in-view
+        // attachment while bodyActive is false.
+        photo()->setProperty("bodyActive", false);
+        QTest::qWait(120);
+        QVERIFY(photo()->property("demandHoldInView").toBool());
+        QVERIFY(!photo()->property("leaseState").isNull());
+        // Move the leased view out of the real bounds while bodyActive stays
+        // false: loadActive never re-notifies here (it is false before and
+        // after), so only a demandHoldInView-triggered refresh can release.
+        photo()->setProperty("y", photo()->property("y").toReal() + 4000.0);
+        QTRY_VERIFY(!photo()->property("demandHoldInView").toBool());
+        QTRY_VERIFY(photo()->property("leaseState").isNull());
+        QVERIFY(photo()->property("imageUrl").toString().isEmpty());
+    }
+
     void mediaViewerOpensNavigatesAndClosesLikeTheReference()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());
