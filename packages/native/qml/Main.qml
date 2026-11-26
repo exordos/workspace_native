@@ -8631,22 +8631,17 @@ component NativeMentionChip: Item {
                     const projection = projectServiceRows(presented, historical);
                     // Issue #872: a redundant messagesChanged (own-send echo,
                     // read ledger, unrelated catalog churn) used to rebind every
-                    // row and re-run the whole viewport chain below - the source
-                    // of the media flicker and scroll jump in #854. When the new
-                    // projection is content-identical to what is rendered, the
-                    // settled viewport must be left alone entirely.
-                    if (sameRoute && openingApplied && renderedMessages.count > 0
-                        && projection.length === renderedMessages.count) {
-                        let unchanged = true;
-                        for (let i = 0; i < projection.length; ++i) {
-                            if (!sameProjectedValue(projection[i], renderedMessages.get(i))) {
-                                unchanged = false;
-                                break;
-                            }
-                        }
-                        if (unchanged)
-                            return;
-                    }
+                    // row - the source of the media flicker in #854. The fix is
+                    // per-row: identical rows are skipped by the sameProjectedValue
+                    // continue below, so the rendered ListModel is not touched at
+                    // all on a content-identical pass. The viewport restoration
+                    // schedule itself is NOT skipped: presence events, read
+                    // receipts and other catalog churn reach this pass with an
+                    // identical message projection and the reference still
+                    // schedules the existing viewport restoration for them
+                    // (pinned by actualUsersAndRealtimePresenceUpdateMain...);
+                    // re-applying the same snapshot over unchanged rows lands
+                    // where the list already is, without a reflow.
                     positioning = true;
                     visibleReadTimer.stop();
                     pendingViewport = snapshot;
