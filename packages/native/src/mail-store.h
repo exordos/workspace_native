@@ -51,6 +51,12 @@ private:
     // Replies older than the newest selection/refresh are dropped, never
     // allowed to overwrite fresh state.
     quint64 m_requestToken = 0;
+    // Sample mode is decided ONLY by the folders response (exordy finding
+    // 4712650373): the sample mailbox may surface just when the folders
+    // endpoint itself was missing. If folders came from the server, a 404 on
+    // the messages endpoint stays an error - never sample rows mixed under
+    // server-provided folders.
+    bool m_sampleMode = false;
 };
 
 } // namespace workspace

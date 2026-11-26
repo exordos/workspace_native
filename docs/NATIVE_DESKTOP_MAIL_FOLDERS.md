@@ -80,7 +80,10 @@ consulted; the node id recorded by the issue is Mailbox and folders
   back to the sample mailbox compiled into the client and reaches `ready`:
   opening Mail in a production build shows the promised folders instead of a
   dead error screen (fix round, exordy finding 4712325987). Real transport and
-  server failures (non-404) keep the `error` + retry path.
+  server failures (non-404) keep the `error` + retry path. Sample mode is armed
+  solely by the folders response: if `/mail/folders` answered `200`, a `404` on
+  `/mail/messages` stays `error` with an empty list, so sample rows can never be
+  listed under server-provided folders (exordy finding 4712650373).
 - All server-supplied strings (folder title, sender, subject, snippet, time and
   the reader title) render with `textFormat: Text.PlainText`, so HTML-shaped
   content can never be interpreted as rich text or request remote images

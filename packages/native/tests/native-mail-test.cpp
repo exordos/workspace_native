@@ -86,6 +86,7 @@ private slots:
         brokenFoldersOnce = false;
         slowInboxOnce = false;
         missingMailEndpoints = false;
+        missingMessagesOnly = false;
     }
 
     // exordy finding 4712325987: a real deployment has no /mail endpoints yet
@@ -101,6 +102,25 @@ private slots:
         store->selectFolder(QStringLiteral("sent"));
         QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("ready"), 5000);
         QCOMPARE(store->messages().size(), 1);
+    }
+
+    // exordy finding 4712650373: sample mode is decided by the FOLDERS
+    // response. When folders loaded from the server (200), a 404 on the
+    // messages endpoint must stay an error - never sample rows listed under
+    // server-provided folders (that would fabricate mailbox content).
+    void serverFoldersNeverMixWithSampleMessages()
+    {
+        missingMessagesOnly = true;
+        store->refresh();
+        // Folders serve; the messages 404 lands straight after - the store
+        // must reach the error state with an empty list, not sample rows.
+        QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("error"), 5000);
+        QVERIFY(store->messages().isEmpty());
+        QCOMPARE(store->folders().size(), 6);
+        // Folder switches keep honouring the same rule.
+        store->selectFolder(QStringLiteral("sent"));
+        QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("error"), 5000);
+        QVERIFY(store->messages().isEmpty());
     }
 
     void foldersLoadWithFixtureCounts()
@@ -235,6 +255,10 @@ private:
             response.status = 404;
             return response;
         }
+        if (missingMessagesOnly && path == "/mail/messages") {
+            response.status = 404;
+            return response;
+        }
         if (path == "/mail/folders") {
             if (brokenFoldersOnce) {
                 brokenFoldersOnce = false;
@@ -296,6 +320,7 @@ private:
     bool brokenFoldersOnce = false;
     bool slowInboxOnce = false;
     bool missingMailEndpoints = false;
+    bool missingMessagesOnly = false;
 };
 
 int main(int argc, char **argv)

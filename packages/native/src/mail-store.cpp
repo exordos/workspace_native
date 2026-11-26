@@ -88,6 +88,8 @@ void MailStore::refresh()
             // The endpoints do not ship with the server yet (#852 owns live
             // integration): show the sample mailbox compiled into the client
             // instead of a dead error screen the retry could never clear.
+            // This is also what arms sample mode for message loads.
+            self->m_sampleMode = true;
             self->m_folders = sampleFolders();
             self->loadMessages();
             return;
@@ -97,6 +99,9 @@ void MailStore::refresh()
             emit self->mailChanged();
             return;
         }
+        // Server-provided folders: message loads must never fall back to the
+        // sample mailbox under these ids.
+        self->m_sampleMode = false;
         QVariantList folders;
         const auto array = result.data.toObject().value(QStringLiteral("folders")).toArray();
         for (const auto &value : array) {
@@ -138,7 +143,10 @@ void MailStore::loadMessages()
                    [self, token, folder](const ApiResult &result) {
         if (!self || token != self->m_requestToken)
             return;
-        if (result.status == 404) {
+        if (result.status == 404 && self->m_sampleMode) {
+            // Only a deployment whose folders endpoint was missing too may
+            // show sample messages; mixing sample rows under server folders
+            // would fabricate mailbox content (finding 4712650373).
             if (self->m_folderId != folder)
                 return;
             self->m_messages = sampleMessages(folder);
