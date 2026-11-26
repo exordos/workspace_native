@@ -97,6 +97,7 @@ QVariantMap GuiPhaseTrace::snapshot() const
     for (const auto &done : g_finished)
         records.append(QVariantMap{{QStringLiteral("name"), done.name},
                                    {QStringLiteral("parent"), done.parent},
+                                   {QStringLiteral("threadId"), done.threadId},
                                    {QStringLiteral("ms"), done.ms},
                                    {QStringLiteral("depth"), done.depth}});
     return QVariantMap{{QStringLiteral("enabled"), isEnabled()},
@@ -180,13 +181,14 @@ void GuiStallSampler::beat()
     // then re-arm the clock.
     const double gapMs = double(m_sinceBeat.nsecsElapsed()) / 1.0e6;
     m_sinceBeat.restart();
-    if (m_samples > 0) // the very first beat only arms the clock
-    {
-        m_worstGapMs = qMax(m_worstGapMs, gapMs);
-        m_totalGapMs += gapMs;
-        if (gapMs > 50.0) ++m_over50Ms;
-        if (gapMs > 300.0) ++m_over300Ms;
-    }
+    // Every gap counts, the first one included: the constructor started the
+    // clock, so gap #1 covers startup work that blocked the GUI thread
+    // before the event loop ever delivered a beat. Excluding it hid exactly
+    // the stalls this sampler exists to measure.
+    m_worstGapMs = qMax(m_worstGapMs, gapMs);
+    m_totalGapMs += gapMs;
+    if (gapMs > 50.0) ++m_over50Ms;
+    if (gapMs > 300.0) ++m_over300Ms;
     ++m_samples;
 }
 
@@ -204,8 +206,8 @@ QVariantMap GuiStallSampler::summary() const
         {QStringLiteral("interval_ms"), kStallIntervalMs},
         {QStringLiteral("samples"), m_samples},
         {QStringLiteral("worst_gap_ms"), qRound(m_worstGapMs * 10.0) / 10.0},
-        {QStringLiteral("mean_gap_ms"), m_samples > 1
-            ? qRound((m_totalGapMs / (m_samples - 1)) * 10.0) / 10.0 : 0.0},
+        {QStringLiteral("mean_gap_ms"), m_samples > 0
+            ? qRound((m_totalGapMs / m_samples) * 10.0) / 10.0 : 0.0},
         {QStringLiteral("beats_over_50ms"), m_over50Ms},
         {QStringLiteral("beats_over_300ms"), m_over300Ms},
     };

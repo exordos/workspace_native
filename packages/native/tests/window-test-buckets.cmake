@@ -492,6 +492,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     escapeFromChatPreservesFocusedInputAndClosesPopupsFirst
     fullscreenEnterGateCapExpiryKeepsTransitionFrameOutOfSavedBounds
     globalChannelEncryptedCreationNavigatesLikeTheOrdinaryPath
+    guiStallSamplerCountsFirstGapBeforeFirstBeat
     inlineEditPickerUploadAppearsInTheEditAndPreservesTheDraft
     loginOtpPasswordIsDestroyedWhenOrganizationChanges
     loginRealmPreviewUsesOnlyAdvertisedBranding
