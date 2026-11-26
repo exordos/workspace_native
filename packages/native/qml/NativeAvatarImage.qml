@@ -25,6 +25,18 @@ Item {
         const ticket = ++refreshTicket
         if (ticket !== refreshTicket) return
         const previous = leaseState
+        // Same-owner stability (#873): a demand re-notification for the urn
+        // that is already leased must not clear the source and re-acquire -
+        // the clear+reload window is the avatar's blank flash. The lease
+        // carries the urn and the scope it was acquired under, so the hold
+        // compares both against the live view instead of fields the lease
+        // never stored (a hold that could never match).
+        if (previous && previous.images === images && previous.reference === reference
+                && Number(previous.scope) === Number(images ? images.scopeRevision : 0)
+                && visible && loadActive) {
+            updateUrl()
+            return
+        }
         leaseState = null
         updateUrl()
         if (previous) previous.images.release(previous.token)
@@ -32,6 +44,7 @@ Item {
         const wanted = visible && loadActive ? images : null
         if (!wanted) return
         const urn = reference
+        const scopeAtAcquire = wanted.scopeRevision
         const acquired = wanted.acquire(urn)
         // acquire/release can synchronously publish a new scope. A nested refresh
         // owns its newer lease; the outer call may only release its own result.
@@ -39,13 +52,15 @@ Item {
             if (acquired) wanted.release(acquired)
             return
         }
-        leaseState = acquired ? { images: wanted, token: acquired } : null
+        leaseState = acquired ? { images: wanted, token: acquired, reference: urn, scope: scopeAtAcquire } : null
         updateUrl()
     }
     onImagesChanged: refresh()
     onReferenceChanged: refresh()
     onVisibleChanged: refresh()
-    onLoadActiveChanged: refresh()
+    // Defer like the message image does: a demand flap that resolves inside
+    // the same event-loop turn must not run a release+re-acquire pass (#873).
+    onLoadActiveChanged: Qt.callLater(refresh)
     Component.onCompleted: { initialized = true; refresh() }
     Component.onDestruction: {
         initialized = false

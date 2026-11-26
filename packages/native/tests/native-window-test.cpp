@@ -21787,6 +21787,304 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(controller.draft() != draft);
     }
 
+    // #873 contract: a demand flap (transient viewport positioning, the
+    // history-ready boundary) must not drop an in-view lease. The old
+    // release+re-acquire cycle exposed an already-loaded attachment as a
+    // blank frame for the duration of the reacquire.
+    void inlineMediaDemandFlapKeepsPaintedAsset()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000c");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-00000000000c");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("demand-flap.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Demand flap window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
+        QTRY_VERIFY(photo());
+        QTRY_VERIFY(!photo()->property("imageUrl").toString().isEmpty());
+        QTRY_VERIFY(!photo()->property("leaseState").isNull());
+        const QString painted = photo()->property("imageUrl").toString();
+        // The hold oracle: the published URL must not be re-notified at all
+        // while demand flaps, because the same lease survives the flap. The
+        // released contract cleared the URL and republished it - a blank
+        // frame for a fully loaded asset.
+        QSignalSpy repaints(photo(), SIGNAL(imageUrlChanged()));
+        QVERIFY(repaints.isValid());
+        photo()->setProperty("bodyActive", false);
+        for (int i = 0; i < 8; ++i) {
+            QTest::qWait(20);
+            QVERIFY2(!photo()->property("imageUrl").toString().isEmpty(),
+                "the in-view attachment went blank mid-flap");
+        }
+        photo()->setProperty("bodyActive", true);
+        QTest::qWait(120);
+        QCOMPARE(photo()->property("imageUrl").toString(), painted);
+        QVERIFY(!photo()->property("leaseState").isNull());
+        QCOMPARE(repaints.count(), 0);
+    }
+
+    // #873 review contract: the in-view hold must still drop when the real
+    // bounds move an already-leased view out of the viewport while bodyActive
+    // stays false. loadActive cannot notify in that state, so without a
+    // demandHoldInView-triggered refresh the demand stays pinned off-screen
+    // forever and starves the bounded manager.
+    void inlineMediaDemandHoldReleasesWhenItLeavesBoundsMidFlap()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000d");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-00000000000d");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("demand-hold-release.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Demand hold release window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
+        QTRY_VERIFY(photo());
+        QTRY_VERIFY(!photo()->property("imageUrl").toString().isEmpty());
+        QTRY_VERIFY(!photo()->property("leaseState").isNull());
+        // Enter the transient flap state: the lease is held for the in-view
+        // attachment while bodyActive is false.
+        photo()->setProperty("bodyActive", false);
+        QTest::qWait(120);
+        QVERIFY(photo()->property("demandHoldInView").toBool());
+        QVERIFY(!photo()->property("leaseState").isNull());
+        // Move the leased view out of the real bounds while bodyActive stays
+        // false: loadActive never re-notifies here (it is false before and
+        // after), so only a demandHoldInView-triggered refresh can release.
+        photo()->setProperty("y", photo()->property("y").toReal() + 4000.0);
+        QTRY_VERIFY(!photo()->property("demandHoldInView").toBool());
+        QTRY_VERIFY(photo()->property("leaseState").isNull());
+        QVERIFY(photo()->property("imageUrl").toString().isEmpty());
+    }
+
+    // #873 review contract: a hold may only extend demand the view is allowed
+    // to have. The acquire path demands only while visible && loadActive, so
+    // hiding an active image (loadActive stays true, visible goes false) must
+    // release the lease and clear the published URL instead of holding demand
+    // for an off-screen, hidden view in the bounded manager.
+    void inlineMediaHidingPaintedImageReleasesLeaseAndUrl()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000e");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-00000000000e");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + fileA;
+            if (path.startsWith(file)) {
+                if (path == file) {
+                    auto metadata = avatarProbeMetadata(fileA, png);
+                    metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                    return Response{metadata};
+                }
+                if (path == file + "/actions/download") {
+                    Response result; result.rawBody = png; result.rawContentType = "image/png";
+                    return result;
+                }
+                return Response{QJsonObject{}, 404};
+            }
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size())}};
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("hide-release.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Hide-release window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        click(window, visibleItem(content, "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), 1);
+        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
+        QTRY_VERIFY(photo());
+        QTRY_VERIFY(!photo()->property("imageUrl").toString().isEmpty());
+        QTRY_VERIFY(!photo()->property("leaseState").isNull());
+        auto *subject = photo();
+        QVERIFY(subject->property("visible").toBool());
+        // Hide while demand stays active: loadActive is untouched by visibility,
+        // so only the visible check can take the hold away from a hidden view.
+        subject->setProperty("visible", false);
+        QTRY_VERIFY(subject->property("leaseState").isNull());
+        QVERIFY(subject->property("imageUrl").toString().isEmpty());
+    }
+
+    // #873 review contract: the avatar same-owner hold must actually match the
+    // lease the acquire path stores. A demand re-notification for the urn that
+    // is already leased (same manager, same urn, same scope) while demand
+    // stays active must keep the lease and the painted URL - a release plus
+    // re-acquire blanks an already-decoded avatar for the reacquire window.
+    void avatarSameOwnerReNotificationKeepsLeaseAndUrl()
+    {
+        const auto png = avatarProbePng(false);
+        WindowDirectFixture fixture; fixture.seed();
+        const auto original = fixture.server.handler;
+        fixture.server.handler = [&, original](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const auto file = "/api/workspace/v1/messenger/files/" + ViewerAvatarFile;
+            if (request.method == "GET" && path == file)
+                return {avatarProbeMetadata(ViewerAvatarFile, png)};
+            if (request.method == "GET" && path == file + "/actions/download") {
+                Response response;
+                response.rawBody = png; response.rawContentType = "image/png"; return response;
+            }
+            return original(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("avatar-hold.ini"));
+        ApiClient api(nullptr, true); Session session(&api);
+        NativeController controller(&api, &session); FileClient files(&api);
+        controller.useFiles(&files);
+        AvatarImages avatars(&api, &session, &files);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences, &avatars);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Avatar hold window did not settle before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready());
+        QQmlComponent component(&engine);
+        component.setData(R"QML(
+import QtQuick
+import "qrc:/workspace/qml"
+NativeAvatarImage {
+    id: subject
+    objectName: "avatarHoldSubject"
+    width: 36; height: 36
+    images: nativeAvatars
+    property var urlLog: []
+    function onImageUrlChanged(url) { urlLog.push(String(url)) }
+}
+)QML", QUrl("qrc:/native-avatar-hold-test.qml"));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QQuickItem> subject(qobject_cast<QQuickItem *>(component.create()));
+        QVERIFY2(subject, qPrintable(component.errorString()));
+        auto *photo = subject.get();
+        photo->setParentItem(window->contentItem());
+        photo->setPosition(QPointF(90, 90));
+        QVERIFY(photo->setProperty("reference", "urn:image:" + ViewerAvatarFile));
+        QTRY_VERIFY(!photo->property("imageUrl").toString().isEmpty());
+        QTRY_VERIFY(!photo->property("leaseState").isNull());
+        QCOMPARE(avatars.stats().leases, 1);
+        const QVariantMap leaseBefore = photo->property("leaseState").toMap();
+        QVERIFY(!leaseBefore.isEmpty());
+        photo->setProperty("urlLog", QVariantList{});
+        // Demand re-notification with demand staying active (visible &&
+        // loadActive), same manager, same urn, same scope: the hold must fire.
+        QMetaObject::invokeMethod(photo, "refresh");
+        QTest::qWait(120);
+        const QStringList urlLog = photo->property("urlLog").toStringList();
+        QStringList blanks;
+        for (const auto &url : urlLog)
+            if (url.isEmpty()) blanks.append(QStringLiteral("blank"));
+        QVERIFY2(blanks.isEmpty(), "re-notification cleared the painted avatar URL");
+        QVERIFY2(urlLog.isEmpty(), "re-notification re-published the avatar URL - the lease was released and reacquired");
+        QCOMPARE(avatars.stats().leases, 1);
+        const QVariantMap leaseAfter = photo->property("leaseState").toMap();
+        QVERIFY(!leaseAfter.isEmpty());
+        QCOMPARE(leaseAfter.value("token"), leaseBefore.value("token"));
+        QVERIFY(!photo->property("imageUrl").toString().isEmpty());
+    }
+
     void mediaViewerOpensNavigatesAndClosesLikeTheReference()
     {
         QTemporaryDir directory; QVERIFY(directory.isValid());

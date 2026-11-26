@@ -49,6 +49,14 @@ Item {
     }
     readonly property bool loadActive: bodyActive && viewport
         && Number.isFinite(viewportY) && viewportY + height >= -640 && viewportY <= viewport.height + 640
+    // Transient viewport positioning (messageList.positioning during the
+    // viewport restoration) flips bodyActive off while the same attachment
+    // stays in view. Releasing the demand for that flap clears the published
+    // URL and shows a blank frame for an already loaded asset (#873). A hold
+    // still drops whenever visibility, owner/scope or the real bounds change.
+    readonly property bool demandActive: Boolean(viewport) && visible
+    readonly property bool demandHoldInView: demandActive && viewport
+        && Number.isFinite(viewportY) && viewportY + height >= -640 && viewportY <= viewport.height + 640
 
     function updateState() {
         const ticket = refreshTicket
@@ -79,6 +87,20 @@ Item {
         const ticket = ++refreshTicket
         if (ticket !== refreshTicket) return
         const previous = leaseState
+        // Same-owner stability: while the identical manager/reference/scope is
+        // already leased and the view stays in demand (or only bodyActive
+        // flapped while the attachment remains in bounds), keep the lease and
+        // the published URL. Release+re-acquire of the same urn can expose a
+        // blank frame mid-restoration (#873). The hold may only extend demand
+        // the acquire path could have: a hidden view has no demand, so the
+        // visible check keeps a hidden image from pinning its lease and URL
+        // when loadActive stays true across the visibility change (#873 review).
+        const sameLease = previous && previous.images === images && previous.reference === reference
+            && Number(viewState.scope) === Number(images ? images.scopeRevision : 0)
+        if (sameLease && visible && (loadActive || (demandHoldInView && images && reference.length > 0))) {
+            updateState()
+            return
+        }
         leaseState = null
         if (ticket === refreshTicket) updateState()
         if (previous) previous.images.release(previous.token)
@@ -107,6 +129,12 @@ Item {
     // identical (acquire is already asynchronous) while the write-back no
     // longer lands inside the notify.
     onLoadActiveChanged: Qt.callLater(refresh)
+    // The hold must also drop when geometry alone moves a leased view out of
+    // bounds while bodyActive stays false: loadActive is false before and
+    // after such a move and never notifies, so only a demandHoldInView pass
+    // releases the demand back to the bounded manager (#873 review). Deferred
+    // for the same binding-loop reason as the loadActive handler.
+    onDemandHoldInViewChanged: Qt.callLater(refresh)
     Component.onCompleted: { initialized = true; refresh() }
     Component.onDestruction: {
         initialized = false
