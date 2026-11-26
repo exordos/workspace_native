@@ -390,6 +390,18 @@ public:
     // stage has actually dispatched. The mock's HTTP/1 connection pool cannot show an
     // over-dispatch at the server, so the cap is observed at the client seam.
     int rowPreviewNetworkIssuedForTest() const { return m_rowPreviewNetIssued; }
+    // #888 witness: catalog-record inspections attributed to preview candidate
+    // enumeration (streams + topics). Tests reset it, drive catalog/topic accepts (or
+    // the scoped seam directly) and bound the GROWTH between catalog sizes - the old
+    // quadratic enumeration cannot satisfy those bounds. Timing-independent by design.
+    qint64 rowPreviewSeedWorkForTest() const { return m_rowPreviewSeedWork; }
+    void resetRowPreviewSeedWorkForTest() { m_rowPreviewSeedWork = 0; }
+    // #888 witness: drive the scoped topic-accept seed exactly as the catalog parser
+    // does after accepting one stream's topic rows.
+    void seedStreamPreviewsForTest(const QString &streamUuid)
+    {
+        seedRowPreviewHydrationForStream(streamUuid);
+    }
     // #866 witness (exordy finding 2): drive the network pump's queue exactly as a
     // catalog seed would (owner map + enqueue) and take candidates with the very
     // pick function the pump uses. Mock arrival order over the HTTP connection
@@ -2365,6 +2377,11 @@ private:
     // disk-stage re-reads before the quiet memo is finally stored.
     static constexpr int rowPreviewLateDiskRetries = 2;
     void seedRowPreviewHydrationFromCatalog();
+    // #888: a single stream's topic catalog accept seeds only its own rows.
+    void seedRowPreviewHydrationForStream(const QString &streamUuid);
+    // #888: work oracle for the linear-enumeration contract - counts every catalog
+    // record inspection (stream row or topic row) attributed to preview seeding.
+    void recordRowPreviewSeedWork(int inspections) const { m_rowPreviewSeedWork += inspections; }
     void scheduleRowPreviewNetworkHydration();
     void pumpRowPreviewNetworkHydration();
     // #866 review (exordy finding 2): the pumps consume their pending queues in a
@@ -2397,6 +2414,7 @@ private:
     QSet<QString> m_rowPreviewNetInFlight;
     QHash<QString, int> m_rowPreviewNetRetries;
     int m_rowPreviewNetIssued = 0; // test-only dispatch counter (rowPreviewNetworkIssuedForTest)
+    mutable qint64 m_rowPreviewSeedWork = 0; // #888 test-only inspection counter
     // #860: per-uuid budget for the late disk re-reads a network negative buys.
     QHash<QString, int> m_rowPreviewLateDiskRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit

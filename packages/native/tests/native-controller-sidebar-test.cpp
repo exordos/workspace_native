@@ -4031,6 +4031,101 @@ private slots:
         const QStringList expectedSwap{streamX, streamB, streamId};
         QCOMPARE(rowKeys(), expectedSwap);
     }
+
+    // #888: candidate enumeration for preview seeding must grow LINEARLY in the
+    // inspected catalog, including when there are no preview pointers. Pre-#888 the
+    // seed scanned m_streams twice and all of m_topics PER candidate, so a catalog
+    // accept cost O(N^2 + N*t_open) inspections and stalled publication of large
+    // channel lists (report: 39-44 ms master vs 387-397 ms at 3,000 channels).
+    // The work counter counts every catalog record inspection attributed to
+    // seeding; the 4x-per-size-growth bound is where the quadratic version fails.
+    void previewSeedWorkGrowsLinearlyInCatalogSize()
+    {
+        struct Sample { int size; qint64 work; };
+        QVector<Sample> samples;
+        for (const int size : {500, 1500, 3000}) {
+            Fixture test;
+            const auto channelRow = [](const QString &uuid) {
+                return QJsonObject{{QStringLiteral("uuid"), uuid},
+                    {QStringLiteral("project_id"), projectId},
+                    {QStringLiteral("name"), QStringLiteral("Channel")},
+                    {QStringLiteral("encryption"), false},
+                    {QStringLiteral("unread_count"), 0},
+                    {QStringLiteral("active_unread_count"), 0},
+                    {QStringLiteral("passive_unread_count"), 0},
+                    // Empty pointers on purpose (issue repro): the enumeration cost
+                    // must be linear even when ZERO previews exist to fetch.
+                    {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                    {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+            };
+            test.streams = [size, channelRow](const Request &request) {
+                if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                    QJsonArray rows;
+                    rows.append(channelRow(streamId)); // the default-opened channel
+                    for (int i = 1; i < size; ++i)
+                        rows.append(channelRow(QStringLiteral("77777777-7777-4777-7777-%1")
+                            .arg(i, 12, 16, QLatin1Char('0'))));
+                    return Response{rows};
+                }
+                const auto uuid = request.target.path().section(QLatin1Char('/'), -2, -2);
+                return Response{channelRow(uuid)};
+            };
+            QVERIFY(test.start());
+            const qint64 work = test.controller.rowPreviewSeedWorkForTest();
+            QVERIFY2(work > 0, "the seed work oracle never fired");
+            samples.append({size, work});
+        }
+        for (int i = 1; i < samples.size(); ++i) {
+            const qint64 bound = samples.at(i - 1).work * 4 * samples.at(i).size
+                               / samples.at(i - 1).size;
+            QVERIFY2(samples.at(i).work <= bound, qPrintable(QStringLiteral(
+                "catalog %1 work %2 exceeds the linear bound %3 (previous: size %4 work %5)"
+                " - enumeration grew super-linearly").arg(samples.at(i).size)
+                .arg(samples.at(i).work).arg(bound)
+                .arg(samples.at(i - 1).size).arg(samples.at(i - 1).work)));
+        }
+    }
+
+    // #888: accepting the open channel's topic catalog must seed ONLY the owning
+    // stream's rows. Pre-#888 this path re-ran the catalog-wide seed, so every topic
+    // accept re-enumerated all unrelated candidates (quadratic per accept in the
+    // channel list). The scoped cost is bounded by ~N + topics-of-this-stream.
+    void topicCatalogAcceptSeedsOnlyTheOpenStream()
+    {
+        Fixture test;
+        const int size = 500;
+        test.streams = [size](const Request &request) {
+            const auto row = [](const QString &uuid) {
+                return QJsonObject{{QStringLiteral("uuid"), uuid},
+                    {QStringLiteral("project_id"), projectId},
+                    {QStringLiteral("name"), QStringLiteral("Channel")},
+                    {QStringLiteral("encryption"), false},
+                    {QStringLiteral("unread_count"), 0},
+                    {QStringLiteral("active_unread_count"), 0},
+                    {QStringLiteral("passive_unread_count"), 0},
+                    {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                    {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+            };
+            if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                QJsonArray rows;
+                rows.append(row(streamId));
+                for (int i = 1; i < size; ++i)
+                    rows.append(row(QStringLiteral("77777777-7777-4777-7777-%1")
+                        .arg(i, 12, 16, QLatin1Char('0'))));
+                return Response{rows};
+            }
+            return Response{row(request.target.path().section(QLatin1Char('/'), -2, -2))};
+        };
+        QVERIFY(test.start());
+        test.controller.resetRowPreviewSeedWorkForTest();
+        test.controller.seedStreamPreviewsForTest(streamId);
+        const qint64 work = test.controller.rowPreviewSeedWorkForTest();
+        // Streams are located by a single linear pass and only this stream's topics
+        // are enumerated - the catalog-wide re-seed cost grew as ~2*N^2 instead.
+        QVERIFY2(work <= 4 * size + 64, qPrintable(QStringLiteral(
+            "scoped topic-accept seed inspected %1 records for a %2-channel catalog"
+            " - it is re-enumerating unrelated candidates").arg(work).arg(size)));
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)

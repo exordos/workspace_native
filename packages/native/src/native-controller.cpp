@@ -9598,8 +9598,10 @@ void NativeController::hydrateInboxStream(const QString &streamUuid)
             topics.append(it.value());
         }
         m_inboxTopics.insert(streamUuid, topics);
-        // #860: a background (inactive-stream) catalog accept is still a catalog accept.
-        seedRowPreviewHydrationFromCatalog();
+        // #860: a background (inactive-stream) catalog accept is still hydration input.
+        // #888: seed only this stream's rows - the catalog-wide re-enumeration on every
+        // background accept was the quadratic hot path.
+        seedRowPreviewHydrationForStream(streamUuid);
         if (authoritative) m_inboxStaleTopics.remove(streamUuid);
         else m_inboxStaleTopics.insert(streamUuid);
         // Issue #729 phase 2: a newly hydrated unread catalog is a batch of
@@ -17502,7 +17504,9 @@ void NativeController::loadTopics()
         }
         m_topics = topics;
         // #860: accepted topic pointers join the bounded preview hydration immediately.
-        seedRowPreviewHydrationFromCatalog();
+        // #888: only the open stream's candidates are seeded - a topic catalog arrival
+        // must not re-scan unrelated candidates across the whole channel list.
+        seedRowPreviewHydrationForStream(m_stream);
         // A verified foreground catalog supersedes an older sidebar snapshot;
         // its revision fences an already-running background revalidation.
         if (authoritative && (m_inboxTopics.contains(m_stream) || m_inboxHydrating.contains(m_stream))) {
@@ -20269,37 +20273,90 @@ void NativeController::seedRowPreviewHydrationFromCatalog()
     // first, then the expanded streams, then the collapsed catalog remainder - and each
     // pump slot re-checks foreground status at dispatch time, so visible and expanded
     // rows never queue behind hidden candidates.
+    // #888: the visitor used to scan m_streams twice and all of m_topics PER candidate,
+    // so one accept cost O(N^2 + N*t_open) inspections and delayed publication of large
+    // channel lists (measured: 39-44 ms master vs 387-397 ms at 3,000 channels). Build
+    // the uuid index and the per-stream topic grouping ONCE - candidate enumeration now
+    // grows linearly in the inspected catalog and topic records. Queue order, archive
+    // skipping and the bounded pumps are unchanged.
+    QHash<QString, const Stream *> streamByUuid;
+    streamByUuid.reserve(m_streams.size());
+    for (const auto &stream : std::as_const(m_streams)) {
+        recordRowPreviewSeedWork(1);
+        streamByUuid.insert(stream.uuid, &stream);
+    }
+    QHash<QString, QVector<const Topic *>> topicsByStream;
+    for (auto slot = m_inboxTopics.constBegin(); slot != m_inboxTopics.constEnd(); ++slot)
+        for (const auto &topic : slot.value()) {
+            recordRowPreviewSeedWork(1);
+            topicsByStream[slot.key()].append(&topic);
+        }
+    for (const auto &topic : std::as_const(m_topics)) {
+        recordRowPreviewSeedWork(1);
+        topicsByStream[topic.stream].append(&topic);
+    }
     QSet<QString> visited;
     const auto queue = [this](const QString &uuid) { enqueueRowPreviewDisk(uuid); };
     const auto visitStream = [&](const QString &streamUuid) {
         if (visited.contains(streamUuid)) return;
         visited.insert(streamUuid);
-        for (const auto &stream : std::as_const(m_streams))
-            if (stream.uuid == streamUuid && stream.archived) return; // archived: not on the sidebar
-        for (const auto &stream : std::as_const(m_streams))
-            if (stream.uuid == streamUuid && !stream.archived) {
-                if (!stream.lastMessage.isEmpty()) {
-                    m_rowPreviewStreamOf.insert(stream.lastMessage, streamUuid);
-                    queue(stream.lastMessage);
-                }
+        const auto found = streamByUuid.constFind(streamUuid);
+        if (found != streamByUuid.constEnd()) {
+            const Stream *stream = *found;
+            if (stream->archived) return; // archived: not on the sidebar (topics too)
+            if (!stream->lastMessage.isEmpty()) {
+                m_rowPreviewStreamOf.insert(stream->lastMessage, streamUuid);
+                queue(stream->lastMessage);
             }
-        const auto inbox = m_inboxTopics.constFind(streamUuid);
-        if (inbox != m_inboxTopics.constEnd())
-            for (const auto &topic : *inbox) {
-                m_rowPreviewStreamOf.insert(topic.lastMessage, streamUuid);
-                queue(topic.lastMessage);
-            }
-        for (const auto &topic : std::as_const(m_topics))
-            if (topic.stream == streamUuid) {
-                m_rowPreviewStreamOf.insert(topic.lastMessage, streamUuid);
-                queue(topic.lastMessage);
-            }
+        }
+        const auto grouped = topicsByStream.constFind(streamUuid);
+        if (grouped == topicsByStream.constEnd()) return;
+        for (const auto *topic : *grouped) {
+            m_rowPreviewStreamOf.insert(topic->lastMessage, streamUuid);
+            queue(topic->lastMessage);
+        }
     };
     if (!m_stream.isEmpty()) visitStream(m_stream);
     for (const auto &expanded : std::as_const(m_expandedSidebarStreams)) visitStream(expanded);
     for (const auto &stream : std::as_const(m_streams)) visitStream(stream.uuid);
     // Defensive remainder: pointers whose owning stream is not in the current list.
     for (const auto &topic : std::as_const(m_topics)) queue(topic.lastMessage);
+    if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
+}
+
+// #888: accepting one stream's topic catalog is not a catalog-wide event - seed only
+// the owning stream's rows. The previous full-catalog seed here re-enumerated every
+// unrelated candidate merely because the open channel's topics arrived (quadratic in
+// the channel list per topic accept; repeated for every background inbox accept too).
+void NativeController::seedRowPreviewHydrationForStream(const QString &streamUuid)
+{
+    const auto queue = [this](const QString &uuid) { enqueueRowPreviewDisk(uuid); };
+    for (const auto &stream : std::as_const(m_streams)) {
+        recordRowPreviewSeedWork(1);
+        if (stream.uuid != streamUuid) continue;
+        if (stream.archived) return; // archived: not on the sidebar (topics too)
+        if (!stream.lastMessage.isEmpty()) {
+            m_rowPreviewStreamOf.insert(stream.lastMessage, streamUuid);
+            queue(stream.lastMessage);
+        }
+        break;
+    }
+    const auto inbox = m_inboxTopics.constFind(streamUuid);
+    if (inbox != m_inboxTopics.constEnd()) {
+        for (const auto &topic : *inbox) {
+            recordRowPreviewSeedWork(1);
+            m_rowPreviewStreamOf.insert(topic.lastMessage, streamUuid);
+            queue(topic.lastMessage);
+        }
+    }
+    // m_topics holds the open route's catalog; only it belongs to this stream.
+    if (m_stream == streamUuid) {
+        for (const auto &topic : std::as_const(m_topics)) {
+            recordRowPreviewSeedWork(1);
+            m_rowPreviewStreamOf.insert(topic.lastMessage, streamUuid);
+            queue(topic.lastMessage);
+        }
+    }
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
