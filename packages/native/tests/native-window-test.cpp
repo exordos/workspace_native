@@ -7950,7 +7950,11 @@ mv -Tf "$root/.current-new" "$root/current"
             type(scenario == "hash" ? "#PLANNING" : scenario == "order" ? "plan" : "planning alpha");
             QTRY_VERIFY_WITH_TIMEOUT(streamVisible(streamId), 2000);
             QTRY_VERIFY_WITH_TIMEOUT(topicVisible(topicId), 2000);
-            QVERIFY(!topicVisible(secondTopicId)); QVERIFY(!streamVisible(windowDirectId()));
+            // The granular sidebar model removes filtered rows as row deltas whose
+            // delegates dispose on the next view pass (a whole-list reassignment
+            // disposed same-tick); allow that one-pass settle like the render tick
+            // the reference DOM filter takes.
+            QTRY_VERIFY(!topicVisible(secondTopicId)); QTRY_VERIFY(!streamVisible(windowDirectId()));
             QCOMPARE(controller.selectedStream(), otherStream); QVERIFY(controller.selectedTopic().isEmpty());
             if (scenario == "order") {
                 QTRY_VERIFY(streamVisible(otherStream) && topicVisible(otherTopic));
@@ -7965,8 +7969,8 @@ mv -Tf "$root/.current-new" "$root/current"
             type(scenario == "email" ? "ALICE@EXAMPLE.INVALID" : scenario == "trimmed" ? "  ENGINEERING  " : "ALICE");
             const auto expected = scenario == "trimmed" ? streamId : windowDirectId();
             QTRY_VERIFY_WITH_TIMEOUT(streamVisible(expected), 2000);
-            QVERIFY(!streamVisible(otherStream));
-            QVERIFY(!streamVisible(scenario == "trimmed" ? windowDirectId() : streamId));
+            QTRY_VERIFY(!streamVisible(otherStream));
+            QTRY_VERIFY(!streamVisible(scenario == "trimmed" ? windowDirectId() : streamId));
         }
         click(window, item(window->contentItem(), "clearSidebarSearch"));
         QTRY_COMPARE(search->property("text").toString(), QString{});
@@ -13327,6 +13331,104 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::mouseClick(window, Qt::LeftButton, {},
             clickRow->mapToScene(QPointF(20, clickRow->height() / 2)).toPoint());
         QTRY_COMPARE(controller.selectedStream(), otherStream);
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) close.dismiss();
+        QVERIFY(closed);
+    }
+
+    void sidebarHydrationReorderKeepsActiveSidebarDelegates()
+    {
+        // #866 (finding 2 acceptance): a hydrated preview whose stamp re-ranks its row
+        // must MOVE the existing sidebar delegates, not re-create them. The reorder
+        // announcement (scheduleStreamsReorderAnnounce) emits streamsChanged, and the
+        // ListView model reassignment reset every row: the row under the user was
+        // destroyed mid interaction. The reference moves the keyed DOM row so focus,
+        // hover and open transient state survive the reorder at the new position.
+        WindowChannelFixture fixture;
+        const QString otherStream = "a3000000-0000-4000-8000-000000000001";
+        const QString previewUuid = "81000000-0000-4000-8000-000000000001";
+        const QString previewBody = QStringLiteral("Hydrated reorder preview");
+        auto first = windowChannel(streamId, "Engineering");
+        first["updated_at"] = QStringLiteral("2026-01-02T10:00:00Z");
+        auto second = windowChannel(otherStream, "Support");
+        second["last_message_uuid"] = previewUuid;
+        second["updated_at"] = QStringLiteral("2026-01-01T10:00:00Z");
+        const auto previewRow = QJsonObject{
+            {"uuid", previewUuid}, {"project_id", projectId}, {"author_uuid", userId},
+            {"stream_uuid", otherStream}, {"topic_uuid", secondTopicId}, {"revision", 1},
+            {"created_at", "2026-01-03T10:00:00.000Z"}, {"updated_at", "2026-01-03T10:00:00.000Z"},
+            {"payload", QJsonObject{{"kind", "markdown"}, {"content", previewBody}}}};
+        const auto fallback = fixture.server.handler;
+        auto held = std::make_shared<std::function<void()>>();
+        fixture.server.handler = [=](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.endsWith("/streams/"))
+                return {QJsonArray{first, second}};
+            if (request.method == "GET" && path.endsWith("/stream_topics/")) {
+                const auto id = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                return {QJsonArray{windowChannelTopic(id == streamId ? topicId : secondTopicId, id, "Topic")}};
+            }
+            // The row-preview uuid lookup for the LOWER-ranked stream, held in flight so
+            // the reply lands while the sidebar is already under interaction. Its stamp
+            // outranks the first stream's fallback key, so the projection swaps rows.
+            if (request.method == "GET" && path.endsWith("/messages/")
+                && QUrlQuery(request.target).queryItemValue("uuid") == previewUuid) {
+                Response response{QJsonArray{previewRow}};
+                response.defer = [held](auto send) { *held = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("hydration-reorder.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Hydration reorder teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic-reorder", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(session.ready() && !controller.busy() && controller.streams().size() == 2);
+        const auto previewText = [&]() {
+            const auto *item = visibleItem("streamPreviewText-" + otherStream);
+            return item ? item->property("text").toString() : QString();
+        };
+        QVERIFY(previewText().isEmpty());
+        // The moving row holds the active interaction; both rows are captured by pointer
+        // so re-creation is observable as a dangling QPointer.
+        QPointer<QQuickItem> movedRow;
+        QPointer<QQuickItem> quietRow;
+        QTRY_VERIFY_WITH_TIMEOUT((movedRow = visibleItem("stream-" + otherStream)) != nullptr, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT((quietRow = visibleItem("stream-" + streamId)) != nullptr, 5000);
+        movedRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(movedRow->hasActiveFocus());
+        auto *streamList = visibleItem("streamList"); QVERIFY(streamList);
+        QVERIFY(quietRow->mapToScene(QPointF(0, 0)).y() < movedRow->mapToScene(QPointF(0, 0)).y());
+        const auto listYBefore = streamList->property("contentY").toDouble();
+        QTRY_VERIFY(bool(*held)); // the lookup is in flight
+        (*held)(); *held = {};
+        // The preview lands and re-ranks its row: the projected order swaps first...
+        QTRY_COMPARE_WITH_TIMEOUT(previewText(), previewBody, 5000);
+        const auto orderSwapped = [&] {
+            const auto *freshMoved = visibleItem("stream-" + otherStream);
+            const auto *freshQuiet = visibleItem("stream-" + streamId);
+            return freshMoved && freshQuiet
+                && freshMoved->mapToScene(QPointF(0, 0)).y() < freshQuiet->mapToScene(QPointF(0, 0)).y();
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(orderSwapped(), 5000);
+        // ...and the swap moved the existing rows: both captured delegates are still
+        // alive and keyboard focus never left the moved row.
+        QVERIFY2(movedRow,
+            "A hydration-driven activity reorder must not re-create the active sidebar row");
+        // The move re-parents the delegate and the focus carry lands on the next
+        // relayout pass, so allow the bounded settle instead of a same-tick assert.
+        QTRY_VERIFY_WITH_TIMEOUT(movedRow->hasActiveFocus(), 2000);
+        QVERIFY2(quietRow,
+            "A hydration-driven activity reorder must not re-create the other sidebar rows");
+        QCOMPARE(streamList->property("contentY").toDouble(), listYBefore);
         const bool closed = closeIncubatedTestWindow(engine, window);
         if (closed) close.dismiss();
         QVERIFY(closed);

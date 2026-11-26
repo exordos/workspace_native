@@ -5068,7 +5068,7 @@ component NativeMentionChip: Item {
         for (let row = 0; row < streamList.count; ++row) {
             const item = streamList.itemAtIndex(row)
             if (item && item.y + item.height > cy + 1.0) {
-                const id = String(streamList.model[row] && streamList.model[row].id || "")
+                const id = String(streamList.model.streamIdAt(row) || "")
                 if (!id.length)
                     return
                 root.sidebarScrollAnchor = {id: id, offset: item.y - cy, contentHeight: streamList.contentHeight}
@@ -5092,7 +5092,7 @@ component NativeMentionChip: Item {
             return
         let row = -1
         for (let i = 0; i < streamList.count; ++i) {
-            if (String(streamList.model[i] && streamList.model[i].id || "") === anchor.id) {
+            if (String(streamList.model.streamIdAt(i) || "") === anchor.id) {
                 row = i
                 break
             }
@@ -6304,7 +6304,10 @@ component NativeMentionChip: Item {
                 anchors.rightMargin: 8
                 spacing: 2
                 clip: true
-                model: root.controller.sidebarStreams
+                // Issue #866 (finding 2): stable move-aware model (see
+                // NativeSidebarStreamListModel) - a hydration re-rank moves the
+                // row instead of resetting the list and re-creating delegates.
+                model: root.controller.sidebarStreamListModel
                 MouseArea {
                     // Issue #142: sidebar wheel scroller (expanded topic rows
                     // included - they are delegate children) using the same
@@ -6329,6 +6332,32 @@ component NativeMentionChip: Item {
                 }
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
+                }
+                property var sidebarFocusCarry: null
+                // Issue #866 (finding 2) companion: a model row move re-parents the
+                // delegate subtree; Qt's focus bubbling drops the moved row's active
+                // focus and lands it on the delegate root after the view relayout.
+                // The browser keeps focus on the moved DOM node, so carry it across:
+                // remember the focused item inside a stream row before the move, and
+                // hand focus back to it the moment the delegate root re-receives the
+                // bubbled focus (synchronous - no deferred closure races the relayout).
+                // streamLive flips false on delegate destruction (the #708 rule), so a
+                // carry can never reach a dead subtree.
+                Connections {
+                    target: streamList.model
+                    function onRowsAboutToBeMoved() {
+                        const win = streamList.Window.window
+                        const focused = win ? win.activeFocusItem : null
+                        streamList.sidebarFocusCarry = null
+                        if (!focused)
+                            return
+                        for (let node = focused; node && node !== streamList; node = node.parent) {
+                            if (node.liveGuard !== undefined) {
+                                streamList.sidebarFocusCarry = { item: focused, guard: node.liveGuard }
+                                return
+                            }
+                        }
+                    }
                 }
                 delegate: Column {
                     id: streamDelegate
@@ -6372,6 +6401,25 @@ component NativeMentionChip: Item {
                     }
                     onModelDataChanged: refreshTopics()
                     Component.onCompleted: refreshTopics()
+                    // #866 companion: plain-JS liveGuard (the #708 rule) - the focus
+                    // carry holds this object, never a QML wrapper, so a destroyed
+                    // delegate is detectable without touching dead properties.
+                    property var liveGuard: ({ live: true })
+                    Component.onDestruction: liveGuard.live = false
+                    onFocusChanged: {
+                        if (!focus)
+                            return
+                        // #866 companion: a model row move re-parents the moved row's
+                        // subtree and Qt's focus fallback lands active focus on some
+                        // delegate root of the list - possibly across several relayout
+                        // passes and not necessarily the moved row's own root. For as
+                        // long as a move carry stands (re-armed and reset at every
+                        // move), hand the bubbled focus to the item that held it
+                        // before the move, so focus provably never left the moved row.
+                        const carry = streamList.sidebarFocusCarry
+                        if (carry && carry.guard.live)
+                            carry.item.forceActiveFocus()
+                    }
                     Connections {
                         target: root.controller
                         function onSidebarTopicsChanged(stream) {
