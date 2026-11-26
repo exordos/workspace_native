@@ -2282,7 +2282,33 @@ component NativeMentionChip: Item {
                     }
                 }
                 ColumnLayout {
-                    visible: root.controller.projects.length === 0 && root.controller.savedAccounts.length > 0
+                    // Issue #886: a degraded startup renewal with nothing
+                    // painted from cache has no cache shell to carry it, so
+                    // the sign-in surface explains the outage and retries.
+                    visible: root.controller.sessionRenewalUnavailable
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Text {
+                        objectName: "startupRenewalNotice"
+                        text: qsTr("The saved account could not reconnect because the service is temporarily unavailable.")
+                        textFormat: Text.PlainText
+                        color: root.colors["text-secondary"]
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                    NativeButton {
+                        objectName: "startupRenewalRetry"
+                        colors: root.colors
+                        Layout.fillWidth: true
+                        primary: true
+                        text: qsTr("Retry")
+                        enabled: !root.controller.busy
+                        onClicked: root.controller.requestSessionRenewal()
+                    }
+                }
+                ColumnLayout {
+                    visible: (root.controller.projects.length === 0 || root.controller.sessionRenewalUnavailable) && root.controller.savedAccounts.length > 0
                     Layout.fillWidth: true
                     spacing: 10
                     Text {
@@ -2293,7 +2319,7 @@ component NativeMentionChip: Item {
                         Layout.fillWidth: true
                     }
                     Repeater {
-                        model: root.controller.projects.length === 0 ? root.controller.savedAccounts : []
+                        model: (root.controller.projects.length === 0 || root.controller.sessionRenewalUnavailable) ? root.controller.savedAccounts : []
                         delegate: Rectangle {
                             id: savedCard
                             required property var modelData
@@ -2366,11 +2392,15 @@ component NativeMentionChip: Item {
                 }
                 NativeButton {
                     objectName: "savedAccountsAddServer"
-                    visible: loginCard.savedAccountsOnly
+                    visible: loginCard.savedAccountsOnly || root.controller.sessionRenewalUnavailable
                     colors: root.colors
                     Layout.fillWidth: true
                     text: qsTr("Add server")
-                    onClicked: loginCard.showSavedAccounts = false
+                    onClicked: {
+                        if (root.controller.sessionRenewalUnavailable)
+                            root.controller.abandonStartupResume();
+                        loginCard.showSavedAccounts = false;
+                    }
                 }
                 Loader {
                     objectName: "organizationFormLoader"

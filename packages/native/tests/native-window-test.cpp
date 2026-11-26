@@ -17334,6 +17334,107 @@ mv -Tf "$root/.current-new" "$root/current"
         window->close();
     }
 
+    // Issue #886: a remembered account whose startup cache holds no chats and
+    // whose startup token renewal answers a transient 5xx must recover on the
+    // sign-in surface itself: an explanatory notice plus an enabled Retry, the
+    // saved account kept reachable, and Add server abandoning the prepared
+    // attempt. The cache-first recovery of #836 (rows painted) is untouched.
+    void emptyCacheStartupRenewalOutageKeepsSignInRecoverable_data()
+    {
+        QTest::addColumn<bool>("recoverViaRetry");
+        QTest::newRow("retry-reopens-account") << true;
+        QTest::newRow("add-server-abandons-attempt") << false;
+    }
+
+    void emptyCacheStartupRenewalOutageKeepsSignInRecoverable()
+    {
+        QFETCH(bool, recoverViaRetry);
+        QTest::failOnWarning(QRegularExpression(".*(?:TypeError|ReferenceError):.*"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        SavedAccount saved{{}, QUrl("https://workspace.example"), projectId, userId,
+                           "synthetic-user", "Synthetic project"};
+        saved.id = SessionVault::accountId(saved.server, saved.project, saved.user);
+        bool stored = false;
+        vault.save(saved, "synthetic-refresh-private", [&](QString error) {
+            QVERIFY(error.isEmpty()); stored = true;
+        });
+        QTRY_VERIFY(stored);
+        QVERIFY(vault.setCurrentAccountId(saved.id).isEmpty());
+        // Empty cache: no NativeCacheService is wired, so nothing can paint and
+        // the degraded resume lands on the plain sign-in surface.
+        bool failRefresh = true;
+        ApiClient api;
+        Session session(&api, nullptr,
+            [&](const QByteArray &method, const QString &path, const QJsonValue &body,
+                const QUrlQuery &, ApiClient::Callback done, bool,
+                const QMap<QByteArray, QByteArray> &) {
+            const QJsonObject payload = body.toObject();
+            Request request{method, QUrl(path), {}, payload};
+            Response response{QJsonObject{}, 404};
+            if (path.endsWith("/actions/get_token/invoke")
+                && payload.value("grant_type").toString() == QLatin1String("refresh_token")
+                && failRefresh)
+                response = Response{QJsonObject{}, 503};
+            else
+                response = sessionResponse(request);
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] {
+            if (!closeIncubatedTestWindow(engine, window))
+                QTest::qFail("Startup-outage sign-in window teardown did not settle", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        QTimer::singleShot(0, &session, &Session::resumeCurrentAccount);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.sessionRenewalUnavailable(), 3000);
+        QVERIFY(!controller.authenticated());
+        // The outage is explained on the visible surface with an enabled Retry.
+        auto *notice = visibleItem(content, "startupRenewalNotice");
+        QVERIFY(notice);
+        QVERIFY(notice->property("text").toString().contains("unavailable"));
+        auto *retry = visibleItem(content, "startupRenewalRetry");
+        QVERIFY(retry);
+        QVERIFY(retry->property("enabled").toBool());
+        // The saved account stays actionable while the outage persists.
+        auto *resume = visibleItem(content, "resume-" + saved.id);
+        QVERIFY(resume);
+        QVERIFY(resume->property("enabled").toBool());
+        if (recoverViaRetry) {
+            failRefresh = false;
+            click(window, retry);
+            // Retry after the service recovered opens the saved account.
+            QTRY_VERIFY_WITH_TIMEOUT(controller.authenticated(), 3000);
+            QTRY_VERIFY(!controller.sessionRenewalUnavailable());
+            QTRY_VERIFY(visibleItem(content, "accountMenuButton"));
+            return;
+        }
+        // Add server abandons the prepared attempt and restores the fresh
+        // sign-in flow: the organization form appears and no degraded state,
+        // no seeded project and no renewal flag survive the escape.
+        auto *add = visibleItem(content, "savedAccountsAddServer");
+        QVERIFY(add);
+        click(window, add);
+        QTRY_VERIFY(visibleItem(content, "serverInput"));
+        QVERIFY(controller.projects().isEmpty());
+        QVERIFY(!controller.sessionRenewalUnavailable());
+        // The same saved account resumes cleanly from the abandoned state.
+        failRefresh = false;
+        click(window, visibleItem(content, "resume-" + saved.id));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.authenticated(), 3000);
+    }
+
     void sourceConversationInsetsAndAvatarFallback_data()
     {
         QTest::addColumn<QString>("check");
