@@ -853,7 +853,11 @@ locally configured full build can use
 `bash packages/native/tests/full-linux-gate.sh BUILD_DIR` on a host with
 Xvnc, Openbox, xauth, x11-utils, PulseAudio with a synthetic microphone, the Qt WebEngine and WebChannel QML modules, Mesa, Noto Color Emoji, the Qt GTK platform theme
 and the GTK desktop portal.
-Tag builds repeat the full gate before publishing. It uses a 1440×900 display and Mesa software OpenGL for pixel checks. The GTK3
+Tag builds reuse the master push's full-gate verdict for the same commit: the
+publish workflow waits for that push's package-linux and full-gate-linux checks
+and packages and publishes only when they are green. When no complete green
+push verdict exists, the tag build runs the full gate itself. The gate uses a
+1440×900 display and Mesa software OpenGL for pixel checks. The GTK3
 platform theme and portal provide system color schemes and keyboard activation.
 Controller fixtures receive a separate session bus so they can own their synthetic
 desktop service names.
