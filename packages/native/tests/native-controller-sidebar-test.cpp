@@ -4070,14 +4070,15 @@ private slots:
                 const auto uuid = request.target.path().section(QLatin1Char('/'), -2, -2);
                 return Response{channelRow(uuid)};
             };
-            QVERIFY(test.start());
+            QVERIFY(test.start({}, size));
             const qint64 work = test.controller.rowPreviewSeedWorkForTest();
             QVERIFY2(work > 0, "the seed work oracle never fired");
             samples.append({size, work});
         }
         for (int i = 1; i < samples.size(); ++i) {
-            const qint64 bound = samples.at(i - 1).work * 4 * samples.at(i).size
-                               / samples.at(i - 1).size;
+            // Sizes triple each step: linear growth is <=3x, the quadratic shape
+            // is 9x - the 4x bound separates them with margin for per-run constants.
+            const qint64 bound = samples.at(i - 1).work * 4;
             QVERIFY2(samples.at(i).work <= bound, qPrintable(QStringLiteral(
                 "catalog %1 work %2 exceeds the linear bound %3 (previous: size %4 work %5)"
                 " - enumeration grew super-linearly").arg(samples.at(i).size)
@@ -4116,7 +4117,7 @@ private slots:
             }
             return Response{row(request.target.path().section(QLatin1Char('/'), -2, -2))};
         };
-        QVERIFY(test.start());
+        QVERIFY(test.start({}, size));
         test.controller.resetRowPreviewSeedWorkForTest();
         test.controller.seedStreamPreviewsForTest(streamId);
         const qint64 work = test.controller.rowPreviewSeedWorkForTest();
