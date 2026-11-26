@@ -21849,7 +21849,7 @@ mv -Tf "$root/.current-new" "$root/current"
         // while demand flaps, because the same lease survives the flap. The
         // released contract cleared the URL and republished it - a blank
         // frame for a fully loaded asset.
-        QSignalSpy repaints(photo(), "imageUrlChanged");
+        QSignalSpy repaints(photo(), SIGNAL(imageUrlChanged()));
         QVERIFY(repaints.isValid());
         photo()->setProperty("bodyActive", false);
         for (int i = 0; i < 8; ++i) {
@@ -21861,10 +21861,6 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::qWait(120);
         QCOMPARE(photo()->property("imageUrl").toString(), painted);
         QVERIFY(!photo()->property("leaseState").isNull());
-        QStringList flashes;
-        for (const auto &call : repaints)
-            if (photo()->property("imageUrl").toString().isEmpty()) flashes.append("blank");
-        QVERIFY2(flashes.isEmpty(), "demand flap cleared the painted URL");
         QCOMPARE(repaints.count(), 0);
     }
 
