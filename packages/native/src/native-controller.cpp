@@ -3981,7 +3981,7 @@ void NativeController::loadDirectCatalog(const QString &owner, const QString &at
         for (const auto &value : intent.topics) topics.append(*creationTopicDto(value.toObject(), m_session->project(), intent.uuid, m_session->user()));
         const auto streamRevision = m_streamRevision;
         const QPointer<NativeController> guard(this);
-        m_streams = streams; ++m_streamRevision; m_catalogVerified = true;
+        m_streams = streams; ++m_streamRevision; ++m_streamsMutation; m_catalogVerified = true;
         emit streamsChanged();
         if (!guard || !directChatContext(owner, attempt, ticket)) return;
         emit callCryptoStateChanged(); // catalog encryption rows moved (guarded re-check above)
@@ -6739,6 +6739,7 @@ void NativeController::loadChannelCatalog(const QString &owner, const QString &i
         const QPointer<NativeController> guard(this);
         m_streams = streams;
         ++m_streamRevision;
+        ++m_streamsMutation;
         m_catalogVerified = true;
         emit streamsChanged();
         if (!guard || !channelCreationContext(owner, id, ticket)) return;
@@ -7355,6 +7356,7 @@ void NativeController::loadStartupCacheStreams()
         GuiPhaseSpan guiPhaseSpan("startup.catalog-publish-cached");
         guard->m_startupCacheMode = true;
         guard->m_streams = streams;
+        ++guard->m_streamsMutation;
         emit guard->streamsChanged();
         emit guard->stateChanged();
     });
@@ -13019,6 +13021,7 @@ void NativeController::reset()
     m_poll.stop();
     m_presenceHeartbeat.stop();
     m_streams.clear();
+    ++m_streamsMutation; // #888: structural change - the scoped-seed index must rebuild
     // Issue #718: the observed-stamp sort cache is per-owner state too.
     m_activityTimestamps.clear();
     // Issue #83: the rail is per-owner state too; the next bootstrap re-reads it.
@@ -13539,6 +13542,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
             decayFolderUnread(stream->uuid, cleared);
         } else {
             m_streams.append(*stream);
+            ++m_streamsMutation; // #888: new row - rebuild the scoped-seed index
         }
         const QPointer<NativeController> guard(this);
         persistStreams();
@@ -17266,6 +17270,7 @@ void NativeController::reloadSnapshot()
         if (authoritative) restoreChatAccess(rows, chatAccess, chatOwner, chatEpoch, chatProjection);
         if (!chatGuard) return false;
         m_streams = streams;
+        ++m_streamsMutation;
         m_catalogVerified = authoritative;
         // #860: catalog accept is the reference's prime point - hydrate previews for every
         // row (rendered or not) instead of waiting for the first projection to ask.
@@ -17739,7 +17744,7 @@ void NativeController::resolveTopicOpeningStream(quint64 ticket)
         }
         // A read-counter event may have admitted the same owned stream while
         // this detail GET was pending. Keep its newer counters and one row.
-        if (added) m_streams.append(*stream);
+        if (added) { m_streams.append(*stream); ++m_streamsMutation; } // #888
         m_topicOpening.targetSecurity = topicOpeningSecurity(added ? *stream : *known);
         // A detail row is not a complete/global fresh catalog projection.
         staleCache(NativeCache::Kind::Streams);
@@ -20324,6 +20329,25 @@ void NativeController::seedRowPreviewHydrationFromCatalog()
     if (!m_rowPreviewPending.isEmpty()) scheduleRowPreviewHydration();
 }
 
+// #888 (exordy finding 4713852581): one reusable uuid -> row index for the scoped
+// seed below. The rebuild is a single linear pass attributed to the seed work
+// counter, and it runs once per structural change of the streams catalog - never
+// once per scoped accept, which is what kept a sweep of N accepts quadratic.
+int NativeController::streamRowByUuid(const QString &uuid)
+{
+    if (m_streamsRowTag != m_streamsMutation) {
+        m_streamsRow.clear();
+        m_streamsRow.reserve(m_streams.size());
+        for (int i = 0; i < m_streams.size(); ++i) {
+            recordRowPreviewSeedWork(1);
+            m_streamsRow.insert(m_streams.at(i).uuid, i);
+        }
+        m_streamsRowTag = m_streamsMutation;
+    }
+    const auto found = m_streamsRow.constFind(uuid);
+    return found == m_streamsRow.constEnd() ? -1 : found.value();
+}
+
 // #888: accepting one stream's topic catalog is not a catalog-wide event - seed only
 // the owning stream's rows. The previous full-catalog seed here re-enumerated every
 // unrelated candidate merely because the open channel's topics arrived (quadratic in
@@ -20331,15 +20355,16 @@ void NativeController::seedRowPreviewHydrationFromCatalog()
 void NativeController::seedRowPreviewHydrationForStream(const QString &streamUuid)
 {
     const auto queue = [this](const QString &uuid) { enqueueRowPreviewDisk(uuid); };
-    for (const auto &stream : std::as_const(m_streams)) {
-        recordRowPreviewSeedWork(1);
-        if (stream.uuid != streamUuid) continue;
+    // #888 (exordy round 2): the row comes from the reusable uuid index - a sweep
+    // of N background accepts inspects the streams catalog once, not N times.
+    const int row = streamRowByUuid(streamUuid);
+    if (row >= 0) {
+        const auto &stream = m_streams.at(row);
         if (stream.archived) return; // archived: not on the sidebar (topics too)
         if (!stream.lastMessage.isEmpty()) {
             m_rowPreviewStreamOf.insert(stream.lastMessage, streamUuid);
             queue(stream.lastMessage);
         }
-        break;
     }
     const auto inbox = m_inboxTopics.constFind(streamUuid);
     if (inbox != m_inboxTopics.constEnd()) {

@@ -4127,6 +4127,65 @@ private slots:
             "scoped topic-accept seed inspected %1 records for a %2-channel catalog"
             " - it is re-enumerating unrelated candidates").arg(work).arg(size)));
     }
+
+    // #888 round 2 (exordy finding 4713852581): background inbox sweeps accept one
+    // stream's topic catalog per stream, so the scoped seed runs once per stream.
+    // Locating the owning stream record must not scan the streams catalog once PER
+    // accept: a sweep of N accepts would then inspect N(N+1)/2 stream records and
+    // the quadratic hot path would survive inside the scoped seed. The sweep below
+    // accepts each background stream once; total inspected records must grow
+    // linearly in the catalog size (quadratic shape is 9x per tripling, bound 4x).
+    void repeatedScopedAcceptsSweepGrowsLinearly()
+    {
+        struct Sample { int size; qint64 work; };
+        QVector<Sample> samples;
+        for (const int size : {500, 1500, 3000}) {
+            Fixture test;
+            const auto channelRow = [](const QString &uuid) {
+                return QJsonObject{{QStringLiteral("uuid"), uuid},
+                    {QStringLiteral("project_id"), projectId},
+                    {QStringLiteral("name"), QStringLiteral("Channel")},
+                    {QStringLiteral("encryption"), false},
+                    {QStringLiteral("unread_count"), 0},
+                    {QStringLiteral("active_unread_count"), 0},
+                    {QStringLiteral("passive_unread_count"), 0},
+                    {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                    {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+            };
+            test.streams = [size, channelRow](const Request &request) {
+                if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                    QJsonArray rows;
+                    rows.append(channelRow(streamId)); // the default-opened channel
+                    for (int i = 1; i < size; ++i)
+                        rows.append(channelRow(QStringLiteral("77777777-7777-4777-7777-%1")
+                            .arg(i, 12, 16, QLatin1Char('0'))));
+                    return Response{rows};
+                }
+                const auto uuid = request.target.path().section(QLatin1Char('/'), -2, -2);
+                return Response{channelRow(uuid)};
+            };
+            QVERIFY(test.start({}, size));
+            test.controller.resetRowPreviewSeedWorkForTest();
+            // One scoped accept per background stream - exactly what an inbox or
+            // sidebar-search sweep produces as its per-stream replies settle.
+            for (int i = 1; i < size; ++i)
+                test.controller.seedStreamPreviewsForTest(QStringLiteral("77777777-7777-4777-7777-%1")
+                    .arg(i, 12, 16, QLatin1Char('0')));
+            const qint64 work = test.controller.rowPreviewSeedWorkForTest();
+            QVERIFY2(work > 0, "the seed work oracle never fired");
+            samples.append({size, work});
+        }
+        for (int i = 1; i < samples.size(); ++i) {
+            const qint64 bound = samples.at(i - 1).work * 4;
+            const QString message = QStringLiteral(
+                "sweep over a %1-channel catalog inspected %2 records; the linear"
+                " bound is %3 (previous: size %4 work %5)"
+                " - the per-accept stream lookup re-scans the catalog");
+            QVERIFY2(samples.at(i).work <= bound, qPrintable(message
+                .arg(samples.at(i).size).arg(samples.at(i).work).arg(bound)
+                .arg(samples.at(i - 1).size).arg(samples.at(i - 1).work)));
+        }
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)

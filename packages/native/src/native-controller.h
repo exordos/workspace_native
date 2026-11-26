@@ -395,7 +395,10 @@ public:
     // the scoped seam directly) and bound the GROWTH between catalog sizes - the old
     // quadratic enumeration cannot satisfy those bounds. Timing-independent by design.
     qint64 rowPreviewSeedWorkForTest() const { return m_rowPreviewSeedWork; }
-    void resetRowPreviewSeedWorkForTest() { m_rowPreviewSeedWork = 0; }
+    // #888 (exordy round 2): the reset also forces the reusable stream-uuid index
+    // cold, so a bounded sweep measurement always starts from the same clean
+    // state - the quadratic shape pays a scan per accept from cold too.
+    void resetRowPreviewSeedWorkForTest() { m_rowPreviewSeedWork = 0; m_streamsRowTag = ~0ull; }
     // #888 witness: drive the scoped topic-accept seed exactly as the catalog parser
     // does after accepting one stream's topic rows.
     void seedStreamPreviewsForTest(const QString &streamUuid)
@@ -2415,6 +2418,16 @@ private:
     QHash<QString, int> m_rowPreviewNetRetries;
     int m_rowPreviewNetIssued = 0; // test-only dispatch counter (rowPreviewNetworkIssuedForTest)
     mutable qint64 m_rowPreviewSeedWork = 0; // #888 test-only inspection counter
+    // #888 (exordy round 2, finding 4713852581): the scoped topic-accept seed runs
+    // once per accepted stream; locating the owning record with a full scan made a
+    // sweep of N accepts quadratic in the channel list. This index maps a stream
+    // uuid to its row in m_streams and is rebuilt only after a structural change
+    // of the streams collection (m_streamsMutation), so repeated accepts reuse one
+    // linear pass instead of re-scanning per accept.
+    int streamRowByUuid(const QString &uuid);
+    quint64 m_streamsMutation = 0;   // bumped by every structural m_streams change
+    quint64 m_streamsRowTag = ~0ull; // mutation tag m_streamsRow was built at
+    QHash<QString, int> m_streamsRow;
     // #860: per-uuid budget for the late disk re-reads a network negative buys.
     QHash<QString, int> m_rowPreviewLateDiskRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit
