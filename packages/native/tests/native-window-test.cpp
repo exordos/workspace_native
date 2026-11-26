@@ -50745,6 +50745,102 @@ private slots:
         QVERIFY(!topicRow(tailOne));
         QVERIFY(!topicRow(tailTwo));
     }
+
+    // Issue #893 (#855 subtask 1): the GUI-phase trace attributes nested,
+    // GUI-thread spans for a scripted login -> select-project -> open-topic
+    // sequence. Proves attribution only; no timing budgets are asserted yet.
+    void guiPhaseTraceAttributesNestedStartupSpans()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setMode("light");
+        MockServer server;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Product team"}, {"description", "Native preview"}, {"encryption", false}, {"unread_count", 2}}}};
+            if (path.endsWith("/users/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", "cassi"}}}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Native desktop"}, {"unread_count", 2}}}};
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{message("Phase attribution probe.")}};
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"registration_url", "https://reg.example/signup"}}};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/introspect"))
+                response.data = QJsonObject{{"project_id", projectId},
+                    {"user_info", QJsonObject{{"uuid", userId}, {"username", "cassi"},
+                        {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "cassi@example.invalid"}}}};
+            return response;
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.setPreferences(&preferences);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        // Telemetry is inert until the seam is queried: before the first reset
+        // the recorder must report nothing for the rendered login shell.
+        QVERIFY(controller.guiPhaseTraceForTest().value("spans").toMap().isEmpty());
+        controller.resetGuiPhaseTraceForTest();
+        auto *serverInput = item(content, "serverInput");
+        QVERIFY(serverInput);
+        serverInput->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_COMPARE(controller.projects().size(), 1);
+        QTRY_VERIFY(item(content, "projectSelect"));
+        click(window, item(content, "projectLoginButton"));
+        QTRY_COMPARE(controller.streams().size(), 1);
+        // Enter the stream first: openTopic is scoped to the open conversation.
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.topics().isEmpty());
+        // The network catalog publish is attributable to the GUI thread.
+        {
+            const auto published = controller.guiPhaseTraceForTest().value("spans").toMap();
+            QVERIFY2(published.value("startup.catalog-publish-network").toMap().value("count").toInt() >= 1,
+                     qPrintable(QVariant(published).toString()));
+        }
+        // Scripted open-topic runs inside a named parent span: the seam must
+        // report the child span nested under it on the GUI thread.
+        const auto scriptedId = controller.beginGuiPhaseSpan("test.scripted-navigate");
+        QVERIFY(scriptedId > 0);
+        QMetaObject::invokeMethod(&controller, "openTopic",
+                                  Q_ARG(QString, topicId), Q_ARG(QString, QString()));
+        controller.endGuiPhaseSpan(scriptedId);
+        QTRY_VERIFY(!controller.messages().isEmpty());
+        const auto trace = controller.guiPhaseTraceForTest();
+        QCOMPARE(trace.value("guiThreadId").toLongLong(), trace.value("currentThreadId").toLongLong());
+        const auto spans = trace.value("spans").toMap();
+        QVERIFY2(spans.value("chat.open-topic").toMap().value("count").toInt() >= 1,
+                 qPrintable(QVariant(spans).toString()));
+        QVERIFY2(spans.value("chat.history-projection").toMap().value("count").toInt() >= 1,
+                 qPrintable(QVariant(spans).toString()));
+        QVERIFY2(spans.value("chat.row-application").toMap().value("count").toInt() >= 1,
+                 qPrintable(QVariant(spans).toString()));
+        bool nestedUnderScriptedStep = false;
+        const auto records = trace.value("records").toList();
+        for (const auto &record : records) {
+            const auto row = record.toMap();
+            if (row.value("name").toString() == QLatin1String("chat.open-topic")
+                && row.value("parent").toString() == QLatin1String("test.scripted-navigate"))
+                nestedUnderScriptedStep = true;
+        }
+        QVERIFY2(nestedUnderScriptedStep, qPrintable(QVariant(records).toString()));
+    }
+
 };
 
 
