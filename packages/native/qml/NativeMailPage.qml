@@ -72,67 +72,73 @@ Item {
             spacing: 0
 
             // Folder sidebar (220 px column per the reference grid).
-            ColumnLayout {
+            // Plain Item wrapper: a fillWidth delegate inside a layout-typed
+            // RowLayout child hoists onto the wrapper level in Qt 6.10 and
+            // starves the sibling columns.
+            Item {
                 Layout.preferredWidth: 220
                 Layout.fillHeight: true
-                Layout.margins: 14
-                spacing: 6
-                Repeater {
-                    id: folderList
-                    objectName: "mailFolderList"
-                    // Stable positional model (NativeFeedPage pattern): a
-                    // rebound Repeater keeps delegates and re-binds
-                    // modelData, so rows index the live list instead.
-                    model: page.mail
-                        ? Array.from({length: page.mail.folders.length}, function (_, i) { return i })
-                        : []
-                    delegate: Rectangle {
-                        id: folderRow
-                        required property var modelData
-                        readonly property var row: (page.mail && page.mail.folders[Number(modelData)]) || ({})
-                        readonly property bool active: page.mail
-                            && page.mail.folderId === row.id
-                        objectName: "mailFolderRow-" + row.id
-                        Layout.fillWidth: true
-                        implicitHeight: 34
-                        radius: 9
-                        color: active ? page.colors["accent-soft"] : "transparent"
-                        border.color: active ? page.colors["accent"] : "transparent"
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.mail.selectFolder(folderRow.row.id)
-                        }
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
-                            spacing: 6
-                            Text {
-                                objectName: "mailFolderTitle-" + folderRow.row.id
-                                Layout.fillWidth: true
-                                text: folderRow.row.title
-                                textFormat: Text.PlainText
-                                font.pixelSize: 13
-                                font.weight: folderRow.active ? Font.DemiBold : Font.Normal
-                                color: folderRow.active
-                                    ? (page.dark ? page.textColor : "#2347a7")
-                                    : page.textColor
-                                elide: Text.ElideRight
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 14
+                    spacing: 6
+                    Repeater {
+                        id: folderList
+                        objectName: "mailFolderList"
+                        // Stable positional model (NativeFeedPage pattern): a
+                        // rebound Repeater keeps delegates and re-binds
+                        // modelData, so rows index the live list instead.
+                        model: page.mail
+                            ? Array.from({length: page.mail.folders.length}, function (_, i) { return i })
+                            : []
+                        delegate: Rectangle {
+                            id: folderRow
+                            required property var modelData
+                            readonly property var row: (page.mail && page.mail.folders[Number(modelData)]) || ({})
+                            readonly property bool active: page.mail
+                                && page.mail.folderId === row.id
+                            objectName: "mailFolderRow-" + row.id
+                            Layout.fillWidth: true
+                            implicitHeight: 34
+                            radius: 9
+                            color: active ? page.colors["accent-soft"] : "transparent"
+                            border.color: active ? page.colors["accent"] : "transparent"
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: page.mail.selectFolder(folderRow.row.id)
                             }
-                            Text {
-                                objectName: "mailFolderUnread-" + folderRow.row.id
-                                visible: folderRow.row.unread > 0
-                                text: String(folderRow.row.unread)
-                                font.pixelSize: 12
-                                font.weight: Font.DemiBold
-                                color: page.colors["on-accent"]
-                                Accessible.name: folderRow.row.title
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                spacing: 6
+                                Text {
+                                    objectName: "mailFolderTitle-" + folderRow.row.id
+                                    Layout.fillWidth: true
+                                    text: folderRow.row.title
+                                    textFormat: Text.PlainText
+                                    font.pixelSize: 13
+                                    font.weight: folderRow.active ? Font.DemiBold : Font.Normal
+                                    color: folderRow.active
+                                        ? (page.dark ? page.textColor : "#2347a7")
+                                        : page.textColor
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    objectName: "mailFolderUnread-" + folderRow.row.id
+                                    visible: folderRow.row.unread > 0
+                                    text: String(folderRow.row.unread)
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    color: page.colors["on-accent"]
+                                    Accessible.name: folderRow.row.title
+                                }
                             }
                         }
                     }
+                    Item { Layout.fillHeight: true }
                 }
-                Item { Layout.fillHeight: true }
             }
             Rectangle {
                 Layout.preferredWidth: 1
@@ -141,34 +147,22 @@ Item {
             }
 
             // Thread list column. The reference grid is 220px | 1fr | 1fr;
-            // Qt Quick Layouts has no fr units and the content hints (ScrollView
-            // minimum vs the reader's Text implicit) distribute greedily - the
-            // thread column collapsed to a 76 px sliver. Split the leftover
-            // explicitly: (row - 248 sidebar - 2 separators) / 2 per column.
-            StackLayout {
-                objectName: "mailThreadColumn"
+            // A plain Item carries the equal fill hints: a layout-typed
+            // RowLayout child with explicit preferredWidth 0 mis-splits the
+            // leftover in Qt 6.10 (first fill column swallows everything,
+            // the sibling freezes at its implicit width - measured 76/121 px).
+            // The list also stays OUT of a StackLayout: delegates incubated
+            // while an ancestor is hidden are never laid out by the layout
+            // engine (thread rows stuck 0 px wide), so busy/error are overlays.
+            Item {
                 Layout.fillWidth: true
-                // Stable hint: an earlier binding derived this from
-                // columnsRow.width (the layout's own assigned result), which
-                // made the RowLayout's sizeHint depend on its output ->
-                // "Qt Quick Layouts: Detected recursive rearrange" warning on
-                // every Main.qml window case. Both fill columns keep equal
-                // constant hints, so the leftover still splits 1fr/1fr.
                 Layout.preferredWidth: 0
                 Layout.minimumWidth: 0
                 Layout.fillHeight: true
-                Layout.margins: 10
-                currentIndex: page.mail && page.mail.state === "loading" ? 0
-                    : page.mail && page.mail.state === "error" ? 2 : 1
-
-                Item {
-                    objectName: "mailLoadingState"
-                    BusyIndicator {
-                        anchors.centerIn: parent
-                        running: true
-                    }
-                }
                 ScrollView {
+                    objectName: "mailThreadColumn"
+                    anchors.fill: parent
+                    anchors.margins: 10
                     clip: true
                     ColumnLayout {
                         objectName: "mailMessageList"
@@ -261,23 +255,36 @@ Item {
                         }
                     }
                 }
-                Item {
+                Rectangle {
+                    objectName: "mailLoadingState"
+                    anchors.fill: parent
+                    visible: page.mail && page.mail.state === "loading"
+                    color: page.pageColor
+                    BusyIndicator {
+                        anchors.centerIn: parent
+                        running: parent.visible
+                    }
+                }
+                Rectangle {
                     objectName: "mailErrorState"
+                    anchors.fill: parent
+                    visible: page.mail && page.mail.state === "error"
+                    color: page.pageColor
                     ColumnLayout {
                         anchors.centerIn: parent
                         spacing: 10
-                    Text {
-                        Layout.alignment: Qt.AlignHCenter
-                        text: qsTr("Couldn't load mail")
-                        font.pixelSize: 14
-                        color: page.textColor
-                    }
-                    Button {
-                        objectName: "mailRetryButton"
-                        Layout.alignment: Qt.AlignHCenter
-                        text: qsTr("Retry")
-                        onClicked: if (page.mail) page.mail.refresh()
-                    }
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: qsTr("Couldn't load mail")
+                            font.pixelSize: 14
+                            color: page.textColor
+                        }
+                        Button {
+                            objectName: "mailRetryButton"
+                            Layout.alignment: Qt.AlignHCenter
+                            text: qsTr("Retry")
+                            onClicked: if (page.mail) page.mail.refresh()
+                        }
                     }
                 }
             }
@@ -287,43 +294,43 @@ Item {
                 color: page.borderColor
             }
 
-            // Reader placeholder column: subject + sender of the selected row
-            // and an empty-body note; the real reader is #880. preferredWidth 0
-            // matches the thread column so the leftover splits 1fr/1fr like
-            // the reference grid.
-            ColumnLayout {
+            // Reader placeholder column: subject + sender of the selected
+            // row and an empty-body note; the real reader is #880. Plain
+            // Item wrapper: see the thread column above.
+            Item {
                 Layout.fillWidth: true
-                Layout.preferredWidth: 0  // stable hint, see mailThreadColumn
+                Layout.preferredWidth: 0
                 Layout.minimumWidth: 0
                 Layout.fillHeight: true
-                Layout.margins: 16
-                spacing: 8
-                Text {
-                    objectName: "mailReaderLabel"
-                    text: qsTr("Preview")
-                    font.pixelSize: 12
-                    color: page.mutedColor
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    spacing: 8
+                    Text {
+                        objectName: "mailReaderLabel"
+                        text: qsTr("Preview")
+                        font.pixelSize: 12
+                        color: page.mutedColor
+                    }
+                    Text {
+                        objectName: "mailReaderTitle"
+                        text: page.mail && page.mail.selectedMessageUuid
+                            ? page.mail.messages.find(m => m.uuid === page.mail.selectedMessageUuid).subject
+                            : qsTr("Select a message")
+                        textFormat: Text.PlainText
+                        font.pixelSize: 18
+                        color: page.textColor
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        objectName: "mailReaderBody"
+                        text: qsTr("Message bodies arrive with the mail server integration.")
+                        font.pixelSize: 13
+                        color: page.mutedColor
+                        wrapMode: Text.WordWrap
+                    }
+                    Item { Layout.fillHeight: true }
                 }
-                Text {
-                    objectName: "mailReaderTitle"
-                    Layout.fillWidth: true
-                    text: page.mail && page.mail.selectedMessageUuid
-                        ? page.mail.messages.find(m => m.uuid === page.mail.selectedMessageUuid).subject
-                        : qsTr("Select a message")
-                    textFormat: Text.PlainText
-                    font.pixelSize: 18
-                    color: page.textColor
-                    elide: Text.ElideRight
-                }
-                Text {
-                    objectName: "mailReaderBody"
-                    Layout.fillWidth: true
-                    text: qsTr("Message bodies arrive with the mail server integration.")
-                    font.pixelSize: 13
-                    color: page.mutedColor
-                    wrapMode: Text.WordWrap
-                }
-                Item { Layout.fillHeight: true }
             }
         }
     }
