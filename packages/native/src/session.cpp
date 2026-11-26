@@ -1,4 +1,5 @@
 #include "session.h"
+#include "gui-phase-trace.h"
 
 #include <QJsonArray>
 #include <QSet>
@@ -97,6 +98,7 @@ void Session::resumeSavedAccount(const QString &id)
     const auto attempt = m_attempt;
     const QPointer<Session> guard(this);
     m_vault->load(id, [guard, attempt, id](SavedAccount account, QByteArray token, QString error) {
+        GuiPhaseSpan guiPhaseSpan("startup.saved-session-restore");
         if (!guard || attempt != guard->m_attempt) return;
         if (!error.isEmpty()) {
             guard->fail(error);

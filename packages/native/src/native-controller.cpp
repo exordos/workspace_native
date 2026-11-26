@@ -11,6 +11,7 @@
 #include "workspace-reference.h"
 #include "native-preferences.h"
 #include "native-auth-guard.h"
+#include "gui-phase-trace.h"
 #include "native-markdown.h"
 #include "native-chat-key-vault.h"
 #include "native-chat-crypto.h"
@@ -3306,6 +3307,7 @@ void NativeController::cancelConversationRestore()
 
 void NativeController::prepareConversationRestore()
 {
+    GuiPhaseSpan guiPhaseSpan("route.saved-route-restore");
     const QPointer<NativeController> guard(this);
     prepareSidebarExpansion();
     if (!guard) return;
@@ -7350,6 +7352,7 @@ void NativeController::loadStartupCacheStreams()
             streams.append(*parsed);
         }
         if (streams.isEmpty()) { releaseAttempt(); return; }
+        GuiPhaseSpan guiPhaseSpan("startup.catalog-publish-cached");
         guard->m_startupCacheMode = true;
         guard->m_streams = streams;
         emit guard->streamsChanged();
@@ -10859,10 +10862,13 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // logging in never adds a request to the bootstrap round itself.
     m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
     connect(&m_presenceHeartbeat, &QTimer::timeout, this, [this] { reportPresenceHeartbeat(); });
+    // Issue #855: opt-in GUI-thread stall sampler (inert without the env var).
+    GuiStallSampler::startFromEnvironment(this);
 }
 
 void NativeController::startAuthenticatedWorkspace()
 {
+    GuiPhaseSpan guiPhaseSpan("startup.bootstrap");
     const QPointer<NativeController> guard(this);
     prepareOwnStatusPreferences();
     interruptTopicOpening();
@@ -10905,6 +10911,26 @@ void NativeController::startAuthenticatedWorkspace()
     if (!guard) return;
     finishDownloadRetries(true);
     if (guard) emit stateChanged();
+}
+
+void NativeController::resetGuiPhaseTraceForTest()
+{
+    GuiPhaseTrace::instance().reset();
+}
+
+QVariantMap NativeController::guiPhaseTraceForTest() const
+{
+    return GuiPhaseTrace::instance().snapshot();
+}
+
+qint64 NativeController::beginGuiPhaseSpan(const QString &name)
+{
+    return GuiPhaseTrace::instance().beginSpan(name);
+}
+
+void NativeController::endGuiPhaseSpan(qint64 id)
+{
+    GuiPhaseTrace::instance().endSpan(id);
 }
 
 NativeController::~NativeController()
@@ -16103,6 +16129,7 @@ QString normalizedReplySelection(const Message &message, const QString &selected
 
 QVariantList NativeController::messages() const
 {
+    GuiPhaseSpan guiPhaseSpan("chat.history-projection");
     const bool avatarsOwned = authenticated() && m_channelDirectoryOwner == creationOwnerKey();
     const bool canReadChat = chatReadAllowed();
     const auto chat = encryption();
@@ -17215,6 +17242,8 @@ void NativeController::reloadSnapshot()
     const auto chatProjection = projectionContext();
     cachedCollection({NativeCache::Kind::Streams, {}, {}, {}}, messenger + "/streams/", {},
         [this, catalog, chatAccess, chatOwner, chatEpoch, chatProjection](const QJsonArray &rows, bool authoritative) {
+        GuiPhaseSpan guiPhaseSpan(authoritative ? "startup.catalog-publish-network"
+                                               : "startup.catalog-publish-cached");
         if (catalog != m_catalog) return false;
         if (!authoritative && !m_streams.isEmpty()) return true;
         QVector<Stream> streams;
@@ -17594,6 +17623,7 @@ void NativeController::finishTopicOpening(quint64 ticket, const QString &error, 
 
 void NativeController::openTopic(const QString &id, const QString &)
 {
+    GuiPhaseSpan guiPhaseSpan("chat.open-topic");
     if (!m_selectingDraftRoute) m_draftOpenId.clear();
     const auto target = id.toLower();
     if (m_topicOpening.active && m_topicOpening.requested == target
@@ -18130,6 +18160,7 @@ void NativeController::loadMessages(bool older, bool latest, bool forceNetwork)
     const auto fetchCache = [this, guard, cache, lease, key, selection, generation, revision, pageRevision, cacheRevision, older, network](bool savedOnly) {
         if (!guard || !cache || cache != m_cache || selection != m_selection || generation != m_api->generation()) return;
         cache->get(lease, key, this, [this, guard, cache, lease, selection, generation, revision, pageRevision, cacheRevision, older, savedOnly, network](std::optional<NativeCache::Entry> entry) {
+            GuiPhaseSpan guiPhaseSpan("chat.row-application");
             if (!guard || selection != m_selection || cache != m_cache || generation != m_api->generation()) return;
             const bool sameLease = lease.owner == m_cacheLease.owner && lease.generation == m_cacheLease.generation;
             if (!sameLease || cacheRevision != m_cacheRevision || revision != m_messageRevision) {
@@ -18304,6 +18335,7 @@ void NativeController::historyPage(bool older, quint64 selection, quint64 revisi
             historyPage(false, selection, revision, boundary, result.nextMarker, accumulated, seen, pages, bytes);
             return;
         }
+        GuiPhaseSpan guiPhaseSpan("chat.row-application");
         rememberChatOutcomeOrder(accumulated);
         if (older) {
             m_messages = noteActivityMerge(m_messages, accumulated);
