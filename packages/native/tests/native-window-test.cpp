@@ -16601,8 +16601,10 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_VERIFY(controller.draft().isEmpty());
             QTRY_VERIFY(list->property("atYEnd").toBool());
             const auto sentId = controller.messages().last().toMap().value("id").toString();
-            QVERIFY(messageItem(sentId));
-            QTRY_VERIFY(messageItem(sentId)->isVisible());
+            // The fresh tail delegate incubates one polish pass after the
+            // controller row lands - re-fetch inside the wait (a one-shot
+            // lookup here races the incubation).
+            QTRY_VERIFY(([&] { auto *sent = messageItem(sentId); return sent && sent->isVisible(); })());
             // The tail pin invariant across the composer collapse + deferred
             // restore: the tail row keeps its gap to the viewport bottom
             // within the layout tolerance - no anchor jump.
