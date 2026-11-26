@@ -602,6 +602,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_25
     editQuotedMessageShowsTheQuoteChipOverTheComposer
     feedPageHidesConversationAndOwnsContentWidth
     folderSystemVisibilityToggleHidesPersonalAndChannels
+    guiPhaseTraceAttributesNestedStartupSpans
     nativeSelectPopupStaysScrollableWhenRowsGrow
     onlyTheActiveVisibleViewportAdvancesTheReadBoundary
     pollManagementClosesWhenItsSourceIsDeleted
