@@ -232,6 +232,7 @@ Item {
                             implicitHeight: emptyText.implicitHeight
                             Text {
                                 id: emptyText
+                                objectName: "mailEmptyStateText"
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 text: qsTr("No messages in this folder")
                                 font.pixelSize: 13
