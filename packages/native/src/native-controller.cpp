@@ -20153,8 +20153,9 @@ void NativeController::pumpRowPreviewNetworkHydration()
         ++m_rowPreviewNetIssued;
         const QPointer<NativeController> guard(this);
         const auto fence = m_rowPreviewFence.value(uuid);
+        const auto dispatchGeneration = m_sessionGeneration;
         request("GET", messenger + "/messages/", {}, {{"project_id", project}, {"uuid", uuid}},
-            [this, guard, uuid, owner, fence, project, cache, lease, netToken](const ApiResult &result) {
+            [this, guard, uuid, owner, fence, project, cache, lease, netToken, dispatchGeneration](const ApiResult &result) {
             if (!guard) return;
             // #866 review (exordy finding 1): a reply may only retire the in-flight marker
             // its own request still owns. After a session change the uuid may already have
@@ -20180,8 +20181,16 @@ void NativeController::pumpRowPreviewNetworkHydration()
                 // instead of a sticky negative memo that outlives the retry window.
                 if (m_rowPreviewNetRetries.value(uuid) < rowPreviewNetworkRetries) {
                     ++m_rowPreviewNetRetries[uuid];
-                    QTimer::singleShot(2000, this, [this, uuid] {
-                        if (!authenticated() || m_rowPreviews.contains(uuid)) return;
+                    // exordy finding (#866): the backoff is fenced to the session that
+                    // scheduled it - the session generation plus the owner captured at
+                    // dispatch. An account swap during the sleep retires the generation
+                    // (signedOut bumps it), so the old uuid is never replayed under the
+                    // new session and origin; an owner-only fence cannot see a swap the
+                    // fixture mocks to an identical owner hash.
+                    QTimer::singleShot(2000, this, [this, uuid, owner, dispatchGeneration] {
+                        if (!authenticated() || m_sessionGeneration != dispatchGeneration
+                            || creationOwnerKey() != owner) return;
+                        if (m_rowPreviews.contains(uuid)) return;
                         enqueueRowPreviewNet(uuid);
                         scheduleRowPreviewNetworkHydration();
                     });
@@ -20215,8 +20224,13 @@ void NativeController::pumpRowPreviewNetworkHydration()
                 // write races the lookup). The negative must not memoize over a late write,
                 // so the miss buys a bounded number of delayed disk re-reads first.
                 ++m_rowPreviewLateDiskRetries[uuid];
-                QTimer::singleShot(1000, this, [this, uuid] {
-                    if (!authenticated() || m_rowPreviews.contains(uuid)) return;
+                // exordy finding (#866): same session fence as the network backoff -
+                // a delayed disk re-read must not fire inside a different session and
+                // memoize over the new realm's rows.
+                QTimer::singleShot(1000, this, [this, uuid, owner, dispatchGeneration] {
+                    if (!authenticated() || m_sessionGeneration != dispatchGeneration
+                        || creationOwnerKey() != owner) return;
+                    if (m_rowPreviews.contains(uuid)) return;
                     if (m_rowPreviewInFlight.contains(uuid)) return;
                     enqueueRowPreviewDisk(uuid);
                     scheduleRowPreviewHydration();

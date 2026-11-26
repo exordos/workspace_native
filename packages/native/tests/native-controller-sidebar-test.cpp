@@ -1,4 +1,5 @@
 #include <QUrlQuery>
+#include <atomic>
 #include "support/native-test-harness.h"
 #include "support/controller-chat-creation-fixtures.h"
 #include "support/controller-navigation-fixtures.h"
@@ -1320,6 +1321,69 @@ private slots:
         QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 2); // no duplicate dispatch
         for (size_t i = 1; i < gates->size(); ++i) { const auto send = gates->at(i); send(); }
         QTest::qWait(400);
+    }
+
+    // #866 review (exordy finding 2): the delayed preview retry is fenced to the session
+    // that scheduled it. A transient network failure schedules a backoff re-enqueue that
+    // captured only the uuid; if the account is swapped while that backoff sleeps, the
+    // firing must not enqueue the previous session's uuid under the new owner, so the
+    // new realm never receives a lookup for a message it never held.
+    void sidebarPreviewNetRetryIsFencedToItsSession()
+    {
+        Fixture test;
+        test.aggregateMessages = true;
+        const auto pointer = QStringLiteral("88888888-8888-4888-8888-0000000000d2");
+        const auto swapped = std::make_shared<std::atomic<bool>>(false);
+        const auto uuidHits = std::make_shared<std::atomic<int>>(0);
+        test.streams = [](const Request &request) {
+            if (request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}}};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}, {"updated_at", "2026-01-02T10:00:05Z"}}};
+        };
+        test.topics = [pointer, swapped](const Request &) {
+            // The first session's catalog points at the message; the swapped session
+            // carries no pointer, so any uuid lookup observed after the swap can only
+            // have come from the stale backoff timer.
+            const QJsonValue last = swapped->load() ? QJsonValue(QJsonValue::Null)
+                                                    : QJsonValue(pointer);
+            return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                {"stream_uuid", streamId}, {"name", "Retry fence probe"}, {"is_done", false},
+                {"is_default", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last},
+                {"updated_at", "2026-01-02T10:00:05Z"}}}};
+        };
+        test.messages = [uuidHits](const Request &request) {
+            const auto uuid = QUrlQuery(request.target).queryItemValue("uuid");
+            if (!uuid.isEmpty()) {
+                ++*uuidHits;
+                Response failed{QJsonArray{}};
+                failed.status = 503; // transient: schedules the bounded backoff
+                return failed;
+            }
+            return Response{QJsonArray{}};
+        };
+        QVERIFY(test.start());
+        QVERIFY(QTest::qWaitFor(
+            [&] { return test.controller.rowPreviewNetworkIssuedForTest() >= 1; }, 5000));
+        QTest::qWait(300);
+        QCOMPARE(*uuidHits, 1); // the failing lookup landed once
+        // Swap accounts while the first backoff (2 s) is still sleeping.
+        swapped->store(true);
+        test.controller.logout();
+        test.controller.login(test.server.origin().toString(), "second-user", "password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        // The first backoff elapses inside the NEW session. An unfenced timer enqueues
+        // the stale uuid and dispatches it under the new owner's session.
+        QTest::qWait(3000);
+        QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 1);
+        QCOMPARE(*uuidHits, 1); // the new realm must never see the old uuid
     }
 
     // #866 review (exordy finding 2): the pumps consume foreground rows first - the
