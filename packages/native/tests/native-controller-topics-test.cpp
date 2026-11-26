@@ -1099,9 +1099,19 @@ private slots:
                     return row.toMap().value("name").toString();
             return QString();
         };
+        // Issue #859 retarget: a route commit only ENSURES the target stream;
+        // the visited stream keeps whatever expansion the chevrons gave it,
+        // so the row state this case models is now set with explicit toggles
+        // instead of relying on the retired stream being collapsed for free.
         if (expandBeforeRelease) {
+            // Collapse and re-expand: an explicit expansion re-hydrates the
+            // retired route's rows before the held reply lands.
+            fixture.controller.toggleSidebarStream(streamId);
             fixture.controller.toggleSidebarStream(streamId);
             QTRY_VERIFY_WITH_TIMEOUT(sidebarRowName() == QStringLiteral("Native topic"), 4000);
+        } else {
+            // Explicit chevron collapse: rows stay gone until re-expansion.
+            fixture.controller.toggleSidebarStream(streamId);
         }
         release();
         QTRY_VERIFY_WITH_TIMEOUT(

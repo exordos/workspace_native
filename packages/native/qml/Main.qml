@@ -5095,8 +5095,8 @@ component NativeMentionChip: Item {
     }
     Connections {
         target: root.controller
-        // selectStream notifies before collapseSidebarExcept's deferred
-        // sidebarExpansionChanged, so this capture sees the pre-collapse layout.
+        // selectStream notifies before ensureSidebarStreamExpanded's deferred
+        // sidebarExpansionChanged, so this capture sees the pre-expansion layout.
         function onSelectedStreamChanged() {
             root.captureSidebarScrollAnchor()
             Qt.callLater(root.restoreSidebarScrollAnchor)

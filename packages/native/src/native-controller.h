@@ -2448,7 +2448,7 @@ private:
     QSet<QString> m_sidebarTopicHydrating;
     bool m_restoringSidebarRoute = false;
     void prepareSidebarExpansion();
-    void collapseSidebarExcept(const QString &stream);
+    void ensureSidebarStreamExpanded(const QString &stream);
     void hydrateExpandedSidebarStreams();
     void pumpSidebarTopicHydration();
 

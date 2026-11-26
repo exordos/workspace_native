@@ -15208,15 +15208,21 @@ void NativeController::toggleSidebarStream(const QString &stream)
     if (guard && expanding) requestSidebarTopics(stream);
 }
 
-void NativeController::collapseSidebarExcept(const QString &stream)
+// Issue #859: a route commit only ensures the target stream's row is expanded.
+// The expanded set belongs to the per-stream chevron toggles (#95): selecting
+// a stream or topic must never replace it, so every explicitly expanded stream
+// stays open (and hydration-eligible) across route commits and on restart.
+void NativeController::ensureSidebarStreamExpanded(const QString &stream)
 {
-    if (m_sidebarExpansionOwner.isEmpty() || creationOwnerKey() != m_sidebarExpansionOwner) return;
-    const QStringList next = stream.isEmpty() ? QStringList{} : QStringList{stream};
-    if (next == m_expandedSidebarStreams) return;
+    if (stream.isEmpty() || m_sidebarExpansionOwner.isEmpty() || creationOwnerKey() != m_sidebarExpansionOwner) return;
+    if (m_expandedSidebarStreams.contains(stream)) return;
+    const auto found = std::find_if(m_streams.cbegin(), m_streams.cend(),
+        [&stream](const Stream &value) { return value.uuid == stream && !value.archived; });
+    if (found == m_streams.cend()) return;
+    QStringList next = m_expandedSidebarStreams;
+    next.append(stream);
     m_expandedSidebarStreams = next;
     QTimer::singleShot(0, this, [this] { emit sidebarExpansionChanged(); });
-    for (auto it = m_sidebarTopicPending.begin(); it != m_sidebarTopicPending.end();)
-        if (*it != stream) it = m_sidebarTopicPending.erase(it); else ++it;
     if (m_statusPreferences) m_statusPreferences->recordExpandedStreams(m_sidebarExpansionOwner, next);
 }
 
@@ -16958,7 +16964,7 @@ void NativeController::activateStream(const QString &id, const QVector<Topic> *v
         m_favoritesVisible = true;
         m_favoritesStatus = QStringLiteral("loading");
     }
-    if (!m_restoringSidebarRoute) collapseSidebarExcept(id);
+    if (!m_restoringSidebarRoute) ensureSidebarStreamExpanded(id);
     m_topicsVerified = m_historyVerified = false;
     m_topic = initialTopic ? initialTopic->uuid : QString{};
     rememberConversation();
@@ -17382,7 +17388,7 @@ void NativeController::selectTopic(const QString &id)
     ++m_topicMutation;
     ++m_selection;
     m_topic = id;
-    if (!m_restoringSidebarRoute) collapseSidebarExcept(m_stream);
+    if (!m_restoringSidebarRoute) ensureSidebarStreamExpanded(m_stream);
     rememberConversation();
     // Issue #729 phase 2: same route-commit wiring as activateStream.
     if (!id.isEmpty()) {
