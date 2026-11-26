@@ -19750,6 +19750,12 @@ void NativeController::announceRowPreviewRows(const QString &uuid)
         if (stream.lastMessage == uuid) { schedulePreviewRevisionBump(); return; }
     for (const auto &topic : m_topics)
         if (topic.lastMessage == uuid) { schedulePreviewRevisionBump(); return; }
+    // exordy finding on PR #866 (head 05c10517): topics of inactive streams live in the
+    // inbox slot map (m_inboxTopics), and the catalog seed hydrates their previews too -
+    // without this scan the memo arrives but the bound inbox row is never re-evaluated.
+    for (const auto &slot : std::as_const(m_inboxTopics))
+        for (const auto &topic : slot)
+            if (topic.lastMessage == uuid) { schedulePreviewRevisionBump(); return; }
 }
 
 void NativeController::scheduleRowPreviewHydration() const
@@ -19838,6 +19844,13 @@ void NativeController::pumpRowPreviewHydration()
             if (!affectsRow)
                 for (const auto &topic : m_topics)
                     if (topic.lastMessage == uuid) { affectsRow = true; break; }
+            // exordy finding on PR #866 (head 05c10517): inbox-slot topics (inactive
+            // streams) are seeded by the same catalog pass and announce like any other
+            // row - the disk pump must recognize their pointers too.
+            if (!affectsRow)
+                for (const auto &slot : std::as_const(m_inboxTopics))
+                    for (const auto &topic : slot)
+                        if (topic.lastMessage == uuid) { affectsRow = true; break; }
             // #866 review (finding 3): preview content announces the preview-only revision.
             if (affectsRow) schedulePreviewRevisionBump();
         });
