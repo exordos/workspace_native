@@ -14483,7 +14483,10 @@ QVariantMap NativeController::streamRowMap(const Stream &stream) const
             ? m_names.value(stream.directUser).presence : QString{}},
         {"activityMicros", activityMicros},
         {"contextKey", QString::fromLatin1(QCryptographicHash::hash(streamAcl(stream).toUtf8(), QCryptographicHash::Sha256).toHex())}};
-    row.insert(rowPreviewFields(stream.lastMessage));
+    // #866 review (finding 3): preview keys are no longer baked into the row DTO - the
+    // delegates derive them from the uuid-keyed preview store through
+    // controller.previewFields(lastMessage, previewRevision), so a preview arrival no
+    // longer needs a projection rebuild.
     // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): the row state measured
     // on the reference sidebar rows. The displayed counter is the
     // resolveWorkspaceDisplayedUnread projection (messenger-notification-mode.lib.ts:
@@ -15480,7 +15483,7 @@ QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Str
         // the rank lambda above ranks.
         row.insert(QStringLiteral("notificationMode"), topic->notificationMode);
         row.insert(QStringLiteral("effectivelyMuted"), rank(topic) == 1);
-        row.insert(rowPreviewFields(topic->lastMessage));
+        // #866 review (finding 3): preview fields derive via previewFields() in QML now.
         result.append(row);
     }
     return result;
@@ -19176,9 +19179,13 @@ void NativeController::refreshEncryptedSidebarPreviews()
     }
     if (states == m_visibleEncryptedPreviewStates) return;
     m_visibleEncryptedPreviewStates = std::move(states);
-    const QPointer<NativeController> guard(this);
-    emit streamsChanged();
-    if (guard) emit topicsChanged();
+    // #866 review (finding 3): the encrypted preview STATE is derived preview content -
+    // announce it on the preview-only revision, not via a projection rebuild. Discrete
+    // state-machine transitions bump SYNCHRONOUSLY (unlike the coalesced pump batches):
+    // the transient "decrypting" placeholder must stay observable in the same tick, which
+    // is exactly the guarantee the synchronous streamsChanged emit used to provide.
+    ++m_previewRevision;
+    emit previewChanged();
 }
 
 std::optional<NativeController::RowPreview> NativeController::rowPreviewOf(const Message &message, bool active) const
@@ -19586,18 +19593,43 @@ QVariantMap NativeController::rowPreviewFields(const QString &lastMessage) const
             tr("Yesterday"))}};
 }
 
+QVariantMap NativeController::previewFields(const QString &lastMessageUuid, int /*revision*/) const
+{
+    // #866 review (finding 3): the QML seam over the uuid-keyed preview store. The
+    // revision argument is the QML binding dependency, not an input: the map is derived
+    // from the current memo for the uuid, exactly as the old baked DTO keys were.
+    return rowPreviewFields(lastMessageUuid);
+}
+
+void NativeController::schedulePreviewRevisionBump()
+{
+    // #866 review (finding 3): one coalesced previewChanged per event-loop tick, no matter
+    // how many memos a pump batch stored. This replaces the streamsChanged emits the
+    // preview paths used to fire, so a preview batch no longer rebuilds the sidebar row
+    // array (and with it every delegate) under an in-flight click or scroll position.
+    if (m_previewRevisionBumpQueued) return;
+    m_previewRevisionBumpQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_previewRevisionBumpQueued = false;
+        ++m_previewRevision;
+        emit previewChanged();
+    });
+}
+
 void NativeController::announceStreamRowPreviews(const QVector<Message> &rows)
 {
-    // A history commit can complete a row preview: the reference re-derives the sidebar row
-    // from the messenger cache the moment its last message becomes known, and the native
-    // activity comparator reads the same instants. Only streams actually pointed at one of
-    // the new messages re-bind, so browsing a channel never reflows the whole list.
+    // Issue #96 (docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md): a history commit can complete a
+    // row preview: the reference re-derives the sidebar row from the messenger cache the
+    // moment its last message becomes known, and the native activity comparator reads the
+    // same instants. #866 review (finding 3): the completion travels on the preview-only
+    // revision - the preview is derived CONTENT, the pointer did not move, so delegates
+    // re-evaluate their preview bindings without a projection rebuild.
     if (rows.isEmpty()) return;
     QSet<QString> ids;
     for (const auto &row : rows) ids.insert(row.uuid);
     for (const auto &stream : std::as_const(m_streams)) {
         if (stream.archived || stream.lastMessage.isEmpty()) continue;
-        if (ids.contains(stream.lastMessage)) { emit streamsChanged(); return; }
+        if (ids.contains(stream.lastMessage)) { schedulePreviewRevisionBump(); return; }
     }
 }
 
@@ -19652,11 +19684,12 @@ void NativeController::markRowPreviewDeleted(const QString &uuid)
 void NativeController::announceRowPreviewRows(const QString &uuid)
 {
     // Mirror of the hydration pump's notification rule: a row whose last-message pointer
-    // references this uuid re-binds when its memo changes shape.
+    // references this uuid re-binds when its memo changes shape. #866 review (finding 3):
+    // the memo is derived content, not the pointer - announce the preview-only revision.
     for (const auto &stream : m_streams)
-        if (stream.lastMessage == uuid) { emit streamsChanged(); emit topicsChanged(); return; }
+        if (stream.lastMessage == uuid) { schedulePreviewRevisionBump(); return; }
     for (const auto &topic : m_topics)
-        if (topic.lastMessage == uuid) { emit streamsChanged(); emit topicsChanged(); return; }
+        if (topic.lastMessage == uuid) { schedulePreviewRevisionBump(); return; }
 }
 
 void NativeController::scheduleRowPreviewHydration() const
@@ -19741,7 +19774,8 @@ void NativeController::pumpRowPreviewHydration()
             if (!affectsRow)
                 for (const auto &topic : m_topics)
                     if (topic.lastMessage == uuid) { affectsRow = true; break; }
-            if (affectsRow) { emit streamsChanged(); emit topicsChanged(); }
+            // #866 review (finding 3): preview content announces the preview-only revision.
+            if (affectsRow) schedulePreviewRevisionBump();
         });
     }
     // A bounded pass leaves the remainder queued for the next tick, so every row of a large

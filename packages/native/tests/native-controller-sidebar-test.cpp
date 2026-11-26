@@ -7,6 +7,14 @@
 #include "support/controller-mention-fixtures.h"
 #include "support/controller-poll-fixtures.h"
 
+// #866 review (finding 3): the row DTO no longer bakes preview keys; assertions read them
+// through the same seam the QML delegates use (previewFields(uuid, previewRevision)).
+static QVariantMap previewOf(const NativeController &controller, const QVariantMap &row)
+{
+    return controller.previewFields(row.value("lastMessage").toString(),
+        controller.previewRevision());
+}
+
 class ControllerSidebarTest final : public NativeControllerTestHarness {
     Q_OBJECT
 private slots:
@@ -789,19 +797,21 @@ private slots:
         };
         QVERIFY(test.start());
         const auto topicRow = test.controller.topics().first().toMap();
-        QCOMPARE(topicRow.value("previewSender").toString(), QStringLiteral("You"));
-        QCOMPARE(topicRow.value("previewText").toString(), expected);
-        QCOMPARE(topicRow.value("previewKind").toString(), kind);
-        QCOMPARE(topicRow.value("previewState").toString(), QStringLiteral("ready"));
-        QVERIFY(!topicRow.value("previewLocked").toBool());
+        const auto topicPreview = previewOf(test.controller, topicRow);
+        QCOMPARE(topicPreview.value("previewSender").toString(), QStringLiteral("You"));
+        QCOMPARE(topicPreview.value("previewText").toString(), expected);
+        QCOMPARE(topicPreview.value("previewKind").toString(), kind);
+        QCOMPARE(topicPreview.value("previewState").toString(), QStringLiteral("ready"));
+        QVERIFY(!topicPreview.value("previewLocked").toBool());
         // The row time is the last-message instant under the same formatter the contract
         // case pins; asserting against the current date keeps this case locale-correct.
-        QCOMPARE(topicRow.value("rowTime").toString(), NativeController::formatRowTime(
+        QCOMPARE(topicPreview.value("rowTime").toString(), NativeController::formatRowTime(
             QDateTime(QDate(2026, 1, 2), QTime(10, 0, 5), Qt::UTC), QLocale::system(),
             QDate::currentDate(), QStringLiteral("Yesterday")));
         const auto streamRow = test.controller.streams().first().toMap();
-        QCOMPARE(streamRow.value("previewText").toString(), expected);
-        QCOMPARE(streamRow.value("rowTime").toString(), topicRow.value("rowTime").toString());
+        QCOMPARE(previewOf(test.controller, streamRow).value("previewText").toString(), expected);
+        QCOMPARE(previewOf(test.controller, streamRow).value("rowTime").toString(),
+            topicPreview.value("rowTime").toString());
     }
 
     // #860: catalog accept hydrates previews and row times for every row (inactive streams and
@@ -876,22 +886,23 @@ private slots:
                 if (row.toMap().value("id").toString() == id) return row.toMap();
             return QVariantMap{};
         };
-        QTRY_VERIFY_WITH_TIMEOUT(!topicRowOf(topicId).value("previewText").toString().isEmpty(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(!previewOf(test.controller, topicRowOf(topicId)).value("previewText").toString().isEmpty(), 3000);
         const QSet<QString> unique{lookedUp.cbegin(), lookedUp.cend()};
         QCOMPARE(unique.size(), lookedUp.size()); // dedup: the sharing topic never double-fetches
         QVERIFY2(lookedUp.contains(mStream), qPrintable(lookedUp.join(",")));
         QVERIFY2(lookedUp.contains(mRead), qPrintable(lookedUp.join(",")));
         const auto readRow = topicRowOf(topicId);
-        QCOMPARE(readRow.value("previewText").toString(), QStringLiteral("Old read body"));
-        QCOMPARE(readRow.value("previewState").toString(), QStringLiteral("ready"));
+        const auto readPreview = previewOf(test.controller, readRow);
+        QCOMPARE(readPreview.value("previewText").toString(), QStringLiteral("Old read body"));
+        QCOMPARE(readPreview.value("previewState").toString(), QStringLiteral("ready"));
         const auto expectedTime = NativeController::formatRowTime(
             QDateTime(QDate(2025, 8, 2), QTime(10, 0, 5), Qt::UTC), QLocale::system(),
             QDate::currentDate(), QStringLiteral("Yesterday"));
-        QCOMPARE(readRow.value("rowTime").toString(), expectedTime);
+        QCOMPARE(readPreview.value("rowTime").toString(), expectedTime);
         const auto streamRow = test.controller.streams().first().toMap();
-        QCOMPARE(streamRow.value("previewText").toString(), QStringLiteral("Stream body"));
+        QCOMPARE(previewOf(test.controller, streamRow).value("previewText").toString(), QStringLiteral("Stream body"));
         const auto emptyRow = topicRowOf(QStringLiteral("77777777-7777-4777-7777-0000000000e1"));
-        QCOMPARE(emptyRow.value("previewText").toString(), QString{});
+        QCOMPARE(previewOf(test.controller, emptyRow).value("previewText").toString(), QString{});
     }
 
     // #866 review (exordy findings 1/3): the network stage batch bounds the TOTAL number of
@@ -962,7 +973,7 @@ private slots:
                     const auto map = row.toMap();
                     if (map.value("id").toString()
                             == QStringLiteral("77777777-7777-4777-7777-0000000000c%1").arg(i, 1, 16)
-                        && !map.value("previewText").toString().isEmpty())
+                        && !previewOf(test.controller, map).value("previewText").toString().isEmpty())
                         ready = true;
                 }
                 if (!ready) return false;
@@ -1074,14 +1085,15 @@ private slots:
         serverRecovered = true;
         test.controller.refresh();
         QVERIFY(QTest::qWaitFor([&] { return netGets >= 4; }, 3000));
-        const auto previewOf = [&] {
+        const auto recoveredPreviewText = [&] {
             for (const auto &row : std::as_const(test.controller).topics()) {
                 const auto map = row.toMap();
-                if (map.value("id").toString() == topicId) return map.value("previewText").toString();
+                if (map.value("id").toString() == topicId)
+                    return previewOf(test.controller, map).value("previewText").toString();
             }
             return QString{};
         };
-        QTRY_VERIFY_WITH_TIMEOUT(previewOf() == QStringLiteral("Recovered body"), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(recoveredPreviewText() == QStringLiteral("Recovered body"), 3000);
     }
 
     // A row whose last message is an E2EE payload the client cannot present previews as the
@@ -1135,11 +1147,12 @@ private slots:
         };
         QVERIFY(test.start());
         const auto row = test.controller.topics().first().toMap();
-        QVERIFY2(row.value("previewLocked").toBool(), qPrintable(row.value("previewText").toString()));
-        QCOMPARE(row.value("previewState").toString(), QStringLiteral("locked"));
-        QCOMPARE(row.value("previewKind").toString(), QStringLiteral("e2ee"));
-        QVERIFY2(!row.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
-            qPrintable(row.value("previewText").toString()));
+        const auto lockedPreview = previewOf(test.controller, row);
+        QVERIFY2(lockedPreview.value("previewLocked").toBool(), qPrintable(lockedPreview.value("previewText").toString()));
+        QCOMPARE(lockedPreview.value("previewState").toString(), QStringLiteral("locked"));
+        QCOMPARE(lockedPreview.value("previewKind").toString(), QStringLiteral("e2ee"));
+        QVERIFY2(!lockedPreview.value("previewText").toString().contains(QStringLiteral("ZmFrZQ")),
+            qPrintable(lockedPreview.value("previewText").toString()));
     }
 
     // docs/NATIVE_DESKTOP_SIDEBAR_ROW_STATES.md (issue #96): streams() rows carry the
@@ -1357,9 +1370,11 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             for (const auto &entry : test.controller.streams()) {
                 const auto row = entry.toMap();
-                if (row.value("id").toString() == second)
-                    return row.value("previewText").toString() == QStringLiteral("Cached preview body")
-                        && !row.value("rowTime").toString().isEmpty();
+                if (row.value("id").toString() == second) {
+                    const auto diskPreview = previewOf(test.controller, row);
+                    return diskPreview.value("previewText").toString() == QStringLiteral("Cached preview body")
+                        && !diskPreview.value("rowTime").toString().isEmpty();
+                }
             }
             return false;
         })(), 5000);
@@ -1378,10 +1393,66 @@ private slots:
         for (const auto &entry : test.controller.streams()) {
             const auto row = entry.toMap();
             if (row.value("id").toString() == unknown) {
-                QCOMPARE(row.value("previewText").toString(), QString());
-                QCOMPARE(row.value("rowTime").toString(), QString());
+                QCOMPARE(previewOf(test.controller, row).value("previewText").toString(), QString());
+                QCOMPARE(previewOf(test.controller, row).value("rowTime").toString(), QString());
             }
         }
+    }
+
+    // #866 review (finding 3, design round): a preview-content arrival must announce on
+    // the narrow preview-only revision and must NOT re-announce the sidebar projection.
+    // A projection rebuild destroys an in-flight click or a pinned scroll position, which
+    // is exactly what the window acceptance case pins at the scene layer. Both signals
+    // are pinned here: `previewChanged` fires (coalesced), `streamsChanged` stays quiet
+    // for a row whose last-message pointer did not move.
+    void previewArrivalAnnouncesRevisionWithoutProjectionRebuild()
+    {
+        Fixture test;
+        const auto hidden = QStringLiteral("88888888-8888-4888-8888-000000000b01");
+        const auto second = QStringLiteral("33333333-3333-4333-8333-666666666667");
+        const auto streamRow = [](const QString &uuid, const QString &name, const QJsonValue &last) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last},
+                {"updated_at", "2026-01-02T10:00:05Z"}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{streamRow(streamId, "Native channel", QJsonValue::Null),
+                    streamRow(second, "Cached channel", QString(hidden))}};
+            return Response{streamRow(streamId, "Native channel", QJsonValue::Null)};
+        };
+        test.messages = [](const Request &) { return Response{QJsonArray{}}; };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativeCacheService cache(directory.path(), {}, true);
+        test.controller.useCache(&cache);
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        QTRY_COMPARE(test.controller.streams().size(), 2);
+        // The DTO no longer carries baked preview keys; the delegate reads the memo
+        // through previewFields(uuid, revision), empty until the body resolves.
+        QVERIFY(test.controller.previewFields(hidden, test.controller.previewRevision())
+            .value("previewText").toString().isEmpty());
+        auto cached = message("Revision preview body", hidden);
+        cached["user_uuid"] = userId;
+        QSignalSpy previews(&test.controller, &NativeController::previewChanged);
+        QSignalSpy projection(&test.controller, &NativeController::streamsChanged);
+        bool stored = false;
+        QVERIFY(cache.putMessageBody(cache.lease(), cached, &cache, [&stored](bool okay) { stored = okay; }));
+        QVERIFY(QTest::qWaitFor([&stored] { return stored; }, 2000));
+        // The late body lands while the catalog is already projected: the pump (or the
+        // late-disk retry after the empty network page) resolves the memo and the ONLY
+        // announcement is the preview revision.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            const auto text = test.controller.previewFields(hidden, test.controller.previewRevision())
+                .value("previewText").toString();
+            return text == QStringLiteral("Revision preview body");
+        })(), 5000);
+        // The coalesced bump fires one event-loop pass after the memo write, so wait for
+        // the announcement instead of racing the poll that observed the text.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return previews.count() >= 1; })(), 2000);
+        QCOMPARE(projection.count(), 0); // no projection churn - the whole point of the seam
     }
 
 private:
@@ -1459,7 +1530,8 @@ private:
     {
         for (const auto &entry : controller.topics()) {
             const auto row = entry.toMap();
-            if (row.value("id").toString() == topic) return row.value("previewText").toString();
+            if (row.value("id").toString() == topic)
+                return previewOf(controller, row).value("previewText").toString();
         }
         return QStringLiteral("<missing topic row>");
     }
