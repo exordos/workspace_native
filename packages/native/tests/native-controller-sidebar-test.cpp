@@ -3131,6 +3131,60 @@ private slots:
         QVERIFY(test.controller.streamById(QString()).isEmpty());
         QCOMPARE(test.controller.streamsProjectionCountForTest(), baseline);
     }
+
+    // Issue #868 (subtask B, design verdict): the computed streams/topics
+    // projections must rebuild on EVERY read. Both properties are bound from
+    // QML (Main.qml globalTopicStreams / aggregateTopics / the sidebar header),
+    // and in Qt 6.10 a getter that serves a cached list freezes every binding
+    // that was served from the cache once: the binding engine never re-evaluates
+    // the binding on the next streamsChanged/topicsChanged again. The cached
+    // form was implemented and went red across four full-gate shards with the
+    // QML binding frozen in globalTopicUsesTypedHttpForEveryMetadataKind
+    // (PR #871); rebuild-per-read is the only variant whose bindings stay live.
+    // This test pins the legal shape: the projection counters tick once per
+    // read and never freeze, and rebuilds are deterministic (same value on
+    // equal inputs). If a getter-level cache is ever reintroduced, this pin and
+    // the window case above fail together.
+    void catalogProjectionsRebuildPerReadForQmlBindingLiveness()
+    {
+        Fixture test;
+        const auto uuidOf = [](int index) {
+            return QStringLiteral("22222222-2222-4222-8222-%1")
+                .arg(index, 12, 10, QLatin1Char('0'));
+        };
+        const auto streamRow = [&](int index) {
+            return QJsonObject{{"uuid", uuidOf(index)}, {"project_id", projectId},
+                {"name", QStringLiteral("Projected %1").arg(index)},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", QJsonValue::Null},
+                {"updated_at", QStringLiteral("2026-01-01T10:00:00Z")}};
+        };
+        test.streams = [&](const Request &) {
+            QJsonArray catalog;
+            for (int index = 0; index < 4; ++index)
+                catalog.append(streamRow(index));
+            return Response{catalog};
+        };
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        if (!QTest::qWaitFor([&] { return test.controller.projects().size() == 1; }, 2000)) { QFAIL("project list"); return; }
+        test.controller.openProject(projectId);
+        if (!QTest::qWaitFor([&] { return test.controller.streams().size() == 4; }, 4000)) { QFAIL("stream list"); return; }
+        QTest::qWait(200);
+        const int baseline = test.controller.streamsProjectionCountForTest();
+        QVariantList previous;
+        for (int pass = 0; pass < 5; ++pass) {
+            const auto rows = test.controller.streams();
+            QVERIFY(rows.size() == 4);
+            if (!previous.isEmpty())
+                QCOMPARE(rows, previous); // a rebuild must reproduce the same rows
+            previous = rows;
+        }
+        QCOMPARE(test.controller.streamsProjectionCountForTest(), baseline + 5);
+        const int topicsBaseline = test.controller.topicsProjectionCountForTest();
+        for (int pass = 0; pass < 4; ++pass)
+            test.controller.topics();
+        QCOMPARE(test.controller.topicsProjectionCountForTest(), topicsBaseline + 4);
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)
