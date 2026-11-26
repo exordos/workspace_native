@@ -50841,6 +50841,7 @@ private slots:
         bool nestedUnderScriptedStep = false;
         const qint64 guiThread = trace.value("guiThreadId").toLongLong();
         const auto records = trace.value("records").toList();
+        QStringList offThreadRecords;
         for (const auto &record : records) {
             const auto row = record.toMap();
             // Per-record thread identity (review finding): guiThreadId names
@@ -50848,16 +50849,25 @@ private slots:
             QVERIFY2(row.contains(QStringLiteral("threadId")),
                      qPrintable(QJsonDocument::fromVariant(row)
                                     .toJson(QJsonDocument::Compact)));
+            // Every phase this case instruments runs on the GUI thread
+            // (cache and network callbacks are delivered through the
+            // receiver's event loop), so every record must name it. Checking
+            // only the scripted child left the other records free to record
+            // on any thread unnoticed.
+            if (row.value("threadId").toLongLong() != guiThread)
+            {
+                offThreadRecords << QJsonDocument::fromVariant(row)
+                                    .toJson(QJsonDocument::Compact);
+            }
             const bool scriptedChild = row.value("name").toString() == QLatin1String("chat.open-topic")
                 && row.value("parent").toString() == QLatin1String("test.scripted-navigate");
             if (scriptedChild)
-            {
-                // The scripted step runs on the GUI thread, so its child
-                // span must report that same thread id.
-                QCOMPARE(row.value("threadId").toLongLong(), guiThread);
                 nestedUnderScriptedStep = true;
-            }
         }
+        QVERIFY2(offThreadRecords.isEmpty(),
+                 qPrintable(QStringLiteral("records not on the GUI thread (")
+                            + QString::number(guiThread)
+                            + QStringLiteral("):\n") + offThreadRecords.join(QLatin1Char('\n'))));
         QVERIFY2(nestedUnderScriptedStep, qPrintable(QVariant(records).toString()));
         // Sampler semantics (#855): a GUI-thread block of known length must be
         // visible in the flushed report. The first smoke run froze at
