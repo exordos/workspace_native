@@ -19,6 +19,7 @@
 #include "call/incoming-call-lifecycle.h"
 #include "native-call-bridge.h"
 
+#include <QAbstractListModel>
 #include <QElapsedTimer>
 #include <QHash>
 #include <QLocale>
@@ -46,6 +47,48 @@ class PowerWatcher;
 class FileClient;
 class NativeChatKeyVault;
 struct FileResult;
+
+// Issue #866 (finding 2): move-aware sidebar row model. The sidebar ListView
+// used to bind the sidebarStreams QVariantList projection directly, so every
+// re-rank (a hydrated preview stamp re-sorting its row) reassigned the model
+// and reset the view: delegates under the user were re-created and lost focus.
+// The reference keeps keyed DOM rows and MOVES them. This model keeps one
+// instance for the app lifetime, exposes each projection row under the
+// "modelData" role (the delegate contract is unchanged), and translates every
+// re-projection into granular inserted/removed/moved/dataChanged deltas so
+// surviving delegates keep their identity across a reorder. Lazily created
+// on the first QML read: pure-C++ controller tests never instantiate it and
+// their pinned projection budgets stay untouched.
+class NativeSidebarStreamListModel final : public QAbstractListModel {
+    Q_OBJECT
+public:
+    explicit NativeSidebarStreamListModel(NativeController *controller, QObject *parent = nullptr);
+
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override;
+    QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
+    QHash<int, QByteArray> roleNames() const override;
+
+    // Sidebar scroll anchors (#660/#693) resolve a row index to its stream id;
+    // with a real model the JS can no longer index model[row], so the id
+    // lookup is part of the model contract.
+    Q_INVOKABLE QString streamIdAt(int row) const;
+
+public slots:
+    // Re-diff the controller projection into the current rows. Idempotent:
+    // connected to every notify that can move the projection; a settled state
+    // emits nothing.
+    void sync();
+
+private:
+    struct Row {
+        QString key;
+        QVariantMap map;
+    };
+    static QString keyForRow(const QVariant &value, int fallbackIndex);
+
+    NativeController *m_controller;
+    QVector<Row> m_rows;
+};
 
 class NativeController final : public QObject {
     Q_OBJECT
@@ -191,6 +234,9 @@ class NativeController final : public QObject {
     // projection over the stream catalog.
     Q_PROPERTY(QVariantList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList sidebarStreams READ sidebarStreams NOTIFY sidebarStreamsChanged)
+    // Issue #866 (finding 2): stable sidebar model instance for the sidebar
+    // ListView (created on first read, never reassigned - CONSTANT).
+    Q_PROPERTY(NativeSidebarStreamListModel *sidebarStreamListModel READ sidebarStreamListModel CONSTANT)
     // Issue #100: the reference sidebar state machine (loading card, blocking
     // error card, partial-refresh banner, five empty states) measured in
     // docs/NATIVE_DESKTOP_SIDEBAR_STATES.md.
@@ -555,6 +601,9 @@ public:
     Q_INVOKABLE QVariantMap previewFields(const QString &lastMessageUuid, int revision) const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
+    // Lazily creates the sidebar model and wires its sync connections
+    // (issue #866 finding 2); pure-C++ consumers never touch this seam.
+    NativeSidebarStreamListModel *sidebarStreamListModel();
     QVariantMap sidebarCatalogState() const;
     QStringList expandedSidebarStreams() const { return m_expandedSidebarStreams; }
     Q_INVOKABLE QVariantMap sidebarTopicState(const QString &stream, bool includeRows) const;
@@ -2267,6 +2316,8 @@ private:
     bool m_previewRevisionBumpQueued = false;
     // exordy finding on PR #866: coalesce flag for the activity-reorder streamsChanged.
     bool m_streamsReorderQueued = false;
+    // Issue #866 (finding 2): lazily created sidebar row model (parented here).
+    NativeSidebarStreamListModel *m_sidebarStreamModel = nullptr;
     // #860: a disk miss is not an authoritative negative - the reference falls through to the
     // project-scoped messages lookup during bootstrap (messenger-last-messages-loader.lib.ts
     // L96-129). The network stage is bounded per tick like the disk pump, retries transient

@@ -15338,6 +15338,144 @@ QVariantMap NativeController::sidebarTopicState(const QString &id, bool includeR
         {"rows", includeRows ? topicRows(topics, &*stream) : QVariantList{}}};
 }
 
+// Issue #866 (finding 2): the sidebar model. Row identity is the stream id;
+// the id-less search marker rows (#847) key off their marker field so a
+// re-projection inside a search still diffs granularly. Keys are expected
+// unique; a duplicate (bad catalog data) degrades to one model reset.
+NativeSidebarStreamListModel::NativeSidebarStreamListModel(NativeController *controller, QObject *parent)
+    : QAbstractListModel(parent), m_controller(controller)
+{
+}
+
+int NativeSidebarStreamListModel::rowCount(const QModelIndex &parent) const
+{
+    return parent.isValid() ? 0 : m_rows.size();
+}
+
+QVariant NativeSidebarStreamListModel::data(const QModelIndex &index, int role) const
+{
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size())
+        return {};
+    if (role == Qt::UserRole)
+        return m_rows.at(index.row()).map;
+    return {};
+}
+
+QHash<int, QByteArray> NativeSidebarStreamListModel::roleNames() const
+{
+    return {{Qt::UserRole, QByteArrayLiteral("modelData")}};
+}
+
+QString NativeSidebarStreamListModel::streamIdAt(int row) const
+{
+    if (row < 0 || row >= m_rows.size())
+        return {};
+    return m_rows.at(row).map.value(QStringLiteral("id")).toString();
+}
+
+QString NativeSidebarStreamListModel::keyForRow(const QVariant &value, int fallbackIndex)
+{
+    const auto map = value.toMap();
+    const auto id = map.value(QStringLiteral("id")).toString();
+    if (!id.isEmpty())
+        return id;
+    const auto separator = map.value(QStringLiteral("searchSeparator")).toString();
+    if (!separator.isEmpty())
+        return QStringLiteral("sep:") + separator;
+    const auto status = map.value(QStringLiteral("searchStatus")).toString();
+    if (!status.isEmpty())
+        return QStringLiteral("status:") + status;
+    return QStringLiteral("pos:%1").arg(fallbackIndex);
+}
+
+void NativeSidebarStreamListModel::sync()
+{
+    const QVariantList projection = m_controller->sidebarStreams();
+    QVector<Row> next;
+    next.reserve(projection.size());
+    bool uniqueKeys = true;
+    QSet<QString> seenKeys;
+    for (int i = 0; i < projection.size(); ++i) {
+        Row row{keyForRow(projection.at(i), i), projection.at(i).toMap()};
+        if (seenKeys.contains(row.key))
+            uniqueKeys = false;
+        else
+            seenKeys.insert(row.key);
+        next.append(row);
+    }
+    if (!uniqueKeys) {
+        beginResetModel();
+        m_rows = next;
+        endResetModel();
+        return;
+    }
+    // Removals back-to-front so the remaining indices stay valid.
+    for (int i = m_rows.size() - 1; i >= 0; --i) {
+        const auto key = m_rows.at(i).key;
+        if (std::any_of(next.cbegin(), next.cend(),
+                [&](const Row &row) { return row.key == key; }))
+            continue;
+        beginRemoveRows(QModelIndex(), i, i);
+        m_rows.remove(i);
+        endRemoveRows();
+    }
+    // Moves: after the removals every surviving key exists exactly once in the
+    // projection. Selection sort over the target order: everything below the
+    // cursor is already final, so the wanted key is always found at or after the
+    // cursor and pulling it back is a legal beginMoveRows range. Survivors are
+    // NEVER reordered by anything else (insertions land later), so a linear
+    // rescan every round keeps the cursor consistent - no index table can go
+    // stale mid-shuffle.
+    for (int i = 0; i < m_rows.size(); ++i) {
+        int target = -1;
+        for (int j = i; j < m_rows.size(); ++j) {
+            if (m_rows.at(j).key == next.at(i).key) {
+                target = j;
+                break;
+            }
+        }
+        if (target <= i)
+            continue;
+        Q_ASSERT(target < m_rows.size());
+        beginMoveRows(QModelIndex(), target, target, QModelIndex(), i);
+        m_rows.move(target, i);
+        endMoveRows();
+    }
+    // Insertions left-to-right at the final index; survivors stay ordered.
+    for (int i = 0; i < next.size(); ++i) {
+        if (i < m_rows.size() && m_rows.at(i).key == next.at(i).key)
+            continue;
+        beginInsertRows(QModelIndex(), i, i);
+        m_rows.insert(i, next.at(i));
+        endInsertRows();
+    }
+    // In-place content changes (same row, new fields - preview, unread, ...).
+    for (int i = 0; i < m_rows.size(); ++i) {
+        if (m_rows.at(i).map == next.at(i).map)
+            continue;
+        m_rows[i].map = next.at(i).map;
+        emit dataChanged(index(i), index(i), {Qt::UserRole});
+    }
+}
+
+NativeSidebarStreamListModel *NativeController::sidebarStreamListModel()
+{
+    if (!m_sidebarStreamModel) {
+        m_sidebarStreamModel = new NativeSidebarStreamListModel(this, this);
+        // Every notify that can move the sidebar projection, i.e. exactly the
+        // signals the QVariantList binding re-evaluated on. sync() is a
+        // no-op diff on a settled projection (no traffic, no churn).
+        connect(this, &NativeController::streamsChanged,
+            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
+        connect(this, &NativeController::sidebarStreamsChanged,
+            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
+        connect(this, &NativeController::foldersChanged,
+            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
+        m_sidebarStreamModel->sync();
+    }
+    return m_sidebarStreamModel;
+}
+
 QVariantList NativeController::sidebarStreams() const
 {
     // Issue #70 (messenger-sidebar.lib.ts:560,592,616,656, sidebar-shell.ui.tsx:124):
