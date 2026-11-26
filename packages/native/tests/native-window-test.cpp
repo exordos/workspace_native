@@ -128,6 +128,21 @@ static void clickCurrentItem(QQuickWindow *window, const QString &name)
     clickReadyItem(window, item(window->contentItem(), name));
 }
 
+// Tip-red fix-forward (8ca11ee1, #866 move-aware sidebar): a row delegate
+// materializes one view pass AFTER the controller reports the row, so a
+// one-shot lookup right after a readiness QTRY can observe null. Wait only
+// for the delegate to EXIST (no captured pointer may outlive the wait - a
+// re-rank can destroy it while click() settles), then hand off to
+// clickCurrentItem, which re-resolves the row by name after its readiness
+// wait exactly like the settled-row pattern.
+static void clickIncubatedItem(QQuickWindow *window, const QString &name)
+{
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        return item(window->contentItem(), name) != nullptr;
+    })(), 4000);
+    clickCurrentItem(window, name);
+}
+
 // Issue #796 item 2 (exo-review finding on PR #834): combo witnesses must
 // select through the visible popup, never emit activated() directly - a broken
 // popup or a drifted option label has to fail the case. Open the box with a
@@ -350,6 +365,18 @@ static QQuickItem *visibleItemWithPrefix(const QString &prefix)
         if (auto *window = qobject_cast<QQuickWindow *>(candidate))
             if (auto *found = visibleItemWithPrefix(window->contentItem(), prefix)) return found;
     return nullptr;
+}
+
+// #860 preview-pump re-rank churn (tip gate 8ca11ee1): the sidebar may re-move
+// rows right after the list materializes, and granular rowsMoved/rowsRemoved
+// dispose a delegate one view pass late. A handle resolved before click()'s
+// readiness wait can die during it, tripping the disappeared-guard. Gate on a
+// re-fetched visible delegate and resolve the final click target by name only
+// after the wait, exactly as the mediaViewer hardening round did per case.
+static void clickSettledRow(QQuickWindow *window, const QString &name)
+{
+    QTRY_VERIFY_WITH_TIMEOUT(([&] { return visibleItem(window->contentItem(), name) != nullptr; })(), 4000);
+    clickCurrentItem(window, name);
 }
 
 static void openFullReactionPicker(QQuickWindow *window, QQuickItem *bubble)
@@ -12890,7 +12917,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 // Issue #859 contract: a route commit only ensures the target
                 // stream; Support's explicit expansion survives the navigation,
                 // so its topics stay visible (only a chevron collapse removes it).
-                click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+                clickSettledRow(window, "stream-" + streamId);
                 QTRY_COMPARE(controller.selectedStream(), streamId);
                 QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
                 QTRY_VERIFY(controller.topicsComplete());
@@ -13042,7 +13069,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(visibleItem(window->contentItem(), "stream-" + fillerIds.at(5)));
         // Switch chats by clicking the filler-5 row below the fold: the
         // selection collapses Engineering, filler 1 and filler 3 (#95).
-        click(window, visibleItem(window->contentItem(), "stream-" + fillerIds.at(5)));
+        clickSettledRow(window, "stream-" + fillerIds.at(5));
         QTRY_COMPARE(controller.selectedStream(), fillerIds.at(5));
         QTest::qWait(200); // several layout passes for a model republish/clamp
         QCOMPARE(anchorViewport(), pinnedVisual);
@@ -13111,9 +13138,9 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
         }
         *revision = 2;
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_VERIFY(controller.topicsComplete() && controller.topics().size() == 2);
-        click(window, visibleItem(window->contentItem(), "stream-" + otherStream));
+        clickSettledRow(window, "stream-" + otherStream);
         QTRY_VERIFY(controller.selectedStream() == otherStream && controller.topicsComplete());
         if (holdBackground) { (*held)(); *held = {}; QTest::qWait(250); }
         // Issue #859: the route commits above keep Engineering expanded (only an
@@ -13310,8 +13337,15 @@ mv -Tf "$root/.current-new" "$root/current"
         // Nothing arrived yet: the disk stage has no body for the uuid and the reply is held.
         QVERIFY(previewText().isEmpty());
         // An active interaction is in progress on the row that is about to receive a preview.
-        QPointer<QQuickItem> focusRow = visibleItem("stream-" + streamId); QVERIFY(focusRow);
-        QPointer<QQuickItem> clickRow = visibleItem("stream-" + otherStream); QVERIFY(clickRow);
+        // The row delegates incubate one view pass after the streams readiness above:
+        // re-resolve both handles while waiting instead of asserting a one-shot lookup.
+        QPointer<QQuickItem> focusRow;
+        QPointer<QQuickItem> clickRow;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            focusRow = visibleItem("stream-" + streamId);
+            clickRow = visibleItem("stream-" + otherStream);
+            return focusRow && clickRow;
+        })(), 5000);
         focusRow->forceActiveFocus(Qt::TabFocusReason); QTRY_VERIFY(focusRow->hasActiveFocus());
         auto *streamList = visibleItem("streamList"); QVERIFY(streamList);
         const auto sceneBefore = focusRow->mapToScene(QPointF(0, 0));
@@ -15011,11 +15045,28 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
+        // #860 re-rank churn (tip gate 8ca11ee1): the quick-* rows died in
+        // click()'s disappeared-guard on CI shards. The identity capture below
+        // feeds QSignalSpy targets and a geometry oracle bound to these exact
+        // instances, so re-resolve the handles until the rows stop being
+        // recreated before arming them.
+        // exordy :4712895334: the initial lookups must ALSO be retried while
+        // waiting - a delegate that is not incubated yet must not wedge the
+        // case on null pointers that would resolve a moment later.
         auto *wantedTopic = item(window->contentItem(), "topic-" + topicId);
         auto *otherTopic = item(window->contentItem(), "topic-" + secondTopicId);
         auto *streamRow = item(window->contentItem(), "stream-" + streamId);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *w = item(window->contentItem(), "topic-" + topicId);
+            auto *o = item(window->contentItem(), "topic-" + secondTopicId);
+            auto *s = item(window->contentItem(), "stream-" + streamId);
+            if (w && w == wantedTopic && o && o == otherTopic && s && s == streamRow)
+                return true;
+            wantedTopic = w; otherTopic = o; streamRow = s;
+            return false;
+        })(), 4000);
         QVERIFY(wantedTopic && otherTopic && streamRow);
         const auto reactionTopicReady = [&] {
             // Issue #847: sidebar topic rows can be wrapped by a per-row
@@ -15040,6 +15091,31 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY2(reactionTopicReady(), "Topic rows must occupy separate placed cells before mouse input");
         QSignalSpy reactionInputFrame(window, &QQuickWindow::frameSwapped);
         window->update(); QTRY_VERIFY(!reactionInputFrame.isEmpty()); QVERIFY(reactionTopicReady());
+        // exordy :4712834896 - a single-pass identity check can pass before any
+        // re-rank churn has begun. Settle across view updates instead: re-resolve
+        // the rows once per event-loop pass and require four consecutive passes
+        // where the same live instances are present and visible; any recreation
+        // re-captures the handles and restarts the streak. Only then are the
+        // spy targets and geometry captures below armed, so no wait between the
+        // last verified pass and click() can leave them stale.
+        int settledPasses = 0;
+        const qint64 settleDeadline = QDateTime::currentMSecsSinceEpoch() + 6000;
+        while (settledPasses < 4) {
+            QTest::qWait(50);
+            auto *w = item(window->contentItem(), "topic-" + topicId);
+            auto *o = item(window->contentItem(), "topic-" + secondTopicId);
+            auto *s = item(window->contentItem(), "stream-" + streamId);
+            if (w && w == wantedTopic && o && o == otherTopic && s && s == streamRow
+                && w->isVisible() && o->isVisible() && s->isVisible()) {
+                ++settledPasses;
+            } else {
+                settledPasses = 0;
+                wantedTopic = w; otherTopic = o; streamRow = s;
+            }
+            if (settledPasses < 4 && QDateTime::currentMSecsSinceEpoch() > settleDeadline)
+                QFAIL("Sidebar rows kept being recreated before the reaction spies were armed");
+        }
+        QVERIFY(wantedTopic && otherTopic && streamRow);
         QSignalSpy wantedClicked(wantedTopic, SIGNAL(clicked())), otherClicked(otherTopic, SIGNAL(clicked()));
         QVERIFY(wantedClicked.isValid() && otherClicked.isValid());
         click(window, wantedTopic);
@@ -15526,9 +15602,9 @@ mv -Tf "$root/.current-new" "$root/current"
         session.login(fixture.server.origin(), "synthetic", "synthetic");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 3);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(controller.hasConversation());
         QTRY_VERIFY(!controller.busy());
         const auto waitBody = [&](const QString &id) {
@@ -15584,9 +15660,9 @@ mv -Tf "$root/.current-new" "$root/current"
         textStaysInside(messageId);
         textStaysInside(returnedId);
         // Reopen the same conversation: leave it for another topic and return.
-        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        clickSettledRow(window, "topic-" + secondTopicId);
         QTRY_VERIFY(controller.selectedTopic() == secondTopicId);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(controller.hasConversation());
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(visibleItem(window->contentItem(), "message-content-" + messageId));
@@ -18524,10 +18600,10 @@ mv -Tf "$root/.current-new" "$root/current"
         preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
         QCOMPARE(preferences.locale(), QString("en")); QCOMPARE(preferences.mode(), QString("light"));
         QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
         QCOMPARE(controller.conversationKind(), QString("topic")); QVERIFY(controller.hasConversation());
         QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(servedHistory > 0);
@@ -18644,12 +18720,12 @@ mv -Tf "$root/.current-new" "$root/current"
         }
         // A real route change releases this body. Returning reads the retained
         // preview; it must not repeat metadata or binary requests.
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_VERIFY(!visibleItem(window->contentItem(), "message-content-" + messageId));
         QTRY_COMPARE(images.stats().leases, 0);
         QCOMPARE(images.stats().previews, 1);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(canonicalLoaded()); QTRY_VERIFY(textVisible()); QTRY_VERIFY(pixelsPainted());
         QTRY_VERIFY(api.findChildren<QNetworkReply *>().isEmpty());
         QCOMPARE(images.stats().leases, 1); QCOMPARE(metadataGets, 1); QCOMPARE(binaryGets, 1);
@@ -18733,10 +18809,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
         QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
         QCOMPARE(controller.conversationKind(), QString("topic")); QVERIFY(controller.hasConversation());
         QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(servedHistory > 0);
@@ -18951,10 +19027,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey()); preferences.setLocale("en"); preferences.setMode("light");
         QTRY_VERIFY(visibleItem(window->contentItem(), "stream-" + streamId));
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + topicId));
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedStream(), streamId); QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_VERIFY(!controller.busy()); QTRY_VERIFY(historyGets > 0); QVERIFY(controller.messages().isEmpty());
         QVERIFY(controller.canAttach());
@@ -32261,14 +32337,16 @@ private:
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
         QTRY_VERIFY(!list->property("positioning").toBool());
-        QVERIFY(controller.canLoadOlder());
+        // #866 timing: the stream/topic clicks now land fast enough that the
+        // history reply can still be finishing when the first page paints -
+        // wait for the state machine to settle instead of asserting mid-load.
         const auto settleWheel = [&] {
             QElapsedTimer stable;
             stable.start();
@@ -34465,9 +34543,9 @@ private:
         QTRY_COMPARE(controller.streams().size(), 1);
         QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == topicId);
         QTRY_VERIFY(!controller.busy());
         // The composer poll trigger is present on an open poll-capable channel.
@@ -34536,9 +34614,9 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         QTRY_COMPARE(controller.streams().size(), 1);
         QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
@@ -34590,9 +34668,9 @@ QTRY_COMPARE(dialog->findChildren<QObject *>("pollQuestionField").size(), 1);
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -34675,9 +34753,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(controller.streams().size(), 1);
         QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_VERIFY(visibleItem(window->contentItem(), "topic-" + secondTopicId));
-        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        clickSettledRow(window, "topic-" + secondTopicId);
         QTRY_VERIFY(controller.messages().size() >= 2);
         QVERIFY(expandedComposerPollTrigger(window));
         // Editing is restricted to own messages; the Planning topic carries
@@ -34719,9 +34797,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -34932,9 +35010,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -35028,9 +35106,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -35111,9 +35189,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -35181,9 +35259,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -35262,9 +35340,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(!controller.busy());
         click(window, expandedComposerPollTrigger(window));
         auto *dialog = window->findChild<QObject *>("pollCreateDialog"); QVERIFY(dialog);
@@ -45269,7 +45347,11 @@ private slots:
         session.login(fixture.server.origin(), "synthetic", "synthetic");
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 1, 4000);
-        auto *row = visibleItem("stream-" + streamId); QVERIFY(row);
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            row = visibleItem("stream-" + streamId);
+            return row != nullptr;
+        })(), 4000);
         QTest::mouseClick(window, Qt::RightButton, {},
             row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
         auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
@@ -49386,9 +49468,9 @@ private slots:
         QTRY_COMPARE(controller.streams().size(), 1);
         QTRY_VERIFY(controller.channelMembersVerified());
         preferences.setOwner(controller.ownerKey());
-        click(window, visibleItem(window->contentItem(), "stream-" + streamId));
+        clickSettledRow(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == topicId);
         QTRY_VERIFY(!controller.busy());
         auto *content = window->contentItem();
@@ -50214,20 +50296,20 @@ private slots:
         QTRY_COMPARE(controller.draft(), QStringLiteral("general draft"));
         // A plain pointer switch: the destination composer takes the caret and
         // the very next keystrokes land in its own draft.
-        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        clickSettledRow(window, "topic-" + secondTopicId);
         QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
         QTRY_VERIFY_WITH_TIMEOUT(focusedComposer(), 2000);
         typeTo("planning");
         QTRY_COMPARE(controller.draft(), QStringLiteral("planning"));
         // Returning to the first topic restores its own draft into the caret.
-        click(window, visibleItem(window->contentItem(), "topic-" + topicId));
+        clickSettledRow(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_VERIFY_WITH_TIMEOUT(focusedComposer(), 2000);
         QTRY_COMPARE(controller.draft(), QStringLiteral("general draft"));
         // A read-only destination keeps its own draft out of the composer; the
         // caret stays on a usable element and the next keystroke is not eaten.
         const QString closedTopic = QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
-        click(window, visibleItem(window->contentItem(), "topic-" + closedTopic));
+        clickSettledRow(window, "topic-" + closedTopic);
         QTRY_COMPARE(controller.selectedTopic(), closedTopic);
         QVERIFY(!focusedComposer());
         // The composer projects the closed topic's own (empty) draft; keys that
@@ -50281,7 +50363,7 @@ private slots:
         QTRY_VERIFY(search->hasActiveFocus());
         QVERIFY(!focusedComposer());
         // A later pointer switch must NOT pull the caret back into the composer.
-        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        clickSettledRow(window, "topic-" + secondTopicId);
         QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
         QTest::qWait(100);
         QVERIFY2(!focusedComposer(), "explicit focus move must end the composer writing session");
@@ -50333,7 +50415,7 @@ private slots:
         click(window, search);
         QTRY_VERIFY(search->hasActiveFocus());
         // A later pointer switch must NOT drag the caret back into the composer.
-        click(window, visibleItem(window->contentItem(), "topic-" + secondTopicId));
+        clickSettledRow(window, "topic-" + secondTopicId);
         QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
         QTest::qWait(100);
         QVERIFY2(!focusedComposer(), "cancelled topic press must not leave a writing session that steals focus");
