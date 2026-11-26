@@ -13,6 +13,7 @@ pollBubbleInlineAddOptionFlow=1.59044
 pollCreateDialogEnforcesServerLimits=1.59584
 quoteThumbnailScopeResetKeepsOneCurrentLease=0.110103
 receivedStandaloneImagePaintsBetweenTextAndCaption=1.14385
+sidebarMoveFocusCarryExpiresAfterSettle=2.3981
 sidebarRowsRenderPreviewAndTime=4.05802
 sourceConversationInsetsAndAvatarFallback=7.72527
 startupCacheEmptyStoreKeepsSignInVisible=1.24574

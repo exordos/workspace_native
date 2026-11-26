@@ -6334,6 +6334,17 @@ component NativeMentionChip: Item {
                     policy: ScrollBar.AsNeeded
                 }
                 property var sidebarFocusCarry: null
+                // exordy finding (#866): a completed move must not leave a live carry.
+                // The carry re-aims bubbled focus onto the pre-move item; left armed
+                // forever, the next focus navigation anywhere in the sidebar would be
+                // forced back to the old row. It expires after the move's relayout
+                // goes quiet: every bubbled restore re-arms it, so multi-pass churn
+                // keeps the item, and once the move has truly settled the carry dies.
+                Timer {
+                    id: sidebarFocusCarryExpiry
+                    interval: 500
+                    onTriggered: streamList.sidebarFocusCarry = null
+                }
                 // Issue #866 (finding 2) companion: a model row move re-parents the
                 // delegate subtree; Qt's focus bubbling drops the moved row's active
                 // focus and lands it on the delegate root after the view relayout.
@@ -6354,6 +6365,7 @@ component NativeMentionChip: Item {
                         for (let node = focused; node && node !== streamList; node = node.parent) {
                             if (node.liveGuard !== undefined) {
                                 streamList.sidebarFocusCarry = { item: focused, guard: node.liveGuard }
+                                sidebarFocusCarryExpiry.restart()
                                 return
                             }
                         }
@@ -6417,8 +6429,12 @@ component NativeMentionChip: Item {
                         // move), hand the bubbled focus to the item that held it
                         // before the move, so focus provably never left the moved row.
                         const carry = streamList.sidebarFocusCarry
-                        if (carry && carry.guard.live)
+                        if (carry && carry.guard.live) {
                             carry.item.forceActiveFocus()
+                            // Each restore re-arms the settle window: churn keeps the
+                            // carry alive, a settled move lets it expire.
+                            sidebarFocusCarryExpiry.restart()
+                        }
                     }
                     Connections {
                         target: root.controller
