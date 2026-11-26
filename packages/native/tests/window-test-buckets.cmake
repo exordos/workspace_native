@@ -259,6 +259,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     mediaViewerControlsStayVisibleWhileBarControlFocused
     mediaViewerVideoDisplayFailureShowsDedicatedLabel
     mentionWrappedLabelCoversEndOfEachLine
+    messageProjectionRebindsOnlyAffectedRows
     pollBubbleExpiredDeadlineTreatedAsClosed
     pollBubbleResultsAlwaysVisibleBeforeVote
     pollBubbleUnrelatedRevisionKeepsInFlightVoteLock
