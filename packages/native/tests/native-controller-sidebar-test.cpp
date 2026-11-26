@@ -1521,6 +1521,66 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(([&] { return projection.count() >= 1; })(), 2000);
     }
 
+    void sidebarPreviewHydrationKeepsEqualFallbackStampAgainstDrift()
+    {
+        Fixture test;
+        test.aggregateMessages = true; // route the pump's GET /messages/?uuid= to test.messages
+        const auto hydrated = QStringLiteral("88888888-8888-4888-8888-000000000c02");
+        const auto peer = QStringLiteral("33333333-3333-4333-8333-666666666669");
+        const auto streamRow = [](const QString &uuid, const QString &name, const QJsonValue &last,
+            const QString &updated) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last}, {"updated_at", updated}};
+        };
+        // exordy finding 4704344635: a hydrated stamp EQUAL to the current fallback must
+        // still reach the activity ledger, because a later catalog bump of updated_at
+        // would otherwise re-key the row from the drift instead of the known stamp.
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{
+                    streamRow(streamId, "Hydrated row", QString(hydrated), "2026-01-02T10:00:00Z"),
+                    streamRow(peer, "Peer row", QJsonValue::Null, "2026-01-02T10:00:03Z")}};
+            if (request.target.path().endsWith(peer))
+                return Response{streamRow(peer, "Peer row", QJsonValue::Null,
+                    "2026-01-02T10:00:03Z")};
+            return Response{streamRow(streamId, "Hydrated row", QString(hydrated),
+                "2026-01-02T10:00:00Z")};
+        };
+        auto lateBody = message("Equal-stamp preview", hydrated);
+        lateBody["created_at"] = QStringLiteral("2026-01-02T10:00:00Z"); // exactly the fallback
+        auto gate = std::make_shared<std::function<void()>>();
+        test.messages = [&](const Request &request) {
+            if (request.method == "GET"
+                && QUrlQuery(request.target).queryItemValue("uuid") == hydrated) {
+                // Hold the pump's lookup so the fallback-sort baseline is deterministic.
+                Response held{QJsonArray{lateBody}};
+                held.defer = [gate](std::function<void()> send) { *gate = send; };
+                return held;
+            }
+            return Response{QJsonArray{}};
+        };
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        QTRY_COMPARE(test.controller.streams().size(), 2);
+        QVERIFY(QTest::qWaitFor([&] { return *gate != nullptr; }, 3000));
+        // Baseline: the peer's fallback (T+3s) leads the hydrated row's fallback (T+0s).
+        QCOMPARE(test.controller.streams().first().toMap().value("id").toString(), peer);
+        (*gate)(); // release the pump's in-flight lookup
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return test.controller.previewFields(hydrated, test.controller.previewRevision())
+                .value("previewText").toString() == QStringLiteral("Equal-stamp preview");
+        })(), 5000);
+        // A later stream.updated bumps the row's updated_at past the peer's key (an
+        // unrelated server-side row edit): with the known message stamp in the ledger the
+        // sort must ignore the drift; with the equal stamp discarded the drift re-keys it.
+        QVERIFY(test.controller.applyRealtimeEvent(controllerEvent("stream.updated",
+            streamRow(streamId, "Hydrated row", QString(hydrated), "2026-01-02T10:00:05Z"))));
+        // The genuinely newer peer keeps the lead: the known T+0s stamp still governs.
+        QCOMPARE(test.controller.streams().first().toMap().value("id").toString(), peer);
+    }
+
 private:
     // --- sidebar preview memo lifecycle (issue #116) ---
 

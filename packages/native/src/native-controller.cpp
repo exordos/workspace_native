@@ -14592,14 +14592,25 @@ bool NativeController::applyHydratedRowActivity(const Message &message)
     // preview-only announcement seam).
     if (message.uuid.isEmpty() || message.createdMicros <= 0) return false;
     bool keyMoves = false;
+    bool rowOwnsPointer = false;
     for (const auto &stream : std::as_const(m_streams)) {
         if (stream.archived || stream.lastMessage != message.uuid) continue;
+        rowOwnsPointer = true;
         if (rowActivityMicros(stream.lastMessage, stream.updatedMicros) != message.createdMicros) {
             keyMoves = true;
             break;
         }
     }
-    if (!keyMoves) return false;
+    if (!rowOwnsPointer) return false;
+    if (!keyMoves) {
+        // exordy finding 4704344635 (PR #866 round 2): record the stamp even when it
+        // equals the current fallback key. Skipping the write on an equal key lets a
+        // later catalog bump of updated_at silently re-key the row from the drift
+        // instead of the known message timestamp (the order cannot move here, so the
+        // preview-only announcement seam stays intact).
+        noteActivityTimestamps({message});
+        return false;
+    }
     QStringList orderBefore;
     for (const auto *stream : orderedStreamPointers()) orderBefore << stream->uuid;
     noteActivityTimestamps({message});
