@@ -3076,6 +3076,12 @@ public:
     // interruption can retire in-flight ops of both families at once, hence a
     // list: every affected family stays attributed (finding 4687482019).
     Q_PROPERTY(QStringList topicSummarySettingsErrorOps READ topicSummarySettingsErrorOps NOTIFY topicSummaryStateChanged)
+    // exo-review finding 4693632013: the EXACT ledger key of the request that
+    // produced the current error ("endpoints" list read vs "endpoint-new" /
+    // "endpoint-<uuid>" write). ErrorOps stays the tab family for the bands;
+    // the dialog retires an in-flight save identity only on the write's own
+    // key, never on a concurrent list-read failure that shares the family.
+    Q_PROPERTY(QString topicSummarySettingsErrorKey READ topicSummarySettingsErrorKey NOTIFY topicSummaryStateChanged)
 
     QVariantMap topicSummaryGates() const { return m_topicSummaryGates; }
     bool topicSummaryGatesLoaded() const { return m_topicSummaryGatesLoaded; }
@@ -3084,6 +3090,7 @@ public:
     QString topicSummarySettingsStatus() const { return m_topicSummarySettingsStatus; }
     QString topicSummarySettingsError() const { return m_topicSummarySettingsError; }
     QStringList topicSummarySettingsErrorOps() const { return m_topicSummarySettingsErrorOps; }
+    QString topicSummarySettingsErrorKey() const { return m_topicSummarySettingsErrorKey; }
 
     // "allowed" | "denied" | "unknown" for tab "topic" | "gates" | "endpoints",
     // mirroring messenger-topic-summary-permissions.lib.ts.
@@ -3108,11 +3115,12 @@ private:
     bool finishTopicSummaryOp(const QString &key, quint64 token);
     void interruptTopicSummaryOps();
     void setTopicSummaryStatus(const QString &status, const QString &error = {},
-        const QString &errorOp = {});
+        const QString &errorOp = {}, const QString &errorKey = {});
     // Multi-producer variant used by the interruption sweep: every family whose
-    // op was retired stays attributed (finding 4687482019).
+    // op was retired stays attributed (finding 4687482019). errorKey is the
+    // exact ledger key the current error is attributed to (empty = none).
     void setTopicSummaryStatusOps(const QString &status, const QString &error,
-        const QStringList &errorOps);
+        const QStringList &errorOps, const QString &errorKey = {});
     // Issue #840: a successful load of one family must not erase a live error
     // belonging to the other family (the bands filter on the ops ledger).
     void settleTopicSummaryLoadSuccess(const QString &family);
@@ -3126,6 +3134,7 @@ private:
     QString m_topicSummarySettingsStatus;
     QString m_topicSummarySettingsError;
     QStringList m_topicSummarySettingsErrorOps;
+    QString m_topicSummarySettingsErrorKey;
 };
 
 }

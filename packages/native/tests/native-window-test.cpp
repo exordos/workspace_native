@@ -30072,8 +30072,10 @@ NativeAvatarImage {
                        == QStringLiteral("error"));
         QVERIFY(scene.controller.property("topicSummarySettingsErrorOps").toStringList()
                     .contains(QStringLiteral("endpoints")));
-        // The errored-op oracle added with the fix: the failed request's own ledger
-        // key. For this read it is "endpoints" - never an "endpoint-<uuid>" save key.
+        // exo-review finding 4693632013 oracle: the errored request's own
+        // ledger key. For this read it is "endpoints" - never an
+        // "endpoint-<uuid>" save key, so the in-flight save's identity must
+        // survive and its late success must rebase the draft below.
         QCOMPARE(scene.controller.property("topicSummarySettingsErrorKey").toString(),
                  QStringLiteral("endpoints"));
         // The save is still unsettled: the footer must not claim saved.

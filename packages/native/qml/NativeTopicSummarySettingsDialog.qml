@@ -964,13 +964,20 @@ Dialog {
                 // later, unrelated busy op reopen the in-flight comparison and
                 // read the pending draft as saved.
                 // exordy finding 4693632013: retire ONLY when the error names
-                // this endpoint's own operation family. pendingOp is the last
-                // DISPATCHED op, not the error's producer: a gates GET failing
-                // while the endpoint save is in flight must leave the identity
-                // intact, or the save's own late success cannot rebase the
-                // draft and the dialog shows "Unsaved changes" forever.
+                // THIS dispatch's own op. pendingOp is the last DISPATCHED op
+                // and the family ledger collapses "endpoint-<uuid>" writes and
+                // the "endpoints" list read into one band, so gate on the
+                // exact errored key: a concurrent list-reload failing with a
+                // save in flight must leave the identity intact, or the save's
+                // own late success cannot rebase the draft and the dialog shows
+                // "Unsaved changes" forever. An interruption retired the whole
+                // ledger, so it always names the pending save.
+                const ownKey = endpointsTab.dispatchUuid === "new"
+                    ? "endpoint-new" : "endpoint-" + endpointsTab.dispatchUuid
                 if (dlg.pendingOp === "endpoint"
                     && controller.topicSummarySettingsErrorOps.includes("endpoints")
+                    && (controller.topicSummarySettingsErrorKey === ownKey
+                        || controller.topicSummarySettingsError === "interrupted")
                     && endpointsTab.dispatchSession === endpointsTab.draftSession) {
                     endpointsTab.dispatchRevision = -1
                     endpointsTab.dispatchUuid = ""
