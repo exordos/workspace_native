@@ -548,6 +548,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     diagnosticsLogViewerModalFiltersClearAndExports
     directChatRosterUsesSourceGeometrySearchAndVirtualRows
     firstEncryptedBatchReservesAnAccessibleMessageViewport
+    inlineMediaDemandFlapKeepsPaintedAsset
     localCachedMessageSearchNavigatesByKeyboard
     mediaViewerLoadErrorOffersRetry
     mentionInlineImagePartsGainChipTargets
