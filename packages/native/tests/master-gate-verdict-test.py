@@ -134,6 +134,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.invoke(wait), (1, "wait"))
         self.assertEqual(self.invoke(block), (2, "block"))
 
+    def invoke_pages(self, *pages):
+        paths = []
+        for payload in pages:
+            with tempfile.NamedTemporaryFile("w", suffix=".json",
+                                             delete=False) as handle:
+                json.dump(payload, handle)
+                paths.append(handle.name)
+        try:
+            proc = subprocess.run([sys.executable, SCRIPT, *paths],
+                                  capture_output=True, text=True)
+            return proc.returncode, proc.stdout.strip()
+        finally:
+            for path in paths:
+                os.unlink(path)
+
+    def test_cli_merges_all_pagination_pages(self):
+        # exordy findings 4712353365/369: the commit check-runs listing is
+        # paginated; every page must reach the decision - the green pair split
+        # across pages is still reuse, and an in-flight match on the LAST page
+        # still forces wait.
+        split = self.invoke_pages(
+            {"check_runs": [run("package-linux")]},
+            {"check_runs": [run("full-gate-linux")]})
+        self.assertEqual(split, (0, "reuse"))
+        late_race = self.invoke_pages(
+            {"check_runs": [run("package-linux"), run("full-gate-linux")]},
+            {"check_runs": [run("full-gate-linux", status="in_progress")]})
+        self.assertEqual(late_race, (1, "wait"))
+        late_red = self.invoke_pages(
+            {"check_runs": [run("package-linux"), run("full-gate-linux")]},
+            {"check_runs": [run("full-gate-linux", status="completed",
+                                conclusion="failure")]})
+        self.assertEqual(late_red, (2, "block"))
+
 
 if __name__ == "__main__":
     unittest.main()

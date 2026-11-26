@@ -53,8 +53,30 @@ jobs:
           deadline=$(( SECONDS + 3000 ))
           reuse=false
           while :; do
-            if gh api "repos/${GITHUB_REPOSITORY}/commits/${GATE_SHA}/check-runs?per_page=100" \
-                > check-runs.json; then
+            # exordy findings 4712353365/369: the commit check-runs listing is
+            # paginated - fetch EVERY page and hand all pages to the verdict
+            # script, so a required run beyond page 1 can never be missed.
+            fetch_ok=false
+            rm -f check-runs-page-*.json
+            page=1
+            while :; do
+              if ! gh api "repos/${GITHUB_REPOSITORY}/commits/${GATE_SHA}/check-runs?per_page=100&page=${page}" \
+                  > "check-runs-page-${page}.json"; then
+                break
+              fi
+              count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["check_runs"]))' "check-runs-page-${page}.json") || break
+              if [ "${count}" -lt 100 ]; then
+                fetch_ok=true
+                break
+              fi
+              if [ "${page}" -ge 20 ]; then
+                echo "::warning::check-runs listing stopped at 20 pages."
+                fetch_ok=true
+                break
+              fi
+              page=$((page + 1))
+            done
+            if [ "${fetch_ok}" = true ]; then
               # The decision lives in one script that is covered by a
               # regression test (packages/native/tests/
               # master-gate-verdict-test.py). Verdicts:
@@ -67,7 +89,7 @@ jobs:
               #           push of the same sha) may still return red;
               #   reuse = completed green verdicts for each required name.
               verdict=$(python3 packages/native/scripts/master-gate-verdict.py \
-                  check-runs.json) || true
+                  check-runs-page-*.json) || true
               if [[ "${verdict}" == block ]]; then
                 echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
                 exit 1

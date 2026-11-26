@@ -6,8 +6,10 @@ the master push of the tagged sha must have produced a successful verdict for
 EACH distinct required check name, every matching run must be completed, and
 no matching run may carry a non-success verdict.
 
-Input : the JSON payload of
-        GET /repos/{owner}/{repo}/commits/{sha}/check-runs
+Input : one or more JSON payloads of
+        GET /repos/{owner}/{repo}/commits/{sha}/check-runs pages. The listing
+        is paginated, so the caller passes EVERY page file (exordy findings
+        4712353365/369); the check_runs lists are merged before deciding.
 Output: one verdict on stdout, one exit code:
         reuse -> 0  (publish reuses the master-push gate)
         wait  -> 1  (keep polling; the caller decides the fallback deadline)
@@ -53,12 +55,23 @@ def decide(payload):
     return "wait"
 
 
+def load_pages(paths):
+    if len(paths) == 1:
+        with open(paths[0], encoding="utf-8") as handle:
+            return json.load(handle)
+    merged = {"check_runs": []}
+    for path in paths:
+        with open(path, encoding="utf-8") as handle:
+            merged["check_runs"].extend(json.load(handle).get("check_runs", []))
+    return merged
+
+
 def main(argv):
-    if len(argv) != 2:
-        print("usage: master-gate-verdict.py CHECK_RUNS_JSON", file=sys.stderr)
+    if len(argv) < 2:
+        print("usage: master-gate-verdict.py CHECK_RUNS_JSON [PAGE_JSON...]",
+              file=sys.stderr)
         return 1
-    with open(argv[1], encoding="utf-8") as handle:
-        payload = json.load(handle)
+    payload = load_pages(argv[1:])
     verdict = decide(payload)
     print(verdict)
     return {"reuse": 0, "wait": 1, "block": 2}[verdict]
