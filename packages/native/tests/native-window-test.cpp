@@ -15030,10 +15030,22 @@ mv -Tf "$root/.current-new" "$root/current"
         // feeds QSignalSpy targets and a geometry oracle bound to these exact
         // instances, so re-resolve the handles until the rows stop being
         // recreated before arming them.
+        // exordy :4712895334: the initial lookups must ALSO be retried while
+        // waiting - a delegate that is not incubated yet must not wedge the
+        // case on null pointers that would resolve a moment later.
         auto *wantedTopic = item(window->contentItem(), "topic-" + topicId);
         auto *otherTopic = item(window->contentItem(), "topic-" + secondTopicId);
         auto *streamRow = item(window->contentItem(), "stream-" + streamId);
-        QTRY_VERIFY(wantedTopic && otherTopic && streamRow);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            auto *w = item(window->contentItem(), "topic-" + topicId);
+            auto *o = item(window->contentItem(), "topic-" + secondTopicId);
+            auto *s = item(window->contentItem(), "stream-" + streamId);
+            if (w && w == wantedTopic && o && o == otherTopic && s && s == streamRow)
+                return true;
+            wantedTopic = w; otherTopic = o; streamRow = s;
+            return false;
+        })(), 4000);
+        QVERIFY(wantedTopic && otherTopic && streamRow);
         const auto reactionTopicReady = [&] {
             // Issue #847: sidebar topic rows can be wrapped by a per-row
             // delegate item (the search "Other topics" separator support), so
