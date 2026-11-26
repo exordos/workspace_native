@@ -22366,9 +22366,16 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
@@ -22444,9 +22451,16 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
@@ -22517,9 +22531,16 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto photo = [&] { return visibleItem(content, "inline-image-" + first); };
@@ -22667,9 +22688,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
@@ -22852,9 +22880,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         auto *viewer = controller.mediaViewer(); QVERIFY(viewer);
         clickActiveInlineImage(window, first);
@@ -23039,9 +23074,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
         auto *viewer = controller.mediaViewer();
         click(window, visibleItem(content, "inline-image-" + first));
@@ -23114,9 +23156,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         auto *viewer = controller.mediaViewer();
         clickActiveInlineImage(window, first);
@@ -23193,9 +23242,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -23352,9 +23408,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), video ? 2 : 3);
         auto *viewer = controller.mediaViewer();
@@ -23477,9 +23540,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -23638,9 +23708,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -23748,9 +23825,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -23854,9 +23938,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -23959,9 +24050,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -24082,9 +24180,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -24208,9 +24313,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -24333,9 +24445,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -24426,9 +24545,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -24514,9 +24640,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         auto *viewer = controller.mediaViewer();
@@ -24587,9 +24720,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         // 1. Bubble thumbnail: the ISO-BMFF bytes decode through libheif and
@@ -24721,9 +24861,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *bubble = visibleItem(content, "inline-image-" + first); QVERIFY(bubble);
@@ -24805,9 +24952,16 @@ NativeAvatarImage {
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
         auto *content = window->contentItem();
-        click(window, visibleItem(content, "stream-" + streamId));
+        // #860 re-rank churn: the preview pump may re-move rows (delegates are
+        // disposed one view pass) right after the list appears. Gate on a
+        // re-fetched delegate and let clickCurrentItem resolve the target only
+        // after the readiness wait, so a transient recreation cannot null the
+        // click (pre-tag gate: mediaViewer run-1 repros on this lane).
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, visibleItem(content, "topic-" + topicId));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         QTRY_VERIFY(visibleItem(content, "inline-image-" + first));
@@ -47912,9 +48066,12 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicA1), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem(window->contentItem(), "topic-" + topicA2), 2000);
         // The unfiltered rows are gone, so focus can never land on them.
-        QVERIFY(!visibleItem(window->contentItem(), "stream-92000000-0000-4000-8000-00000000000b"));
-        QVERIFY(!visibleItem(window->contentItem(), "stream-92000000-0000-4000-8000-00000000000c"));
-        QVERIFY(!visibleItem(window->contentItem(), "topic-" + topicOff));
+        // #860 granular moves dispose delegates one view pass after the model
+        // diff (whole-list reassignment used to dispose them synchronously),
+        // so the negative pins must allow the one-pass dispose window.
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "stream-92000000-0000-4000-8000-00000000000b"));
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "stream-92000000-0000-4000-8000-00000000000c"));
+        QTRY_VERIFY(!visibleItem(window->contentItem(), "topic-" + topicOff));
         const auto focusName = [window] {
             auto *focused = window->activeFocusItem();
             return focused ? focused->objectName() : QString();
