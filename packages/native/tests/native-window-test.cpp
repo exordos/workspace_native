@@ -130,17 +130,17 @@ static void clickCurrentItem(QQuickWindow *window, const QString &name)
 
 // Tip-red fix-forward (8ca11ee1, #866 move-aware sidebar): a row delegate
 // materializes one view pass AFTER the controller reports the row, so a
-// one-shot lookup right after a readiness QTRY can observe null. Re-resolve
-// the delegate while waiting, then click through click() so its readiness
-// guards stay in play.
+// one-shot lookup right after a readiness QTRY can observe null. Wait only
+// for the delegate to EXIST (no captured pointer may outlive the wait - a
+// re-rank can destroy it while click() settles), then hand off to
+// clickCurrentItem, which re-resolves the row by name after its readiness
+// wait exactly like the settled-row pattern.
 static void clickIncubatedItem(QQuickWindow *window, const QString &name)
 {
-    QQuickItem *target = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(([&] {
-        target = item(window->contentItem(), name);
-        return target != nullptr;
+        return item(window->contentItem(), name) != nullptr;
     })(), 4000);
-    click(window, target);
+    clickCurrentItem(window, name);
 }
 
 // Issue #796 item 2 (exo-review finding on PR #834): combo witnesses must
