@@ -972,6 +972,60 @@ private slots:
         QCOMPARE(test.controller.rowPreviewNetworkIssuedForTest(), 12); // every pointer got its lookup
     }
 
+    // #866 review (exordy finding 2, multi-stream witness): the network pump must
+    // pick the FOREGROUND rows - the open route and every expanded sidebar stream -
+    // ahead of hidden catalog candidates, and it must re-check expansion live at
+    // every slot, not only at seed time. The pump's queue arrival order depends on
+    // parallel cache reads and the mock's connection pool, so the contract is
+    // pinned at the state seam: the seed seam queues candidates with owners and
+    // the pick seam runs the pump's own takeRowPreviewCandidate. A plain FIFO
+    // picker (the pre-fix shape) fails the expanded-stream and route picks below.
+    void sidebarPreviewNetworkHydrationPrefersForegroundRows()
+    {
+        Fixture test;
+        const QString altStream =
+            QStringLiteral("55555555-5555-4555-8555-000000000008"); // collapsed stream
+        const QString hiddenOwner =
+            QStringLiteral("55555555-5555-4555-8555-999999999999"); // never expanded
+        test.streams = [&, altStream](const Request &request) {
+            const auto dto = [&test](const QString &uuid, const QString &name) {
+                return QJsonObject{{"uuid", uuid}, {"project_id", projectId},
+                    {"name", name}, {"encryption", false}, {"unread_count", 0},
+                    {"active_unread_count", 0}, {"passive_unread_count", 0},
+                    {"last_message_uuid", QJsonValue::Null},
+                    {"updated_at", "2026-01-02T10:00:05Z"}};
+            };
+            if (request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{dto(streamId, "Route stream"),
+                    dto(altStream, "Collapsed stream")}};
+            const auto uuid = request.target.path()
+                .split(QLatin1Char('/'), Qt::SkipEmptyParts).value(2);
+            return Response{dto(uuid, "Stream detail")};
+        };
+        QVERIFY(test.start({}, 2));
+        const QString h0 = QStringLiteral("88888888-8888-4888-8888-0000000000a0");
+        const QString h1 = QStringLiteral("88888888-8888-4888-8888-0000000000a1");
+        const QString e0 = QStringLiteral("88888888-8888-4888-8888-0000000000e0");
+        const QString r0 = QStringLiteral("88888888-8888-4888-8888-0000000000b0");
+        // The route stream is foreground without any expansion: a hidden candidate
+        // queued FIRST still loses its slot to the route row.
+        test.controller.rowPreviewSeedNetCandidateForTest(h0, hiddenOwner);
+        test.controller.rowPreviewSeedNetCandidateForTest(r0, streamId);
+        QCOMPARE(test.controller.rowPreviewTakeNetForTest(), r0);
+        // With no foreground rows left the picker degrades to FIFO order.
+        QCOMPARE(test.controller.rowPreviewTakeNetForTest(), h0);
+        // Seed the collapsed stream's row BEFORE the user expands it.
+        test.controller.rowPreviewSeedNetCandidateForTest(h1, hiddenOwner);
+        test.controller.rowPreviewSeedNetCandidateForTest(e0, altStream);
+        // Expand mid-pump: the queue is now [h1, e0]; FIFO would take h1, the
+        // live foreground check must take e0 (the expansion is re-read per slot).
+        test.controller.toggleSidebarStream(altStream);
+        QVERIFY(test.controller.expandedSidebarStreams().contains(altStream));
+        QCOMPARE(test.controller.rowPreviewTakeNetForTest(), e0);
+        QCOMPARE(test.controller.rowPreviewTakeNetForTest(), h1);
+        QVERIFY(test.controller.rowPreviewTakeNetForTest().isEmpty());
+    }
+
     // #866 review (exordy finding 2): a transient failure must not become a sticky negative
     // preview once the retry budget is spent. The row keeps the reference empty preview, but
     // no memo is stored, so a later catalog accept can hydrate it after the server recovers.
