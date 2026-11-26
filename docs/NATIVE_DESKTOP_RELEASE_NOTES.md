@@ -1,3 +1,14 @@
+# Workspace Native 0.50.1 - Linux development preview
+
+- Fixed: the header call action no longer appears in the no-topic aggregate view, where there is no conversation to call into (issue #857).
+- Fixed: streams that were explicitly expanded in the sidebar stay expanded across route commits instead of silently collapsing back (issue #862).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.50.0 to 0.50.1](https://github.com/exordos/workspace_native/compare/0.50.0...0.50.1)
+
+---
+
 # Workspace Native 0.50.0 - Linux development preview
 
 - New: the expanded call now lives in its own standalone OS window. Enlarging a call opens a separate window with its own window controls, and malformed or unusable call links route through the InvalidUrl shell instead of stranding the call surface (issue #846).
