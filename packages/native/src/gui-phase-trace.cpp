@@ -174,7 +174,12 @@ GuiStallSampler *GuiStallSampler::startFromEnvironment(QObject *parent)
 
 void GuiStallSampler::beat()
 {
-    const double gapMs = double(m_sinceBeat.restart()) / 1.0e6;
+    // QElapsedTimer::restart() returns ELAPSED MILLISECONDS, not nanoseconds:
+    // dividing it by 1e6 (first smoke run) silently floored every gap to 0.0
+    // and froze the report's worst/mean at zero. Read nanoseconds explicitly,
+    // then re-arm the clock.
+    const double gapMs = double(m_sinceBeat.nsecsElapsed()) / 1.0e6;
+    m_sinceBeat.restart();
     if (m_samples > 0) // the very first beat only arms the clock
     {
         m_worstGapMs = qMax(m_worstGapMs, gapMs);

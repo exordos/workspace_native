@@ -50777,6 +50777,13 @@ private slots:
                         {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "cassi@example.invalid"}}}};
             return response;
         };
+        // Arm the controller-hosted stall sampler through its env seam (same
+        // issue #855): it must be set BEFORE the controller is constructed,
+        // and the report path must outlive the case.
+        QTemporaryDir stallDirectory;
+        QVERIFY(stallDirectory.isValid());
+        const QString stallReport = stallDirectory.filePath("stall.json");
+        qputenv("WORKSPACE_NATIVE_STALL_PROBE", stallReport.toLocal8Bit());
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
@@ -50839,6 +50846,28 @@ private slots:
                 nestedUnderScriptedStep = true;
         }
         QVERIFY2(nestedUnderScriptedStep, qPrintable(QVariant(records).toString()));
+        // Sampler semantics (#855): a GUI-thread block of known length must be
+        // visible in the flushed report. The first smoke run froze at
+        // worst_gap_ms=0 because the beat divided QElapsedTimer::restart()
+        // (milliseconds) by 1e6 as if it were nanoseconds - every gap floored
+        // to 0.0 and no over-threshold beat ever counted.
+        QTest::qSleep(300); // no event loop runs here: the next beat sees a >=300 ms gap
+        const auto readStall = [&stallReport]() {
+            QFile file(stallReport);
+            if (!file.open(QIODevice::ReadOnly)) return QVariantMap{};
+            return QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+        };
+        QVariantMap stall;
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(), stall.value("samples").toLongLong() > 1), 5000);
+        QVERIFY2(stall.value("worst_gap_ms").toDouble() >= 100.0,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+        QVERIFY(stall.value("beats_over_50ms").toLongLong() >= 1);
+        // Periodic flush is live, not a one-shot first write: samples advance
+        // across a later flush cycle (interval 500 ms).
+        const qint64 samplesAtFirstRead = stall.value("samples").toLongLong();
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
+            stall.value("samples").toLongLong() > samplesAtFirstRead), 5000);
+        qunsetenv("WORKSPACE_NATIVE_STALL_PROBE");
     }
 
 };
