@@ -4186,6 +4186,52 @@ private slots:
                 .arg(samples.at(i - 1).size).arg(samples.at(i - 1).work)));
         }
     }
+
+    // #888 round 3 (exordy finding 4713938731): the reusable uuid index must keep
+    // the first-match semantics of the scan it replaced. The finding's premise is
+    // pinned where it actually lives: every accepted stream list is deduplicated
+    // by uuid - catalog ingestion REJECTS a duplicate - so a duplicate uuid can
+    // never reach the scoped seed at all. The guard in streamRowByUuid keeps
+    // first-row resolution for the case a producer ever changes that contract.
+    void duplicateStreamUuidsNeverReachTheScopedSeed()
+    {
+        Fixture test;
+        const QString dupUuid = QStringLiteral("66666666-6666-4666-6666-000000000001");
+        const QString shadowMsg = QStringLiteral("88888888-8888-4888-8888-000000000001");
+        const auto channelRow = [](const QString &uuid, const QString &lastMessage) {
+            return QJsonObject{{QStringLiteral("uuid"), uuid},
+                {QStringLiteral("project_id"), projectId},
+                {QStringLiteral("name"), QStringLiteral("Channel")},
+                {QStringLiteral("encryption"), false},
+                {QStringLiteral("unread_count"), 0},
+                {QStringLiteral("active_unread_count"), 0},
+                {QStringLiteral("passive_unread_count"), 0},
+                {QStringLiteral("last_message_uuid"), lastMessage},
+                {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                QJsonArray rows;
+                rows.append(channelRow(streamId, QString()));
+                // The same uuid twice; the second row carries a preview pointer
+                // that only a last-row-resolution index could ever seed.
+                rows.append(channelRow(dupUuid, QString()));
+                rows.append(channelRow(dupUuid, shadowMsg));
+                return Response{rows};
+            }
+            return Response{channelRow(
+                request.target.path().section(QLatin1Char('/'), -2, -2), QString())};
+        };
+        QVERIFY(!test.start({}, 3)); // the catalog never accepts a duplicate list
+        QCOMPARE(test.controller.streams().size(), 0);
+        QCOMPARE(test.controller.error(),
+            QStringLiteral("The server returned an invalid channel list."));
+        test.controller.resetRowPreviewSeedWorkForTest();
+        test.controller.seedStreamPreviewsForTest(dupUuid);
+        QVERIFY2(test.controller.rowPreviewStreamOfForTest(shadowMsg).isEmpty(),
+            "the scoped seed attributed a preview pointer to a stream row that"
+            " catalog ingestion had rejected");
+    }
 };
 
 QTEST_MAIN(ControllerSidebarTest)

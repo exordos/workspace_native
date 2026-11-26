@@ -20340,7 +20340,12 @@ int NativeController::streamRowByUuid(const QString &uuid)
         m_streamsRow.reserve(m_streams.size());
         for (int i = 0; i < m_streams.size(); ++i) {
             recordRowPreviewSeedWork(1);
-            m_streamsRow.insert(m_streams.at(i).uuid, i);
+            // Keep the first row per uuid: the scan this index replaced stopped at
+            // the first match, so a duplicate uuid must resolve to row order
+            // (exordy finding 4713938731). Catalog ingestion deduplicates today;
+            // this keeps the index honest if a producer ever changes that.
+            if (!m_streamsRow.contains(m_streams.at(i).uuid))
+                m_streamsRow.insert(m_streams.at(i).uuid, i);
         }
         m_streamsRowTag = m_streamsMutation;
     }

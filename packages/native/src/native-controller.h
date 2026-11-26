@@ -405,6 +405,13 @@ public:
     {
         seedRowPreviewHydrationForStream(streamUuid);
     }
+    // #888 round 3 witness (exordy finding 4713938731): which preview pointer the
+    // scoped seed actually attributed - used to pin that a duplicate-uuid stream
+    // list never reaches the seed at all (catalog ingestion rejects it).
+    QString rowPreviewStreamOfForTest(const QString &messageUuid) const
+    {
+        return m_rowPreviewStreamOf.value(messageUuid);
+    }
     // #866 witness (exordy finding 2): drive the network pump's queue exactly as a
     // catalog seed would (owner map + enqueue) and take candidates with the very
     // pick function the pump uses. Mock arrival order over the HTTP connection
