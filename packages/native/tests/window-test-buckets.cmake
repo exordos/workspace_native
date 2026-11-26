@@ -148,6 +148,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
     rightDrawerConversationSwitchDropsNestedChatScreens
     savedHistoryRefreshFailureShowsOneAlertAndOneRetry
     sidebarExpansionWindowLoadDiagnostic
+    sidebarNetworkPreviewHydrationKeepsRowFocusAndClickTarget
     sidebarPartialRefreshErrorKeepsRowsAndShowsBanner
     windowChannelInfoNonOwnerMemberGates
     windowChannelNotificationLevelsAndUnsupportedFallback
