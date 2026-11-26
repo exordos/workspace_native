@@ -148,7 +148,13 @@ Item {
             StackLayout {
                 objectName: "mailThreadColumn"
                 Layout.fillWidth: true
-                Layout.preferredWidth: Math.max(0, (columnsRow.width - 250) / 2)
+                // Stable hint: an earlier binding derived this from
+                // columnsRow.width (the layout's own assigned result), which
+                // made the RowLayout's sizeHint depend on its output ->
+                // "Qt Quick Layouts: Detected recursive rearrange" warning on
+                // every Main.qml window case. Both fill columns keep equal
+                // constant hints, so the leftover still splits 1fr/1fr.
+                Layout.preferredWidth: 0
                 Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 Layout.margins: 10
@@ -287,7 +293,7 @@ Item {
             // the reference grid.
             ColumnLayout {
                 Layout.fillWidth: true
-                Layout.preferredWidth: Math.max(0, (columnsRow.width - 250) / 2)
+                Layout.preferredWidth: 0  // stable hint, see mailThreadColumn
                 Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 Layout.margins: 16
