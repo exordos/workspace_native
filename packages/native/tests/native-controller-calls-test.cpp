@@ -581,6 +581,33 @@ private slots:
         QVERIFY(fixture.controller.callError().isEmpty());
     }
 
+    void joinCallOnOpenCallRaisesStandaloneWindow()
+    {
+        // #887: clicking Join on a card for a call that is already open must raise
+        // the standalone window (#846 same-callId rule). The store returns the
+        // existing call for the same callKey without activeCallChanged, so the
+        // shell wiring never re-ran and focus stayed in the main window.
+        Fixture fixture;
+        QVERIFY(fixture.start());
+        const QString room = QStringLiteral("https://meet.example.com/rejoin-room");
+        fixture.controller.joinCall(room);
+        QTRY_VERIFY(fixture.controller.calls()->hasActiveCall());
+        QTRY_VERIFY(fixture.controller.callWindow()->mode()
+            != JitsiCallWindowController::Closed);
+        const auto openedCallId = fixture.controller.calls()->activeCall()
+            .value(QStringLiteral("callId")).toString();
+        QVERIFY(!openedCallId.isEmpty());
+        QSignalSpy focusSpy(fixture.controller.callWindow(),
+            &JitsiCallWindowController::focusRequested);
+        // Same meeting card clicked again while the call window sits in background:
+        // the existing call survives unchanged and the shell asks to raise it.
+        fixture.controller.joinCall(room);
+        QVERIFY(fixture.controller.callError().isEmpty());
+        QCOMPARE(fixture.controller.calls()->activeCall()
+            .value(QStringLiteral("callId")).toString(), openedCallId);
+        QCOMPARE(focusSpy.count(), 1);
+    }
+
     void encryptedStreamSendsNoPlaintextCallUrl()
     {
         Fixture fixture;

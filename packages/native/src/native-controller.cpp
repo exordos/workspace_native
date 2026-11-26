@@ -21462,9 +21462,17 @@ void NativeController::joinCall(const QString &meetingUrl)
     payload.insert(QStringLiteral("locationName"), isDirectConversation() ? title() : QString());
     payload.insert(QStringLiteral("ownerKey"), ownerKey());
     payload.insert(QStringLiteral("meetUrl"), m_meetHost);
-    if (const auto open = m_callStore.requestOpenCall(payload);
-        open.value(QStringLiteral("status")).toString() == QLatin1String("blocked-active"))
+    const auto open = m_callStore.requestOpenCall(payload);
+    const auto openStatus = open.value(QStringLiteral("status")).toString();
+    if (openStatus == QLatin1String("blocked-active"))
         m_callError = tr("Call could not be started.");
+    else if (openStatus == QLatin1String("same"))
+        // #887: the same-call re-open keeps the stored call, so activeCallChanged
+        // never fires and the shell wiring does not re-run. Re-dispatch the open
+        // request: the single-window rules turn a same-callId re-open into
+        // focusRequested, which raises the standalone window the user clicked
+        // toward (reference jitsi-call-window.ts:228-231).
+        m_callWindow.requestStandaloneOpen(m_callStore.activeCall());
     emit stateChanged();
 }
 
