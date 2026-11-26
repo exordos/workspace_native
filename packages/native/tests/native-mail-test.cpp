@@ -181,18 +181,17 @@ private slots:
         QVERIFY(object);
         auto *page = qobject_cast<QQuickItem *>(object.data());
         QVERIFY(page);
-        // The Repeater only incubates delegates inside a window; the offscreen
-        // platform serves this headlessly.
         QQuickWindow window;
         window.resize(900, 700);
         page->setParentItem(window.contentItem());
         window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
         store->refresh();
         QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("ready"), 5000);
-QTRY_VERIFY(item(page, "mailFolderRow-inbox"));
+        QTRY_VERIFY_WITH_TIMEOUT(item(page, QStringLiteral("mailFolderRow-inbox")), 5000);
         QVERIFY(textOf(page, "mailFolderTitle-inbox").contains("Inbox"));
         QCOMPARE(textOf(page, "mailFolderUnread-inbox"), QStringLiteral("12"));
-        QVERIFY(item(page, "mailMessageRow-mail-inbox-1"));
+        QTRY_VERIFY_WITH_TIMEOUT(item(page, QStringLiteral("mailMessageRow-mail-inbox-1")), 5000);
         QCOMPARE(textOf(page, "mailReaderTitle"), QStringLiteral("Select a message"));
         store->selectMessage(QStringLiteral("mail-inbox-2"));
         QTRY_COMPARE(textOf(page, "mailReaderTitle"),
@@ -247,7 +246,15 @@ private:
 
     QQuickItem *item(QQuickItem *root, const QString &name)
     {
-        return root->findChild<QQuickItem *>(name);
+        // Visual-tree search (the native-window-test convention): Repeater
+        // delegates keep their creation context as QObject parent, so a
+        // findChild object walk never sees them.
+        if (root->objectName() == name)
+            return root;
+        for (auto *child : root->childItems())
+            if (auto *found = item(child, name))
+                return found;
+        return nullptr;
     }
 
     bool visible(QQuickItem *root, const QString &name)
