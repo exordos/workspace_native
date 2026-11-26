@@ -8519,6 +8519,47 @@ component NativeMentionChip: Item {
                         topicRunStart: index > 0 && rows[index - 1].topicId !== entry.topicId
                     };
                 }
+                // Issue #872: value equality for projected rows. The rendered
+                // projection is rebuilt fresh from the controller DTOs on every
+                // messagesChanged; rows are plain JSON-shaped data, so equality
+                // is decided by content, never by object identity. Dates get a
+                // duck-typed compare because Object.keys() sees no own keys on
+                // them and would otherwise declare any two Dates equal.
+                function sameProjectedValue(left, right) {
+                    if (left === right)
+                        return true;
+                    if (typeof left !== typeof right || left === null || right === null
+                        || typeof left !== "object")
+                        return false;
+                    const leftDate = Object.prototype.toString.call(left) === "[object Date]";
+                    const rightDate = Object.prototype.toString.call(right) === "[object Date]";
+                    if (leftDate || rightDate)
+                        return leftDate && rightDate && left.getTime() === right.getTime();
+                    if (Array.isArray(left) || Array.isArray(right)) {
+                        if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length)
+                            return false;
+                        for (let i = 0; i < left.length; ++i)
+                            if (!sameProjectedValue(left[i], right[i]))
+                                return false;
+                        return true;
+                    }
+                    // ListModel.get() injects wrapper roles (objectName, its
+                    // NOTIFY alias, and the __N dynamic-role cache) into every
+                    // returned row map. They are not projection content and
+                    // never exist on fresh rows.
+                    const wrapperRole = /^(objectName|objectNameChanged|__\d+)$/;
+                    const leftKeys = Object.keys(left).filter(k => !wrapperRole.test(k));
+                    const rightKeys = Object.keys(right).filter(k => !wrapperRole.test(k));
+                    if (leftKeys.length !== rightKeys.length)
+                        return false;
+                    for (const key of leftKeys) {
+                        if (!Object.prototype.hasOwnProperty.call(right, key))
+                            return false;
+                        if (!sameProjectedValue(left[key], right[key]))
+                            return false;
+                    }
+                    return true;
+                }
                 function replaceMessages(rows, reproject) {
                     const route = routeKey();
                     const opening = root.controller.conversationOpening;
@@ -8588,6 +8629,24 @@ component NativeMentionChip: Item {
                     if (presented.length || outgoingPresentation.id)
                         preparedWindowOpened = true;
                     const projection = projectServiceRows(presented, historical);
+                    // Issue #872: a redundant messagesChanged (own-send echo,
+                    // read ledger, unrelated catalog churn) used to rebind every
+                    // row and re-run the whole viewport chain below - the source
+                    // of the media flicker and scroll jump in #854. When the new
+                    // projection is content-identical to what is rendered, the
+                    // settled viewport must be left alone entirely.
+                    if (sameRoute && openingApplied && renderedMessages.count > 0
+                        && projection.length === renderedMessages.count) {
+                        let unchanged = true;
+                        for (let i = 0; i < projection.length; ++i) {
+                            if (!sameProjectedValue(projection[i], renderedMessages.get(i))) {
+                                unchanged = false;
+                                break;
+                            }
+                        }
+                        if (unchanged)
+                            return;
+                    }
                     positioning = true;
                     visibleReadTimer.stop();
                     pendingViewport = snapshot;
@@ -8634,6 +8693,11 @@ component NativeMentionChip: Item {
                             rowUpdateCountForTest++;
                             renderedMessages.move(previous, i, 1);
                         }
+                        // #872: rebind only the row whose content actually
+                        // changed; the reference keeps unchanged rows' DOM
+                        // intact through uuid reconciliation.
+                        if (sameProjectedValue(model, renderedMessages.get(i)))
+                            continue;
                         rowUpdateCountForTest++;
                         renderedMessages.set(i, model);
                     }
