@@ -10329,8 +10329,13 @@ private slots:
         const auto twice = [](const QString &text) { return QStringList{text, text}; };
         QTRY_COMPARE(previews(), twice(locale == "ru" ? QStringLiteral("Нужен ключ") : QStringLiteral("Key required")));
         bool preparing = false;
-        const auto observe = connect(&f.controller, &NativeController::topicsChanged, this, [&] {
-            if (f.controller.streams().first().toMap().value("previewState") != "preparing") return;
+        // #866 review (finding 3): the encrypted preview state travels on previewChanged
+        // now - the sidebar projection is not re-announced for derived content.
+        const auto observe = connect(&f.controller, &NativeController::previewChanged, this, [&] {
+            const auto prepRow = f.controller.streams().first().toMap();
+            const auto prepState = f.controller.previewFields(prepRow.value("lastMessage").toString(),
+                f.controller.previewRevision()).value("previewState").toString();
+            if (prepState != QLatin1String("preparing")) return;
             const auto expected = locale == "ru" ? QStringLiteral("Расшифровка сообщения…") : QStringLiteral("Decrypting message…");
             preparing |= previews() == twice(expected);
         });
@@ -10346,7 +10351,9 @@ private slots:
         QTRY_COMPARE(previews(), twice(QStringLiteral("Sidebar summary")));
         f.controller.useChatKeys(nullptr);
         QTRY_COMPARE(previews(), twice(locale == "ru" ? QStringLiteral("Нужен ключ") : QStringLiteral("Key required")));
-        QVERIFY(f.controller.streams().first().toMap().value("previewText").toString().isEmpty());
+        const auto finalRow = f.controller.streams().first().toMap();
+        QVERIFY(f.controller.previewFields(finalRow.value("lastMessage").toString(),
+            f.controller.previewRevision()).value("previewText").toString().isEmpty());
     }
 
     void uiEncryptedMessageDecryptRetryRowCyclesAndRepairs_data() {

@@ -41094,7 +41094,9 @@ private slots:
         const auto latestTopic = [&] {
             for (const auto &entry : controller.streams()) {
                 const auto row = entry.toMap();
-                if (row.value("id").toString() == streamId) return row.value("previewTopic").toString();
+                if (row.value("id").toString() == streamId)
+                    return controller.previewFields(row.value("lastMessage").toString(),
+                        controller.previewRevision()).value("previewTopic").toString();
             }
             return QString{};
         };
@@ -41168,7 +41170,8 @@ private slots:
             for (const auto &value : controller.streams()) {
                 const auto row = value.toMap();
                 if (row.value("id").toString() == streamId)
-                    return row.value("previewTopic").toString() == secondTopicId;
+                    return controller.previewFields(row.value("lastMessage").toString(),
+                        controller.previewRevision()).value("previewTopic").toString() == secondTopicId;
             }
             return false;
         })(), 5000);
@@ -46485,7 +46488,9 @@ private slots:
         QVERIFY(!display().contains("hidden word"));
         QVERIFY(!display().contains("Block answer"));
         QVERIFY(display().contains(locale == "ru" ? QStringLiteral("Спойлер") : QStringLiteral("Spoiler")));
-        const auto summary = controller.streams().first().toMap().value("previewText").toString();
+        const auto summaryRow = controller.streams().first().toMap();
+        const auto summary = controller.previewFields(summaryRow.value("lastMessage").toString(),
+            controller.previewRevision()).value("previewText").toString();
         QVERIFY2(summary.contains("hidden word") && summary.contains("Block answer"), qPrintable(summary));
         click(window, target(1));
         QTRY_VERIFY(display().contains("hidden word"));

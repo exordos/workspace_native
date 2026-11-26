@@ -177,6 +177,12 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList cachedSearchResults READ cachedSearchResults NOTIFY cachedSearchChanged)
     Q_PROPERTY(QString cachedSearchState READ cachedSearchState NOTIFY cachedSearchChanged)
     Q_PROPERTY(QVariantList streams READ streams NOTIFY streamsChanged)
+    // #866 review (finding 3, design round): preview CONTENT announces travel on a narrow
+    // preview-only revision instead of streamsChanged, so a preview batch re-evaluates the
+    // delegates' text bindings without rebuilding the sidebar row array under an in-flight
+    // click or scroll. Delegates pass the revision into previewFields() as an explicit
+    // binding dependency. Last-message POINTER moves still announce streamsChanged.
+    Q_PROPERTY(int previewRevision READ previewRevision NOTIFY previewChanged)
     // Issue #867: projection-count seam for the regression tests (no NOTIFY).
     Q_PROPERTY(int streamsProjectionCountForTest READ streamsProjectionCountForTest)
     Q_PROPERTY(int topicsProjectionCountForTest READ topicsProjectionCountForTest)
@@ -540,6 +546,13 @@ public:
     // Issue #868 test-only oracle: how many full topics() projections ran.
     // Intentionally has no NOTIFY - nothing in QML may bind to it.
     int topicsProjectionCountForTest() const { return m_topicsProjectionCount; }
+    // #866 review (finding 3): the preview-only revision counter (see the Q_PROPERTY note).
+    int previewRevision() const { return m_previewRevision; }
+    // #866 review (finding 3, design round): the QML seam for sidebar preview fields.
+    // `revision` is intentionally unused by the lookup: delegates pass controller.previewRevision
+    // so the QML binding re-evaluates on every coalesced preview announcement (QML var
+    // identity is not stable across property reads, so the counter is the dependency edge).
+    Q_INVOKABLE QVariantMap previewFields(const QString &lastMessageUuid, int revision) const;
     QVariantList folders() const;
     QVariantList sidebarStreams() const;
     QVariantMap sidebarCatalogState() const;
@@ -1136,6 +1149,8 @@ signals:
     void editSessionChanged();
     void replySessionChanged();
     void streamsChanged();
+    // #866 review (finding 3): preview-content announcements only; see previewRevision.
+    void previewChanged();
     void foldersChanged();
     void sidebarStreamsChanged();
     void sidebarCatalogStateChanged();
@@ -2173,6 +2188,10 @@ private:
     void refreshRowPreviewFromPayload(const Message &message);
     void markRowPreviewDeleted(const QString &uuid);
     void announceRowPreviewRows(const QString &uuid);
+    // #866 review (finding 3): coalesced preview-revision bump - one previewChanged per
+    // pump tick no matter how many memos that tick stored (replaces the streamsChanged
+    // announcements the preview paths used to fire).
+    void schedulePreviewRevisionBump();
     quint64 bumpRowPreviewFence(const QString &uuid);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
     // Issue #867 (subtask A): single-row projection shared by streams() and
@@ -2235,6 +2254,9 @@ private:
     // paths and the sign-out reset mutate these fields, always on the GUI thread.
     static constexpr int rowPreviewCacheLimit = 512;
     static constexpr int rowPreviewHydrationBatch = 8;
+    // #866 review (finding 3): preview-only revision counter + coalesce flag.
+    int m_previewRevision = 0;
+    bool m_previewRevisionBumpQueued = false;
     // #860: a disk miss is not an authoritative negative - the reference falls through to the
     // project-scoped messages lookup during bootstrap (messenger-last-messages-loader.lib.ts
     // L96-129). The network stage is bounded per tick like the disk pump, retries transient

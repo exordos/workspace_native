@@ -6349,7 +6349,14 @@ component NativeMentionChip: Item {
                     // target; section 1.1/1.2 of the design doc holds the measurements.
                     readonly property bool compactDensity: root.preferences.chatListDensity === "compact"
                     readonly property bool opensLatestTopic: root.preferences.chatClickAction === "latestTopic"
-                    readonly property string previewTopic: String(streamDelegate.modelData.previewTopic || "")
+                    // #866 review (finding 3): preview fields derive from the uuid-keyed
+                    // store; controller.previewRevision is the explicit binding dependency
+                    // that re-evaluates them when a preview batch lands, WITHOUT the
+                    // projection (and delegate) rebuild the old streamsChanged path forced.
+                    readonly property var previewData:
+                        root.controller.previewFields(String(streamDelegate.modelData.lastMessage || ""),
+                            root.controller.previewRevision)
+                    readonly property string previewTopic: String(streamDelegate.previewData.previewTopic || "")
                     // workspace_ui 61dacef sidebar-message-preview.ui.tsx: sender in the
                     // sidebar-sender token + ": " + body in text-secondary, one 20 px line.
                     property var sidebarTopicState: ({ known: false, count: 0, rows: [] })
@@ -6401,9 +6408,9 @@ component NativeMentionChip: Item {
                         }
                         return rows
                     }
-                    readonly property string previewBody: root.sidebarPreviewBody(modelData)
+                    readonly property string previewBody: root.sidebarPreviewBody(streamDelegate.previewData)
                     readonly property string previewSenderLabel: {
-                        const sender = String(modelData.previewSender || "")
+                        const sender = String(streamDelegate.previewData.previewSender || "")
                         return sender.length && previewBody.length ? sender + ": " : ""
                     }
                     width: streamList.width
@@ -6862,7 +6869,7 @@ component NativeMentionChip: Item {
                                     objectName: "streamTime-" + streamDelegate.modelData.id
                                     Layout.alignment: Qt.AlignBottom | Qt.AlignRight
                                     visible: text.length > 0 && !streamDelegate.compactDensity
-                                    text: String(streamDelegate.modelData.rowTime || "")
+                                    text: String(streamDelegate.previewData.rowTime || "")
                                     textFormat: Text.PlainText
                                     color: root.colors["text-muted"]
                                     font.pixelSize: 12
@@ -6926,9 +6933,14 @@ component NativeMentionChip: Item {
                             readonly property var modelData: topicDelegate.modelData
                             visible: !topicDelegate.searchOtherTopicsSeparator
                             objectName: topicDelegate.searchOtherTopicsSeparator ? "" : "topic-" + modelData.id
-                            readonly property string previewBody: root.sidebarPreviewBody(modelData)
+                            // #866 review (finding 3): same preview-revision derivation as
+                            // the stream row - text bindings re-evaluate, delegates survive.
+                            readonly property var previewData:
+                                root.controller.previewFields(String(modelData.lastMessage || ""),
+                                    root.controller.previewRevision)
+                            readonly property string previewBody: root.sidebarPreviewBody(topicButton.previewData)
                             readonly property string previewSenderLabel: {
-                                const sender = String(modelData.previewSender || "")
+                                const sender = String(topicButton.previewData.previewSender || "")
                                 return sender.length && previewBody.length ? sender + ": " : ""
                             }
                             colors: root.colors
@@ -7130,7 +7142,7 @@ component NativeMentionChip: Item {
                                     y: 28
                                     // showTime = !compact (sidebar-chat-row-meta.ui.tsx).
                                     visible: text.length > 0 && !streamDelegate.compactDensity
-                                    text: String(topicButton.modelData.rowTime || "")
+                                    text: String(topicButton.previewData.rowTime || "")
                                     textFormat: Text.PlainText
                                     color: root.colors["text-muted"]
                                     font.pixelSize: 12
