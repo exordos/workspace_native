@@ -1455,6 +1455,72 @@ private slots:
         QCOMPARE(projection.count(), 0); // no projection churn - the whole point of the seam
     }
 
+    // exordy finding on PR #866 (medium): hydration learns the authoritative creation stamp
+    // of a row's last message. When that stamp moves the projected activity order, the
+    // sidebar must actually re-sort: the pump records the observed stamp in the same ledger
+    // noteActivityMerge feeds, and announces it - the projection rebuilds per read, but the
+    // QML streams binding only re-reads on streamsChanged. Without this the row stays pinned
+    // at its stale updated_at fallback forever.
+    void sidebarPreviewHydrationReordersActivityOrder()
+    {
+        Fixture test;
+        test.aggregateMessages = true; // route the pump's GET /messages/?uuid= to test.messages
+        const auto hydrated = QStringLiteral("88888888-8888-4888-8888-000000000c01");
+        const auto fallbackLead = QStringLiteral("33333333-3333-4333-8333-666666666668");
+        const auto streamRow = [](const QString &uuid, const QString &name, const QJsonValue &last,
+            const QString &updated) {
+            return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"name", name},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", last}, {"updated_at", updated}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.method == "GET" && request.target.path().endsWith("/streams/"))
+                return Response{QJsonArray{
+                    streamRow(streamId, "Route stream", QString(hydrated), "2026-01-02T10:00:05Z"),
+                    streamRow(fallbackLead, "Fallback lead", QJsonValue::Null, "2026-01-02T10:00:06Z")}};
+            if (request.target.path().endsWith(fallbackLead))
+                return Response{streamRow(fallbackLead, "Fallback lead", QJsonValue::Null,
+                    "2026-01-02T10:00:06Z")};
+            return Response{streamRow(streamId, "Route stream", QString(hydrated), "2026-01-02T10:00:05Z")};
+        };
+        auto lateBody = message("Hydrated late activity", hydrated);
+        lateBody["created_at"] = QStringLiteral("2026-01-03T09:00:00Z"); // newer than every fallback key
+        auto gate = std::make_shared<std::function<void()>>();
+        test.messages = [&](const Request &request) {
+            if (request.method == "GET"
+                && QUrlQuery(request.target).queryItemValue("uuid") == hydrated) {
+                // Hold the pump's lookup so the fallback-sort baseline is deterministic.
+                Response held{QJsonArray{lateBody}};
+                held.defer = [gate](std::function<void()> send) { *gate = send; };
+                return held;
+            }
+            return Response{QJsonArray{}};
+        };
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        QTRY_COMPARE(test.controller.streams().size(), 2);
+        // Before hydration both rows sort by their updated_at fallback, so the pointerless
+        // channel with the newer stamp leads.
+        QVERIFY(QTest::qWaitFor([&] { return *gate != nullptr; }, 3000));
+        QCOMPARE(test.controller.streams().first().toMap().value("id").toString(), fallbackLead);
+        QSignalSpy projection(&test.controller, &NativeController::streamsChanged);
+        (*gate)(); // release the pump's in-flight lookup
+        // The network pump resolves the pointer from the catalog seed...
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return test.controller.previewFields(hydrated, test.controller.previewRevision())
+                .value("previewText").toString() == QStringLiteral("Hydrated late activity");
+        })(), 5000);
+        // ...and the resolved true stamp must move the row to the top: the projection rebuilds
+        // per read, so a fresh read after the pump shows the corrected order.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return test.controller.streams().first().toMap().value("id").toString() == streamId;
+        })(), 5000);
+        // And the reorder travels as a streamsChanged announcement - the QML binding edge
+        // that re-reads the projection. It fires one event-loop pass after the ledger write.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return projection.count() >= 1; })(), 2000);
+    }
+
 private:
     // --- sidebar preview memo lifecycle (issue #116) ---
 
@@ -2547,6 +2613,7 @@ private slots:
         const QJsonArray streams{streamDto(streamId, "Hydrated", "2026-01-01T00:00:00Z", recent),
             streamDto(bgA, "Alpha", "2026-01-02T00:00:00Z", QString()),
             streamDto(bgB, "Beta", "2026-01-03T00:00:00Z", QString())};
+        auto gate = std::make_shared<std::function<void()>>();
         fixture.streams = [&](const Request &) { return Response{streams}; };
         fixture.counters = [&](const Request &request) -> Response {
             const auto id = request.target.path().section('/', -1);
@@ -2565,6 +2632,13 @@ private slots:
         fixture.messages = [&](const Request &request) -> Response {
             if (request.target.toString().contains(bgA) || request.target.toString().contains(bgB))
                 return Response{QJsonArray{}};
+            if (QUrlQuery(request.target).queryItemValue("uuid") == recent) {
+                // Hold the preview pump's lookup so the fallback-sort baseline is
+                // deterministic; the test releases it explicitly.
+                Response held{QJsonArray{hero}};
+                held.defer = [gate](std::function<void()> send) { *gate = send; };
+                return held;
+            }
             return Response{QJsonArray{hero}};
         };
         auto &c = fixture.controller;
@@ -2577,7 +2651,12 @@ private slots:
         c.login(fixture.server.origin().toString(), "synthetic-user", "synthetic-password", "");
         QTRY_COMPARE(c.projects().size(), 1); c.openProject(projectId);
         QTRY_COMPARE(c.streams().size(), 3);
+        QVERIFY(QTest::qWaitFor([&] { return *gate != nullptr; }, 3000));
         QCOMPARE(position(streamId), 2); // Oldest updated_at sorts last before hydration.
+        // exordy finding on PR #866: the preview pump's learned stamp is a legitimate
+        // activity move - release the held lookup and the row must reorder on its own.
+        (*gate)();
+        QTRY_COMPARE_WITH_TIMEOUT(position(streamId), 0, 5000);
         c.selectStream(streamId);
         QTRY_COMPARE(c.messages().size(), 1); QTRY_VERIFY(!c.busy());
         QCOMPARE(position(streamId), 0); // The hydrated last-message stamp ranks it first.
