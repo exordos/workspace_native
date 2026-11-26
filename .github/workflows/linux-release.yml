@@ -58,15 +58,17 @@ jobs:
                                and .check_suite.head_branch == "master")]' > check-runs.json; then
               required=$(jq 'length' check-runs.json)
               completed=$(jq '[.[] | select(.status == "completed")] | length' check-runs.json)
-              successful=$(jq '[.[] | select(.conclusion == "success")] | length' check-runs.json)
+              # Any completed non-success verdict blocks the release at once,
+              # before the timeout fallback: one red required check must never
+              # be outraced by the other check still running at the deadline.
+              red=$(jq '[.[] | select(.status == "completed" and .conclusion != "success")] | length' check-runs.json)
+              if [[ "${red}" -gt 0 ]]; then
+                echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
+                exit 1
+              fi
               if [[ "${required}" -ge 2 && "${completed}" -eq "${required}" ]]; then
-                if [[ "${successful}" -eq "${required}" ]]; then
-                  echo "The master-push gate on ${GATE_SHA} is green; publishing reuses its verdict."
-                  reuse=true
-                else
-                  echo "::error::The master-push gate on ${GATE_SHA} is not green; refusing to publish this tag."
-                  exit 1
-                fi
+                echo "The master-push gate on ${GATE_SHA} is green; publishing reuses its verdict."
+                reuse=true
                 break
               fi
             fi
