@@ -33,6 +33,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_2
     archiveUsesExactHistoryAndCanonicalRestore
     avatarSameOwnerReNotificationKeepsLeaseAndUrl
     channelTopicSummaryDialogEndpointEditDuringPendingSurvivesSaved
+    channelTopicSummaryEndpointRevertDuringInFlightSaveSettlesByOutcome
     durableComposerRestoresActualInputAcrossWindowAndControllerLifetimes
     externalProviderDialogProjectsReadyDraftWithoutBindingLoop
     focusedTextWindowLosesFocusBeforeNativeSurfaceIsDestroyed
