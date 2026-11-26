@@ -16384,6 +16384,236 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(closed);
     }
 
+    // #874 (the #854 anchor subtask): a tail append plus the deferred viewport
+    // restoration must keep the new row visible with a stable bottom pin
+    // through a send - including when the composer changes height while the
+    // draft is cleared - and a scrolled-back viewport must land back on the
+    // same reading anchor and pixel offset when the conversation is
+    // revalidated with identical content. Pins both restoreViewport branches
+    // (tail pin and anchor restore) at the window layer.
+    void conversationTailAndReentryAnchorStaySteadyThroughUpdates_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        QTest::newRow("send-at-tail") << QString("send-at-tail");
+        QTest::newRow("send-at-tail-tall-composer") << QString("send-at-tail-tall-composer");
+        QTest::newRow("reentry-revalidate-away") << QString("reentry-revalidate-away");
+    }
+
+    void conversationTailAndReentryAnchorStaySteadyThroughUpdates()
+    {
+        QFETCH(QString, scenario);
+        const bool tall = scenario == "send-at-tail-tall-composer";
+        const bool reentry = scenario == "reentry-revalidate-away";
+        QTemporaryDir preferencesDirectory; QVERIFY(preferencesDirectory.isValid());
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        MockServer server;
+        QMap<int, QJsonObject> history;
+        const auto row = [&](int number) {
+            auto entry = message(QString("Steady fixture %1").arg(number),
+                QString("83000000-0000-4000-8000-%1").arg(number, 12, 10, QLatin1Char('0')),
+                reentry && number >= 20 ? secondTopicId : topicId);
+            entry["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                .addSecs(number).toString(Qt::ISODateWithMs);
+            return entry;
+        };
+        for (int i = 0; i < 40; ++i) history.insert(i, row(i));
+        QJsonObject sent;
+        const auto stream = [&] {
+            return QJsonObject{{"uuid", streamId}, {"project_id", projectId}, {"name", "Steady fixture"},
+                {"encryption", false}, {"unread_count", 0}, {"active_unread_count", 0},
+                {"passive_unread_count", 0}, {"last_message_uuid", history.last().value("uuid")}};
+        };
+        const auto topic = [&](const QString &id = topicId) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", id == topicId ? "Tail pin" : "Second pane"}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", history.last().value("uuid")}};
+        };
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/")) return Response{QJsonArray{stream()}};
+            if (path.endsWith("/streams/" + streamId)) return Response{stream()};
+            if (path.endsWith("/users/")) return Response{QJsonArray{}};
+            if (path.endsWith("/stream_topics/")) return reentry
+                ? Response{QJsonArray{topic(), topic(secondTopicId)}} : Response{QJsonArray{topic()}};
+            if (path.endsWith("/stream_topics/" + topicId)) return Response{topic()};
+            if (reentry && path.endsWith("/stream_topics/" + secondTopicId))
+                return Response{topic(secondTopicId)};
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                const QUrlQuery query(request.target);
+                if (query.queryItemValue("read") == "false")
+                    return Response{QJsonArray{}}; // every fixture row starts read
+                const auto wantedTopic = query.queryItemValue("topic_uuid");
+                const auto marker = query.queryItemValue("page_marker");
+                const auto boundary = marker.isEmpty() ? 40 : marker.right(12).toInt();
+                QJsonArray page;
+                for (auto it = history.cend(); it != history.cbegin();) {
+                    --it;
+                    if (it.key() >= boundary) continue;
+                    if (!wantedTopic.isEmpty()
+                        && it.value().value("topic_uuid").toString() != wantedTopic)
+                        continue;
+                    if (page.size() == 50) break;
+                    page.append(it.value());
+                }
+                return Response{page};
+            }
+            if (path.endsWith("/messages/") && request.method == "POST") {
+                sent = row(40);
+                sent["payload"] = request.body.value("payload");
+                history.insert(40, sent);
+                return Response{sent};
+            }
+            if (path.endsWith("/actions/read_up_to/invoke")) {
+                const auto id = path.section('/', -4, -4);
+                auto boundary = std::find_if(history.begin(), history.end(), [&id](const auto &entry) {
+                    return entry.value("uuid") == id;
+                });
+                if (boundary == history.end()) return Response{QJsonObject{}, 404};
+                for (auto it = history.begin(); it.key() <= boundary.key(); ++it) {
+                    if (it.value()["topic_uuid"] == boundary.value()["topic_uuid"])
+                        it.value()["read"] = true;
+                    if (it == boundary) break;
+                }
+                return Response{boundary.value()};
+            }
+            if (!sent.isEmpty() && path.endsWith("/messages/" + sent.value("uuid").toString()))
+                return Response{sent};
+            return sessionResponse(request);
+        };
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        // Issue #718 precedent: keep the background preload sweep out of this
+        // case's request and layout traffic (sweep behaviour has its own cases).
+        controller.setTopicPreloadEnabledForTest(false);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Steady-state window did not settle before teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(server.origin(), "synthetic-user", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        controller.setRealtimeMode(true);
+        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_COMPARE(controller.topics().size(), reentry ? 2 : 1);
+        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_COMPARE(controller.messages().size(), reentry ? 20 : 40);
+        auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
+        QTRY_VERIFY(list->property("atYEnd").toBool());
+        const auto messageItem = [&](const QString &id) {
+            return item(window->contentItem(), "message-" + id);
+        };
+        const auto firstVisible = [&] {
+            QPair<QString, qreal> anchor;
+            for (const auto &entry : controller.messages()) {
+                const auto id = entry.toMap().value("id").toString();
+                auto *bubble = messageItem(id);
+                if (!bubble || !bubble->isVisible()) continue;
+                const auto point = bubble->mapToItem(list, QPointF());
+                if (point.y() < list->height() && point.y() + bubble->height() > 0) {
+                    anchor = {id, point.y()};
+                    break;
+                }
+            }
+            return anchor;
+        };
+        const auto settleWheel = [&] {
+            QElapsedTimer stable;
+            stable.start();
+            auto previousY = list->property("contentY").toReal();
+            return QTest::qWaitFor([&] {
+                const auto currentY = list->property("contentY").toReal();
+                if (qAbs(currentY - previousY) > 0.01) {
+                    previousY = currentY;
+                    stable.restart();
+                }
+                return !list->property("moving").toBool() && stable.elapsed() >= 50;
+            }, 1500);
+        };
+        const auto distanceFromBottom = [&] {
+            return list->property("originY").toReal() + list->property("contentHeight").toReal()
+                + list->property("bottomMargin").toReal() - list->property("contentY").toReal()
+                - list->height();
+        };
+        const auto tailGap = [&] {
+            const auto lastId = controller.messages().last().toMap().value("id").toString();
+            auto *tail = messageItem(lastId);
+            if (!tail) return -1.0;
+            return list->height() - (tail->mapToItem(list, QPointF()).y() + tail->height());
+        };
+        if (reentry) {
+            const auto before = list->property("contentY").toReal();
+            const auto center = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+            QTest::mouseMove(window, center.toPoint());
+            QTest::wheelEvent(window, center, QPoint(0, 1200));
+            QTRY_VERIFY(list->property("contentY").toReal() < before - 100);
+            QVERIFY(settleWheel());
+            QTRY_VERIFY(!list->property("positioning").toBool());
+            const auto anchor = firstVisible();
+            QVERIFY(!anchor.first.isEmpty());
+            QVERIFY(distanceFromBottom() > 80); // genuinely away from the tail
+            // Re-entry revalidation: leave for the second topic and come back.
+            // The identical page must restore the saved reading anchor exactly.
+            // The topic rail re-incubates its rows while the visible-read
+            // batch lands, so aim only once the target delegate identity is
+            // stable across two polls (click helper QFAILs on a disappearing
+            // target mid-readiness-wait).
+            const auto clickTopic = [&](const QString &id) {
+                QVERIFY(QTest::qWaitFor([&] {
+                    auto *first = item(window->contentItem(), "topic-" + id);
+                    if (!first) return false;
+                    QTest::qWait(80);
+                    auto *second = item(window->contentItem(), "topic-" + id);
+                    return second && first == second && second->isVisible();
+                }, 6000));
+                click(window, item(window->contentItem(), "topic-" + id));
+            };
+            clickTopic(secondTopicId);
+            QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
+            QTRY_VERIFY(!list->property("positioning").toBool());
+            clickTopic(topicId);
+            QTRY_COMPARE(controller.selectedTopic(), topicId);
+            QTRY_VERIFY(!list->property("positioning").toBool());
+            const auto restored = firstVisible();
+            QCOMPARE(restored.first, anchor.first);
+            QVERIFY2(qAbs(restored.second - anchor.second) <= 1,
+                qPrintable(QString("Re-entry anchor %1 moved %2 -> %3")
+                    .arg(anchor.first).arg(anchor.second).arg(restored.second)));
+        } else {
+            QTRY_VERIFY(tailGap() >= 0);
+            const auto gapBefore = tailGap();
+            auto *composer = item(window->contentItem(), "messageComposer"); QVERIFY(composer);
+            composer->setProperty("text", tall
+                ? QString("First composer line\nSecond composer line\nThird composer line\nFourth composer line")
+                : QString("A tail-pinned sent row."));
+            QTRY_VERIFY(controller.canSend());
+            click(window, item(window->contentItem(), "sendButton"));
+            QTRY_COMPARE(controller.messages().size(), 41);
+            QTRY_VERIFY(controller.draft().isEmpty());
+            QTRY_VERIFY(list->property("atYEnd").toBool());
+            const auto sentId = controller.messages().last().toMap().value("id").toString();
+            QVERIFY(messageItem(sentId));
+            QTRY_VERIFY(messageItem(sentId)->isVisible());
+            // The tail pin invariant across the composer collapse + deferred
+            // restore: the tail row keeps its gap to the viewport bottom
+            // within the layout tolerance - no anchor jump.
+            QTRY_VERIFY_WITH_TIMEOUT(tailGap() >= 0 && qAbs(tailGap() - gapBefore) <= 1.0, 2000);
+            QVERIFY(distanceFromBottom() <= 80);
+        }
+        const bool closed = closeIncubatedTestWindow(engine, window);
+        if (closed) closeBeforeEngine.dismiss();
+        QVERIFY(closed);
+    }
+
     // docs/NATIVE_DESKTOP_AUTO_PAGING.md + docs/NATIVE_DESKTOP_HISTORY_PREFETCH.md:
     // a wheel approaching the loaded top issues the older-page request with no
     // button click. The reference boundary is LOAD_MORE_THRESHOLD = 100 px
