@@ -15419,29 +15419,41 @@ void NativeSidebarStreamListModel::sync()
         m_rows.remove(i);
         endRemoveRows();
     }
-    // Moves: after the removals every surviving key exists exactly once in the
-    // projection. Selection sort over the target order: everything below the
-    // cursor is already final, so the wanted key is always found at or after the
-    // cursor and pulling it back is a legal beginMoveRows range. Survivors are
-    // NEVER reordered by anything else (insertions land later), so a linear
-    // rescan every round keeps the cursor consistent - no index table can go
-    // stale mid-shuffle.
+    // Moves: the survivors must take the TARGET ORDER BEFORE any new row is
+    // inserted. Indexing the raw `next` at the current row positions desyncs
+    // the cursor as soon as a new key lands in front of survivors that
+    // re-rank ([A, B] -> [X, B, A] left A/B unordered, the insertion pass
+    // then duplicated B and the content pass read past `next`). The surviving
+    // sequence is `next` restricted to keys that already exist, so its
+    // multiset equals m_rows exactly - every round finds its key.
+    QStringList survivorOrder;
+    for (const Row &row : next) {
+        if (std::any_of(m_rows.cbegin(), m_rows.cend(),
+                [&](const Row &existing) { return existing.key == row.key; }))
+            survivorOrder.append(row.key);
+    }
+    // Selection sort over the survivor order: everything below the cursor is
+    // already final, so the wanted key is always found at or after the cursor
+    // and pulling it back is a legal beginMoveRows range. A linear rescan
+    // every round keeps the cursor consistent - no index table can go stale
+    // mid-shuffle.
     for (int i = 0; i < m_rows.size(); ++i) {
         int target = -1;
         for (int j = i; j < m_rows.size(); ++j) {
-            if (m_rows.at(j).key == next.at(i).key) {
+            if (m_rows.at(j).key == survivorOrder.at(i)) {
                 target = j;
                 break;
             }
         }
+        Q_ASSERT(target >= i);
         if (target <= i)
             continue;
-        Q_ASSERT(target < m_rows.size());
         beginMoveRows(QModelIndex(), target, target, QModelIndex(), i);
         m_rows.move(target, i);
         endMoveRows();
     }
-    // Insertions left-to-right at the final index; survivors stay ordered.
+    // Insertions left-to-right at the final index. With the survivors already
+    // in target order, every mismatch at a position is exactly a new key.
     for (int i = 0; i < next.size(); ++i) {
         if (i < m_rows.size() && m_rows.at(i).key == next.at(i).key)
             continue;
