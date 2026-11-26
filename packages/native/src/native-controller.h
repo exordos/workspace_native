@@ -319,6 +319,24 @@ public:
     // stage has actually dispatched. The mock's HTTP/1 connection pool cannot show an
     // over-dispatch at the server, so the cap is observed at the client seam.
     int rowPreviewNetworkIssuedForTest() const { return m_rowPreviewNetIssued; }
+    // #866 witness (exordy finding 2): drive the network pump's queue exactly as a
+    // catalog seed would (owner map + enqueue) and take candidates with the very
+    // pick function the pump uses. Mock arrival order over the HTTP connection
+    // pool is not a deterministic oracle, so the foreground-priority contract is
+    // pinned at the state seam - the pick sequence below is fully deterministic.
+    void rowPreviewSeedNetCandidateForTest(const QString &uuid, const QString &ownerStream)
+    {
+        m_rowPreviewStreamOf.insert(uuid, ownerStream);
+        enqueueRowPreviewNet(uuid);
+    }
+    QString rowPreviewTakeNetForTest()
+    {
+        if (m_rowPreviewNetQueue.isEmpty())
+            return {};
+        const auto picked = takeRowPreviewCandidate(m_rowPreviewNetQueue);
+        m_rowPreviewNetPending.remove(picked);
+        return picked;
+    }
     // #866 review (exordy finding 1): how many preview lookups are counted in-flight now.
     // The stale-session oracle: a reply from a retired session must leave the NEWER
     // request's marker in place, so a re-catalog can never re-dispatch the uuid.
