@@ -30087,6 +30087,89 @@ NativeAvatarImage {
         QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
     }
 
+    // exordy thread 4692802566 hostile-row sweep on head 6f4d67f4: the two
+    // unpinned permutations of "revert while the save is in flight".
+    // Row own-error: the revert holds, the save fails with its OWN op key, the
+    // dispatch identity retires and the reverted draft equals the untouched
+    // server row again - the marker must CLEAR (nothing needs saving).
+    // Row retype-dispatched: the revert is typed back to the dispatched value
+    // while still in flight, then the save succeeds - the rebase onto
+    // dispatchValues leaves no pending diff, the footer settles on "saved".
+    void channelTopicSummaryEndpointRevertDuringInFlightSaveSettlesByOutcome_data()
+    {
+        QTest::addColumn<bool>("saveFails");
+        QTest::addColumn<bool>("retypeDispatched");
+        QTest::newRow("own-error") << true << false;
+        QTest::newRow("retype-dispatched") << false << true;
+    }
+    void channelTopicSummaryEndpointRevertDuringInFlightSaveSettlesByOutcome()
+    {
+        QFETCH(bool, saveFails);
+        QFETCH(bool, retypeDispatched);
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        std::function<void()> releasePut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response = saveFails
+                    ? Response{QJsonObject{{"detail", "synthetic outage"}}, 500}
+                    : Response{endpointDto};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        QCOMPARE(original, QStringLiteral("Synthetic GPT"));
+        const QString dispatched = original + QStringLiteral("x");
+        name->setProperty("text", dispatched);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the PUT reached the server and is held: op in flight
+        // Shared prologue: revert WHILE in flight must read as unsaved (pinned by
+        // the sibling case); this sweep follows the revert past its two outcomes.
+        name->setProperty("text", original);
+        QTest::qWait(50);
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        if (retypeDispatched) {
+            name->setProperty("text", dispatched); // back onto the in-flight payload
+            QTest::qWait(50);
+            QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        }
+        releasePut();
+        releasePut = nullptr;
+        if (saveFails)
+            QTRY_COMPARE(dialog->property("footerStatus").toString(), QString());
+        else
+            QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        QCOMPARE(name->property("text").toString(), retypeDispatched ? dispatched : original);
+    }
+
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
     {
         ChannelInfoWindowScene scene;
