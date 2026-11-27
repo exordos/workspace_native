@@ -1,3 +1,16 @@
+# Workspace Native 0.51.0 - Linux development preview
+
+- New: the Calendar section page shell is in place - opening Calendar shows the month grid scaffold with the section header, the first slice of the calendar rollout (issue #881, PR #904).
+- Fixed: the calendar month window request now covers every rendered cell, so events on adjacent-month days shown in the grid are fetched too (PR #916).
+- Fixed: sidebar topic rows re-rank by the hydrated last-message stamps, so row order settles once previews arrive instead of shuffling (PR #903).
+- Fixed: the folders reply fence is liveness-guarded against teardown, removing a stale-reply crash path during account switches (issue #864, PR #906).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.50.4 to 0.51.0](https://github.com/exordos/workspace_native/compare/0.50.4...0.51.0)
+
+---
+
 # Workspace Native 0.50.4 - Linux development preview
 
 - Sidebar stream rows now hydrate their last-message preview and timestamp in the background as the catalog is accepted: previews appear after sign-in without opening a conversation, re-ranked rows keep selection, scroll position and keyboard focus across moves, folder switches and search (issue #860).
