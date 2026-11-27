@@ -53,29 +53,19 @@ jobs:
           deadline=$(( SECONDS + 3000 ))
           reuse=false
           while :; do
-            # exordy findings 4712353365/369: the commit check-runs listing is
-            # paginated - fetch EVERY page and hand all pages to the verdict
-            # script, so a required run beyond page 1 can never be missed.
+            # exordy findings 4712353365/369: the commit check-runs listing
+            # is paginated and a TRUNCATED listing must never authorize
+            # reuse. Pagination lives in the tested script (--fetch mode):
+            # it fetches every page until a short page ends the listing and
+            # exits non-zero on truncation or gh failure, so the verdict
+            # below is only ever computed from complete pages.
             fetch_ok=false
             rm -f check-runs-page-*.json
-            page=1
-            while :; do
-              if ! gh api "repos/${GITHUB_REPOSITORY}/commits/${GATE_SHA}/check-runs?per_page=100&page=${page}" \
-                  > "check-runs-page-${page}.json"; then
-                break
-              fi
-              count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["check_runs"]))' "check-runs-page-${page}.json") || break
-              if [ "${count}" -lt 100 ]; then
-                fetch_ok=true
-                break
-              fi
-              if [ "${page}" -ge 20 ]; then
-                echo "::warning::check-runs listing stopped at 20 pages."
-                fetch_ok=true
-                break
-              fi
-              page=$((page + 1))
-            done
+            if python3 packages/native/scripts/master-gate-verdict.py \
+                --fetch "${GATE_SHA}" --repo "${GITHUB_REPOSITORY}" \
+                --out-prefix check-runs-page-; then
+              fetch_ok=true
+            fi
             if [ "${fetch_ok}" = true ]; then
               # The decision lives in one script that is covered by a
               # regression test (packages/native/tests/
