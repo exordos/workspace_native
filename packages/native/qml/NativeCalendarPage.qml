@@ -791,8 +791,11 @@ FocusScope {
         }
         Connections {
             target: page
-            function onVisibleChanged() { if (!page.visible) meetingForm.close() }
-            function onSampleModeChanged() { meetingForm.close() }
+            function onVisibleChanged() {
+                if (page.visible) meetingForm.resumeForSection()
+                else meetingForm.hideForSection()
+            }
+            function onSampleModeChanged() { meetingForm.retire() }
         }
     }
 
@@ -880,7 +883,7 @@ FocusScope {
     Connections {
         target: page.calendarActions
         function onCalendarSessionReset() {
-            meetingForm.close()
+            meetingForm.retire()
             deleteConfirmation.close()
             page.detailEvent = null
         }

@@ -217,3 +217,8 @@ section re-reads its canonical collections, and a hidden section waits until
 the next visit. Repeated event UUIDs and bursts of related updates share a
 refresh. Changes arriving during a Calendar read trigger a follow-up read
 after the requested window settles.
+
+Leaving Calendar during a create keeps the pending form and its UUID with
+that session. Returning restores an unresolved attempt and its warning. If
+another session changes the open meeting, the editor asks the user to close
+and reopen it before saving or moving the refreshed event.

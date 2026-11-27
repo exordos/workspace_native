@@ -6053,6 +6053,10 @@
     <context>
         <name>NativeCalendarMeetingDialog</name>
         <message>
+            <source>This meeting changed or was removed. Close and reopen it before saving.</source>
+            <translation>Встреча изменилась или была удалена. Закройте и откройте её снова перед сохранением.</translation>
+        </message>
+        <message>
             <source>Could not confirm the new meeting. Retry it unchanged or cancel and check your calendar.</source>
             <translation>Не удалось подтвердить создание встречи. Повторите без изменений или отмените и проверьте календарь.</translation>
         </message>
