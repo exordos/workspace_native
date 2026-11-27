@@ -226,9 +226,15 @@ FocusScope {
                             readonly property bool isToday: page.calDate(cellDate) === page.calDate(new Date())
                             readonly property bool isSelected: page.calDate(cellDate) === page.calDate(page.selectedDate)
                             Rectangle {
+                                objectName: "miniCellBg-" + miniCell.modelData
                                 anchors.fill: parent
                                 radius: 6
-                                color: miniCell.isSelected ? page.colors["accent"] : "transparent"
+                                // #924: hover tint per the #665 interaction-state
+                                // pattern, distinct from the selected accent fill.
+                                color: miniCell.isSelected ? page.colors["accent"]
+                                                           : (miniPointer.hovered
+                                                              ? page.colors["card-bg-active"]
+                                                              : "transparent")
                             }
                             Label {
                                 anchors.centerIn: parent
@@ -238,7 +244,11 @@ FocusScope {
                                                                               : page.colors["text-muted"])
                             }
                             MouseArea {
+                                id: miniPointer
+                                objectName: "miniCellHover-" + miniCell.modelData
                                 anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
                                 onClicked: page.selectedDate = miniCell.cellDate
                             }
                         }
@@ -344,6 +354,10 @@ FocusScope {
                                 delegate: Label {
                                     required property var modelData
                                     objectName: "weekChip-" + modelData.uuid
+                                    // #924: bound to the day column and elided,
+                                    // long titles no longer spill past it.
+                                    width: weekColumn.width
+                                    elide: Text.ElideRight
                                     text: modelData.start + " " + modelData.title
                                     color: page.colors["text-primary"]
                                 }
@@ -365,6 +379,7 @@ FocusScope {
                             delegate: Rectangle {
                                 id: monthCell
                                 required property int modelData
+                                objectName: "monthCell-" + modelData
                                 width: 64
                                 height: 64
                                 readonly property var cellDate: {
@@ -375,7 +390,11 @@ FocusScope {
                                 }
                                 readonly property int eventCount: page.visibleEvents(
                                     page.calDate(cellDate), page.calDate(cellDate)).length
-                                color: monthCell.eventCount > 0 ? page.colors["bg-elevated"] : "transparent"
+                                // #924: the hover tint is distinct from the
+                                // event-day fill so both states are separable.
+                                color: monthPointer.hovered ? page.colors["card-bg-active"]
+                                                            : (monthCell.eventCount > 0
+                                                               ? page.colors["bg-elevated"] : "transparent")
                                 radius: 4
                                 Label {
                                     anchors.top: parent.top
@@ -395,13 +414,17 @@ FocusScope {
                                     }
                                 }
                                 MouseArea {
+                                    id: monthPointer
                                     anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: page.selectedDate = monthCell.cellDate
                                 }
                             }
                         }
                     }
                     ListView {
+                        id: monthAgendaList
                         objectName: "calendarMonthAgenda"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -409,6 +432,11 @@ FocusScope {
                         model: page.dayEvents()
                         delegate: Label {
                             required property var modelData
+                            objectName: "monthAgendaRow-" + modelData.uuid
+                            // #924: width bound to the agenda pane, long titles
+                            // elide instead of spilling past the pane edge.
+                            width: monthAgendaList.width
+                            elide: Text.ElideRight
                             text: modelData.start + " " + modelData.title
                             color: page.colors["text-primary"]
                         }

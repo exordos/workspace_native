@@ -690,6 +690,33 @@ public:
     }
 };
 
+// Issue #924: calendar interaction-state and elide pins. Serves two events on
+// the real current day (one with a title long enough to prove elision) through
+// the same channel harness shape as the #911 fixture.
+class WindowCalendarPolishFixture final : public WindowChannelFixture {
+public:
+    static QString longEventUuid() { return QStringLiteral("90000000-0000-4000-8000-0000000000a1"); }
+    WindowCalendarPolishFixture()
+    {
+        const QString today = QDate::currentDate().toString(Qt::ISODate);
+        auto parentHandler = std::move(server.handler);
+        server.handler = [this, parentHandler, today](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/calendar/events")) {
+                return {QJsonArray{
+                    QJsonObject{{"uuid", longEventUuid()}, {"day", today}, {"start", "09:00"},
+                        {"end", "10:00"},
+                        {"title", "Quarterly alignment across all workspace squads and external partners"},
+                        {"calendar", "work"}, {"color_token", "accent"}},
+                    QJsonObject{{"uuid", QStringLiteral("90000000-0000-4000-8000-0000000000a2")},
+                        {"day", today}, {"start", "11:00"}, {"end", "11:30"},
+                        {"title", "Standup"}, {"calendar", "personal"}, {"color_token", "accent"}}}};
+            }
+            return parentHandler(request);
+        };
+    }
+};
+
 // Draft HTTP remains synthetic and is layered over the same catalog, topics,
 // session and actual Main.qml harness as ordinary conversation tests.
 class WindowDraftFixture : public WindowChannelFixture {
@@ -38640,6 +38667,90 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(!view("sidebar"));
         click(window, view("sectionChatButton"));
         QTRY_VERIFY_WITH_TIMEOUT(!view("calendarSectionPage") && view("sidebar"), 5000);
+    }
+
+    // #924: the self-built calendar cells must answer hover (per the #665
+    // interaction-state pattern) and event rows must elide inside their column/
+    // pane. Pins: mini-grid hover tint distinct from idle and from the selected
+    // accent (selected keeps the accent under hover), month-cell hover tint
+    // distinct from the event-day fill, and at 800x600 the long-titled week
+    // chip and month-agenda row stay inside their column/pane with ElideRight.
+    void calendarCellHoverStatesAndEventRowElide()
+    {
+        WindowCalendarPolishFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage");
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("events").toList().size() == 2, 5000);
+        const QColor hoverTint("#cde6ff"); // card-bg-active light (same token as the #910-era chip pins)
+        // Index of today in the 42-cell matrix: the grid starts at the leading
+        // Monday of the selected month (weekStart contract, #911).
+        const QDate today = QDate::currentDate();
+        const QDate monthStart(today.year(), today.month(), 1);
+        const int todayIndex = ((monthStart.dayOfWeek() % 7) + 6) % 7 + (today.day() - 1);
+        const auto cellPoint = [&](QQuickItem *item) {
+            return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+        };
+        // --- mini grid: hover tint on an unselected cell. The QTRY guard waits
+        // for the first layout pass: a freshly incubated delegate still maps to
+        // the scene origin until the Grid has positioned it.
+        auto *miniIdle = view(QStringLiteral("miniCellBg-8")); QVERIFY(miniIdle);
+        QTRY_VERIFY_WITH_TIMEOUT(miniIdle->width() >= 20 && miniIdle->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        const QColor miniIdleFill = miniIdle->property("color").value<QColor>();
+        QTest::mouseMove(window, cellPoint(miniIdle));
+        QTRY_COMPARE_WITH_TIMEOUT(miniIdle->property("color").value<QColor>(), hoverTint, 2000);
+        // The selected cell keeps the accent fill even under hover.
+        auto *miniSelected = view(QStringLiteral("miniCellBg-%1").arg(todayIndex)); QVERIFY(miniSelected);
+        const QColor accent = page->property("colors").toMap().value("accent").value<QColor>();
+        QCOMPARE(miniSelected->property("color").value<QColor>(), accent);
+        QTest::mouseMove(window, cellPoint(miniSelected));
+        QTRY_COMPARE_WITH_TIMEOUT(miniSelected->property("color").value<QColor>(), accent, 1500);
+        // Pointer leave restores the idle fill.
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_COMPARE_WITH_TIMEOUT(miniIdle->property("color").value<QColor>(), miniIdleFill, 2000);
+        // --- month view: hover on the today cell (which carries an event) must
+        // be distinguishable from the event-day fill and restore after leave.
+        page->setProperty("viewMode", "month");
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarMonthGrid"), 5000);
+        auto *todayCell = view(QStringLiteral("monthCell-%1").arg(todayIndex)); QVERIFY(todayCell);
+        QTRY_VERIFY_WITH_TIMEOUT(todayCell->width() >= 40 && todayCell->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        const QColor eventFill = todayCell->property("color").value<QColor>();
+        QVERIFY2(eventFill != hoverTint,
+                 "the hover tint must be distinguishable from the event-day fill");
+        QTest::mouseMove(window, cellPoint(todayCell));
+        QTRY_COMPARE_WITH_TIMEOUT(todayCell->property("color").value<QColor>(), hoverTint, 2000);
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_COMPARE_WITH_TIMEOUT(todayCell->property("color").value<QColor>(), eventFill, 2000);
+        // --- narrow window: the long-titled rows elide inside their containers.
+        window->resize(800, 600);
+        QTRY_VERIFY_WITH_TIMEOUT(window->width() <= 800 && window->height() <= 600, 5000);
+        const QString longUuid = WindowCalendarPolishFixture::longEventUuid();
+        auto *agendaRow = view(QStringLiteral("monthAgendaRow-%1").arg(longUuid)); QVERIFY(agendaRow);
+        QTRY_VERIFY_WITH_TIMEOUT(agendaRow->isVisible(), 5000);
+        QCOMPARE(agendaRow->property("elide").toInt(), int(Qt::ElideRight));
+        QTRY_VERIFY_WITH_TIMEOUT(agendaRow->property("implicitWidth").toReal() > agendaRow->width(), 5000);
+        auto *agendaPane = view("calendarMonthAgenda"); QVERIFY(agendaPane);
+        QVERIFY(agendaRow->width() <= agendaPane->width());
+        page->setProperty("viewMode", "week");
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarWeekGrid"), 5000);
+        auto *chip = view(QStringLiteral("weekChip-%1").arg(longUuid)); QVERIFY(chip);
+        QTRY_VERIFY_WITH_TIMEOUT(chip->isVisible(), 5000);
+        QCOMPARE(chip->property("elide").toInt(), int(Qt::ElideRight));
+        QTRY_VERIFY_WITH_TIMEOUT(chip->property("implicitWidth").toReal() > chip->width(), 5000);
+        QVERIFY(chip->parentItem());
+        QVERIFY(chip->width() <= chip->parentItem()->width());
     }
 
     // Issue #911: the month grid renders a FIXED 42-cell matrix that starts at
