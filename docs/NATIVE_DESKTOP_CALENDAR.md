@@ -191,3 +191,19 @@ and event pages are accepted together for the current account/project and
 window. An event must reference a returned calendar in that project. Changing
 session retires pending pages. Server events are read-only here. The sample
 calendar remains the separate local editor for the UI phase.
+
+## Personal event changes
+
+On the server view, Create meeting lists the current account's writable personal
+calendars. A meeting in one of those calendars can be edited, moved to another
+writable personal calendar, or deleted after confirmation. The editor hides
+participants because the personal-event payload carries no invitations. Edit
+preserves the description and UTC precision of existing instants. Move uses
+the dedicated action and keeps the event UUID and payload.
+
+The form stays open while the request is pending or when its result cannot be
+confirmed. A new meeting keeps its generated UUID across retries of that form.
+After an uncertain create the client checks the exact UUID, calendar and
+payload before showing success. The accepted change reloads the visible
+window from Workspace. An account change closes outstanding dialogs and
+retires their responses. Imported calendars remain read-only in this slice.
