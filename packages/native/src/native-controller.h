@@ -390,6 +390,28 @@ public:
     // stage has actually dispatched. The mock's HTTP/1 connection pool cannot show an
     // over-dispatch at the server, so the cap is observed at the client seam.
     int rowPreviewNetworkIssuedForTest() const { return m_rowPreviewNetIssued; }
+    // #888 witness: catalog-record inspections attributed to preview candidate
+    // enumeration (streams + topics). Tests reset it, drive catalog/topic accepts (or
+    // the scoped seam directly) and bound the GROWTH between catalog sizes - the old
+    // quadratic enumeration cannot satisfy those bounds. Timing-independent by design.
+    qint64 rowPreviewSeedWorkForTest() const { return m_rowPreviewSeedWork; }
+    // #888 (exordy round 2): the reset also forces the reusable stream-uuid index
+    // cold, so a bounded sweep measurement always starts from the same clean
+    // state - the quadratic shape pays a scan per accept from cold too.
+    void resetRowPreviewSeedWorkForTest() { m_rowPreviewSeedWork = 0; m_streamsRowTag = ~0ull; }
+    // #888 witness: drive the scoped topic-accept seed exactly as the catalog parser
+    // does after accepting one stream's topic rows.
+    void seedStreamPreviewsForTest(const QString &streamUuid)
+    {
+        seedRowPreviewHydrationForStream(streamUuid);
+    }
+    // #888 round 3 witness (exordy finding 4713938731): which preview pointer the
+    // scoped seed actually attributed - used to pin that a duplicate-uuid stream
+    // list never reaches the seed at all (catalog ingestion rejects it).
+    QString rowPreviewStreamOfForTest(const QString &messageUuid) const
+    {
+        return m_rowPreviewStreamOf.value(messageUuid);
+    }
     // #866 witness (exordy finding 2): drive the network pump's queue exactly as a
     // catalog seed would (owner map + enqueue) and take candidates with the very
     // pick function the pump uses. Mock arrival order over the HTTP connection
@@ -2365,6 +2387,11 @@ private:
     // disk-stage re-reads before the quiet memo is finally stored.
     static constexpr int rowPreviewLateDiskRetries = 2;
     void seedRowPreviewHydrationFromCatalog();
+    // #888: a single stream's topic catalog accept seeds only its own rows.
+    void seedRowPreviewHydrationForStream(const QString &streamUuid);
+    // #888: work oracle for the linear-enumeration contract - counts every catalog
+    // record inspection (stream row or topic row) attributed to preview seeding.
+    void recordRowPreviewSeedWork(int inspections) const { m_rowPreviewSeedWork += inspections; }
     void scheduleRowPreviewNetworkHydration();
     void pumpRowPreviewNetworkHydration();
     // #866 review (exordy finding 2): the pumps consume their pending queues in a
@@ -2397,6 +2424,17 @@ private:
     QSet<QString> m_rowPreviewNetInFlight;
     QHash<QString, int> m_rowPreviewNetRetries;
     int m_rowPreviewNetIssued = 0; // test-only dispatch counter (rowPreviewNetworkIssuedForTest)
+    mutable qint64 m_rowPreviewSeedWork = 0; // #888 test-only inspection counter
+    // #888 (exordy round 2, finding 4713852581): the scoped topic-accept seed runs
+    // once per accepted stream; locating the owning record with a full scan made a
+    // sweep of N accepts quadratic in the channel list. This index maps a stream
+    // uuid to its row in m_streams and is rebuilt only after a structural change
+    // of the streams collection (m_streamsMutation), so repeated accepts reuse one
+    // linear pass instead of re-scanning per accept.
+    int streamRowByUuid(const QString &uuid);
+    quint64 m_streamsMutation = 0;   // bumped by every structural m_streams change
+    quint64 m_streamsRowTag = ~0ull; // mutation tag m_streamsRow was built at
+    QHash<QString, int> m_streamsRow;
     // #860: per-uuid budget for the late disk re-reads a network negative buys.
     QHash<QString, int> m_rowPreviewLateDiskRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit
