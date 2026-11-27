@@ -184,6 +184,7 @@ runs = [{"name": "pad-%d-%d" % (page, i),
          "status": "completed", "conclusion": "success",
          "check_suite": {"event": "push", "head_branch": "master"}}
         for i in range(count)]
+runs.extend(spec.get("extra_runs", {}).get(str(page), []))
 print(json.dumps({"check_runs": runs}))
 """
 
@@ -232,6 +233,37 @@ class FetchModeTests(unittest.TestCase):
         rc, _out, _written = self.invoke_fetch(
             {"pages": {"1": 100}, "fail_at": 2}, max_pages=50)
         self.assertEqual(rc, 4)
+
+    def test_truncated_listing_with_visible_red_blocks(self):
+        # exordy finding 4714995326: the in-job fallback gate must never
+        # outrace a red master-push check that is already visible on the
+        # fetched pages. Truncation forbids REUSE only; a visible completed
+        # non-success still blocks the publish immediately.
+        spec = {"pages": {"1": 100},
+                "extra_runs": {"1": [run("full-gate-linux", status="completed",
+                                         conclusion="failure")]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=1)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
+    def test_fetch_error_with_visible_red_still_blocks(self):
+        # A gh failure after a page that already shows a red must block too:
+        # the red was observed, the failure only means the listing is wider.
+        spec = {"pages": {"1": 100}, "fail_at": 2,
+                "extra_runs": {"1": [run("package-linux", status="completed",
+                                         conclusion="timed_out")]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
+    def test_truncated_listing_without_red_stays_incomplete(self):
+        # Guard for the guard: no visible red on a truncated listing must
+        # keep the old fail-closed-for-reuse verdict rc 3 (fallback allowed).
+        spec = {"pages": {"1": 100},
+                "extra_runs": {"1": [run("package-linux"),
+                                     run("full-gate-linux")]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=1)
+        self.assertEqual(rc, 3, out)
 
 
 if __name__ == "__main__":

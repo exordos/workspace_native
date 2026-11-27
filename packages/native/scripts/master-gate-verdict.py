@@ -122,6 +122,20 @@ def main(argv):
             gh_bin=opts.get("gh", "gh"),
             per_page=int(opts.get("per-page", 100)),
             max_pages=int(opts.get("max-pages", 50)))
+        # exordy finding 4714995326: completeness is required only to ACCEPT
+        # reuse, never to honour a visible block. A completed non-success
+        # among the runs we did fetch must block the publish even when the
+        # listing came back truncated or the gh call later failed - the
+        # in-job fallback gate must never outrace an observed red.
+        if paths:
+            merged = {"check_runs": []}
+            for path in paths:
+                with open(path, encoding="utf-8") as handle:
+                    merged["check_runs"].extend(
+                        json.load(handle).get("check_runs", []))
+            if decide(merged) == "block":
+                print("block (%d pages)" % len(paths))
+                return 2
         print("%s (%d pages)" % (status, len(paths)))
         return {"complete": 0, "truncated": 3, "error": 4}[status]
     if len(argv) < 2:
