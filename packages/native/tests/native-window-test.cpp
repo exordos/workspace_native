@@ -16575,10 +16575,18 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
+        // Issue #932: sidebar delegates incubate one polish pass after the
+        // controller collection changed. Under shard load that pass can land
+        // after the click helper's readiness wait, the direct lookup returns
+        // nullptr ('guard' FALSE), and every downstream scroll pin fails.
+        // Wait for the delegate to exist before clicking it.
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
         click(window, item(window->contentItem(), "stream-" + streamId));
         QTRY_COMPARE(controller.topics().size(), aggregate ? 2 : 1);
-        if (!aggregate)
+        if (!aggregate) {
+            QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
             click(window, item(window->contentItem(), "topic-" + topicId));
+        }
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
