@@ -41822,15 +41822,20 @@ private slots:
         QTRY_VERIFY(controller.activityOpen());
         auto *row = view("activityRow-inbox"); QVERIFY(row);
         auto *label = view("activityRowLabel-inbox"); QVERIFY(label);
-        const QColor base = row->property("color").value<QColor>();
-        QVERIFY2(base.isValid(), "activity row lost its base fill");
-        const QPointF claimant = label->mapToScene(
-            QPointF(label->width() / 2.0, label->height() / 2.0));
-        QTest::mouseMove(window, claimant.toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != base, 2000);
-        // Neutral corner away from every row: the fill must revert.
-        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == base, 2000);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const auto palette = window->property("colors").toMap();
+        const auto point = label->mapToScene(QPointF(
+            qMin(label->property("contentWidth").toReal(), label->width()) / 2, label->height() / 2));
+        const auto idle = QColor(palette.value("card-bg").toString());
+        const auto hovered = QColor(palette.value("card-bg-active").toString());
+        QTest::mouseMove(window, QPoint(3, 3));
+        QTRY_COMPARE(row->property("color").value<QColor>(), idle);
+        QTest::mouseMove(window, point.toPoint());
+        QTRY_COMPARE(row->property("color").value<QColor>(), hovered);
+        QTest::mouseMove(window, QPoint(3, 3));
+        QTRY_COMPARE(row->property("color").value<QColor>(), idle);
     }
 
     // Issue #942 subtask B witness: the horizontal rail chip has no internal
@@ -46457,15 +46462,12 @@ private:
 
         // The fenced block grows the mounted copy button (reference
         // workspace-message-body-interactions.hook.ts:137-214).
-        QTRY_VERIFY(item(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
-        auto *button = visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0");
+        QTRY_VERIFY(visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0"));
         auto *label = item(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
         QCOMPARE(label->property("text").toString(), QStringLiteral("Copy"));
 
-        // Pointer activation of the mounted button; the delegate exports one
-        // performCopy() code path shared by the MouseArea and this invoke
-        // (pointer routing itself is covered by the right-click Copy link case).
-        QMetaObject::invokeMethod(button, "performCopy");
+        // Activate at the painted text so competing bubble handlers participate.
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("echo copy-me"), 3000);
         // Success feedback lasts CODE_COPY_RESET_MS = 1200 ms before the idle
         // label returns (hook.ts:25,140-162).
@@ -46671,10 +46673,12 @@ private:
         QTRY_VERIFY(visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
         auto *button = visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0");
         auto *label = visibleItem(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
-        QVERIFY2(button->property("color").value<QColor>().alpha() == 0,
-            "the code-copy chip no longer starts transparent");
-        QTest::mouseMove(window,
-            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QSignalSpy layoutFrame(window, &QQuickWindow::frameSwapped);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        window->update();
+        QTRY_VERIFY(!layoutFrame.isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() == 0, 2000);
+        QTest::mouseMove(window, label->mapToScene(label->boundingRect().center()).toPoint());
         QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() > 0, 2000);
         // Neutral corner away from the bubble: the fill must revert.
         QTest::mouseMove(window, QPoint(window->width() - 40, 8));
@@ -46737,7 +46741,7 @@ private:
 
         auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
         clipboard->setText(QStringLiteral("media-copy-sentinel"));
-        QMetaObject::invokeMethod(button, "performCopy");
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("sed -i copy-media"), 3000);
         QTRY_VERIFY_WITH_TIMEOUT(label->property("text").toString() == QStringLiteral("Copied"), 600);
         clipboard->setText(QStringLiteral("media-copy-sentinel-after"));
