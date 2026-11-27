@@ -37,11 +37,11 @@ Item {
             const endDate = event.endUtc ? Qt.formatDate(new Date(event.endUtc), "yyyy-MM-dd")
                                          : (event.lastDay || event.day)
             let end = endDate > date ? 1440 : minutes(event.end)
-            if (event.day === date && endDate === date && event.startUtc && event.endUtc) {
+            if (end <= start && event.day === date && endDate === date && event.startUtc && event.endUtc) {
                 // The displayed wall clock repeats an hour when daylight saving time ends.
                 const elapsed = (Date.parse(event.endUtc) - Date.parse(event.startUtc)) / 60000
                 if (elapsed > 0)
-                    end = Math.min(1440, Math.max(end, start + elapsed))
+                    end = Math.min(1440, start + elapsed)
             }
             timed.push({event, start, end: Math.max(start + 1, end), lane: 0, lanes: 1})
         }

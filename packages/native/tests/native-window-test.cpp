@@ -40039,10 +40039,17 @@ QTRY_VERIFY(create->property("enabled").toBool());
             QQmlExpression expression(qmlContext(week), week, script);
             return expression.evaluate();
         };
+        const auto laidOutEnd = [&](const QString &start, const QString &end,
+                                    const QString &startUtc, const QString &endUtc) {
+            const auto date = QDateTime::fromString(endUtc, Qt::ISODate).toLocalTime().date().toString(Qt::ISODate);
+            return evaluateWeek(QStringLiteral("arrange([{day:'%1', start:'%2', end:'%3', "
+                                               "startUtc:'%4', endUtc:'%5'}], '%1').timed[0].end")
+                                .arg(date, start, end, startUtc, endUtc)).toInt();
+        };
         // The clock repeats 01:00 in New York. The second 01:15 follows the first 01:45.
-        QCOMPARE(evaluateWeek(R"(arrange([{day:"2026-11-01", start:"01:45", end:"01:15",
-            startUtc:"2026-11-01T05:45:00Z", endUtc:"2026-11-01T06:15:00Z"}],
-            "2026-11-01").timed[0].end)").toInt(), 135);
+        QCOMPARE(laidOutEnd("01:45", "01:15", "2026-11-01T05:45:00Z", "2026-11-01T06:15:00Z"), 135);
+        // An unambiguous end belongs at its wall-clock position on the 24-hour grid.
+        QCOMPARE(laidOutEnd("00:30", "03:30", "2026-11-01T04:30:00Z", "2026-11-01T08:30:00Z"), 210);
         evaluateWeek(R"(eventsForDate = function(date) {
             if (Qt.formatDate(date, "yyyy-MM-dd") !== Qt.formatDate(dates[0], "yyyy-MM-dd")) return [];
             const day = Qt.formatDate(date, "yyyy-MM-dd");
@@ -40056,8 +40063,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         auto *timeline = view("calendarWeekTimeline");
         auto *allDay = view("calendarWeekAllDay");
         QVERIFY(timeline && allDay);
+        QTRY_VERIFY(allDay->height() > 0 && allDay->property("contentHeight").toReal() > allDay->height());
         QVERIFY(timeline->height() >= week->height() / 2);
-        QVERIFY(allDay->property("contentHeight").toReal() > allDay->height());
         auto *lastAllDay = view("weekChip-all39");
         QVERIFY(lastAllDay);
         lastAllDay->forceActiveFocus(Qt::TabFocusReason);
