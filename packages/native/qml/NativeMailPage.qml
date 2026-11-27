@@ -75,6 +75,20 @@ Item {
                 }
             }
         }
+        Text {
+            objectName: "mailSampleNotice"
+            Layout.fillWidth: true
+            Layout.leftMargin: 16
+            Layout.rightMargin: 16
+            Layout.bottomMargin: 12
+            visible: page.mail && page.mail.sampleFolders
+            text: page.mail && page.mail.sampleMessages
+                ? qsTr("Sample mailbox. These messages and unread counts are examples.")
+                : qsTr("Sample folders. The unread counts are examples.")
+            font.pixelSize: 13
+            color: page.textColor
+            wrapMode: Text.WordWrap
+        }
         Rectangle {
             Layout.fillWidth: true
             height: 1

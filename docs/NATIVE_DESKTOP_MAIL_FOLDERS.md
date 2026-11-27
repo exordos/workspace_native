@@ -114,6 +114,9 @@ consulted; the node id recorded by the issue is Mailbox and folders
   solely by the folders response: if `/mail/folders` answered `200`, a `404` on
   `/mail/messages` stays `error` with an empty list, so sample rows can never be
   listed under server-provided folders (exordy finding 4712650373).
+- Mail identifies built-in folders, unread counts and messages with a persistent
+  localized notice below the header. If only the folders come from the sample,
+  the notice identifies only the folder data as examples.
 - All server-supplied strings (folder title, message rows, reader headers and body) render with `textFormat: Text.PlainText`, so HTML-shaped
   content can never be interpreted as rich text or request remote images
   (exordy finding 4712325992).

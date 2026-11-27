@@ -92,6 +92,7 @@ void MailStore::reset()
     m_folderId = QStringLiteral("inbox");
     m_selectedMessage.clear();
     m_sampleMode = false;
+    m_sampleMessages = false;
     m_state = QStringLiteral("idle");
     emit mailChanged();
 }
@@ -186,12 +187,14 @@ void MailStore::loadMessages()
             if (self->m_folderId != folder)
                 return;
             self->m_messages = sampleMessages(folder);
+            self->m_sampleMessages = true;
             self->m_state = QStringLiteral("ready");
             emit self->mailChanged();
             return;
         }
         if (result.status != 200 || !result.data.isObject()) {
             self->m_messages.clear();
+            self->m_sampleMessages = false;
             self->m_state = QStringLiteral("error");
             emit self->mailChanged();
             return;
@@ -223,6 +226,7 @@ void MailStore::loadMessages()
         if (self->m_folderId != folder)
             return;
         self->m_messages = messages;
+        self->m_sampleMessages = false;
         self->m_state = QStringLiteral("ready");
         emit self->mailChanged();
     });
