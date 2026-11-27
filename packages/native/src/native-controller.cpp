@@ -14795,7 +14795,16 @@ void NativeController::loadFolders()
     if (!authenticated())
         return;
     const auto catalog = m_catalog;
-    const auto guard = [this, catalog] { return catalog == m_catalog && authenticated(); };
+    // Issue #864: the catalog fence is required but not sufficient at teardown.
+    // A folders reply settling while an outer object's destructor pumps events
+    // (e.g. ~NativeCacheService drains its writer) fires this fence on an
+    // already-destroyed controller - the fence itself dereferences the dead
+    // `this`, then the callback emits foldersChanged() on the dead QObject
+    // (SIGSEGV in QObjectPrivate::maybeSignalConnected). The liveness check goes
+    // FIRST: QPointer reads are safe on destroyed QObjects, matching the late-
+    // reply guards everywhere else in this file.
+    const QPointer<NativeController> alive(this);
+    const auto guard = [this, catalog, alive] { return alive && catalog == m_catalog && authenticated(); };
     const auto synthesize = [this] {
         // Reference fixed system slots; used when the server has no row for a
         // system folder. Synthesized slots never scope the sidebar.
