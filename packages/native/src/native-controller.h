@@ -327,13 +327,14 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
     // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): events
-    // for the visible window, fetched from GET /calendar/events?from&to.
+    // for the visible window and the authenticated account’s calendar list.
     // Calendar state carries its own NOTIFY (issue #881, #89 lesson): the fetch
     // fires while Main.qml's `visible: section === "calendar"` binding is still
     // being evaluated (page onVisibleChanged -> refreshWindow -> request), and a
     // stateChanged emission here re-dirtied the section dependency mid-evaluation
     // - Qt raised "Binding loop detected for property visible" and the warning
     // poisoned every window case in the shard. Notify only what calendar changed.
+    Q_PROPERTY(QVariantList calendarCatalog READ calendarCatalog NOTIFY calendarChanged)
     Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY calendarChanged)
     Q_PROPERTY(bool sampleCalendar READ sampleCalendar WRITE setSampleCalendar NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY calendarChanged)
@@ -766,6 +767,7 @@ public:
     QVariantMap feedPage() const;
     // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): UI-phase
     // events for the last fetched window; the live adapter is #852.
+    QVariantList calendarCatalog() const { return m_calendar.calendars; }
     bool sampleCalendar() const { return m_calendar.sample; }
     void setSampleCalendar(bool enabled);
     Q_INVOKABLE bool saveSampleMeeting(const QString &uuid, const QVariantMap &draft);
@@ -876,7 +878,7 @@ public:
     Q_INVOKABLE void showInbox();
     Q_INVOKABLE void showSection(const QString &name);
     // Calendar section page (#881): fetch the visible [from,to] window of
-    // events (GET /calendar/events?from&to) and re-fetch it on retry.
+    // events and re-fetch it on retry.
     Q_INVOKABLE void requestCalendarWindow(const QString &from, const QString &to);
     Q_INVOKABLE void retryCalendar();
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
@@ -2770,8 +2772,19 @@ private:
     // The version fences late answers of a retired window (same monotonic
     // identity discipline as FeedState, issue #356); a re-show of the same
     // loaded window is not re-fetched, so section re-entry is traffic-free.
+    struct CalendarWindowRead {
+        quint64 version;
+        QString owner;
+        QUrlQuery range;
+        QVariantMap calendars, events;
+        QSet<QByteArray> markers;
+        bool readingEvents = false;
+        qsizetype seenRows = 0;
+    };
+    void readCalendarPage(const std::shared_ptr<CalendarWindowRead> &read, const QByteArray &marker = {});
+    void finishCalendarWindow(const CalendarWindowRead &read, int status);
     struct CalendarState {
-        QVariantList events;
+        QVariantList calendars, events;
         QVariantMap sampleEvents; // UUID -> session-local meeting
         bool sample = false;
         QString from, to;

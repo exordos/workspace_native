@@ -5,8 +5,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // Calendar section page shell (issue #881, Part of #851,
-// docs/NATIVE_DESKTOP_CALENDAR.md). UI phase: deterministic fixture data is
-// fed through `events`; the live adapter is #852. The reference app ships no
+// docs/NATIVE_DESKTOP_CALENDAR.md). Both the Workspace reader and the sample
+// calendar supply the QML event model. The reference app ships no
 // functional calendar screen (embed placeholder only), so layout follows the
 // cached Figma frame names 18693:32760 (day), 18693:32323 (week),
 // 18693:33825 (month); concrete metrics are marked pending-Figma until the
@@ -17,16 +17,30 @@ FocusScope {
 
     required property var colors
     property var events: []
+    required property var calendars
     required property bool sampleMode
     required property var saveSampleMeeting
     required property var deleteSampleMeeting
     signal sampleModeRequested(bool enabled)
-    onSampleModeChanged: detailEvent = null
+    onSampleModeChanged: {
+        detailEvent = null
+        hiddenCalendars = []
+    }
+    onCalendarsChanged: {
+        if (!sampleMode) {
+            const ids = calendars.map(row => row.key)
+            hiddenCalendars = hiddenCalendars.filter(id => ids.indexOf(id) >= 0)
+        }
+    }
+    onEventsChanged: {
+        if (detailEvent)
+            detailEvent = events.find(row => row.uuid === detailEvent.uuid) || null
+    }
     property date selectedDate: new Date()
     property string viewMode: "day"
     property bool loading: false
     property bool error: false
-    property var activeCalendars: ["work", "personal"]
+    property var hiddenCalendars: []
     property string uiLocale: "en"
 
     // Localized full date for keyboard-focus announced cell names (#925).
@@ -71,7 +85,7 @@ FocusScope {
     function visibleEvents(fromDate, toDate) {
         const out = [];
         for (const ev of events) {
-            if (activeCalendars.indexOf(String(ev.calendar)) < 0)
+            if (hiddenCalendars.indexOf(String(ev.calendar)) >= 0)
                 continue;
             if (String(ev.lastDay || ev.day) >= fromDate && String(ev.day) <= toDate)
                 out.push(ev);
@@ -436,37 +450,50 @@ FocusScope {
                         }
                     }
                 }
-                Repeater {
-                    id: filterRows
-                    objectName: "calendarFilters"
-                    model: [
-                        { key: "work", label: qsTr("Work") },
-                        { key: "personal", label: qsTr("Personal") }
-                    ]
-                    delegate: CheckBox {
-                        objectName: "calendarFilter" + modelData.key.charAt(0).toUpperCase()
-                                      + modelData.key.slice(1)
-                        required property var modelData
-                        text: modelData.label
-                        checked: page.activeCalendars.indexOf(modelData.key) >= 0
-                        // onToggled, NOT onCheckedChanged: the checked binding reads
-                        // activeCalendars, so a data-driven re-check that wrote the
-                        // array back (as onCheckedChanged did) re-entered the binding
-                        // and Qt froze the projection with "Binding loop detected for
-                        // property checked" (CI #904: the warning poisoned every
-                        // window case in the shard). Only user toggles mutate the
-                        // filter now, and only on a real membership change.
-                        onToggled: {
-                            const cur = page.activeCalendars.slice();
-                            const idx = cur.indexOf(modelData.key);
-                            if (checked && idx < 0) cur.push(modelData.key);
-                            else if (!checked && idx >= 0) cur.splice(idx, 1);
-                            else return;
-                            page.activeCalendars = cur;
+                ScrollView {
+                    id: filterScroll
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    activeFocusOnTab: false
+                    clip: true
+                    contentWidth: availableWidth
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                    Column {
+                        width: filterScroll.availableWidth
+                        Repeater {
+                            id: filterRows
+                            objectName: "calendarFilters"
+                            model: page.sampleMode ? [
+                                { key: "work", label: qsTr("Work") },
+                                { key: "personal", label: qsTr("Personal") }
+                            ] : page.calendars
+                            delegate: CheckBox {
+                                id: filter
+                                objectName: "calendarFilter" + modelData.key.charAt(0).toUpperCase()
+                                            + modelData.key.slice(1)
+                                required property var modelData
+                                width: filterScroll.availableWidth
+                                text: modelData.label
+                                contentItem: Text {
+                                    leftPadding: filter.mirrored ? 0 : filter.indicator.width + filter.spacing
+                                    rightPadding: filter.mirrored ? filter.indicator.width + filter.spacing : 0
+                                    text: filter.text
+                                    textFormat: Text.PlainText
+                                    color: page.colors["text-primary"]
+                                    font: filter.font
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                }
+                                checked: page.hiddenCalendars.indexOf(modelData.key) < 0
+                                onToggled: {
+                                    const others = page.hiddenCalendars.filter(id => id !== modelData.key)
+                                    page.hiddenCalendars = checked ? others : others.concat([modelData.key])
+                                }
+                            }
                         }
                     }
                 }
-                Item { Layout.fillHeight: true }
             }
 
             // ---- main pane: active view ----
@@ -750,8 +777,7 @@ FocusScope {
         onDeleteRequested: (uuid, title) => deleteConfirmation.ask(uuid, title)
         onSaved: (start, calendar) => {
             page.detailEvent = null
-            if (page.activeCalendars.indexOf(calendar) < 0)
-                page.activeCalendars = page.activeCalendars.concat([calendar])
+            page.hiddenCalendars = page.hiddenCalendars.filter(id => id !== calendar)
             page.selectedDate = start
         }
         Connections {
