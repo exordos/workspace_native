@@ -309,6 +309,8 @@ public:
                 return realtime(request);
             if (path.endsWith("/server_settings"))
                 return serverSettings ? serverSettings(request) : Response{organizationSettingsDto()};
+            if (path.contains("/calendar/") && calendar)
+                return calendar(request);
             return authentication ? authentication(request) : sessionResponse(request);
         };
     }
