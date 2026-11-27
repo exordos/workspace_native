@@ -8955,10 +8955,14 @@ void NativeController::resetFeed()
 // ---- Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md) ----
 // UI-phase data contract: GET /calendar/events?from&to serves the events
 // intersecting the visible window; the live server adapter is #852. Rows stay
-// plain maps ({uuid, day, start, end, title, calendar, colorToken}) because
+// plain maps ({uuid, day, start, end, title, calendar, colorToken, location,
+// allDay, startUtc, endUtc, participants}) because
 // every view (agenda, week columns, month cells) needs random per-day access,
 // not a paginated sequence - the QAbstractListModel shape would only serve the
 // agenda list and force a second index for the grids (design doc amended).
+// #907 additions (event detail): location, all_day, start_utc/end_utc ISO
+// instants (display is converted to the client zone; stored instants stay UTC)
+// and participants (list of display names).
 
 void NativeController::requestCalendarWindow(const QString &from, const QString &to)
 {
@@ -8994,6 +8998,9 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         QVariantList events;
         for (const auto &value : result.data.toArray()) {
             const auto row = value.toObject();
+            QVariantList participants;
+            for (const auto &person : row.value("participants").toArray())
+                participants.append(person.toString());
             events.append(QVariantMap{
                 {"uuid", row.value("uuid").toString()},
                 {"day", row.value("day").toString()},
@@ -9002,6 +9009,11 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
                 {"title", row.value("title").toString()},
                 {"calendar", row.value("calendar").toString()},
                 {"colorToken", row.value("color_token").toString()},
+                {"location", row.value("location").toString()},
+                {"allDay", row.value("all_day").toBool()},
+                {"startUtc", row.value("start_utc").toString()},
+                {"endUtc", row.value("end_utc").toString()},
+                {"participants", participants},
             });
         }
         m_calendar.events = events;
