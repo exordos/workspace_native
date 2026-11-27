@@ -1,3 +1,4 @@
+addMembersOptionFillsOnLabelCenterHover=0.949405
 anchorOverlayOwnsOnlyItsVisibleConversation=6.14884
 archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable=0.81737
 channelTopicSummaryDialogEffortPickSendsFieldAndClosesOnSuccess=1.2516

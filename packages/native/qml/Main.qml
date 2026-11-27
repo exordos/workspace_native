@@ -11468,20 +11468,31 @@ component NativeMentionChip: Item {
                                 Accessible.name: codeCopyLabel.text
                                 Accessible.onPressAction: codeCopyButton.performCopy()
                                 x: bubbleContent.x + (mountPart < 0 ? messageBody.width : mediaMessageBody.width) - width - 2
-                                // runShift is only a re-layout dependency: the
-                                // image loads after delegate creation and shifts
-                                // the media runs, so the y expression must be
-                                // re-evaluated once the run settles (mapToItem
-                                // already carries the full path to bubble).
-                                readonly property real runShift: mountPart < 0 ? 0
-                                    : (imageRuns.count > mountPart ? imageRuns.itemAt(mountPart).y : 0)
+                                // Issue #944 probe: runShift is only a re-layout
+                                // dependency. The body/probe document is laid
+                                // out one pass AFTER this delegate is incubated
+                                // (and re-wrapped when the bubble width settles),
+                                // so a y binding that reads only the object
+                                // identity freezes at the un-laid-out offset and
+                                // the chip can mount below the row, outside
+                                // Qt's pointer-delivery walk. Read the layout
+                                // target's live box so positionToRectangle
+                                // re-evaluates when the document settles; the
+                                // media branch additionally keeps the run's own
+                                // y (mapToItem already carries the full path).
+                                readonly property real runShift: layoutTarget
+                                    ? layoutTarget.width + layoutTarget.contentHeight
+                                        + (mountPart < 0 ? 0
+                                            : (imageRuns.count > mountPart
+                                                ? imageRuns.itemAt(mountPart).y : 0))
+                                    : 0
                                 y: layoutTarget && layoutTarget.length > Number(modelData.start)
                                     ? layoutTarget.mapToItem(bubble, 0,
                                         layoutTarget.positionToRectangle(Number(modelData.start)).y).y + 2
                                         + runShift - runShift : 0
-                                color: codeCopyMouse.containsMouse || codeCopyButton.activeFocus
+                                color: codeCopyHover.hovered || codeCopyButton.activeFocus
                                     ? root.colors["bg-elevated"] : "transparent"
-                                border.width: codeCopyMouse.containsMouse || codeCopyButton.activeFocus ? 1 : 0
+                                border.width: codeCopyHover.hovered || codeCopyButton.activeFocus ? 1 : 0
                                 border.color: root.colors["border-subtle"]
                                 Keys.onPressed: event => {
                                     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
@@ -11509,12 +11520,19 @@ component NativeMentionChip: Item {
                                     copyState = root.controller.copyToClipboard(codeText) ? "copied" : "failed";
                                     codeCopyReset.restart();
                                 }
-                                MouseArea {
-                                    id: codeCopyMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
+                                // Issue #944: Qt 6.10 delivers hover only to the
+                                // claimant under the pointer and its ancestors,
+                                // so the interior MouseArea never lit the fill
+                                // from the label point. A root-level HoverHandler
+                                // owns the hover state now; taps go through a
+                                // TapHandler so pointer, keyboard and a11y keep
+                                // the one shared performCopy() path.
+                                HoverHandler {
+                                    id: codeCopyHover
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: codeCopyButton.performCopy()
+                                }
+                                TapHandler {
+                                    onTapped: codeCopyButton.performCopy()
                                 }
                                 Timer {
                                     id: codeCopyReset

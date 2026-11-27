@@ -181,6 +181,22 @@ static void pickComboOption(QQuickWindow *window, QQuickItem *combo, const QStri
     click(window, row);
 }
 
+// Exercise the visual binding at the painted glyph or text, including the return
+// to idle after the pointer leaves the control.
+static void checkControlHover(QQuickWindow *window, QQuickItem *control,
+                              const QPoint &point, const QPoint &away,
+                              const QString &property, QColor idle, QColor hovered)
+{
+    const auto color = [&] { return QQmlProperty::read(control, property).value<QColor>(); };
+    QVERIFY(idle.isValid() && hovered.isValid() && idle != hovered);
+    QTest::mouseMove(window, away);
+    QTRY_COMPARE(color(), idle);
+    QTest::mouseMove(window, point);
+    QTRY_COMPARE(color(), hovered);
+    QTest::mouseMove(window, away);
+    QTRY_COMPARE(color(), idle);
+}
+
 static int itemCountWithPrefix(QQuickItem *root, const QString &prefix)
 {
     int count = root->objectName().startsWith(prefix);
@@ -4138,6 +4154,12 @@ private slots:
         QVERIFY(!visibleItem("nativeAboutDrawer"));auto *indicator=visibleItem("nativeUpdateIndicator");QVERIFY(indicator);
         QCOMPARE(indicator->width(),qreal(36));QCOMPARE(indicator->height(),qreal(36));
         QCOMPARE(profile->mapToScene(QPointF{}),profilePosition);
+        const auto palette = window->property("colors").toMap();
+        auto *glyph = indicator->property("contentItem").value<QQuickItem *>();
+        QVERIFY(glyph);
+        checkControlHover(window, indicator, glyph->mapToScene(glyph->boundingRect().center()).toPoint(),
+                          QPoint(3, 3), "icon.color", QColor(palette.value("accent").toString()),
+                          QColor(palette.value("text-primary").toString()));
         click(window,indicator);QTRY_VERIFY(visibleItem("nativeAboutDrawer"));QCOMPARE(releases.requests.size(),2);
         click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
         QCOMPARE(updater.state(),QString("downloading"));QCOMPARE(releases.requests.size(),2);
@@ -6583,6 +6605,252 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(fixture.starredLists >= 2);
     }
 
+    // Issue #945 witness: the inbox row fill/border was driven by the row's
+    // own MouseArea (`rowArea`, NativeInboxPage.qml). Qt 6.10 delivers hover
+    // only to the claimant under the pointer and its ancestors, so the oracle
+    // hovers the ROW LABEL CENTER and requires the fill to light there; the
+    // pre-migration site only lit from its own surface.
+    void inboxRowFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        class WindowInboxHoverFixture final : public WindowChannelFixture {
+        public:
+            WindowInboxHoverFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const auto path = request.target.path();
+                    if (path.endsWith("/streams/") && request.method == "GET") {
+                        auto dm = windowChannel(dmStreamId, "Alice");
+                        dm["private"] = true;
+                        dm["direct_user_uuid"] = channelPeer;
+                        dm["unread_count"] = 5;
+                        dm["active_unread_count"] = 5;
+                        auto team = windowChannel(streamId, "Product team");
+                        team["default_topic_uuid"] = topicId;
+                        team["unread_count"] = 3;
+                        team["active_unread_count"] = 3;
+                        return {QJsonArray{team, dm}};
+                    }
+                    if (path.endsWith("/stream_topics/")) {
+                        const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                        if (stream == streamId) {
+                            // Same scene as the base fixture, but Releases
+                            // carries active unreads so it surfaces in the inbox.
+                            auto releases = windowChannelTopic(
+                                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", streamId, "Releases");
+                            releases["is_default"] = false;
+                            releases["is_done"] = true;
+                            releases["unread_count"] = 3;
+                            releases["active_unread_count"] = 3;
+                            auto planning = windowChannelTopic(secondTopicId, streamId, "Planning");
+                            planning["is_default"] = false;
+                            return {QJsonArray{
+                                windowChannelTopic(topicId, streamId, "General Topic"),
+                                planning, releases}};
+                        }
+                        if (stream == dmStreamId) {
+                            auto dmTopic = windowChannelTopic(dmTopicId, dmStreamId, "");
+                            dmTopic["is_default"] = false;
+                            dmTopic["unread_count"] = 5;
+                            dmTopic["active_unread_count"] = 5;
+                            return {QJsonArray{dmTopic}};
+                        }
+                    }
+                    return fallback(request);
+                };
+            }
+            QString dmStreamId = "a2000000-0000-4000-8000-000000000002";
+            QString dmTopicId = "b2000000-0000-4000-8000-000000000002";
+        };
+        WindowInboxHoverFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-inbox"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.inboxVisible() && view("nativeInboxPage"));
+        const QString releasesId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        QTRY_VERIFY_WITH_TIMEOUT(view("inbox-row-" + releasesId)
+            && view("inbox-row-title-" + releasesId), 5000);
+        auto *row = view("inbox-row-" + releasesId); QVERIFY(row);
+        auto *title = view("inbox-row-title-" + releasesId); QVERIFY(title);
+        const QColor before = row->property("color").value<QColor>();
+        const QColor borderBefore = QQmlProperty(row, "border.color").read().value<QColor>();
+        QVERIFY(borderBefore.isValid());
+        QTest::mouseMove(window,
+            title->mapToScene(QPointF(title->width() / 2.0, title->height() / 2.0)).toPoint());
+        // Both hover channels must move: the fill AND the border accent.
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before
+            && QQmlProperty(row, "border.color").read().value<QColor>() != borderBefore, 2000);
+        // Neutral corner away from the card: fill and border must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before
+            && QQmlProperty(row, "border.color").read().value<QColor>() == borderBefore, 2000);
+    }
+
+    // Issue #945 witness: the starred card fill and the hover-revealed action
+    // cluster (NativeStarredPage.qml `cardHover`/`actionsHover`) must respond
+    // to the pointer over the card's text, not only over the bare card
+    // background behind the labels.
+    void starredCardFillsAndRevealsActionsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        class WindowStarredHoverFixture final : public WindowChannelFixture {
+        public:
+            int starredLists = 0;
+            QJsonArray all;
+            QJsonObject one(const QString &id, const QString &text, int minute)
+            {
+                auto row = message(text, id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(minute * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredHoverFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        ++starredLists;
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredHoverFixture fixture;
+        const QString hoveredId = "7b7b7b7b-7b7b-4b7b-8b7b-000000000009";
+        fixture.all = {fixture.one(hoveredId, "Starred hover witness", 30)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-starred"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.starredVisible() && view("nativeStarredPage"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starred-card-" + hoveredId), 5000);
+        auto *card = view("starred-card-" + hoveredId); QVERIFY(card);
+        auto *author = view("starred-author-" + hoveredId); QVERIFY(author);
+        auto *actions = item(window->contentItem(), "starredActions-" + hoveredId); QVERIFY(actions);
+        QCOMPARE(card->property("color").value<QColor>().alpha(), 0); // starts transparent
+        QTest::mouseMove(window,
+            author->mapToScene(QPointF(author->width() / 2.0, author->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() > 0, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(actions->property("opacity").toReal() > 0.99, 2000);
+        // Neutral corner: both the fill and the reveal must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() == 0, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(actions->property("opacity").toReal() < 0.01, 2000);
+    }
+
+    // Issue #945 witness: a remembered-session row in the switcher dropdown
+    // (SessionSwitcher.qml `rowMouse`) must light its hover fill when the
+    // pointer sits on the row's text column, not only on the bare row
+    // background beside it.
+    void sessionSwitcherRowFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const QUrl server("https://switcher-hover.invalid");
+        struct Identity { QString user; QString project; };
+        QVector<Identity> identities{
+            {userId, projectId},
+            {"66666666-6666-4666-8666-666666666661", "77777777-7777-4777-8777-777777777771"}};
+        auto byToken = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        for (int index = 0; index < identities.size(); ++index) {
+            SavedAccount account{SessionVault::accountId(server, identities[index].project,
+                identities[index].user), server, identities[index].project, identities[index].user,
+                QStringLiteral("synthetic-user-%1").arg(index), QStringLiteral("Project %1").arg(index)};
+            const QString token = QStringLiteral("switch-refresh-%1").arg(index);
+            byToken->insert(token, {identities[index].user, identities[index].project});
+            bool stored = false;
+            vault.save(account, token.toUtf8(), [&](const QString &error) { QVERIFY(error.isEmpty()); stored = true; });
+            QTRY_VERIFY(stored);
+        }
+        auto expected = std::make_shared<QPair<QString, QString>>();
+        ApiClient api;
+        Session session(&api, nullptr, [byToken, expected, &api](const QByteArray &method,
+            const QString &path, const QJsonValue &body, const QUrlQuery &,
+            ApiClient::Callback done, bool, const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/actions/get_token/invoke")) {
+                const QString refresh = body.toObject().value("refresh_token").toString();
+                *expected = byToken->value(refresh);
+                auto data = response.data.toObject();
+                data.insert("refresh_token", refresh);
+                response.data = data;
+            } else if (path.endsWith("/actions/introspect")) {
+                response.data = QJsonObject{{"user_info", QJsonObject{{"uuid", expected->first}}},
+                    {"project_id", expected->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                response.status = 200;
+            } else if (path == "/api/core/v1/iam/projects/") {
+                response.data = QJsonArray{QJsonObject{{"uuid", expected->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                response.status = 200;
+            }
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        const auto order = controller.savedAccounts();
+        QCOMPARE(order.size(), 2);
+        QStringList ids;
+        for (const auto &row : order) ids.append(row.toMap().value("id").toString());
+        controller.resumeSavedAccount(ids.first());
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        auto *content = window->contentItem();
+        preferences.setMode("dark"); QTRY_VERIFY(preferences.dark());
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        auto *row = item(content, "sessionRow-" + ids[1]); QVERIFY(row);
+        auto *label = item(content, "sessionRowPrimary-" + ids[1]); QVERIFY(label);
+        QCOMPARE(row->property("color").value<QColor>().alpha(), 0); // non-current row starts transparent
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() > 0, 2000);
+        // Neutral corner: the hover fill must revert to transparent.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() == 0, 2000);
+    }
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
@@ -12482,6 +12750,55 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(launcher->hasActiveFocus());
         QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+    }
+
+    void profileAndSidebarReactToHoverAtTheirTitles()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setMode("light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        clickCurrentItem(window, "stream-" + streamId);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+
+        const auto palette = window->property("colors").toMap();
+        const auto color = [&](const QString &token) { return QColor(palette.value(token).toString()); };
+        const auto checkTitle = [&](const QString &rowName, const QString &labelName,
+                                    QColor idle, QColor hover) {
+            auto *row = visibleItem(window->contentItem(), rowName);
+            QQuickItem *label = nullptr;
+            QTRY_VERIFY((label = visibleItem(window->contentItem(), labelName)));
+            QVERIFY(row);
+            const qreal textWidth = qMin(label->width(), label->property("contentWidth").toReal());
+            QVERIFY(textWidth > 0);
+            const QPointF textCenter(textWidth / 2, label->height() / 2);
+            checkControlHover(window, row, label->mapToScene(textCenter).toPoint(), QPoint(3, 3),
+                              "background.color", idle, hover);
+        };
+        checkTitle("accountMenuButton", "profileDisplayName", Qt::transparent, color("card-bg-active"));
+        checkTitle("stream-" + streamId, "streamTitleName-" + streamId,
+                   color("card-bg"), color("sidebar-item-hover"));
+        checkTitle("topic-" + secondTopicId, "topicTitle-" + secondTopicId,
+                   color("card-bg"), color("sidebar-item-hover"));
     }
 
     void sidebarRowsRenderPreviewAndTime_data()
@@ -39545,6 +39862,14 @@ private slots:
             QVERIFY(control() && control()->hasActiveFocus());
             QTest::keyClick(window, Qt::Key_Space);
         } else {
+            const auto palette = window->property("colors").toMap();
+            auto *reply = control();
+            auto *text = reply->property("contentItem").value<QQuickItem *>();
+            QVERIFY(text);
+            const auto bubbleCenter = bubble->mapToScene(bubble->boundingRect().center()).toPoint();
+            checkControlHover(window, reply, text->mapToScene(text->boundingRect().center()).toPoint(),
+                              bubbleCenter, "background.color", QColor(palette.value("card-bg").toString()),
+                              QColor(palette.value("card-bg-active").toString()));
             click(window, control());
         }
         QTRY_COMPARE(controller.replyMessageId(), messageId);
@@ -41793,6 +42118,234 @@ private slots:
         QTRY_VERIFY(!controller.activityOpen());
         QTRY_VERIFY(view("activity-drafts"));
         QCOMPARE(chatList->y(), closedTop);
+    }
+
+    // Issue #944: Qt 6.10 delivers hover only to the claimant under the
+    // pointer and its ancestors, so the old sibling MouseArea stayed dead
+    // while the row label claimed the exact hover point. The row root now
+    // owns a HoverHandler; the witness moves the pointer to the LABEL
+    // CENTER (the claimant point) and asserts the fill change, then pins
+    // the revert after the pointer leaves the row.
+    void activityPanelRowsHighlightOnLabelCenterHover()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("activity-hover-944.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Activity row hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("activity-drafts"));
+        click(window, view("activityExpandButton"));
+        QTRY_VERIFY(controller.activityOpen());
+        auto *row = view("activityRow-inbox"); QVERIFY(row);
+        auto *label = view("activityRowLabel-inbox"); QVERIFY(label);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const auto palette = window->property("colors").toMap();
+        const auto point = label->mapToScene(QPointF(
+            qMin(label->property("contentWidth").toReal(), label->width()) / 2, label->height() / 2));
+        checkControlHover(window, row, point.toPoint(), QPoint(3, 3), "color",
+                          QColor(palette.value("card-bg").toString()), QColor(palette.value("card-bg-active").toString()));
+    }
+
+    // Issue #942 subtask B witness: the horizontal rail chip has no internal
+    // pointer surface - the strip-level MouseArea under the Flickable owns
+    // hover and publishes hoverKey, which the chip binds to (hovered).
+    // The witness hovers the LABEL CENTER (the claimant point) and pins the
+    // hover fill observable through the label colour flip: a claimant-centered
+    // dead strip MouseArea would leave the chip colour untouched.
+    void folderRailChipLabelCenterHoverFillsViaStripHoverKey()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chip-hover-944.ini"));
+        preferences.setLocale("en");
+        preferences.setFolderRailLayout("horizontal");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Chip hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("folderRailHorizontal"));
+        auto *label = view("folderChipLabel-personal"); QVERIFY(label);
+        const QColor base = label->property("color").value<QColor>();
+        QVERIFY2(base.isValid(), "chip label lost its base colour");
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("color").value<QColor>() != base, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("color").value<QColor>() == base, 2000);
+    }
+
+    // Issue #942 subtask B witness: the vertical folder cell fills its hover
+    // from the cell-wide MouseArea (folderCellPointer); the claimant at the
+    // title centre is a plain Text, so under Qt 6.10 hover-inert pass-through
+    // the MouseArea must still see the hover. The icon tint (interactive) is
+    // the observable; the icon button itself only claims the icon glyph area,
+    // which this point deliberately avoids.
+    void folderGridCellLabelCenterHoverTintsIcon()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("grid-hover-944.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Grid hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *cell = view("folder-personal"); QVERIFY(cell);
+        auto *icon = view("folderIcon-personal"); QVERIFY(icon);
+        const QColor base = icon->property("iconColor").value<QColor>();
+        QVERIFY2(base.isValid(), "folder icon lost its base tint");
+        // Title box spans x -2..50, y 42..58 inside the 72x72 cell.
+        QTest::mouseMove(window, cell->mapToScene(QPointF(24, 50)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(icon->property("iconColor").value<QColor>() != base, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(icon->property("iconColor").value<QColor>() == base, 2000);
+    }
+
+
+    // Issue #942 subtask B witness: the edit notice's Cancel strip keeps a
+    // trailing sibling MouseArea over its plain label; hover at the label
+    // centre must tint the strip.
+    void cancelEditNoticeLabelCenterHoverFillsStrip()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const auto note = message(QStringLiteral("Plain body for the hover witness"));
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{note}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Edit cancel hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-edit-cancel-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        QVERIFY(controller.beginEditMessage(messageId));
+        auto *content = window->contentItem();
+        auto *label = item(content, "cancelEditButton"); QVERIFY(label);
+        auto *strip = label->parentItem(); QVERIFY(strip);
+        const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        controller.cancelEditMessage();
+    }
+
+    void cancelReplyNoticeLabelCenterHoverFillsStrip_data()
+    {
+        QTest::addColumn<bool>("multiple");
+        QTest::newRow("single-reply") << false;
+        QTest::newRow("reply-tabs") << true;
+    }
+
+    void cancelReplyNoticeLabelCenterHoverFillsStrip()
+    {
+        QFETCH(bool, multiple);
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message(QStringLiteral("Peer origin for the hover witness"), messageId);
+        origin["is_own"] = false;
+        const QString secondMessageId = QStringLiteral("81000000-0000-4000-8000-000000000002");
+        const auto other = message(QStringLiteral("Another reply target"), secondMessageId);
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{origin, other}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Reply cancel hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-reply-cancel-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        QVERIFY(controller.beginReply(messageId));
+        if (multiple) QVERIFY(controller.addReplyTab(secondMessageId));
+        auto *content = window->contentItem();
+        auto *tabs = item(content, "replyTabStrip");
+        QVERIFY(tabs);
+        QTRY_COMPARE(tabs->height() > 0, multiple);
+        QQuickItem *target = nullptr;
+        QTRY_VERIFY((target = visibleItem(content, "cancelReplyButton")));
+        // In the single-reply notice the named item is the label. In the tab
+        // strip it is the button, whose centered child paints that label.
+        auto *strip = multiple ? target : target->parentItem();
+        auto *label = multiple ? nullptr : target;
+        if (multiple) {
+            for (auto *child : strip->childItems()) {
+                if (child->property("text").toString() == QStringLiteral("Cancel")) label = child;
+            }
+        }
+        QVERIFY(label && strip);
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!painted.isEmpty());
+        QVERIFY(strip->boundingRect().contains(label->mapToItem(strip, label->boundingRect().center())));
+        const auto point = label->mapToScene(label->boundingRect().center()).toPoint();
+        QVERIFY(window->contentItem()->boundingRect().contains(point));
+        if (multiple) QVERIFY(tabs->contains(tabs->mapFromScene(point)));
+        QTest::mouseMove(window, QPoint(3, 3));
+        const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        QTest::mouseMove(window, point);
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        controller.cancelReply();
     }
 
     // Issue #101: open/closed state persists per workspace session
@@ -46255,15 +46808,12 @@ private:
 
         // The fenced block grows the mounted copy button (reference
         // workspace-message-body-interactions.hook.ts:137-214).
-        QTRY_VERIFY(item(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
-        auto *button = visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0");
+        QTRY_VERIFY(visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0"));
         auto *label = item(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
         QCOMPARE(label->property("text").toString(), QStringLiteral("Copy"));
 
-        // Pointer activation of the mounted button; the delegate exports one
-        // performCopy() code path shared by the MouseArea and this invoke
-        // (pointer routing itself is covered by the right-click Copy link case).
-        QMetaObject::invokeMethod(button, "performCopy");
+        // Activate at the painted text so competing bubble handlers participate.
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("echo copy-me"), 3000);
         // Success feedback lasts CODE_COPY_RESET_MS = 1200 ms before the idle
         // label returns (hook.ts:25,140-162).
@@ -46440,6 +46990,45 @@ private:
         clipboard->setText(QStringLiteral("f4-sentinel-after"));
     }
 
+    // Issue #944 witness: the code-copy chip floats above the bubble body,
+    // so under Qt 6.10 claimant-centered hover its own interior hover area
+    // never sees the pointer - the bubble-layer claimant above it wins. The
+    // fill must be observable by hovering the LABEL CENTER (the claimant
+    // point); a transparent fill there proves the hover wiring is dead.
+    void codeCopyButtonFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        BodyCopyWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("CodeCopy hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-codecopy-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.messages().size() == 2, 12000);
+        auto *content = window->contentItem();
+        QTRY_VERIFY(visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
+        auto *button = visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0");
+        auto *label = visibleItem(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
+        QVERIFY2(button->property("color").value<QColor>().alpha() == 0,
+            "the code-copy chip no longer starts transparent");
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() > 0, 2000);
+        // Neutral corner away from the bubble: the fill must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
     // Issue #110 review r3 (finding 4639247928): a message whose body is split
     // around an inline image still mounts a working copy button into its fence.
     void codeCopyButtonAppearsInMediaSplitBody()
@@ -46496,7 +47085,7 @@ private:
 
         auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
         clipboard->setText(QStringLiteral("media-copy-sentinel"));
-        QMetaObject::invokeMethod(button, "performCopy");
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("sed -i copy-media"), 3000);
         QTRY_VERIFY_WITH_TIMEOUT(label->property("text").toString() == QStringLiteral("Copied"), 600);
         clipboard->setText(QStringLiteral("media-copy-sentinel-after"));
@@ -51435,6 +52024,178 @@ private slots:
         QVERIFY2(fresh.contains(QStringLiteral("samples")),
                  qPrintable(QString::fromUtf8(readReport())));
         QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
+    }
+
+    // Issue #946 witness: the channel-info member row fill (NativeChannelInfo.qml
+    // cardHover) must respond to the pointer over the row's text block, not only
+    // over the bare card background behind the labels. The witness moves the
+    // pointer to the member NAME center (the sibling claimant point) and asserts
+    // the hover-driven fill change, then pins the revert after the pointer leaves.
+    void channelInfoMemberRowFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        // Members arrive asynchronously with the info fetch: the lookup must be
+        // re-run inside the wait (#718 wrapped-assignment QTRY), never one-shot.
+        const QString prefix = QStringLiteral("channelInfoMember-");
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
+        const QString suffix = row->objectName().mid(prefix.size());
+        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+        QVERIFY(name);
+        const QColor before = row->property("color").value<QColor>();
+        QVERIFY(before.isValid());
+        QTest::mouseMove(scene.window,
+            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
+        // Neutral corner away from the drawer: the fill must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
+    }
+
+    // Issue #946 site 2 witness: the member-row remove button is opacity-0 until
+    // the row hover group claims (NativeChannelInfo.qml removeButton), so the
+    // reveal is driven by the same `cardHover` MouseArea as the row fill. The
+    // pointer goes to the member NAME center (sibling claimant point) and the
+    // button opacity must animate in, then out again when the pointer leaves.
+    void channelInfoRemoveButtonRevealsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        // Alice is a removable member in this owner fixture. Wait for her row
+        // and the drawer layout before computing the pointer location.
+        const QString binding = scene.fixture.bindingId(2);
+        QQuickItem *name = nullptr;
+        QTRY_VERIFY((name = visibleItem("channelInfoMemberName-" + binding)));
+        QQuickItem *remove = nullptr;
+        QTRY_VERIFY((remove = visibleItem("channelInfoRemove-" + binding)));
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        QTest::mouseMove(scene.window, QPoint(3, 3));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->opacity(), 0.0, 2000);
+        const auto point = name->mapToScene(QPointF(
+            qMin(name->property("contentWidth").toReal(), name->width()) / 2, name->height() / 2));
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll && scroll->contains(scroll->mapFromScene(point)));
+        QTest::mouseMove(scene.window, point.toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(remove->opacity(), 1.0, 3000);
+        // Neutral corner away from the drawer: the reveal must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
+    }
+
+    // Issue #946 site 3 witness: the add-members picker option fill is driven by
+    // `optionArea` (NativeChannelInfo.qml :837), a MouseArea under the option
+    // name Text. The pointer to the option NAME center (sibling claimant point)
+    // must switch the row fill from transparent to the active surface, and the
+    // fill must revert when the pointer leaves.
+    void addMembersOptionFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QVERIFY(visibleItem("channelInfoAddButton"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        const QString optionId = scene.fixture.daveUser;
+        auto *option = visibleItem(QStringLiteral("addMembersOption-") + optionId);
+        QVERIFY(option);
+        auto *label = visibleItem(QStringLiteral("addMembersOptionName-") + optionId);
+        QVERIFY(label);
+        // The fill rect is the delegate's first child (declared before the
+        // MouseArea and the Texts); unread fill = transparent (alpha 0).
+        auto *fill = option->childItems().value(0);
+        QVERIFY(fill);
+        QVERIFY(fill->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(scene.window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() != 0, 2000);
+        // Leaving the dialog area must revert the fill.
+        QTest::mouseMove(scene.window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
+    // Issue #946 site 5 witness: the logs-modal close button (NativeDiagnosticsPage.qml
+    // logsCloseButton, :1350) paints its fill through `logsCloseMouseArea.containsMouse`
+    // while its Image glyph sits on top. The pointer to the glyph center must
+    // switch the fill in and revert it when the pointer leaves.
+    void logsModalCloseButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowOwnStatusFixture fixture;
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section() == QStringLiteral("diagnostics"), 4000);
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        auto *closeButton = visibleItem("logsCloseButton");
+        QVERIFY(closeButton);
+        QVERIFY(closeButton->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(window,
+            closeButton->mapToScene(QPointF(closeButton->width() / 2.0,
+                closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() != 0, 2000);
+        // Neutral corner: the fill must revert.
+        QTest::mouseMove(window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
+    // Issue #946 site 6 witness: the call-window header ShellIconButton glyph
+    // fill (ShellIconButton.qml `area`, :21) must flip on a pointer over the
+    // glyph center and revert once the pointer leaves the button. The button
+    // color is "transparent" at rest and Qt.alpha(bg, 0.5) on hover.
+    void callWindowShellButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call window shell teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(fixture.start(controller));
+        window->resize(1280, 800);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        clickCallCard(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        auto *closeButton = visibleItem(shell->contentItem(), QStringLiteral("callWindowCloseButton"));
+        QVERIFY(closeButton);
+        QCOMPARE(closeButton->property("color").value<QColor>().alpha(), 0);
+        QTest::mouseMove(shell, closeButton->mapToScene(
+            QPointF(closeButton->width() / 2.0, closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() > 0, 2000);
+        // Header far corner: the fill must revert.
+        QTest::mouseMove(shell, QPoint(20, 20));
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() == 0, 2000);
     }
 
 };

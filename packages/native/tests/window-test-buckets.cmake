@@ -77,8 +77,10 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_3
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_4
     accountPreferencePanelsApplyAndPersist
+    activityPanelRowsHighlightOnLabelCenterHover
     archiveMatchesPinnedGeometryAndVirtualSearch
     avatarComponentKeepsNestedScopeAndReferenceLease
+    channelInfoRemoveButtonRevealsOnLabelCenterHover
     channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending
     channelTopicSummaryDialogEndpointSaveKeepsOtherTabDraft
     chatBackgroundSectionAppliesPresetAndRepaintsConversation
@@ -138,7 +140,9 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
     diagnosticsMemoryPanelPollsWhileVisibleAndStopsOnLeave
     draftsActualMainConflictButtonsUseConditionalOwnedActions
     favoritesTopicCompletionFollowsCurrentPage
+    folderRailChipLabelCenterHoverFillsViaStripHoverKey
     incomingCallInviteAvatarPhotoReplacesFallbacks
+    logsModalCloseButtonFillsOnGlyphCenterHover
     mentionLongBodyLocatorWorkStaysBounded
     messageSpoilersOpenByPointerAndKeyboard
     ownStatusActualMainSavesOneHeldCanonicalResponse
@@ -184,6 +188,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     alreadyInstalledUpdateOffersExplicitRestart
     callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady
     callWindowLiveParticipantCountArrivesFromEmbedPageEvents
+    channelInfoMemberRowFillsOnLabelCenterHover
     channelInfoTopicRowsNavigateAndCollapse
     compactComposerToggleCentersWithInputRow
     fullscreenExitFromMaximizedDetachDuringGatePersistsUserRestore
@@ -200,6 +205,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     windowProfileCallChipOpensSeededDmCallOnce
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_9
+    addMembersOptionFillsOnLabelCenterHover
     anchorOverlayOwnsOnlyItsVisibleConversation
     archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable
     channelTopicSummaryDialogEffortPickSendsFieldAndClosesOnSuccess
@@ -252,6 +258,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     appearanceAndSidebarRestoreAfterQuickWindowRecreation
     archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling
     calendarMonthGridRequestCoversAdjacentWeeks
+    cancelEditNoticeLabelCenterHoverFillsStrip
     channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
     channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable
@@ -276,6 +283,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     replyMenuQuotesTheDraggedBubbleFragment
     rightDrawerBackPopsNestedScreensOnly
     sidebarTopicSwitchDropsWritingSessionAfterExplicitFocusMove
+    starredCardFillsAndRevealsActionsOnLabelCenterHover
     startupPaintsSavedCacheWhileRefreshIsInFlight
     topicContextMenuMarkReadVisibilityAndAction
     upToEditLastAndSaveUseTheComposerEditMode
@@ -345,7 +353,9 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
     mediaViewerSingleImageHidesNavigationAndStrip
     mentionChipsReachedByTabWithoutPointer
     pollBubbleAddOptionRetryReusesClientUuid
+    profileAndSidebarReactToHoverAtTheirTitles
     savedStatusTracksMessagesWhenSwitchingChats
+    sessionSwitcherRowFillsOnLabelCenterHover
     sidebarSearchHotkeyFocusesSearchAndExpandsCollapsedSidebar
     topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks
     topicContextMenuNotificationSwitchPostsAndGuardsPending
@@ -389,6 +399,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     composerTimePickerPreservesBothFallBackInstants
     diagnosticsNewPingCancelsPendingFeedbackReset
     favoritesEnsureFailureShowsErrorCardAndRetry
+    folderGridCellLabelCenterHoverTintsIcon
     folderRailLayoutTogglesHorizontallyAndSurvivesRestart
     fullscreenExitRecapturesUserMoveMadeDuringTheTransitionGate
     globalChannelFormKeepsNarrowKeyboardFieldsVisible
@@ -439,6 +450,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_18
     activityStarredErrorAndEmptyStates
     channelTopicSummaryEndpointSaveSurvivesConcurrentGatesError
     diagnosticsPingSettlesAcrossApiGenerationChange
+    inboxRowFillsOnLabelCenterHover
     lastConversationRestoresInANewActualMainAfterSettingsReopen
     licensesExternalLinkHandsOffToTheBrowser
     mediaViewerVideoControlsVisibleAndSeekRoundTrip
@@ -557,6 +569,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     activityReactionsDeeplinkRendersUnsupportedState
     activityStarredChipOpensPageAndCloseFlow
+    cancelReplyNoticeLabelCenterHoverFillsStrip
     codeCopyButtonIsKeyboardOperableAndAccessible
     confirmedSlowClipboardCopyRemainsVisibleAndCancellable
     diagnosticsLogViewerModalFiltersClearAndExports
@@ -623,6 +636,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_26
     archiveKeyboardAndOwnerLifetimeRemainScoped
     attachmentCardHitAreaAndKeyboardActivateDownload
     callWindowEmbedLoaderErrorSettlesShellToLoadFailed
+    callWindowShellButtonFillsOnGlyphCenterHover
     externalAccountDismissedSubmissionRefreshesAfterTheServerCommits
     folderRailIconClickClosesDraftsAndSelectsTheFolder
     folderRenameAfterCatalogReload
@@ -644,6 +658,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
     channelTopicSummaryEndpointFailedSaveKeepsMarkerUnderUnrelatedBusy
     channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity
+    codeCopyButtonFillsOnLabelCenterHover
     existingEditAttachmentCardsLoadFailAndRemove
     existingEncryptedDirectFromNewChatOpensWithoutChangingThePair
     externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision
