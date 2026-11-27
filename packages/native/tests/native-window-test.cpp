@@ -51438,6 +51438,97 @@ private slots:
     }
 
 
+    void calendarCreatesSampleMeetingWithoutInvitingParticipants_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("ru-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void calendarCreatesSampleMeetingWithoutInvitingParticipants()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowCalendarRouteFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view("calendarSampleToggle"));
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        const auto feed = controller.calendarEvents();
+        QVERIFY(!view("calendarCreateMeeting"));
+        click(window, view("calendarSampleToggle"));
+        QTRY_VERIFY(view("calendarCreateMeeting"));
+        QVERIFY(controller.calendarEvents().isEmpty());
+        click(window, view("calendarCreateMeeting"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QCOMPARE(view("calendarMeetingError")->property("text").toString(), locale == "en"
+            ? QStringLiteral("Enter a meeting title.") : QStringLiteral("Введите название встречи."));
+        QVERIFY(controller.calendarEvents().isEmpty());
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Cancelled meeting")));
+        click(window, view("calendarMeetingCancel"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QVERIFY(controller.calendarEvents().isEmpty());
+
+        click(window, view("calendarCreateMeeting"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QString());
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Planning")));
+        QVERIFY(view("calendarMeetingParticipants")->setProperty("text", QStringLiteral("Ari\nNoor")));
+        QVERIFY(view("calendarMeetingLocation")->setProperty("text", QStringLiteral("Room 5")));
+        QVERIFY(view("calendarMeetingEndTime")->setProperty("text", QStringLiteral("08:59")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QVERIFY(controller.calendarEvents().isEmpty());
+        QVERIFY(view("calendarMeetingEndTime")->setProperty("text", QStringLiteral("10:30")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        const auto event = controller.calendarEvents().first().toMap();
+        const auto id = event.value("uuid").toString();
+        QVERIFY(!QUuid(id).isNull());
+        QCOMPARE(event.value("title").toString(), QStringLiteral("Planning"));
+        QCOMPARE(event.value("location").toString(), QStringLiteral("Room 5"));
+        QCOMPARE(event.value("participants").toStringList(), QStringList({"Ari", "Noor"}));
+        QTRY_VERIFY(view("calendarAgendaRow-" + id));
+        click(window, view("viewTabWeek"));
+        QTRY_VERIFY(view("weekChip-" + id));
+        QVERIFY(view("weekChip-" + id)->property("text").toString().contains("Planning"));
+        // Switching back always restores the unmodified server feed.
+        click(window, view("calendarSampleToggle"));
+        QTRY_COMPARE(controller.calendarEvents(), feed);
+        click(window, view("calendarSampleToggle"));
+        QTRY_VERIFY(view("weekChip-" + id));
+        for (const auto &request : fixture.server.requests) {
+            if (request.target.path().contains("/calendar/"))
+                QCOMPARE(request.method, QByteArray("GET"));
+        }
+        controller.logout();
+        QTRY_VERIFY(!controller.sampleCalendar());
+        QVERIFY(controller.calendarEvents().isEmpty());
+    }
+
     // Issue #907 (Part of #882): clicking an agenda row opens the event detail
     // card; the stored UTC instants must render converted to the client zone
     // (DST-correct by construction - expectations derive from QDateTime

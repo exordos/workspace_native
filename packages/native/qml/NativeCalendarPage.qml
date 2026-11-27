@@ -17,6 +17,10 @@ FocusScope {
 
     required property var colors
     property var events: []
+    required property bool sampleMode
+    required property var saveSampleMeeting
+    signal sampleModeRequested(bool enabled)
+    onSampleModeChanged: detailEvent = null
     property date selectedDate: new Date()
     property string viewMode: "day"
     property bool loading: false
@@ -50,7 +54,7 @@ FocusScope {
         for (const ev of events) {
             if (activeCalendars.indexOf(String(ev.calendar)) < 0)
                 continue;
-            if (String(ev.day) >= fromDate && String(ev.day) <= toDate)
+            if (String(ev.lastDay || ev.day) >= fromDate && String(ev.day) <= toDate)
                 out.push(ev);
         }
         out.sort((a, b) => String(a.start).localeCompare(String(b.start)));
@@ -197,6 +201,24 @@ FocusScope {
                 Layout.margins: 12
                 spacing: 8
 
+                CheckBox {
+                    objectName: "calendarSampleToggle"
+                    text: qsTr("Sample calendar")
+                    checked: page.sampleMode
+                    onToggled: {
+                        page.sampleModeRequested(checked)
+                        if (!checked)
+                            page.refreshWindow()
+                    }
+                }
+                Button {
+                    objectName: "calendarCreateMeeting"
+                    visible: page.sampleMode
+                    Layout.fillWidth: true
+                    highlighted: true
+                    text: qsTr("Create meeting")
+                    onClicked: meetingForm.openForDate(page.selectedDate)
+                }
                 Label {
                     objectName: "miniCalendarTitle"
                     color: page.colors["text-primary"]
@@ -307,6 +329,7 @@ FocusScope {
                             }
                             Label {
                                 text: modelData.title
+                                textFormat: Text.PlainText
                                 color: page.colors["text-primary"]
                             }
                         }
@@ -350,6 +373,7 @@ FocusScope {
                                     required property var modelData
                                     objectName: "weekChip-" + modelData.uuid
                                     text: modelData.start + " " + modelData.title
+                                    textFormat: Text.PlainText
                                     color: page.colors["text-primary"]
                                     MouseArea {
                                         anchors.fill: parent
@@ -432,6 +456,22 @@ FocusScope {
                     }
                 }
             }
+        }
+    }
+
+    NativeCalendarMeetingDialog {
+        id: meetingForm
+        colors: page.colors
+        saveMeeting: page.saveSampleMeeting
+        onSaved: (start, calendar) => {
+            if (page.activeCalendars.indexOf(calendar) < 0)
+                page.activeCalendars = page.activeCalendars.concat([calendar])
+            page.selectedDate = start
+        }
+        Connections {
+            target: page
+            function onVisibleChanged() { if (!page.visible) meetingForm.close() }
+            function onSampleModeChanged() { if (!page.sampleMode) meetingForm.close() }
         }
     }
 

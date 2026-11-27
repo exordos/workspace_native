@@ -13823,6 +13823,9 @@ component NativeMentionChip: Item {
             objectName: "calendarSectionPage"
             colors: root.colors
             events: root.controller.calendarEvents
+            sampleMode: root.controller.sampleCalendar
+            onSampleModeRequested: enabled => root.controller.sampleCalendar = enabled
+            saveSampleMeeting: draft => root.controller.createSampleMeeting(draft)
             loading: root.controller.calendarLoading
             error: root.controller.calendarError
             visible: root.controller.section === "calendar"

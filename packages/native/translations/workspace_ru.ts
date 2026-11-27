@@ -5923,6 +5923,14 @@
     <context>
         <name>NativeCalendarPage</name>
         <message>
+            <source>Sample calendar</source>
+            <translation>Демонстрационный календарь</translation>
+        </message>
+        <message>
+            <source>Create meeting</source>
+            <translation>Создать встречу</translation>
+        </message>
+        <message>
             <source>Day</source>
             <translation>День</translation>
         </message>
@@ -5984,6 +5992,81 @@
         <message>
             <source>+%1 more</source>
             <translation>и ещё %1</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeCalendarMeetingDialog</name>
+        <message>
+            <source>New meeting</source>
+            <translation>Новая встреча</translation>
+        </message>
+        <message>
+            <source>Enter a meeting title.</source>
+            <translation>Введите название встречи.</translation>
+        </message>
+        <message>
+            <source>Enter valid dates and times. The end must be after the start.</source>
+            <translation>Проверьте даты и время. Встреча должна закончиться позже, чем начнётся.</translation>
+        </message>
+        <message>
+            <source>The sample calendar is unavailable.</source>
+            <translation>Демонстрационный календарь недоступен.</translation>
+        </message>
+        <message>
+            <source>Sample meetings stay in this session. Participants will not receive invitations.</source>
+            <translation>Встречи сохраняются на время этого сеанса. Участникам не придут приглашения.</translation>
+        </message>
+        <message>
+            <source>Title</source>
+            <translation>Название</translation>
+        </message>
+        <message>
+            <source>Participants</source>
+            <translation>Участники</translation>
+        </message>
+        <message>
+            <source>One name per line</source>
+            <translation>По одному имени на строку</translation>
+        </message>
+        <message>
+            <source>Calendar</source>
+            <translation>Календарь</translation>
+        </message>
+        <message>
+            <source>Work</source>
+            <translation>Рабочий</translation>
+        </message>
+        <message>
+            <source>Personal</source>
+            <translation>Личный</translation>
+        </message>
+        <message>
+            <source>Start date</source>
+            <translation>Дата начала</translation>
+        </message>
+        <message>
+            <source>Start time</source>
+            <translation>Время начала</translation>
+        </message>
+        <message>
+            <source>End date</source>
+            <translation>Дата окончания</translation>
+        </message>
+        <message>
+            <source>End time</source>
+            <translation>Время окончания</translation>
+        </message>
+        <message>
+            <source>Location</source>
+            <translation>Место</translation>
+        </message>
+        <message>
+            <source>Create meeting</source>
+            <translation>Создать встречу</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
         </message>
     </context>
 </TS>
