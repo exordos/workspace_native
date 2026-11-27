@@ -1,3 +1,4 @@
+calendarDetailLongLocationStaysWithinWindowAndScrolls=1.54763
 callWindowInvalidLinkStaysVisibleWithTheNotice=1.36219
 channelTopicSummaryDialogSendsOnlyUserEditedEffortAfterRemotePromptUpdate=1.14606
 chatHeaderCountersRenderMembersAndOnline=0.725043

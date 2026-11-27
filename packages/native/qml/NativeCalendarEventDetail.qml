@@ -23,7 +23,18 @@ Rectangle {
     border.color: detail.colors["border-subtle"]
     border.width: 1
     implicitWidth: Math.min(420, Math.max(320, implicitChildrenWidth))
-    implicitHeight: contentColumn.implicitHeight + 32
+    // A plain Rectangle never auto-sizes from implicit* - bind width
+    // explicitly, or the card renders as a 0-wide box with its children
+    // floating unclipped (found while reproducing the #907 review finding).
+    width: implicitWidth
+    implicitHeight: scroller.contentHeight + 32
+    // Review on #907: a long server-supplied location used to grow the card
+    // past the window, and centering then placed the header (close button)
+    // outside the page. Cap the card to the available page height and let the
+    // body scroll instead; short events still use the natural implicit height.
+    height: Math.min(implicitHeight,
+                     Math.max(160, (parent ? parent.height : implicitHeight) - 32))
+    clip: true
 
     required property var colors
     property var event: ({})
@@ -54,13 +65,20 @@ Rectangle {
         return text + " - " + Qt.formatDate(end, "dd.MM HH:mm")
     }
 
-    ColumnLayout {
-        id: contentColumn
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
+    ScrollView {
+        id: scroller
+        objectName: "calendarDetailScroller"
+        anchors.fill: parent
         anchors.margins: 16
-        spacing: 10
+        clip: true
+        padding: 0
+        contentWidth: availableWidth
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+        ColumnLayout {
+            id: contentColumn
+            width: scroller.availableWidth
+            spacing: 10
 
         RowLayout {
             Layout.fillWidth: true
@@ -73,10 +91,14 @@ Rectangle {
                 Layout.minimumWidth: 0
                 text: String(detail.event.title || "") .length > 0
                       ? String(detail.event.title) : qsTr("(untitled)")
+                // Review on #907: server-supplied strings render as PLAIN
+                // text only - AutoText would interpret rich-text markup and
+                // could fetch remote images on the viewer's client.
+                textFormat: Text.PlainText
                 color: detail.colors["text-primary"]
                 font.pixelSize: 16
                 font.bold: true
-                elide: Text.ElideEnd
+                elide: Text.ElideRight
             }
             Button {
                 objectName: "calendarDetailClose"
@@ -108,6 +130,8 @@ Rectangle {
                 Layout.fillWidth: true
                 text: String(detail.event.location || "").length > 0
                       ? String(detail.event.location) : qsTr("No location specified")
+                // Plain text only for event-supplied content (#907 review).
+                textFormat: Text.PlainText
                 color: String(detail.event.location || "").length > 0
                        ? detail.colors["text-primary"] : detail.colors["text-muted"]
                 wrapMode: Text.WordWrap
@@ -136,8 +160,10 @@ Rectangle {
                     objectName: "calendarDetailParticipant-" + index
                     Layout.fillWidth: true
                     text: String(modelData)
+                    // Plain text only for event-supplied content (#907 review).
+                    textFormat: Text.PlainText
                     color: detail.colors["text-primary"]
-                    elide: Text.ElideEnd
+                    elide: Text.ElideRight
                 }
             }
             Label {
@@ -146,6 +172,7 @@ Rectangle {
                 text: qsTr("+%1 more").arg((detail.event.participants || []).length - 3)
                 color: detail.colors["text-muted"]
             }
+        }
         }
     }
 }
