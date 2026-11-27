@@ -51101,6 +51101,45 @@ private slots:
             closeButton->property("color").value<QColor>().alpha() == 0, 2000);
     }
 
+    // Issue #946 site 6 witness: the call-window header ShellIconButton glyph
+    // fill (ShellIconButton.qml `area`, :21) must flip on a pointer over the
+    // glyph center and revert once the pointer leaves the button. The button
+    // color is "transparent" at rest and Qt.alpha(bg, 0.5) on hover.
+    void callWindowShellButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call window shell teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(fixture.start(controller));
+        window->resize(1280, 800);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        clickCallCard(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        auto *closeButton = visibleItem(shell->contentItem(), QStringLiteral("callWindowCloseButton"));
+        QVERIFY(closeButton);
+        QCOMPARE(closeButton->property("color").value<QColor>().alpha(), 0);
+        QTest::mouseMove(shell, closeButton->mapToScene(
+            QPointF(closeButton->width() / 2.0, closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() > 0, 2000);
+        // Header far corner: the fill must revert.
+        QTest::mouseMove(shell, QPoint(20, 20));
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
 };
 
 

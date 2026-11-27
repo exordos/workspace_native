@@ -78,6 +78,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_4
     accountPreferencePanelsApplyAndPersist
     archiveMatchesPinnedGeometryAndVirtualSearch
     avatarComponentKeepsNestedScopeAndReferenceLease
+    channelInfoRemoveButtonRevealsOnLabelCenterHover
     channelTopicSettingsCanRetryWhileAnotherTopicActionWasPending
     channelTopicSummaryDialogEndpointSaveKeepsOtherTabDraft
     chatBackgroundSectionAppliesPresetAndRepaintsConversation
@@ -138,6 +139,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
     draftsActualMainConflictButtonsUseConditionalOwnedActions
     favoritesTopicCompletionFollowsCurrentPage
     incomingCallInviteAvatarPhotoReplacesFallbacks
+    logsModalCloseButtonFillsOnGlyphCenterHover
     mentionLongBodyLocatorWorkStaysBounded
     messageSpoilersOpenByPointerAndKeyboard
     ownStatusActualMainSavesOneHeldCanonicalResponse
@@ -183,6 +185,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     alreadyInstalledUpdateOffersExplicitRestart
     callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady
     callWindowLiveParticipantCountArrivesFromEmbedPageEvents
+    channelInfoMemberRowFillsOnLabelCenterHover
     channelInfoTopicRowsNavigateAndCollapse
     compactComposerToggleCentersWithInputRow
     fullscreenExitFromMaximizedDetachDuringGatePersistsUserRestore
@@ -199,6 +202,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     windowProfileCallChipOpensSeededDmCallOnce
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_9
+    addMembersOptionFillsOnLabelCenterHover
     anchorOverlayOwnsOnlyItsVisibleConversation
     archiveErrorAtMinimumWindowKeepsFooterAndBodyReachable
     channelTopicSummaryDialogEffortPickSendsFieldAndClosesOnSuccess
@@ -619,6 +623,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_26
     archiveKeyboardAndOwnerLifetimeRemainScoped
     attachmentCardHitAreaAndKeyboardActivateDownload
     callWindowEmbedLoaderErrorSettlesShellToLoadFailed
+    callWindowShellButtonFillsOnGlyphCenterHover
     externalAccountDismissedSubmissionRefreshesAfterTheServerCommits
     folderRailIconClickClosesDraftsAndSelectsTheFolder
     folderRenameAfterCatalogReload
