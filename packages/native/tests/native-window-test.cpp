@@ -38,6 +38,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <cmath>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
 #endif
@@ -23018,12 +23019,18 @@ NativeAvatarImage {
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QCoreApplication::sendEvent(window, &event);
         };
+        // #919 multiplicative curve: exp(0.0035 * delta) per event, clamp
+        // [1, 5]. QCOMPARE on doubles would demand the exact libm product,
+        // so curve values go through a near-comparison.
+        const auto scaleNear = [image](double want) {
+            return qAbs(image->scale() - want) < 1e-6;
+        };
         wheel({}, QPoint(0, 120));
-        QCOMPARE(image->scale(), 1.12);
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
         wheel(QPoint(0, 20), {});
-        QCOMPARE(image->scale(), 1.14);
+        QVERIFY2(scaleNear(std::exp(0.49)), qPrintable(QString::number(image->scale())));
         wheel({}, QPoint(0, 4800));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
         // The enlarged picture extends above the media area's original top margin.
         const QPoint overflow(window->width() / 2, 44);
         QTest::mouseClick(window, Qt::LeftButton, {}, overflow);
@@ -23031,23 +23038,23 @@ NativeAvatarImage {
         QWheelEvent outside(overflow, window->mapToGlobal(overflow), {}, QPoint(0, -120),
                             Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         QCoreApplication::sendEvent(window, &outside);
-        QCOMPARE(image->scale(), 2.88);
+        QVERIFY2(scaleNear(5.0 * std::exp(-0.42)), qPrintable(QString::number(image->scale())));
         wheel({}, QPoint(0, -4800));
-        QCOMPARE(image->scale(), 0.5);
+        QCOMPARE(image->scale(), 1.0);
         QCOMPARE(list->property("contentY").toReal(), historyY);
         click(window, visibleItem(content, "mediaViewer-next"));
         QCOMPARE(viewer->index(), 1);
         QCOMPARE(image->scale(), 1.0);
         QTRY_VERIFY(image->isVisible());
         wheel({}, QPoint(0, 120));
-        QCOMPARE(image->scale(), 1.12);
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
         QTRY_VERIFY(image->isVisible());
 
         wheel({}, QPoint(0, 120));
-        QCOMPARE(image->scale(), 1.12);
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
         QVERIFY(viewer->openFromMessages(controller.messages(), fileA));
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
@@ -23195,7 +23202,10 @@ NativeAvatarImage {
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
         auto *image = visibleItem(content, "mediaViewer-image"); QVERIFY(image);
         const auto wheel = [&](QPoint pixels, QPoint angle) {
-            const QPoint center(window->width() / 2, window->height() / 2);
+            // Wheel at the media-area center (not the window center): with
+            // #919 cursor anchoring an off-center wheel would add a pan and
+            // skew the drag-pin math below.
+            const QPoint center(window->width() / 2, window->height() / 2 - 28);
             QWheelEvent event(center, window->mapToGlobal(center), pixels, angle,
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QCoreApplication::sendEvent(window, &event);
@@ -23208,11 +23218,18 @@ NativeAvatarImage {
         };
         const auto near = [](QPointF a, QPointF b) { return qAbs(a.x() - b.x()) < 0.75 && qAbs(a.y() - b.y()) < 0.75; };
         QVERIFY(near(paintedCenter(), areaCenter));
-        // Zoom to the ceiling: angleDelta 4800 steps the +0.001-per-unit curve
-        // past the clamp (mediaViewer zoomByWheel), so the painted picture is
-        // oversized on both axes and every edge is out of reach without a pan.
+        // Zoom to the ceiling: raw angleDelta saturates the multiplicative
+        // curve against the MAX_SCALE=5 clamp (#919). Stage 2/5 then step
+        // back to 3x: the bound is 732 px on both axes there - inside the
+        // window, so the (1260,1045) pin-drags below overshoot it on both
+        // axes (at 4x the 1284-px bound outruns QTest's synthesized coords).
         wheel({}, QPoint(0, 4800));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
+        // ln(3/5)/0.0035 = -145.9 -> -146 raw angleDelta lands on 3x within
+        // float rounding; the curve is exp-based so the pin is a tolerance.
+        wheel({}, QPoint(0, -146));
+        QVERIFY2(qAbs(image->scale() - 3.0) < 0.01,
+                 qPrintable(QStringLiteral("scale after step-back: %1").arg(image->scale())));
         const qreal boundX = qMax(0.0, (image->property("paintedWidth").toReal() * image->scale()
             - (window->width() - 128.0)) / 2.0);
         const qreal boundY = qMax(0.0, (image->property("paintedHeight").toReal() * image->scale()
@@ -23235,7 +23252,8 @@ NativeAvatarImage {
             return qAbs(c.x() - 60.0) < 0.75 && qAbs(c.y() - 45.0) < 0.75; })());
         // Stage 2: dragging far past the edge pins the picture at the bound
         // (edges reachable, no overscroll): the painted center sits exactly
-        // boundX/boundY right/down of the area center.
+        // boundX/boundY right/down of the area center. At 4x the bounds are
+        // 1284x732, which the (1260,1045)-leg drags overshoot on both axes.
         QTest::mousePress(window, Qt::LeftButton, {}, grab + QPoint(60, 45));
         QTest::mouseMove(window, grab + QPoint(660, 545));
         QTest::qWait(20);
@@ -23256,7 +23274,7 @@ NativeAvatarImage {
         // slot must arrive centered even though the previous one ended at
         // a panned, zoomed position.
         wheel({}, QPoint(0, 2000));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
         QTest::mousePress(window, Qt::LeftButton, {}, grab);
         QTest::mouseMove(window, grab + QPoint(40, 30));
         QTest::qWait(20);
@@ -23273,7 +23291,7 @@ NativeAvatarImage {
         // the reverse drag first chews through the slack and the picture is
         // stuck at the edge.
         wheel({}, QPoint(0, 4800));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
         QTest::qWait(50);
         const qreal boundBefore = image->property("panBoundX").toReal();
         QVERIFY2(boundBefore > 60.0, qPrintable(QStringLiteral("bound too small: ")
@@ -23315,6 +23333,180 @@ NativeAvatarImage {
             return qAbs(paintedCenter().x() - (beforeReverse.x() - 60.0)) < 0.75;
         })());
         // Escape still closes after all the pointer traffic.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #919 reference zoom upgrade: clamp [1, 5], multiplicative wheel
+    // exp(0.0035 * delta) anchored at the cursor, a bottom-centered zoom pill
+    // (minus / percent-reset / plus, 36 px buttons, 40% disabled opacity),
+    // 1.25x button steps, +/-/0 keyboard zoom and Shift+arrow 48 px pan that
+    // never pages the gallery; slot change resets scale and pan.
+    void mediaViewerReferenceZoomToolbarStepsKeyboardPanAndClamps()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            for (const auto &fileUuid : {fileA, fileB}) {
+                const auto file = "/api/workspace/v1/messenger/files/" + fileUuid;
+                if (path.startsWith(file)) {
+                    if (path == file) {
+                        auto metadata = avatarProbeMetadata(fileUuid, png);
+                        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                        return Response{metadata};
+                    }
+                    if (path == file + "/actions/download") {
+                        Response result; result.rawBody = png; result.rawContentType = "image/png";
+                        return result;
+                    }
+                    return Response{QJsonObject{}, 404};
+                }
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerRow(second, fileB, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Zoom upgrade window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *viewer = controller.mediaViewer(); QVERIFY(viewer);
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        auto *image = visibleItem(content, "mediaViewer-image"); QVERIFY(image);
+        const auto wheelAt = [window](QPoint pos, QPoint angle) {
+            QWheelEvent event(pos, window->mapToGlobal(pos), {}, angle,
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        const QPoint center(window->width() / 2, window->height() / 2);
+        const auto scaleNear = [image](double want) {
+            return qAbs(image->scale() - want) < 1e-6;
+        };
+        // The pill: bottom-centered, 16 px above the bottom edge (bottom-4).
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-zoomBar"));
+        auto *zoomBar = visibleItem(content, "mediaViewer-zoomBar");
+        auto *zoomOut = visibleItem(content, "mediaViewer-zoomOutButton");
+        auto *zoomReset = visibleItem(content, "mediaViewer-zoomResetButton");
+        auto *zoomIn = visibleItem(content, "mediaViewer-zoomInButton");
+        auto *percent = item(content, "mediaViewer-zoomPercent"); QVERIFY(percent);
+        QCOMPARE(zoomBar->mapToItem(content, QPointF(zoomBar->width() / 2.0, 0)).x(),
+                 content->width() / 2.0);
+        QCOMPARE(zoomBar->mapToItem(content, QPointF(0, zoomBar->height())).y(),
+                 content->height() - 16.0);
+        QCOMPARE(zoomIn->height(), 36.0); QCOMPARE(zoomOut->height(), 36.0);
+        QCOMPARE(zoomReset->width() >= 56.0, true);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        // At 1x the minus button sits disabled (opacity-40 contract).
+        QVERIFY(!zoomOut->isEnabled()); QVERIFY(zoomIn->isEnabled());
+        // One wheel notch multiplies: exp(0.42) = 1.52 -> "152%".
+        wheelAt(center, QPoint(0, 120));
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("152%"));
+        // Ceiling: the clamp is exactly 5x and the plus button disables.
+        wheelAt(center, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 5.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("500%"));
+        QVERIFY(!zoomIn->isEnabled()); QVERIFY(zoomOut->isEnabled());
+        // Floor: the 0.5x floor of the old #204 contract is gone - 1x.
+        wheelAt(center, QPoint(0, -4800));
+        QCOMPARE(image->scale(), 1.0);
+        wheelAt(center, QPoint(0, -120));
+        QCOMPARE(image->scale(), 1.0);
+        // Cursor anchoring: zooming at center+200 keeps that pixel under the
+        // cursor, so the picture center moves 4x200/... the pan offset from
+        // the media-area center becomes cx * (1 - applied) = 200 * (1 - 5)
+        // = -800 (media area is centered horizontally on the window).
+        wheelAt(center + QPoint(200, 0), QPoint(0, 4800));
+        QCOMPARE(image->scale(), 5.0);
+        const QPointF areaCenter(window->width() / 2.0, window->height() / 2.0 - 28.0);
+        const auto paintedCenter = [&]() {
+            return image->mapToScene(QPointF(image->width() / 2.0, image->height() / 2.0));
+        };
+        const auto anchored = paintedCenter();
+        QVERIFY2(qAbs(anchored.x() - (areaCenter.x() - 800.0)) < 0.75,
+            qPrintable(QStringLiteral("anchored x: ") + QString::number(anchored.x())));
+        wheelAt(center, QPoint(0, -4800));
+        QCOMPARE(image->scale(), 1.0);
+        // Buttons step 1.25x from the clamp-down state.
+        click(window, zoomIn);
+        QCOMPARE(image->scale(), 1.25);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("125%"));
+        click(window, zoomIn);
+        QCOMPARE(image->scale(), 1.5625);
+        click(window, zoomOut);
+        QCOMPARE(image->scale(), 1.25);
+        click(window, zoomOut);
+        click(window, zoomOut);   // 1.25 -> 1.0 (clamped), then it disables
+        QCOMPARE(image->scale(), 1.0);
+        QVERIFY(!zoomOut->isEnabled());
+        click(window, zoomIn);    // 1.25
+        click(window, zoomReset); // percent button resets to 100%
+        QCOMPARE(image->scale(), 1.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        // Keyboard zoom: "+"/"=" in, "-" out, "0" reset.
+        QTest::keyClick(window, Qt::Key_Equal);
+        QCOMPARE(image->scale(), 1.25);
+        QTest::keyClick(window, Qt::Key_Equal);
+        QCOMPARE(image->scale(), 1.5625);
+        QTest::keyClick(window, Qt::Key_Minus);
+        QCOMPARE(image->scale(), 1.25);
+        QTest::keyClick(window, Qt::Key_0);
+        QCOMPARE(image->scale(), 1.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        // Shift+arrow pans 48 px while zoomed and never pages the gallery;
+        // plain arrows keep paging and the slot change resets scale and pan.
+        wheelAt(center, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 5.0);
+        const QPointF beforePan = paintedCenter();
+        QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - (beforePan.x() + 48.0)) < 0.75;
+        })(), 2000);
+        QCOMPARE(viewer->index(), 0);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().y() - (beforePan.y() + 48.0)) < 0.75;
+        })(), 2000);
+        QCOMPARE(viewer->index(), 0);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(viewer->index(), 1);
+        QCOMPARE(image->scale(), 1.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        QTRY_VERIFY(image->isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - areaCenter.x()) < 0.75;
+        })(), 2000);
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
     }
@@ -23592,7 +23784,12 @@ NativeAvatarImage {
         QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, 240),
                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         QCoreApplication::sendEvent(window, &wheel);
-        QCOMPARE(video->scale(), 1.24);
+        // #919: video slots keep zoom DISABLED (the reference binds the zoom
+        // hook to images only) and the zoom pill is not rendered for them;
+        // the wheel is still consumed so nothing behind the viewer scrolls.
+        QCOMPARE(video->scale(), 1.0);
+        QVERIFY2(!visibleItem(content, "mediaViewer-zoomBar"),
+            "the zoom toolbar must not render for a video slot");
         // Same media box as images: 64 px side padding and the
         // calc(100vh-12rem) height cap (media-viewer-overlay.ui.tsx:126,158).
         QCOMPARE(video->width(), content->width() - 128.0);

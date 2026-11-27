@@ -83,10 +83,58 @@ Popup {
         Qt.callLater(statusLabel.announceStatus);
     }
 
+    // Issue #919 reference zoom contract (media-viewer-zoom.hook.ts):
+    // clamp [MIN_SCALE=1, MAX_SCALE=5], multiplicative wheel
+    // scale * exp(delta * 0.0035) anchored at the cursor, 1.25x steps for
+    // the buttons and the keyboard anchored at the image center, 48 px
+    // Shift+arrow keyboard pan while zoomed. The wheel unit maps Qt's
+    // pixelDelta (trackpad) else angleDelta (120/notch) onto the reference
+    // delta (docs/NATIVE_DESKTOP_MEDIA_VIEWER.md); video slots keep zoom
+    // disabled but still consume the wheel so nothing behind scrolls.
+    readonly property real minScale: 1
+    readonly property real maxScale: 5
+    readonly property real stepFactor: 1.25
+    readonly property int keyboardPanStep: 48
+    readonly property bool zoomableSlot: currentSlot.state === "ready"
+        && String(currentSlot.kind || "") !== "video"
     function zoomByWheel(wheel) {
-        const delta = wheel.pixelDelta.y || wheel.angleDelta.y;
-        zoom = Math.max(0.5, Math.min(3, zoom + 0.001 * delta));
         wheel.accepted = true;
+        if (!zoomableSlot)
+            return;
+        const delta = wheel.pixelDelta.y || wheel.angleDelta.y;
+        const next = Math.max(minScale, Math.min(maxScale,
+                                                 zoom * Math.exp(delta * 0.0035)));
+        const applied = next / zoom;
+        // Cursor anchoring: the pixel under the cursor stays under the
+        // cursor. Offsets are measured from the media area center, where
+        // the scaled picture is centered at pan 0.
+        panX = (wheel.x - mediaArea.width / 2) * (1 - applied) + panX * applied;
+        panY = (wheel.y - mediaArea.height / 2) * (1 - applied) + panY * applied;
+        zoom = next; // onZoomChanged re-clamps the pan into the new bounds
+    }
+    // Button/keyboard step anchored at the image center: the picture center
+    // keeps its on-screen offset while the scale changes.
+    function zoomByStep(factor) {
+        const next = Math.max(minScale, Math.min(maxScale, zoom * factor));
+        const applied = next / zoom;
+        panX = panX * applied;
+        panY = panY * applied;
+        zoom = next;
+    }
+    function resetZoom() {
+        zoom = 1;
+        panX = 0;
+        panY = 0;
+    }
+    // Shift+arrow pan (reference): only while zoomed, write-clamped to the
+    // current bounds so no hidden excess can strand the picture (#762 rule).
+    function panBy(dx, dy) {
+        if (!(zoom > 1))
+            return;
+        panX = Math.max(-mediaImage.panBoundX,
+                        Math.min(mediaImage.panBoundX, panX + dx));
+        panY = Math.max(-mediaImage.panBoundY,
+                        Math.min(mediaImage.panBoundY, panY + dy));
     }
     // #730: when the zoom shrinks the bounds (e.g. back to fit), bring the raw
     // pan values along so a zoom-out centers the picture and a zoom-in starts
@@ -641,6 +689,20 @@ Popup {
         }
     }
 
+    // Issue #919: a zoom-pill button (36 px high, glyph centered, 40% opacity
+    // while disabled per the reference opacity-40).
+    component ZoomButton: AbstractButton {
+        implicitHeight: 36
+        padding: 0
+        hoverEnabled: true
+        opacity: enabled ? 1.0 : 0.4
+        background: Rectangle {
+            radius: 6
+            color: parent.hovered && parent.enabled
+                   ? viewerRoot.colors["bg-elevated"] : "transparent"
+        }
+    }
+
     // Prev/next: fixed top-1/2 h-12 w-12 -translate-y-1/2 rounded-full
     // bg-black/50 hover:bg-black/70, left-4/right-4, chevron size 24, left
     // rotated 180; only rendered when items.length > 1
@@ -879,6 +941,75 @@ Popup {
         }
     }
 
+    // Issue #919 zoom toolbar pill (media-viewer-overlay.ui.tsx): rounded-lg
+    // p-1 gap-1 pill bg-bg-elevated/80 anchored bottom-4 centered (z-float);
+    // "-" / reset / "+" buttons h-9 w-9 text-xl, the reset button min-w-14
+    // px-1 text-sm with the rounded percentage. Rendered only for a ready
+    // IMAGE slot (the video slot keeps zoom disabled); disabled buttons keep
+    // their glyph at 40% opacity per the reference opacity-40.
+    Rectangle {
+        id: zoomBar
+        objectName: "mediaViewer-zoomBar"
+        visible: viewerRoot.visible && viewerRoot.zoomableSlot
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 16
+        anchors.horizontalCenter: parent.horizontalCenter
+        width: zoomRow.implicitWidth + 8
+        height: zoomRow.implicitHeight + 8
+        radius: 8
+        color: viewerRoot.colors["bg-elevated"]
+        opacity: 0.8
+        Accessible.ignored: true
+        Row {
+            id: zoomRow
+            anchors.centerIn: parent
+            spacing: 4
+            ZoomButton {
+                objectName: "mediaViewer-zoomOutButton"
+                implicitWidth: 36
+                enabled: viewerRoot.zoom > 1
+                onClicked: viewerRoot.zoomByStep(1 / viewerRoot.stepFactor)
+                Accessible.name: qsTr("Zoom out")
+                contentItem: Label {
+                    horizontalAlignment: Label.AlignHCenter
+                    verticalAlignment: Label.AlignVCenter
+                    text: "-"
+                    font.pixelSize: 20
+                    color: viewerRoot.colors["text-primary"]
+                }
+            }
+            ZoomButton {
+                objectName: "mediaViewer-zoomResetButton"
+                implicitWidth: Math.max(56, zoomPercent.implicitWidth + 8)
+                onClicked: viewerRoot.resetZoom()
+                Accessible.name: qsTr("Reset zoom")
+                contentItem: Label {
+                    id: zoomPercent
+                    objectName: "mediaViewer-zoomPercent"
+                    horizontalAlignment: Label.AlignHCenter
+                    verticalAlignment: Label.AlignVCenter
+                    text: Math.round(viewerRoot.zoom * 100) + "%"
+                    font.pixelSize: 14
+                    color: viewerRoot.colors["text-primary"]
+                }
+            }
+            ZoomButton {
+                objectName: "mediaViewer-zoomInButton"
+                implicitWidth: 36
+                enabled: viewerRoot.zoom < viewerRoot.maxScale
+                onClicked: viewerRoot.zoomByStep(viewerRoot.stepFactor)
+                Accessible.name: qsTr("Zoom in")
+                contentItem: Label {
+                    horizontalAlignment: Label.AlignHCenter
+                    verticalAlignment: Label.AlignVCenter
+                    text: "+"
+                    font.pixelSize: 20
+                    color: viewerRoot.colors["text-primary"]
+                }
+            }
+        }
+    }
+
     // Document-level keyboard contract (media-viewer-backdrop.ui.tsx:27-51):
     // Escape always closes; arrows navigate only with more than one item.
     Shortcut {
@@ -895,5 +1026,58 @@ Popup {
         sequence: "Right"
         enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.gallery
         onActivated: viewerRoot.viewer.next()
+    }
+    // Issue #919 zoom keyboard contract: "+"/"=" in, "-" out, "0" reset,
+    // Shift+arrow pans 48 px while zoomed (reference KEYBOARD_PAN_STEP).
+    // Bare "Left"/"Right" above keep paging the gallery; Qt shortcut matching
+    // is exact on modifiers, so Shift+arrows never page and "+" never reaches
+    // a Ctrl/Meta/Alt chord - the reference ignore-rules fall out by shape.
+    // The sequences use symbol characters: QKeySequence::fromString does not
+    // parse the "Equal"/"Plus"/"Minus" key-name words in this Qt build
+    // (they yield an empty sequence that never matches), while the symbols
+    // parse to Qt::Key_Equal/Key_Plus/Key_Minus reliably (probed).
+    Shortcut {
+        sequence: "+"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+        onActivated: viewerRoot.zoomByStep(viewerRoot.stepFactor)
+    }
+    Shortcut {
+        sequence: "="
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+        onActivated: viewerRoot.zoomByStep(viewerRoot.stepFactor)
+    }
+    Shortcut {
+        sequence: "-"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+        onActivated: viewerRoot.zoomByStep(1 / viewerRoot.stepFactor)
+    }
+    Shortcut {
+        sequence: "0"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+        onActivated: viewerRoot.resetZoom()
+    }
+    Shortcut {
+        sequence: "Shift+Left"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+                 && viewerRoot.zoom > 1
+        onActivated: viewerRoot.panBy(-viewerRoot.keyboardPanStep, 0)
+    }
+    Shortcut {
+        sequence: "Shift+Right"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+                 && viewerRoot.zoom > 1
+        onActivated: viewerRoot.panBy(viewerRoot.keyboardPanStep, 0)
+    }
+    Shortcut {
+        sequence: "Shift+Up"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+                 && viewerRoot.zoom > 1
+        onActivated: viewerRoot.panBy(0, -viewerRoot.keyboardPanStep)
+    }
+    Shortcut {
+        sequence: "Shift+Down"
+        enabled: viewerRoot.viewer.open && viewerRoot.activeFocus && viewerRoot.zoomableSlot
+                 && viewerRoot.zoom > 1
+        onActivated: viewerRoot.panBy(0, viewerRoot.keyboardPanStep)
     }
 }
