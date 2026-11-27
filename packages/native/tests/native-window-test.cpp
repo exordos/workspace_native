@@ -39226,10 +39226,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(stepped->property("keyboardFocused").toBool());
         auto *oldFocus = delegateAt(15); QVERIFY(oldFocus);
         QVERIFY(!oldFocus->property("keyboardFocused").toBool());
-        // Up + 4x Left walk back to the adjacent-month cell (Feb 11 ->
-        // Feb 4 -> Jan 30).
+        // Up + 5x Left walk back to the adjacent-month cell: Feb 11 ->
+        // Feb 4 (Up), then five day-steps Left land on Jan 30 (index 4).
         QTest::keyClick(window, Qt::Key_Up);
-        for (int i = 0; i < 4; ++i) QTest::keyClick(window, Qt::Key_Left);
+        for (int i = 0; i < 5; ++i) QTest::keyClick(window, Qt::Key_Left);
         QTRY_COMPARE(gridItem->property("focusIndex").toInt(), 4);
         auto *jan30 = delegateAt(4); QVERIFY(jan30);
         QCOMPARE(jan30->property("cellDate").toDate(), QDate(2026, 1, 30));
