@@ -9063,18 +9063,19 @@ bool NativeController::writeCalendarMeeting(const QString &operation, const QStr
     if (create || edit) {
         if (edit)
             payload = QJsonObject::fromVariantMap(event.value("wirePayload").toMap());
-        const auto title = draft.value("title").toString().trimmed();
-        const auto location = draft.value("location").toString().trimmed();
+        const auto title = draft.value("title").toString();
+        const auto location = draft.value("location").toString();
         const auto start = draft.value("startUtc").toString();
         const auto end = draft.value("endUtc").toString();
         const auto from = calendarUtcMicros(start);
         const auto to = calendarUtcMicros(end);
-        if (!from || !to || *from >= *to || title.isEmpty() || title.toUcs4().size() > 1024
+        if (!from || !to || *from >= *to || title.trimmed().isEmpty() || title.toUcs4().size() > 1024
             || location.toUcs4().size() > 2048)
             return false;
         payload["kind"] = "event";
         payload["title"] = title;
-        payload["location"] = location.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(location);
+        if (create || payload.value("location").toString() != location)
+            payload["location"] = location.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(location);
         payload["starts_at"] = start;
         payload["ends_at"] = end;
         body["payload"] = payload;

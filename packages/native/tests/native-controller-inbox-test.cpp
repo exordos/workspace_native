@@ -1674,6 +1674,57 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    void calendarUnchangedWireTextSurvivesUnrelatedEdits()
+    {
+        Fixture fixture;
+        const auto base = fixture.server.handler;
+        const auto id = QStringLiteral("95000000-0000-4000-8000-000000000001");
+        auto event = calendarEvent(id, "2026-11-01", "09:00", "10:00", "  Existing title ",
+                                   workCalendarId, " Room 4  ");
+        auto original = event.value("payload").toObject();
+        QJsonObject sent;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/calendar/calendars/") {
+                auto row = calendarList().first().toObject();
+                row["read_only"] = false;
+                row["external_account_uuid"] = QJsonValue::Null;
+                return {QJsonArray{row}};
+            }
+            if (path == "/api/workspace/v1/calendar/events/")
+                return {QJsonArray{event}};
+            if (request.method == "PUT" && path == "/api/workspace/v1/calendar/events/" + id) {
+                sent = request.body.value("payload").toObject();
+                event["payload"] = sent;
+                return {event};
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        QVariantMap draft{{"title", "Renamed"}, {"location", original.value("location").toString()},
+                          {"startUtc", original.value("starts_at").toString()},
+                          {"endUtc", original.value("ends_at").toString()}};
+        QVERIFY(controller.writeCalendarMeeting("edit", id, draft));
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent.value("location"), original.value("location"));
+        QTRY_VERIFY(!controller.calendarWriting() && !controller.calendarLoading());
+        original["location"] = QJsonValue::Null;
+        event["payload"] = original;
+        controller.retryCalendar();
+        QTRY_VERIFY(!controller.calendarLoading());
+        draft["title"] = original.value("title").toString();
+        draft["location"] = "";
+        draft["endUtc"] = "2026-11-01T23:00:00Z";
+        sent = {};
+        QVERIFY(controller.writeCalendarMeeting("edit", id, draft));
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent.value("title"), original.value("title"));
+        QVERIFY(sent.value("location").isNull());
+    }
+
     void calendarWritesFenceReadOnlyAndForeignResources()
     {
         Fixture fixture;
