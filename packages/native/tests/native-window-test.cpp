@@ -39359,6 +39359,51 @@ QTRY_VERIFY(create->property("enabled").toBool());
                                 .arg(gridItem->property("effectiveFocusIndex").toInt());
         if (page->property("selectedDate").toDateTime().date() != QDate(2026, 1, 30))
             witnessLeaks << QStringLiteral("4722010314: roaming arrows moved the selection");
+        // exo-review round 2, finding 4722274186: after the edge re-anchor the
+        // fetched event window must follow the DISPLAYED matrix (December 2025:
+        // 2025-12-01..2026-01-11), not stay on the selected date's month -
+        // otherwise the newly displayed cells render without their events.
+        if (grid == QLatin1String("month"))
+        {
+            bool windowFollowed = false;
+            for (int i = 0; i < 40 && !windowFollowed; ++i)
+            {
+                QTest::qWait(50);
+                windowFollowed = !fixture.calendarFrom.isEmpty()
+                    && fixture.calendarFrom.last() == QStringLiteral("2025-12-01")
+                    && fixture.calendarTo.last() == QStringLiteral("2026-01-11");
+            }
+            if (!windowFollowed)
+                witnessLeaks << QStringLiteral(
+                    "4722274186: newest recorded window is %1..%2,"
+                    " must be 2025-12-01..2026-01-11 (the displayed matrix)")
+                                    .arg(fixture.calendarFrom.isEmpty()
+                                             ? QString() : fixture.calendarFrom.last(),
+                                         fixture.calendarTo.isEmpty()
+                                             ? QString() : fixture.calendarTo.last());
+        }
+        // exo-review round 2, finding 4722274191: the heading must describe the
+        // month its grid actually shows: after the December re-anchor the
+        // mini-calendar title (and, in month view, the header title) may not
+        // still announce the selected date's month (January 2026).
+        if (grid == QLatin1String("mini"))
+        {
+            auto *miniTitle = view("miniCalendarTitle"); QVERIFY(miniTitle);
+            const QString shown = miniTitle->property("text").toString();
+            if (shown != QStringLiteral("December 2025"))
+                witnessLeaks << QStringLiteral(
+                    "4722274191: mini-calendar title shows '%1' while its cells show December 2025")
+                                    .arg(shown);
+        }
+        else
+        {
+            auto *header = view("calendarDateTitle"); QVERIFY(header);
+            const QString shown = header->property("text").toString();
+            if (shown != QStringLiteral("December 2025"))
+                witnessLeaks << QStringLiteral(
+                    "4722274191: month-view header shows '%1' while the grid shows December 2025")
+                                    .arg(shown);
+        }
         // One RED pass must print every verdict: qWarning each leak, then
         // fail exactly once (a hard-failing assert would abort the case).
         for (const QString &leak : std::as_const(witnessLeaks))
