@@ -3,10 +3,10 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import http.server
 import json
 import os
-from pathlib import Path
+import pathlib
 import secrets
 import ssl
 import subprocess
@@ -14,13 +14,13 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 import urllib.request
+import uuid
 
-from hosted_capture import HostedCapture
+import hosted_capture
 
 
-HERE = Path(__file__).resolve().parent
+HERE = pathlib.Path(__file__).resolve().parent
 WINDOWS = sys.platform == "win32"
 PROJECT = str(uuid.uuid4())
 USER = str(uuid.uuid4())
@@ -42,7 +42,7 @@ def wait_for(operation, message, timeout=25):
     raise RuntimeError(message)
 
 
-class SessionFixture(ThreadingHTTPServer):
+class SessionFixture(http.server.ThreadingHTTPServer):
     def __init__(self):
         super().__init__(("127.0.0.1", 0), Handler)
         self.capture = None
@@ -66,7 +66,7 @@ class SessionFixture(ThreadingHTTPServer):
             raise
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
@@ -130,7 +130,7 @@ def trust_loopback_certificate(directory):
     openssl = "openssl"
     if sys.platform == "darwin":
         prefix = subprocess.check_output(["brew", "--prefix", "openssl@3"], text=True).strip()
-        openssl = str(Path(prefix) / "bin/openssl")
+        openssl = str(pathlib.Path(prefix) / "bin/openssl")
     run(openssl, "version")
     ca = directory / "ca.pem"
     ca_key = directory / "ca.key"
@@ -194,6 +194,23 @@ def drive(pid, mode, origin):
         run("swift", HERE / "macos-account.swift", pid, mode, origin, timeout=100)
 
 
+def verify_hosted_capture(pid, origin, results, devices):
+    try:
+        drive(pid, "join-call", origin)
+    except subprocess.CalledProcessError as error:
+        # The macOS driver uses EX_TEMPFAIL only for an unacknowledged AXPress.
+        # Do not press again. The loopback page reports the actual transition.
+        if sys.platform != "darwin" or error.returncode != 75:
+            raise
+    wait_for(lambda: all(kind in results for kind in ("page", "audio", "video")),
+             "The installed meeting did not report both media results", timeout=40)
+    check(results["page"] == "loaded", "The installed meeting did not load")
+    for kind in ("audio", "video"):
+        expected = "live" if devices[kind] else "NotFoundError"
+        check(results[kind] == expected, f"{kind}: {results[kind]}, expected {expected}")
+    print("Installed meeting capture:", results, flush=True)
+
+
 def capture_inventory():
     if WINDOWS:
         output = run("powershell", "-NoProfile", "-File", HERE / "windows-capture-inventory.ps1",
@@ -215,7 +232,7 @@ def scenario(executable, check_updater, check_capture):
           "The TLS fixture requires a disposable GitHub-hosted runner")
     check(WINDOWS or sys.platform == "darwin", "A Windows or macOS desktop is required")
     with tempfile.TemporaryDirectory(prefix="cassi-package-session-") as name:
-        folder = Path(name)
+        folder = pathlib.Path(name)
         with trust_loopback_certificate(folder) as (cert, key), SessionFixture() as fixture:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(cert, key)
@@ -223,7 +240,7 @@ def scenario(executable, check_updater, check_capture):
             print("Trusted an ephemeral loopback TLS fixture.", flush=True)
             origin = "https://127.0.0.1:" + str(fixture.server_port)
             if check_capture:
-                fixture.capture = HostedCapture(PROJECT, USER, origin)
+                fixture.capture = hosted_capture.HostedCapture(PROJECT, USER, origin)
                 devices = capture_inventory()
                 print("Native capture devices:", devices, flush=True)
             identity = json.dumps(["workspace-session-v1", origin, PROJECT, USER], separators=(",", ":"))
@@ -256,15 +273,7 @@ def scenario(executable, check_updater, check_capture):
                                     drive(app.pid, "update", origin)
                                     print("The installed application reported its unsupported update channel in App version.", flush=True)
                                 if check_capture:
-                                    drive(app.pid, "join-call", origin)
-                                    results = fixture.capture.results
-                                    wait_for(lambda: all(kind in results for kind in ("page", "audio", "video")),
-                                             "The installed meeting did not report both media results", timeout=40)
-                                    check(results["page"] == "loaded", "The installed meeting did not load")
-                                    for kind in ("audio", "video"):
-                                        expected = "live" if devices[kind] else "NotFoundError"
-                                        check(results[kind] == expected, f"{kind}: {results[kind]}, expected {expected}")
-                                    print("Installed meeting capture:", results, flush=True)
+                                    verify_hosted_capture(app.pid, origin, fixture.capture.results, devices)
                                     drive(app.pid, "close-call", origin)
                                 drive(app.pid, "logout", origin)
                                 wait_for(lambda: not stored(record), "Signing out did not remove the OS credential")

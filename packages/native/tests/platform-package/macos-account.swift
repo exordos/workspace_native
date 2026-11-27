@@ -79,8 +79,31 @@ func fill(_ name: String, _ value: String) throws {
 }
 func press(_ name: String) throws {
     let button = try control(name, kAXButtonRole as String)
-    guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
-        throw fail("The \(name) action failed.")
+    let status = AXUIElementPerformAction(button, kAXPressAction as CFString)
+    guard status == .success else {
+        throw fail("The \(name) action failed (AXError \(status.rawValue)).")
+    }
+}
+func joinHostedCall() throws {
+    func pressCard() throws -> AXError {
+        let card = try control("Join call", kAXButtonRole as String)
+        return AXUIElementPerformAction(card, kAXPressAction as CFString)
+    }
+    var status = try pressCard()
+    if status == .invalidUIElement {
+        // Loading the channel can replace its message delegate between lookup
+        // and press. Reacquire it once unless the meeting already opened.
+        if find(root, "Close call", kAXButtonRole as String) != nil { return }
+        status = try pressCard()
+    }
+    if status == .cannotComplete {
+        // AX can time out while Qt opens the meeting. The parent verifies the
+        // actual hosted page and both media reports before it accepts a join.
+        print("Join call returned AXError \(status.rawValue); checking the hosted meeting.")
+        exit(75)
+    }
+    guard status == .success else {
+        throw fail("The Join call action failed (AXError \(status.rawValue)).")
     }
 }
 guard AXIsProcessTrusted(), CGPreflightPostEventAccess() else { throw fail("The native desktop input permissions are unavailable.") }
@@ -94,7 +117,7 @@ case "login":
     try press("Login")
 case "join-call":
     try press("General Chat: Cassi hosted channel")
-    try press("Join call")
+    try joinHostedCall()
 case "close-call":
     try press("Close call")
 case "update":
