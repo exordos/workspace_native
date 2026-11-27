@@ -22,6 +22,16 @@ FocusScope {
     property bool loading: false
     property bool error: false
     property var activeCalendars: ["work", "personal"]
+    property string uiLocale: "en"
+
+    // Localized full date for keyboard-focus announced cell names (#925).
+    // Pattern-per-language follows the Main.qml date-label precedent;
+    // QLocale is not exposed as a QML type, so enum formats are not
+    // reachable from QML.
+    function localizedCellDate(d) {
+        const pattern = uiLocale === "ru" ? "dddd, d MMMM yyyy" : "dddd, MMMM d, yyyy"
+        return Qt.locale(uiLocale).toString(d, pattern)
+    }
 
     signal visibleWindowChanged(string from, string to)
     signal retryRequested()
@@ -286,7 +296,7 @@ FocusScope {
                             readonly property bool keyboardFocused: miniGrid.activeFocus
                                 && miniGrid.effectiveFocusIndex === modelData
                             Accessible.role: Accessible.Button
-                            Accessible.name: Qt.formatDate(miniCell.cellDate, Qt.locale(), QLocale.LongFormat)
+                            Accessible.name: page.localizedCellDate(miniCell.cellDate)
                             Accessible.selected: miniCell.isSelected
                             Accessible.onPressAction: page.selectedDate = miniCell.cellDate
                             Rectangle {
@@ -500,7 +510,7 @@ FocusScope {
                                 readonly property bool keyboardFocused: monthGrid.activeFocus
                                     && monthGrid.effectiveFocusIndex === modelData
                                 Accessible.role: Accessible.Button
-                                Accessible.name: Qt.formatDate(monthCell.cellDate, Qt.locale(), QLocale.LongFormat)
+                                Accessible.name: page.localizedCellDate(monthCell.cellDate)
                                 Accessible.selected: monthCell.isSelected
                                 Accessible.onPressAction: page.selectedDate = monthCell.cellDate
                                 color: monthCell.eventCount > 0 ? page.colors["bg-elevated"] : "transparent"

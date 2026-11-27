@@ -39403,7 +39403,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QAccessible::setActive(true);
         auto *jan30Iface = QAccessible::queryAccessibleInterface(jan30); QVERIFY(jan30Iface);
         const QString expectedName =
-            QLocale(QLocale::system()).toString(QDate(2026, 1, 30), QLocale::LongFormat);
+            QLocale(QLocale::English).toString(QDate(2026, 1, 30),
+                                               QStringLiteral("dddd, MMMM d, yyyy"));
         QCOMPARE(jan30Iface->text(QAccessible::Name), expectedName);
         QVERIFY(!jan30Iface->state().selected);
         // Enter runs the same selection action: the date moves and the agenda
