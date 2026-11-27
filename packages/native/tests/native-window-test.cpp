@@ -11180,14 +11180,14 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         perfPhase("project-open", clock.restart());
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         perfPhase("stream-open-1-cold", clock.restart());
         const QStringList topicPhaseNames{QStringLiteral("topic-select-1-cold"),
             QStringLiteral("topic-select-2-cold"), QStringLiteral("topic-select-3-warm")};
         int topicPhaseIndex = 0;
         for (const auto &id : {topicId, secondTopicId, topicId}) {
-            click(window, item(content, "topic-" + id));
+            clickIncubatedItem(window, "topic-" + id);
             QTRY_VERIFY(!controller.busy());
             QTRY_VERIFY(item(content, "message-content-" + (id == topicId ? messageId : returnedId)));
             QVERIFY(!controller.cacheStale());
@@ -11196,12 +11196,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(historyGets, 2);
         QCOMPARE(aggregateGets, 1);
         QCOMPARE(topicGets, 1);
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.messages().size(), 2);
         perfPhase("stream-open-2-warm", clock.restart());
-        click(window, item(content, "topic-" + secondTopicId));
+        clickIncubatedItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(item(content, "message-content-" + returnedId));
         perfPhase("topic-select-4-warm", clock.restart());
@@ -42568,9 +42568,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *content = window->contentItem();
@@ -48537,9 +48537,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
