@@ -777,6 +777,8 @@ public:
                 return {QJsonArray{
                     calendarEvent(longEventUuid(), today, "09:00", "10:00",
                         "Quarterly alignment across all workspace squads and external partners"),
+                    calendarEvent("90000000-0000-4000-8000-0000000000a3", today, "09:30", "10:30",
+                        "Design review"),
                     calendarEvent("90000000-0000-4000-8000-0000000000a2", today, "11:00", "11:30",
                         "Standup", personalCalendarId)}};
             }
@@ -39940,7 +39942,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, view("sectionCalendarButton"));
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
         auto *page = view("calendarSectionPage");
-        QTRY_VERIFY_WITH_TIMEOUT(page->property("events").toList().size() == 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("events").toList().size() == 3, 5000);
         const QColor hoverTint("#cde6ff"); // card-bg-active light (same token as the #910-era chip pins)
         // Index of today in the 42-cell matrix: the grid starts at the leading
         // Monday of the selected month (weekStart contract, #911).
@@ -40020,6 +40022,61 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(chip->property("implicitWidth").toReal() > chip->width(), 5000);
         QVERIFY(chip->parentItem());
         QVERIFY(chip->width() <= chip->parentItem()->width());
+        auto *overlap = view("weekChip-90000000-0000-4000-8000-0000000000a3");
+        auto *standalone = view("weekChip-90000000-0000-4000-8000-0000000000a2");
+        QVERIFY(overlap);
+        QVERIFY(standalone);
+        const qreal hour = view("calendarWeekGrid")->property("hourHeight").toReal();
+        QVERIFY(hour >= 44);
+        QVERIFY(qAbs(overlap->y() - chip->y() - hour / 2) < 1);
+        QVERIFY(qAbs(standalone->y() - chip->y() - 2 * hour) < 1);
+        QVERIFY(overlap->y() < chip->y() + chip->height());
+        QVERIFY(chip->x() + chip->width() <= overlap->x());
+        QVERIFY(qAbs(standalone->height() + 1 - hour / 2) < 1);
+        QVERIFY(standalone->width() > chip->width());
+        auto *week = view("calendarWeekGrid");
+        const auto evaluateWeek = [&](const QString &script) {
+            QQmlExpression expression(qmlContext(week), week, script);
+            return expression.evaluate();
+        };
+        const auto laidOutEnd = [&](const QString &start, const QString &end,
+                                    const QString &startUtc, const QString &endUtc) {
+            const auto date = QDateTime::fromString(endUtc, Qt::ISODate).toLocalTime().date().toString(Qt::ISODate);
+            return evaluateWeek(QStringLiteral("arrange([{day:'%1', start:'%2', end:'%3', "
+                                               "startUtc:'%4', endUtc:'%5'}], '%1').timed[0].end")
+                                .arg(date, start, end, startUtc, endUtc)).toInt();
+        };
+        // The clock repeats 01:00 in New York. The second 01:15 follows the first 01:45.
+        QCOMPARE(laidOutEnd("01:45", "01:15", "2026-11-01T05:45:00Z", "2026-11-01T06:15:00Z"), 135);
+        // An unambiguous end belongs at its wall-clock position on the 24-hour grid.
+        QCOMPARE(laidOutEnd("00:30", "03:30", "2026-11-01T04:30:00Z", "2026-11-01T08:30:00Z"), 210);
+        evaluateWeek(R"(eventsForDate = function(date) {
+            if (Qt.formatDate(date, "yyyy-MM-dd") !== Qt.formatDate(dates[0], "yyyy-MM-dd")) return [];
+            const day = Qt.formatDate(date, "yyyy-MM-dd");
+            const events = [];
+            for (let i = 0; i < 40; ++i)
+                events.push({uuid:"all"+i, title:"All day "+i, day:day, allDay:true});
+            events.push({uuid:"early", title:"Morning", day:day, start:"08:00", end:"09:00"});
+            events.push({uuid:"late", title:"Night", day:day, start:"23:00", end:"23:30"});
+            return events;
+        })");
+        auto *timeline = view("calendarWeekTimeline");
+        auto *allDay = view("calendarWeekAllDay");
+        QVERIFY(timeline && allDay);
+        QTRY_VERIFY(allDay->height() > 0 && allDay->property("contentHeight").toReal() > allDay->height());
+        QVERIFY(timeline->height() >= week->height() / 2);
+        auto *lastAllDay = view("weekChip-all39");
+        QVERIFY(lastAllDay);
+        lastAllDay->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(allDay->property("contentY").toReal() > 0);
+        auto *early = view("weekChip-early");
+        auto *late = view("weekChip-late");
+        QVERIFY(early && late);
+        early->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY(late->hasActiveFocus());
+        QTRY_VERIFY(late->mapToItem(timeline, QPointF(0, late->height())).y() <= timeline->height() + 1);
+        QVERIFY(late->mapToItem(timeline, QPointF()).y() >= 0);
     }
 
     void calendarCreatesEditsMovesAndDeletesServerMeeting_data()
@@ -53588,7 +53645,10 @@ private slots:
         click(window, view("viewTabWeek"));
         const auto chipName = "weekChip-" + uuid;
         QTRY_VERIFY(view(chipName));
-        QCOMPARE(view(chipName)->property("text").toString(), QStringLiteral("09:30 Updated plan"));
+        QCOMPARE(view(chipName)->property("text").toString(), QStringLiteral("Updated plan"));
+        const auto *time = view(chipName)->findChild<QQuickItem *>("weekTimeRange");
+        QVERIFY(time);
+        QVERIFY(time->property("text").toString().startsWith(QStringLiteral("09:30")));
         click(window, view(chipName));
         QTRY_VERIFY(view("calendarDetailDelete"));
         click(window, view("calendarDetailDelete"));
