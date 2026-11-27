@@ -40034,6 +40034,42 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(chip->x() + chip->width() <= overlap->x());
         QVERIFY(qAbs(standalone->height() + 1 - hour / 2) < 1);
         QVERIFY(standalone->width() > chip->width());
+        auto *week = view("calendarWeekGrid");
+        const auto evaluateWeek = [&](const QString &script) {
+            QQmlExpression expression(qmlContext(week), week, script);
+            return expression.evaluate();
+        };
+        // The clock repeats 01:00 in New York. The second 01:15 follows the first 01:45.
+        QCOMPARE(evaluateWeek(R"(arrange([{day:"2026-11-01", start:"01:45", end:"01:15",
+            startUtc:"2026-11-01T05:45:00Z", endUtc:"2026-11-01T06:15:00Z"}],
+            "2026-11-01").timed[0].end)").toInt(), 135);
+        evaluateWeek(R"(eventsForDate = function(date) {
+            if (Qt.formatDate(date, "yyyy-MM-dd") !== Qt.formatDate(dates[0], "yyyy-MM-dd")) return [];
+            const day = Qt.formatDate(date, "yyyy-MM-dd");
+            const events = [];
+            for (let i = 0; i < 40; ++i)
+                events.push({uuid:"all"+i, title:"All day "+i, day:day, allDay:true});
+            events.push({uuid:"early", title:"Morning", day:day, start:"08:00", end:"09:00"});
+            events.push({uuid:"late", title:"Night", day:day, start:"23:00", end:"23:30"});
+            return events;
+        })");
+        auto *timeline = view("calendarWeekTimeline");
+        auto *allDay = view("calendarWeekAllDay");
+        QVERIFY(timeline && allDay);
+        QVERIFY(timeline->height() >= week->height() / 2);
+        QVERIFY(allDay->property("contentHeight").toReal() > allDay->height());
+        auto *lastAllDay = view("weekChip-all39");
+        QVERIFY(lastAllDay);
+        lastAllDay->forceActiveFocus(Qt::TabFocusReason);
+        QTRY_VERIFY(allDay->property("contentY").toReal() > 0);
+        auto *early = view("weekChip-early");
+        auto *late = view("weekChip-late");
+        QVERIFY(early && late);
+        early->forceActiveFocus(Qt::TabFocusReason);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY(late->hasActiveFocus());
+        QTRY_VERIFY(late->mapToItem(timeline, QPointF(0, late->height())).y() <= timeline->height() + 1);
+        QVERIFY(late->mapToItem(timeline, QPointF()).y() >= 0);
     }
 
     void calendarCreatesEditsMovesAndDeletesServerMeeting_data()

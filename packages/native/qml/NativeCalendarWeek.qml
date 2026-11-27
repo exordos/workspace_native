@@ -13,7 +13,7 @@ Item {
     signal eventActivated(var event)
     readonly property real gutter: 42
     readonly property real columnWidth: Math.max(1, (width - gutter) / 7)
-    readonly property real hourHeight: Math.max(44, (height - header.height) / 10)
+    readonly property real hourHeight: Math.max(44, (height - header.height - allDayScroll.height) / 10)
     readonly property var days: dates.map(date => arrange(eventsForDate(date), Qt.formatDate(date, "yyyy-MM-dd")))
     readonly property int firstHour: Math.min(8, ...days.map(day => day.timed.length
         ? Math.floor(day.timed[0].start / 60) : 8))
@@ -36,7 +36,13 @@ Item {
             const start = event.day < date ? 0 : minutes(event.start)
             const endDate = event.endUtc ? Qt.formatDate(new Date(event.endUtc), "yyyy-MM-dd")
                                          : (event.lastDay || event.day)
-            const end = endDate > date ? 1440 : minutes(event.end)
+            let end = endDate > date ? 1440 : minutes(event.end)
+            if (event.day === date && endDate === date && event.startUtc && event.endUtc) {
+                // The displayed wall clock repeats an hour when daylight saving time ends.
+                const elapsed = (Date.parse(event.endUtc) - Date.parse(event.startUtc)) / 60000
+                if (elapsed > 0)
+                    end = Math.min(1440, Math.max(end, start + elapsed))
+            }
             timed.push({event, start, end: Math.max(start + 1, end), lane: 0, lanes: 1})
         }
         timed.sort((a, b) => a.start - b.start || b.end - a.end)
@@ -59,6 +65,14 @@ Item {
         return {timed, allDay}
     }
 
+    function reveal(chip, viewport) {
+        const top = chip.mapToItem(viewport.contentItem, 0, 0).y
+        if (top < viewport.contentY || chip.height >= viewport.height)
+            viewport.contentY = Math.min(top, Math.max(0, viewport.contentHeight - viewport.height))
+        else if (top + chip.height > viewport.contentY + viewport.height)
+            viewport.contentY = top + chip.height - viewport.height
+    }
+
     component EventChip: Label {
         id: chip
         required property var event
@@ -73,6 +87,7 @@ Item {
         verticalAlignment: Text.AlignTop
         color: week.colors["text-primary"]
         activeFocusOnTab: true
+        onActiveFocusChanged: if (activeFocus) week.reveal(chip, event.allDay ? allDayScroll : scroll)
         Accessible.role: Accessible.Button
         Accessible.name: event.allDay ? text : event.start + " – " + event.end + " " + text
         Accessible.onPressAction: week.eventActivated(chip.event)
@@ -105,26 +120,46 @@ Item {
         x: week.gutter
         Repeater {
             model: 7
-            delegate: Column {
-                id: heading
+            delegate: Label {
                 required property int index
                 width: week.columnWidth
-                Label {
-                    width: parent.width
-                    height: 26
-                    leftPadding: 4
-                    verticalAlignment: Text.AlignVCenter
-                    text: Qt.locale(week.localeName).toString(week.dates[heading.index], "ddd d")
-                    color: week.colors["text-muted"]
-                    elide: Text.ElideRight
-                }
-                Repeater {
-                    model: week.days[heading.index].allDay
-                    delegate: EventChip {
-                        required property var modelData
-                        event: modelData
-                        width: heading.width - 2
-                        height: 20
+                height: 26
+                leftPadding: 4
+                verticalAlignment: Text.AlignVCenter
+                text: Qt.locale(week.localeName).toString(week.dates[index], "ddd d")
+                color: week.colors["text-muted"]
+                elide: Text.ElideRight
+            }
+        }
+    }
+
+    Flickable {
+        id: allDayScroll
+        objectName: "calendarWeekAllDay"
+        anchors { top: header.bottom; left: parent.left; right: parent.right }
+        height: Math.min(contentHeight, Math.max(0, week.height - header.height) / 3)
+        contentWidth: width
+        contentHeight: allDayRow.height
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar {}
+        Row {
+            id: allDayRow
+            x: week.gutter
+            Repeater {
+                model: 7
+                delegate: Column {
+                    id: heading
+                    required property int index
+                    width: week.columnWidth
+                    Repeater {
+                        model: week.days[heading.index].allDay
+                        delegate: EventChip {
+                            required property var modelData
+                            event: modelData
+                            width: heading.width - 2
+                            height: 20
+                        }
                     }
                 }
             }
@@ -134,7 +169,7 @@ Item {
     Flickable {
         id: scroll
         objectName: "calendarWeekTimeline"
-        anchors { top: header.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
+        anchors { top: allDayScroll.bottom; bottom: parent.bottom; left: parent.left; right: parent.right }
         clip: true
         contentWidth: width
         contentHeight: week.hourHeight * 24
