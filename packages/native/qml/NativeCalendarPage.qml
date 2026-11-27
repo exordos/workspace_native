@@ -435,6 +435,6 @@ FocusScope {
         visible: page.detailEvent !== null
         colors: page.colors
         event: page.detailEvent !== null ? page.detailEvent : ({})
-        onClose: page.detailEvent = null
+        onClosed: page.detailEvent = null
     }
 }
