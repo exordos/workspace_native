@@ -49,13 +49,16 @@ The message bubble (`Main.qml`, message row) adds a `Repeater` over
 (objectName `codeCopyButton-<messageId>-<index>`, idle label `Copy`) positioned
 at the top-right corner of its code block: `messageBody` +
 `positionToRectangle(start)` for the y, right edge of the body for the x.
+The button is parented to the text item that laid out the code. Hovering its
+label highlights the button, and a click anywhere on the button copies the block.
 Clicking writes the block text through `controller.copyToClipboard(text)`,
 swaps the label to `Copied` / `Failed to copy`, and a
 `Timer { interval: 1200 }` (mirrors `CODE_COPY_RESET_MS`) restores
 `Copy`; a repeat click restarts the timer, matching the reference's clear-and-reset.
 The label Text carries objectName `codeCopyButtonText-<messageId>-<index>` so
-tests and AT see the feedback. The button is hidden for encrypted-locked,
-key-control and media-split bodies only insofar as those already replace the body.
+tests and AT see the feedback. Text runs on either side of inline media have
+their own copy buttons. Locked encrypted messages and key-control rows have no
+rendered code blocks.
 The message-permalink row was relabeled `Copy message link`
 (`message.copyMessageLink`, reference :247) so it cannot be confused with the
 hyperlink `Copy link` item introduced below.

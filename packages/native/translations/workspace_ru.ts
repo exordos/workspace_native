@@ -3854,6 +3854,18 @@
             <source>Media %1</source>
             <translation>Медиа %1</translation>
         </message>
+        <message>
+            <source>Zoom in</source>
+            <translation>Приблизить</translation>
+        </message>
+        <message>
+            <source>Zoom out</source>
+            <translation>Отдалить</translation>
+        </message>
+        <message>
+            <source>Reset zoom</source>
+            <translation>Сбросить масштаб</translation>
+        </message>
     </context>
 <context>
     <name>NativeExternalAccountBlock</name>
@@ -5923,6 +5935,38 @@
     <context>
         <name>NativeCalendarPage</name>
         <message>
+            <source>Selected date</source>
+            <translation>Дата выбрана</translation>
+        </message>
+        <message>
+            <source>Date not selected</source>
+            <translation>Дата не выбрана</translation>
+        </message>
+        <message>
+            <source>Delete meeting?</source>
+            <translation>Удалить встречу?</translation>
+        </message>
+        <message>
+            <source>Delete “%1” from the sample calendar?</source>
+            <translation>Удалить «%1» из демонстрационного календаря?</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Delete</source>
+            <translation>Удалить</translation>
+        </message>
+        <message>
+            <source>Sample calendar</source>
+            <translation>Демонстрационный календарь</translation>
+        </message>
+        <message>
+            <source>Create meeting</source>
+            <translation>Создать встречу</translation>
+        </message>
+        <message>
             <source>Day</source>
             <translation>День</translation>
         </message>
@@ -5961,6 +6005,257 @@
         <message>
             <source>No events on this day.</source>
             <translation>На этот день событий нет.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeCalendarEventDetail</name>
+        <message>
+            <source>Edit meeting</source>
+            <translation>Редактировать встречу</translation>
+        </message>
+        <message>
+            <source>Delete meeting</source>
+            <translation>Удалить встречу</translation>
+        </message>
+        <message>
+            <source>(untitled)</source>
+            <translation>(без названия)</translation>
+        </message>
+        <message>
+            <source>Location</source>
+            <translation>Место</translation>
+        </message>
+        <message>
+            <source>No location specified</source>
+            <translation>Место не указано</translation>
+        </message>
+        <message>
+            <source>Participants</source>
+            <translation>Участники</translation>
+        </message>
+        <message>
+            <source>+%1 more</source>
+            <translation>и ещё %1</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeCalendarMeetingDialog</name>
+        <message>
+            <source>Edit meeting</source>
+            <translation>Редактировать встречу</translation>
+        </message>
+        <message>
+            <source>Save changes</source>
+            <translation>Сохранить изменения</translation>
+        </message>
+        <message>
+            <source>Delete meeting</source>
+            <translation>Удалить встречу</translation>
+        </message>
+        <message>
+            <source>New meeting</source>
+            <translation>Новая встреча</translation>
+        </message>
+        <message>
+            <source>Enter a meeting title.</source>
+            <translation>Введите название встречи.</translation>
+        </message>
+        <message>
+            <source>Enter valid dates and times. The end must be after the start.</source>
+            <translation>Проверьте даты и время. Встреча должна закончиться позже, чем начнётся.</translation>
+        </message>
+        <message>
+            <source>The sample calendar is unavailable.</source>
+            <translation>Демонстрационный календарь недоступен.</translation>
+        </message>
+        <message>
+            <source>Sample meetings stay in this session. Participants will not receive invitations.</source>
+            <translation>Встречи сохраняются на время этого сеанса. Участникам не придут приглашения.</translation>
+        </message>
+        <message>
+            <source>Title</source>
+            <translation>Название</translation>
+        </message>
+        <message>
+            <source>Participants</source>
+            <translation>Участники</translation>
+        </message>
+        <message>
+            <source>One name per line</source>
+            <translation>По одному имени на строку</translation>
+        </message>
+        <message>
+            <source>Calendar</source>
+            <translation>Календарь</translation>
+        </message>
+        <message>
+            <source>Work</source>
+            <translation>Рабочий</translation>
+        </message>
+        <message>
+            <source>Personal</source>
+            <translation>Личный</translation>
+        </message>
+        <message>
+            <source>Start date</source>
+            <translation>Дата начала</translation>
+        </message>
+        <message>
+            <source>Start time</source>
+            <translation>Время начала</translation>
+        </message>
+        <message>
+            <source>End date</source>
+            <translation>Дата окончания</translation>
+        </message>
+        <message>
+            <source>End time</source>
+            <translation>Время окончания</translation>
+        </message>
+        <message>
+            <source>Location</source>
+            <translation>Место</translation>
+        </message>
+        <message>
+            <source>Create meeting</source>
+            <translation>Создать встречу</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeMailComposeDialog</name>
+        <message>
+            <source>New message</source>
+            <translation>Новое письмо</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+        <message>
+            <source>To</source>
+            <translation>Кому</translation>
+        </message>
+        <message>
+            <source>Names or email addresses</source>
+            <translation>Имена или адреса электронной почты</translation>
+        </message>
+        <message>
+            <source>Enter at least one recipient.</source>
+            <translation>Укажите хотя бы одного получателя.</translation>
+        </message>
+        <message>
+            <source>Subject</source>
+            <translation>Тема</translation>
+        </message>
+        <message>
+            <source>Attach files</source>
+            <translation>Прикрепить файлы</translation>
+        </message>
+        <message>
+            <source>Remove</source>
+            <translation>Убрать</translation>
+        </message>
+        <message>
+            <source>Write a message…</source>
+            <translation>Напишите сообщение…</translation>
+        </message>
+        <message>
+            <source>Message</source>
+            <translation>Сообщение</translation>
+        </message>
+        <message>
+            <source>Send</source>
+            <translation>Отправить</translation>
+        </message>
+        <message>
+            <source>Sending mail is unavailable in this preview.</source>
+            <translation>Отправка писем недоступна в режиме предпросмотра.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeMailReader</name>
+        <message>
+            <source>Select a message</source>
+            <translation>Выберите сообщение</translation>
+        </message>
+        <message>
+            <source>From: %1</source>
+            <translation>От: %1</translation>
+        </message>
+        <message>
+            <source>To: %1</source>
+            <translation>Кому: %1</translation>
+        </message>
+        <message>
+            <source>Date: %1</source>
+            <translation>Дата: %1</translation>
+        </message>
+        <message>
+            <source>Message body unavailable</source>
+            <translation>Текст письма недоступен</translation>
+        </message>
+        <message>
+            <source>Reply</source>
+            <translation>Ответить</translation>
+        </message>
+        <message>
+            <source>Forward</source>
+            <translation>Переслать</translation>
+        </message>
+        <message>
+            <source>Mark as read</source>
+            <translation>Пометить прочитанным</translation>
+        </message>
+        <message>
+            <source>Mark as unread</source>
+            <translation>Пометить непрочитанным</translation>
+        </message>
+        <message>
+            <source>Delete</source>
+            <translation>Удалить</translation>
+        </message>
+        <message>
+            <source>Mail actions are unavailable in this preview.</source>
+            <translation>Действия с письмами недоступны в режиме предпросмотра.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeMailPage</name>
+        <message>
+            <source>Compose</source>
+            <translation>Написать письмо</translation>
+        </message>
+        <message>
+            <source>Sample mailbox. These messages and unread counts are examples.</source>
+            <translation>Демоящик. Письма и счётчики непрочитанных показаны для примера.</translation>
+        </message>
+        <message>
+            <source>Sample folders. The unread counts are examples.</source>
+            <translation>Демопапки. Счётчики непрочитанных показаны для примера.</translation>
+        </message>
+        <message>
+            <source>Mail</source>
+            <translation>Почта</translation>
+        </message>
+        <message>
+            <source>Search mail...</source>
+            <translation>Поиск в почте...</translation>
+        </message>
+        <message>
+            <source>No messages in this folder</source>
+            <translation>В этой папке нет сообщений</translation>
+        </message>
+        <message>
+            <source>Couldn't load mail</source>
+            <translation>Не удалось загрузить почту</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
         </message>
     </context>
 </TS>

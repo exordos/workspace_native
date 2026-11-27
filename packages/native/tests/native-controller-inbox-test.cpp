@@ -1540,6 +1540,93 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    // Issue #910: navigating the calendar while a window request is in flight
+    // must not drop the navigation. The in-flight reply may only populate the
+    // window it was sent for; the newest requested window has to be re-issued
+    // once the current request settles (deterministic defer-gate repro).
+    void calendarNavigationDuringInflightReissuesNewestWindow_data()
+    {
+        QTest::addColumn<int>("firstStatus");
+        QTest::newRow("loaded") << 200;
+        QTest::newRow("feed-unavailable") << 501;
+        QTest::newRow("request-error") << 503;
+    }
+
+    void calendarNavigationDuringInflightReissuesNewestWindow()
+    {
+        QFETCH(int, firstStatus);
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto queries = std::make_shared<QStringList>();
+        fixture.calendar = [gates, queries, firstStatus](const Request &request) {
+            queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
+            Response response{QJsonArray{}, queries->size() == 1 ? firstStatus : 200};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        // Navigation lands while the first window is still in flight.
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(queries->size() == 2, 3000);
+        QVERIFY(queries->at(1).contains("from=2026-12-01"));
+        QVERIFY(queries->at(1).contains("to=2026-12-31"));
+        // exo-review on #910: settle the re-issued window's reply before
+        // re-requesting it, otherwise the final request would exercise the
+        // in-flight branch instead of the settled-window guard under test.
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 3000); // the re-issue is gated
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 3000);
+        // The settled newest window re-shows without re-fetching (guard intact).
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        QTest::qWait(200);
+        QCOMPARE(queries->size(), 2);
+    }
+
+    // Review follow-up on #910: returning to the window that is CURRENTLY in
+    // flight makes every queued window stale - the newest requested window is
+    // the one being fetched, so the queue must be dropped instead of fired
+    // when the in-flight reply settles.
+    void calendarReturnToInflightWindowDropsQueuedWindow()
+    {
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto queries = std::make_shared<QStringList>();
+        fixture.calendar = [gates, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
+            Response response{QJsonArray{}};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        // A newer window is queued, then the user returns to the in-flight one.
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        // The in-flight reply settles as the newest requested window; the
+        // dropped queue must never fire afterwards.
+        QTest::qWait(400);
+        QCOMPARE(queries->size(), 1);
+        QVERIFY(gates->empty());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 3000);
+    }
+
     // Issue #37: the recent-calls page is a rendered section (calls-page.ui.tsx
     // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af). The reference
     // top-bar Calls chip sits behind the TOP_BAR_CALLS_NAV build gate

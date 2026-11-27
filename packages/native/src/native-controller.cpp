@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "mail-store.h"
 #include "messages/time/message-time.h"
 #include <QCollator>
 #include "call/incoming-call.h"
@@ -8955,15 +8956,82 @@ void NativeController::resetFeed()
 // ---- Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md) ----
 // UI-phase data contract: GET /calendar/events?from&to serves the events
 // intersecting the visible window; the live server adapter is #852. Rows stay
-// plain maps ({uuid, day, start, end, title, calendar, colorToken}) because
+// plain maps ({uuid, day, start, end, title, calendar, colorToken, location,
+// allDay, startUtc, endUtc, participants}) because
 // every view (agenda, week columns, month cells) needs random per-day access,
 // not a paginated sequence - the QAbstractListModel shape would only serve the
 // agenda list and force a second index for the grids (design doc amended).
+// #907 additions (event detail): location, all_day, start_utc/end_utc ISO
+// instants (display is converted to the client zone; stored instants stay UTC)
+// and participants (list of display names).
+
+void NativeController::setSampleCalendar(bool enabled)
+{
+    if (!authenticated() || m_calendar.sample == enabled)
+        return;
+    m_calendar.sample = enabled;
+    emit calendarChanged();
+}
+
+bool NativeController::saveSampleMeeting(const QString &uuid, const QVariantMap &draft)
+{
+    if (!authenticated() || !m_calendar.sample
+        || (!uuid.isEmpty() && !m_calendar.sampleEvents.contains(uuid)))
+        return false;
+
+    const auto title = draft.value("title").toString().trimmed();
+    const auto start = draft.value("start").toDateTime().toLocalTime();
+    const auto end = draft.value("end").toDateTime().toLocalTime();
+    const auto calendar = draft.value("calendar").toString();
+    if (title.isEmpty() || !start.isValid() || !end.isValid() || end <= start
+        || (calendar != QStringLiteral("work") && calendar != QStringLiteral("personal")))
+        return false;
+
+    const QString id = uuid.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : uuid;
+    m_calendar.sampleEvents.insert(id, QVariantMap{
+        {"uuid", id},
+        {"title", title}, {"calendar", calendar}, {"colorToken", QStringLiteral("accent")},
+        {"day", start.date().toString(Qt::ISODate)},
+        {"lastDay", end.addMSecs(-1).date().toString(Qt::ISODate)},
+        {"start", start.time().toString("HH:mm")}, {"end", end.time().toString("HH:mm")},
+        {"startUtc", start.toUTC().toString(Qt::ISODate)}, {"endUtc", end.toUTC().toString(Qt::ISODate)},
+        {"allDay", false}, {"location", draft.value("location").toString().trimmed()},
+        {"participants", draft.value("participants").toStringList()},
+    });
+    emit calendarChanged();
+    return true;
+}
+
+bool NativeController::deleteSampleMeeting(const QString &uuid)
+{
+    if (!authenticated() || !m_calendar.sample || !m_calendar.sampleEvents.remove(uuid))
+        return false;
+    emit calendarChanged();
+    return true;
+}
 
 void NativeController::requestCalendarWindow(const QString &from, const QString &to)
 {
-    if (!authenticated() || m_calendar.inflight)
+    if (!authenticated() || m_calendar.sample)
         return;
+    if (m_calendar.inflight) {
+        // Issue #910: a navigation that lands while a window fetch is in
+        // flight must not be dropped. Remember the newest window; the
+        // in-flight reply populates only its own window (version guard), and
+        // the queued window is re-issued when the request settles.
+        if (m_calendar.from != from || m_calendar.to != to) {
+            m_calendar.pendingFrom = from;
+            m_calendar.pendingTo = to;
+            m_calendar.hasPending = true;
+        } else {
+            // Review on #910: returning to the window that is currently in
+            // flight makes every queued window stale - the in-flight request
+            // already answers the newest requested window, so drop the queue
+            // instead of re-fetching the abandoned one when the reply lands.
+            m_calendar.hasPending = false;
+        }
+        return;
+    }
     // Re-showing the same loaded window must not re-storm the server; the
     // window only re-fetches after an error or an explicit retry.
     if (m_calendar.hasLoaded && !m_calendar.error
@@ -8985,30 +9053,49 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         if (version != m_calendar.version || owner != creationOwnerKey())
             return; // a newer window or an owner switch owns the state now
         m_calendar.inflight = false;
-        if (!result.ok() || !result.data.isArray()) {
-            m_calendar.loading = false;
+        // Issue #910: drain the newest window requested while this reply
+        // was in flight (both the success and the failure path re-issue it).
+        const bool hasPending = m_calendar.hasPending;
+        const QString pendingFrom = m_calendar.pendingFrom;
+        const QString pendingTo = m_calendar.pendingTo;
+        m_calendar.hasPending = false;
+        if (result.status == 501) {
+            // Recheck an absent endpoint when this window is requested again.
+            m_calendar.events.clear();
+            m_calendar.hasLoaded = false;
+            m_calendar.error = false;
+        } else if (!result.ok() || !result.data.isArray()) {
             m_calendar.error = true;
-            emit calendarChanged();
-            return;
+        } else {
+            QVariantList events;
+            for (const auto &value : result.data.toArray()) {
+                const auto row = value.toObject();
+                QVariantList participants;
+                for (const auto &person : row.value("participants").toArray())
+                    participants.append(person.toString());
+                events.append(QVariantMap{
+                    {"uuid", row.value("uuid").toString()},
+                    {"day", row.value("day").toString()},
+                    {"start", row.value("start").toString()},
+                    {"end", row.value("end").toString()},
+                    {"title", row.value("title").toString()},
+                    {"calendar", row.value("calendar").toString()},
+                    {"colorToken", row.value("color_token").toString()},
+                    {"location", row.value("location").toString()},
+                    {"allDay", row.value("all_day").toBool()},
+                    {"startUtc", row.value("start_utc").toString()},
+                    {"endUtc", row.value("end_utc").toString()},
+                    {"participants", participants},
+                });
+            }
+            m_calendar.events = events;
+            m_calendar.hasLoaded = true;
+            m_calendar.error = false;
         }
-        QVariantList events;
-        for (const auto &value : result.data.toArray()) {
-            const auto row = value.toObject();
-            events.append(QVariantMap{
-                {"uuid", row.value("uuid").toString()},
-                {"day", row.value("day").toString()},
-                {"start", row.value("start").toString()},
-                {"end", row.value("end").toString()},
-                {"title", row.value("title").toString()},
-                {"calendar", row.value("calendar").toString()},
-                {"colorToken", row.value("color_token").toString()},
-            });
-        }
-        m_calendar.events = events;
-        m_calendar.hasLoaded = true;
         m_calendar.loading = false;
-        m_calendar.error = false;
         emit calendarChanged();
+        if (hasPending && version == m_calendar.version && owner == creationOwnerKey())
+            requestCalendarWindow(pendingFrom, pendingTo);
     });
 }
 
@@ -9024,8 +9111,11 @@ void NativeController::resetCalendar()
 {
     // Same monotonic identity discipline as resetFeed (issue #356).
     const auto version = m_calendar.version + 1;
+    const bool hadSample = m_calendar.sample || !m_calendar.sampleEvents.isEmpty();
     m_calendar = CalendarState{};
     m_calendar.version = version;
+    if (hadSample)
+        emit calendarChanged();
 }
 
 // Issue #356: replacing the access token bumps the API generation, the shared
@@ -10373,6 +10463,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
 {
     m_externalAccounts = new NativeExternalAccounts(api, session, this);
     m_externalProviderAdmin = new NativeExternalProviderAdmin(api, session, this);
+    // #879: mock mailbox store; fetches only when the Mail page asks (visible).
+    m_mail = new MailStore(api, this);
     m_mediaViewer = new MediaViewerModel(this, this);
     // Issue #51: the log viewer modal subscribes to the ring buffer like the
     // reference subscribeLogHistory (logger.ts), so forward every change.
@@ -10483,6 +10575,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::authenticated, this, [this] {
         const auto owner = creationOwnerKey();
         if (owner != m_sessionGenerationOwner) {
+            if (!m_sessionGenerationOwner.isEmpty())
+                m_mail->reset();
             ++m_sessionGeneration;
             m_sessionGenerationOwner = owner;
             m_sessionLog.beginSupportScope();

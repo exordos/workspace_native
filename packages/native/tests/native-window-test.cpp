@@ -39,6 +39,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <cmath>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
 #endif
@@ -179,6 +180,22 @@ static void pickComboOption(QQuickWindow *window, QQuickItem *combo, const QStri
     })(), 3000);
     QVERIFY(row->isVisible());
     click(window, row);
+}
+
+// Exercise the visual binding at the painted glyph or text, including the return
+// to idle after the pointer leaves the control.
+static void checkControlHover(QQuickWindow *window, QQuickItem *control,
+                              const QPoint &point, const QPoint &away,
+                              const QString &property, QColor idle, QColor hovered)
+{
+    const auto color = [&] { return QQmlProperty::read(control, property).value<QColor>(); };
+    QVERIFY(idle.isValid() && hovered.isValid() && idle != hovered);
+    QTest::mouseMove(window, away);
+    QTRY_COMPARE(color(), idle);
+    QTest::mouseMove(window, point);
+    QTRY_COMPARE(color(), hovered);
+    QTest::mouseMove(window, away);
+    QTRY_COMPARE(color(), idle);
 }
 
 static int itemCountWithPrefix(QQuickItem *root, const QString &prefix)
@@ -548,6 +565,39 @@ static bool isInitialUnreadMentionIndex(const Request &request)
         && !query.hasQueryItem("stream_uuid") && !query.hasQueryItem("topic_uuid");
 }
 
+// #879: deterministic mailbox fixtures for the mail window cases
+// (mirrors the native-mail-test adapter fixtures; live integration is #852).
+static QJsonArray mailFixtureFolders()
+{
+    auto row = [](const char *id, const char *title, int unread) {
+        return QJsonObject{{"id", id}, {"title", title}, {"unread", unread}};
+    };
+    return {row("inbox", "Inbox", 12), row("sent", "Sent", 0), row("drafts", "Drafts", 3),
+            row("archive", "Archive", 0), row("spam", "Spam", 1), row("trash", "Trash", 0)};
+}
+
+static QJsonArray mailFixtureMessages(const QString &folder)
+{
+    if (folder == QLatin1String("inbox")) {
+        auto row = [](const char *uuid, const char *sender, const char *subject,
+                      const char *snippet, const char *time) {
+            return QJsonObject{{"uuid", uuid}, {"sender", sender}, {"subject", subject},
+                               {"snippet", snippet}, {"time", time}, {"unread", true}};
+        };
+        return {row("mail-inbox-1", "Build Bot", "Release 0.5.0 checks passed",
+                    "All pipelines are green and artifacts are ready.", "10:24"),
+                row("mail-inbox-2", "Product Team", "Demo agenda for Friday",
+                    "Please review talking points before 15:00.", "09:02"),
+                row("mail-inbox-3", "<i>Design</i>", "Light theme polish proposal",
+                    "Attached updated spacing and color recommendations.", "Mon")};
+    }
+    if (folder == QLatin1String("sent"))
+        return {QJsonObject{{"uuid", "mail-sent-1"}, {"sender", "me"},
+                            {"subject", "Re: demo slot"}, {"snippet", "Works for me."},
+                            {"time", "Tue"}, {"unread", false}}};
+    return {};
+}
+
 class WindowChannelFixture {
 public:
     MockServer server;
@@ -562,6 +612,7 @@ public:
     int postDelay = 150, canonicalDelay = 80, topicDelay = 0, catalogDelay = 0;
     bool applyMembers = true, includeCreated = true, includeDefault = true;
     bool sourceScene = false;
+    bool serveMail = false;
     QJsonObject streamBody, memberBody;
 
     WindowChannelFixture()
@@ -655,6 +706,11 @@ public:
                 }
                 return {rows};
             }
+            if (serveMail && path.endsWith("/mail/folders"))
+                return {QJsonObject{{"folders", mailFixtureFolders()}}};
+            if (serveMail && path.endsWith("/mail/messages"))
+                return {QJsonObject{{"messages",
+                    mailFixtureMessages(QUrlQuery(request.target).queryItemValue("folder"))}}};
             auto response = sessionResponse(request);
             if (sourceScene && path.endsWith("/actions/introspect"))
                 response.data = QJsonObject{{"project_id", projectId}, {"user_info", QJsonObject{{"uuid", userId},
@@ -670,6 +726,10 @@ public:
 class WindowCalendarRouteFixture final : public WindowChannelFixture {
 public:
     QStringList calendarFrom, calendarTo;
+    // Issue #953 knobs: serve an empty page, or the server's real
+    // "endpoint absent" verdict (501 NotImplementedError while #852 is open).
+    int eventsStatus = 200;
+    bool emptyEvents = false;
     WindowCalendarRouteFixture()
     {
         auto parentHandler = std::move(server.handler);
@@ -679,6 +739,12 @@ public:
                 const QUrlQuery query(request.target);
                 calendarFrom.append(query.queryItemValue("from"));
                 calendarTo.append(query.queryItemValue("to"));
+                if (eventsStatus != 200)
+                    return {QJsonObject{{"type", "NotImplementedError"}, {"code", eventsStatus},
+                            {"message", "Not implemented ('method get in MessengerApiEndpointController')."}}
+                        , eventsStatus};
+                if (emptyEvents)
+                    return {QJsonArray{}};
                 // One event on a trailing day of the month BEFORE the pinned
                 // test month (February 2026): only a window that starts at the
                 // leading week can ever deliver it to the grid.
@@ -686,6 +752,33 @@ public:
                     {"day", "2026-01-30"}, {"start", "09:00"}, {"end", "10:00"},
                     {"title", "Adjacent-month review"}, {"calendar", "work"},
                     {"color_token", "accent"}}}};
+            }
+            return parentHandler(request);
+        };
+    }
+};
+
+// Issue #924: calendar interaction-state and elide pins. Serves two events on
+// the real current day (one with a title long enough to prove elision) through
+// the same channel harness shape as the #911 fixture.
+class WindowCalendarPolishFixture final : public WindowChannelFixture {
+public:
+    static QString longEventUuid() { return QStringLiteral("90000000-0000-4000-8000-0000000000a1"); }
+    WindowCalendarPolishFixture()
+    {
+        const QString today = QDate::currentDate().toString(Qt::ISODate);
+        auto parentHandler = std::move(server.handler);
+        server.handler = [this, parentHandler, today](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/calendar/events")) {
+                return {QJsonArray{
+                    QJsonObject{{"uuid", longEventUuid()}, {"day", today}, {"start", "09:00"},
+                        {"end", "10:00"},
+                        {"title", "Quarterly alignment across all workspace squads and external partners"},
+                        {"calendar", "work"}, {"color_token", "accent"}},
+                    QJsonObject{{"uuid", QStringLiteral("90000000-0000-4000-8000-0000000000a2")},
+                        {"day", today}, {"start", "11:00"}, {"end", "11:30"},
+                        {"title", "Standup"}, {"calendar", "personal"}, {"color_token", "accent"}}}};
             }
             return parentHandler(request);
         };
@@ -3333,10 +3426,10 @@ struct NativeWindowScene {
         session.selectProject(projectId);
         if (!QTest::qWaitFor([&] { return controller.streams().size() == 25; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         if (!QTest::qWaitFor([&] { return controller.topics().size() == 1; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         if (!QTest::qWaitFor([&] { return controller.messages().size() == 50; }, 5000))
             return false;
         auto *list = item(window->contentItem(), "messageList");
@@ -4138,6 +4231,12 @@ private slots:
         QVERIFY(!visibleItem("nativeAboutDrawer"));auto *indicator=visibleItem("nativeUpdateIndicator");QVERIFY(indicator);
         QCOMPARE(indicator->width(),qreal(36));QCOMPARE(indicator->height(),qreal(36));
         QCOMPARE(profile->mapToScene(QPointF{}),profilePosition);
+        const auto palette = window->property("colors").toMap();
+        auto *glyph = indicator->property("contentItem").value<QQuickItem *>();
+        QVERIFY(glyph);
+        checkControlHover(window, indicator, glyph->mapToScene(glyph->boundingRect().center()).toPoint(),
+                          QPoint(3, 3), "icon.color", QColor(palette.value("accent").toString()),
+                          QColor(palette.value("text-primary").toString()));
         click(window,indicator);QTRY_VERIFY(visibleItem("nativeAboutDrawer"));QCOMPARE(releases.requests.size(),2);
         click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
         QCOMPARE(updater.state(),QString("downloading"));QCOMPARE(releases.requests.size(),2);
@@ -6583,6 +6682,265 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(fixture.starredLists >= 2);
     }
 
+    // Issue #945 witness: the inbox row fill/border was driven by the row's
+    // own MouseArea (`rowArea`, NativeInboxPage.qml). Qt 6.10 delivers hover
+    // only to the claimant under the pointer and its ancestors, so the oracle
+    // hovers the ROW LABEL CENTER and requires the fill to light there; the
+    // pre-migration site only lit from its own surface.
+    void inboxRowFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        class WindowInboxHoverFixture final : public WindowChannelFixture {
+        public:
+            WindowInboxHoverFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const auto path = request.target.path();
+                    if (path.endsWith("/streams/") && request.method == "GET") {
+                        auto dm = windowChannel(dmStreamId, "Alice");
+                        dm["private"] = true;
+                        dm["direct_user_uuid"] = channelPeer;
+                        dm["unread_count"] = 5;
+                        dm["active_unread_count"] = 5;
+                        auto team = windowChannel(streamId, "Product team");
+                        team["default_topic_uuid"] = topicId;
+                        team["unread_count"] = 3;
+                        team["active_unread_count"] = 3;
+                        return {QJsonArray{team, dm}};
+                    }
+                    if (path.endsWith("/stream_topics/")) {
+                        const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                        if (stream == streamId) {
+                            // Same scene as the base fixture, but Releases
+                            // carries active unreads so it surfaces in the inbox.
+                            auto releases = windowChannelTopic(
+                                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", streamId, "Releases");
+                            releases["is_default"] = false;
+                            releases["is_done"] = true;
+                            releases["unread_count"] = 3;
+                            releases["active_unread_count"] = 3;
+                            auto planning = windowChannelTopic(secondTopicId, streamId, "Planning");
+                            planning["is_default"] = false;
+                            return {QJsonArray{
+                                windowChannelTopic(topicId, streamId, "General Topic"),
+                                planning, releases}};
+                        }
+                        if (stream == dmStreamId) {
+                            auto dmTopic = windowChannelTopic(dmTopicId, dmStreamId, "");
+                            dmTopic["is_default"] = false;
+                            dmTopic["unread_count"] = 5;
+                            dmTopic["active_unread_count"] = 5;
+                            return {QJsonArray{dmTopic}};
+                        }
+                    }
+                    return fallback(request);
+                };
+            }
+            QString dmStreamId = "a2000000-0000-4000-8000-000000000002";
+            QString dmTopicId = "b2000000-0000-4000-8000-000000000002";
+        };
+        WindowInboxHoverFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-inbox"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.inboxVisible() && view("nativeInboxPage"));
+        const QString releasesId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        QTRY_VERIFY_WITH_TIMEOUT(view("inbox-row-" + releasesId)
+            && view("inbox-row-title-" + releasesId), 5000);
+        auto *row = view("inbox-row-" + releasesId); QVERIFY(row);
+        auto *title = view("inbox-row-title-" + releasesId); QVERIFY(title);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const QPoint away(window->width() - 40, 8);
+        const auto colors = window->property("colors").toMap();
+        auto idle = colors.value("bg-elevated").value<QColor>();
+        idle.setAlphaF(0.5);
+        auto hoverBorder = colors.value("accent-soft").value<QColor>();
+        hoverBorder.setAlphaF(0.4);
+        const auto hover = colors.value("card-bg").value<QColor>();
+        const auto idleBorder = colors.value("border-subtle").value<QColor>();
+        QVERIFY(idle.isValid() && hover.isValid() && idleBorder.isValid() && hoverBorder.isValid());
+        const auto fill = [&] { return row->property("color").value<QColor>().rgba(); };
+        const auto border = [&] { return QQmlProperty::read(row, "border.color").value<QColor>().rgba(); };
+        QTest::mouseMove(window, away);
+        QTRY_COMPARE(fill(), idle.rgba());
+        QTRY_COMPARE(border(), idleBorder.rgba());
+        const QPointF textCenter(qMin(title->property("contentWidth").toReal(), title->width()) / 2,
+                                 title->height() / 2);
+        QTest::mouseMove(window, title->mapToScene(textCenter).toPoint());
+        QTRY_COMPARE(fill(), hover.rgba());
+        QTRY_COMPARE(border(), hoverBorder.rgba());
+        QTest::mouseMove(window, away);
+        QTRY_COMPARE(fill(), idle.rgba());
+        QTRY_COMPARE(border(), idleBorder.rgba());
+    }
+
+    // Issue #945 witness: the starred card fill and the hover-revealed action
+    // cluster (NativeStarredPage.qml `cardHover`/`actionsHover`) must respond
+    // to the pointer over the card's text, not only over the bare card
+    // background behind the labels.
+    void starredCardFillsAndRevealsActionsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        class WindowStarredHoverFixture final : public WindowChannelFixture {
+        public:
+            int starredLists = 0;
+            QJsonArray all;
+            QJsonObject one(const QString &id, const QString &text, int minute)
+            {
+                auto row = message(text, id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(minute * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredHoverFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        ++starredLists;
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredHoverFixture fixture;
+        const QString hoveredId = "7b7b7b7b-7b7b-4b7b-8b7b-000000000009";
+        fixture.all = {fixture.one(hoveredId, "Starred hover witness", 30)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-starred"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.starredVisible() && view("nativeStarredPage"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starred-card-" + hoveredId), 5000);
+        auto *card = view("starred-card-" + hoveredId); QVERIFY(card);
+        auto *author = view("starred-author-" + hoveredId); QVERIFY(author);
+        auto *actions = item(window->contentItem(), "starredActions-" + hoveredId); QVERIFY(actions);
+        QCOMPARE(card->property("color").value<QColor>().alpha(), 0); // starts transparent
+        QTest::mouseMove(window,
+            author->mapToScene(QPointF(author->width() / 2.0, author->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() > 0, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(actions->property("opacity").toReal() > 0.99, 2000);
+        // Neutral corner: both the fill and the reveal must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() == 0, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(actions->property("opacity").toReal() < 0.01, 2000);
+    }
+
+    // Issue #945 witness: a remembered-session row in the switcher dropdown
+    // (SessionSwitcher.qml `rowMouse`) must light its hover fill when the
+    // pointer sits on the row's text column, not only on the bare row
+    // background beside it.
+    void sessionSwitcherRowFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const QUrl server("https://switcher-hover.invalid");
+        struct Identity { QString user; QString project; };
+        QVector<Identity> identities{
+            {userId, projectId},
+            {"66666666-6666-4666-8666-666666666661", "77777777-7777-4777-8777-777777777771"}};
+        auto byToken = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        for (int index = 0; index < identities.size(); ++index) {
+            SavedAccount account{SessionVault::accountId(server, identities[index].project,
+                identities[index].user), server, identities[index].project, identities[index].user,
+                QStringLiteral("synthetic-user-%1").arg(index), QStringLiteral("Project %1").arg(index)};
+            const QString token = QStringLiteral("switch-refresh-%1").arg(index);
+            byToken->insert(token, {identities[index].user, identities[index].project});
+            bool stored = false;
+            vault.save(account, token.toUtf8(), [&](const QString &error) { QVERIFY(error.isEmpty()); stored = true; });
+            QTRY_VERIFY(stored);
+        }
+        auto expected = std::make_shared<QPair<QString, QString>>();
+        ApiClient api;
+        Session session(&api, nullptr, [byToken, expected, &api](const QByteArray &method,
+            const QString &path, const QJsonValue &body, const QUrlQuery &,
+            ApiClient::Callback done, bool, const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/actions/get_token/invoke")) {
+                const QString refresh = body.toObject().value("refresh_token").toString();
+                *expected = byToken->value(refresh);
+                auto data = response.data.toObject();
+                data.insert("refresh_token", refresh);
+                response.data = data;
+            } else if (path.endsWith("/actions/introspect")) {
+                response.data = QJsonObject{{"user_info", QJsonObject{{"uuid", expected->first}}},
+                    {"project_id", expected->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                response.status = 200;
+            } else if (path == "/api/core/v1/iam/projects/") {
+                response.data = QJsonArray{QJsonObject{{"uuid", expected->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                response.status = 200;
+            }
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        const auto order = controller.savedAccounts();
+        QCOMPARE(order.size(), 2);
+        QStringList ids;
+        for (const auto &row : order) ids.append(row.toMap().value("id").toString());
+        controller.resumeSavedAccount(ids.first());
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        auto *content = window->contentItem();
+        preferences.setMode("dark"); QTRY_VERIFY(preferences.dark());
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        auto *row = item(content, "sessionRow-" + ids[1]); QVERIFY(row);
+        auto *label = item(content, "sessionRowPrimary-" + ids[1]); QVERIFY(label);
+        QCOMPARE(row->property("color").value<QColor>().alpha(), 0); // non-current row starts transparent
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() > 0, 2000);
+        // Neutral corner: the hover fill must revert to transparent.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() == 0, 2000);
+    }
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
@@ -11180,14 +11538,14 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         perfPhase("project-open", clock.restart());
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         perfPhase("stream-open-1-cold", clock.restart());
         const QStringList topicPhaseNames{QStringLiteral("topic-select-1-cold"),
             QStringLiteral("topic-select-2-cold"), QStringLiteral("topic-select-3-warm")};
         int topicPhaseIndex = 0;
         for (const auto &id : {topicId, secondTopicId, topicId}) {
-            click(window, item(content, "topic-" + id));
+            clickIncubatedItem(window, "topic-" + id);
             QTRY_VERIFY(!controller.busy());
             QTRY_VERIFY(item(content, "message-content-" + (id == topicId ? messageId : returnedId)));
             QVERIFY(!controller.cacheStale());
@@ -11196,12 +11554,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(historyGets, 2);
         QCOMPARE(aggregateGets, 1);
         QCOMPARE(topicGets, 1);
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.messages().size(), 2);
         perfPhase("stream-open-2-warm", clock.restart());
-        click(window, item(content, "topic-" + secondTopicId));
+        clickIncubatedItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(item(content, "message-content-" + returnedId));
         perfPhase("topic-select-4-warm", clock.restart());
@@ -12482,6 +12840,55 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(launcher->hasActiveFocus());
         QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+    }
+
+    void profileAndSidebarReactToHoverAtTheirTitles()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setMode("light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        clickCurrentItem(window, "stream-" + streamId);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+
+        const auto palette = window->property("colors").toMap();
+        const auto color = [&](const QString &token) { return QColor(palette.value(token).toString()); };
+        const auto checkTitle = [&](const QString &rowName, const QString &labelName,
+                                    QColor idle, QColor hover) {
+            auto *row = visibleItem(window->contentItem(), rowName);
+            QQuickItem *label = nullptr;
+            QTRY_VERIFY((label = visibleItem(window->contentItem(), labelName)));
+            QVERIFY(row);
+            const qreal textWidth = qMin(label->width(), label->property("contentWidth").toReal());
+            QVERIFY(textWidth > 0);
+            const QPointF textCenter(textWidth / 2, label->height() / 2);
+            checkControlHover(window, row, label->mapToScene(textCenter).toPoint(), QPoint(3, 3),
+                              "background.color", idle, hover);
+        };
+        checkTitle("accountMenuButton", "profileDisplayName", Qt::transparent, color("card-bg-active"));
+        checkTitle("stream-" + streamId, "streamTitleName-" + streamId,
+                   color("card-bg"), color("sidebar-item-hover"));
+        checkTitle("topic-" + secondTopicId, "topicTitle-" + secondTopicId,
+                   color("card-bg"), color("sidebar-item-hover"));
     }
 
     void sidebarRowsRenderPreviewAndTime_data()
@@ -14290,7 +14697,7 @@ mv -Tf "$root/.current-new" "$root/current"
             // its own real-window regressions.
             controller.cancelConversationOpening();
         }
-        else click(window, item(window->contentItem(), "stream-" + streamId));
+        else clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 3);
         // This was the first actual UI RED: stream selection had no source
         // topic-choice footer and retained the disabled composer frame instead.
@@ -14434,14 +14841,14 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
             QTRY_VERIFY(visibleItem("messageComposerShell"));
             controller.setDraft("A topic draft survives the aggregate route");
-            click(window, item(window->contentItem(), "stream-" + streamId));
+            clickIncubatedItem(window, "stream-" + streamId);
             QTRY_VERIFY(visibleItem("streamTopicPrompt"));
             QVERIFY(!visibleItem("messageComposerShell"));
             QTRY_VERIFY(visibleItem("topicShortcut-" + secondTopicId));
-            click(window, item(window->contentItem(), "topicShortcut-" + secondTopicId));
+            clickIncubatedItem(window, "topicShortcut-" + secondTopicId);
             QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
             QCOMPARE(controller.draft(), QString("A topic draft survives the aggregate route"));
-            click(window, item(window->contentItem(), "stream-" + streamId));
+            clickIncubatedItem(window, "stream-" + streamId);
             QTRY_VERIFY(visibleItem("topicShortcut-" + closedTopicId));
             if (scenario == "ru-dark") {
                 window->resize(700, 600);
@@ -14459,7 +14866,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 closedShortcut->forceActiveFocus(Qt::TabFocusReason);
                 QTRY_VERIFY(closedShortcut->hasActiveFocus());
                 QTest::keyClick(window, Qt::Key_Space);
-            } else click(window, item(window->contentItem(), "topicShortcut-" + closedTopicId));
+            } else clickIncubatedItem(window, "topicShortcut-" + closedTopicId);
             QTRY_COMPARE(controller.selectedTopic(), closedTopicId);
             QTRY_VERIFY(controller.topicClosed());
             QVERIFY(!visibleItem("messageComposerShell"));
@@ -14620,10 +15027,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(item(content, "sessionLogo-" + switcherLiveId)->property("status").toInt(), 1);
         QVERIFY(!item(content, "messageComposer")->isEnabled());
         QTRY_VERIFY(item(content, "stream-" + streamId));
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         QTRY_VERIFY(item(content, "topic-" + topicId));
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         QTRY_VERIFY(item(content, "message-content-" + messageId));
         const auto peerHtml = item(content, "message-content-" + messageId)->property("text").toString();
@@ -16588,12 +16995,10 @@ mv -Tf "$root/.current-new" "$root/current"
         // after the click helper's readiness wait, the direct lookup returns
         // nullptr ('guard' FALSE), and every downstream scroll pin fails.
         // Wait for the delegate to exist before clicking it.
-        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), aggregate ? 2 : 1);
         if (!aggregate) {
-            QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
-            click(window, item(window->contentItem(), "topic-" + topicId));
+            clickIncubatedItem(window, "topic-" + topicId);
         }
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
@@ -16863,9 +17268,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        // Same #917 root cause as the anchor-jump cases above: the sidebar row
+        // delegate materializes a view pass after the controller reports it, so
+        // a one-shot click can miss (topics().size() stays 0). Click through the
+        // incubation-safe helper.
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 5);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -17228,9 +17637,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -17392,9 +17801,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -17659,9 +18068,9 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
         QVERIFY(composer);
@@ -17752,9 +18161,9 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
         QVERIFY(composer && composer->isEnabled());
@@ -17931,11 +18340,11 @@ mv -Tf "$root/.current-new" "$root/current"
                 QSignalSpy frame(window, &QQuickWindow::frameSwapped);
                 QVERIFY(frame.isValid());
                 window->update(); QTRY_VERIFY(!frame.isEmpty());
-                click(window, item(content, "stream-" + streamId));
+                clickIncubatedItem(window, "stream-" + streamId);
                 QTRY_COMPARE(controller.selectedStream(), streamId);
                 QTRY_VERIFY(item(content, "topic-" + secondTopicId));
                 frame.clear(); window->update(); QTRY_VERIFY(!frame.isEmpty());
-                click(window, item(content, "topic-" + secondTopicId));
+                clickIncubatedItem(window, "topic-" + secondTopicId);
             }
             QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), secondTopicId, 2000);
             QCOMPARE(controller.selectedStream(), streamId);
@@ -19726,13 +20135,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
         QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
-        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Preserved draft");
-        controller.attachFiles({QUrl::fromLocalFile(path)});
-        QTRY_VERIFY(!controller.fileBusy());
-        QCOMPARE(uploads, 0);
+        QTRY_VERIFY(controller.canAttach());
+        // #936: catalog-readiness oracle. The banner composition embeds the
+        // FileClient detail exactly as that class translated it at validation
+        // time while the header is translated here at composition time; if the
+        // row's locale catalog is not observably installed yet, the two halves
+        // can freeze in different languages (the mixed-language CI banner).
+        // Wait until FileClient::tr resolves in the fixture's locale before
+        // any localized error may be composed.
         const auto detail = locale == "ru"
             ? QString::fromUtf8("Тип файла изображения не соответствует его содержимому.")
             : QString("The image file type does not match its contents.");
+        QTRY_VERIFY(FileClient::tr("The image file type does not match its contents.") == detail);
+        controller.setDraft("Preserved draft");
+        controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!controller.fileBusy());
+        QCOMPARE(uploads, 0);
         QVERIFY2(controller.error().contains(detail), qPrintable(controller.error()));
         QTRY_VERIFY(hasVisibleText(window->contentItem(), controller.error()));
         QCOMPARE(controller.draft(), QString("Preserved draft")); QVERIFY(!controller.canSend());
@@ -19788,9 +20206,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         QVERIFY(controller.canAttach());
         auto *picker = window->findChild<QObject *>("attachmentPicker");
@@ -23036,12 +23454,18 @@ NativeAvatarImage {
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QCoreApplication::sendEvent(window, &event);
         };
+        // #919 multiplicative curve: exp(0.0035 * delta) per event, clamp
+        // [1, 5]. QCOMPARE on doubles would demand the exact libm product,
+        // so curve values go through a near-comparison.
+        const auto scaleNear = [image](double want) {
+            return qAbs(image->scale() - want) < 1e-6;
+        };
         wheel({}, QPoint(0, 120));
-        QCOMPARE(image->scale(), 1.12);
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
         wheel(QPoint(0, 20), {});
-        QCOMPARE(image->scale(), 1.14);
+        QVERIFY2(scaleNear(std::exp(0.49)), qPrintable(QString::number(image->scale())));
         wheel({}, QPoint(0, 4800));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
         // The enlarged picture extends above the media area's original top margin.
         const QPoint overflow(window->width() / 2, 44);
         QTest::mouseClick(window, Qt::LeftButton, {}, overflow);
@@ -23049,23 +23473,23 @@ NativeAvatarImage {
         QWheelEvent outside(overflow, window->mapToGlobal(overflow), {}, QPoint(0, -120),
                             Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         QCoreApplication::sendEvent(window, &outside);
-        QCOMPARE(image->scale(), 2.88);
+        QVERIFY2(scaleNear(5.0 * std::exp(-0.42)), qPrintable(QString::number(image->scale())));
         wheel({}, QPoint(0, -4800));
-        QCOMPARE(image->scale(), 0.5);
+        QCOMPARE(image->scale(), 1.0);
         QCOMPARE(list->property("contentY").toReal(), historyY);
         click(window, visibleItem(content, "mediaViewer-next"));
         QCOMPARE(viewer->index(), 1);
         QCOMPARE(image->scale(), 1.0);
         QTRY_VERIFY(image->isVisible());
         wheel({}, QPoint(0, 120));
-        QCOMPARE(image->scale(), 1.12);
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
         QTRY_VERIFY(image->isVisible());
 
         wheel({}, QPoint(0, 120));
-        QCOMPARE(image->scale(), 1.12);
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
         QVERIFY(viewer->openFromMessages(controller.messages(), fileA));
         QCOMPARE(viewer->index(), 0);
         QCOMPARE(image->scale(), 1.0);
@@ -23135,7 +23559,12 @@ NativeAvatarImage {
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->index(), 1);
         QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-0"));
-        click(window, visibleItem(content, "mediaViewer-thumb-0"));
+        // The #919 zoom pill overlaps the middle of the strip and, like the
+        // reference pill div, consumes clicks inside its box. Hit the exposed
+        // top band of the thumbnail (above the pill) instead of its center.
+        auto *thumb0 = visibleItem(content, "mediaViewer-thumb-0");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          thumb0->mapToScene(QPointF(thumb0->width() / 2.0, 4.0)).toPoint());
         QCOMPARE(viewer->index(), 0);
         QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(8, 300));
         QTRY_VERIFY(!viewer->open());
@@ -23213,7 +23642,10 @@ NativeAvatarImage {
         QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
         auto *image = visibleItem(content, "mediaViewer-image"); QVERIFY(image);
         const auto wheel = [&](QPoint pixels, QPoint angle) {
-            const QPoint center(window->width() / 2, window->height() / 2);
+            // Wheel at the media-area center (not the window center): with
+            // #919 cursor anchoring an off-center wheel would add a pan and
+            // skew the drag-pin math below.
+            const QPoint center(window->width() / 2, window->height() / 2 - 28);
             QWheelEvent event(center, window->mapToGlobal(center), pixels, angle,
                               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
             QCoreApplication::sendEvent(window, &event);
@@ -23226,11 +23658,18 @@ NativeAvatarImage {
         };
         const auto near = [](QPointF a, QPointF b) { return qAbs(a.x() - b.x()) < 0.75 && qAbs(a.y() - b.y()) < 0.75; };
         QVERIFY(near(paintedCenter(), areaCenter));
-        // Zoom to the ceiling: angleDelta 4800 steps the +0.001-per-unit curve
-        // past the clamp (mediaViewer zoomByWheel), so the painted picture is
-        // oversized on both axes and every edge is out of reach without a pan.
+        // Zoom to the ceiling: raw angleDelta saturates the multiplicative
+        // curve against the MAX_SCALE=5 clamp (#919). Stage 2/5 then step
+        // back to 3x: the bound is 732 px on both axes there - inside the
+        // window, so the (1260,1045) pin-drags below overshoot it on both
+        // axes (at 4x the 1284-px bound outruns QTest's synthesized coords).
         wheel({}, QPoint(0, 4800));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
+        // ln(3/5)/0.0035 = -145.9 -> -146 raw angleDelta lands on 3x within
+        // float rounding; the curve is exp-based so the pin is a tolerance.
+        wheel({}, QPoint(0, -146));
+        QVERIFY2(qAbs(image->scale() - 3.0) < 0.01,
+                 qPrintable(QStringLiteral("scale after step-back: %1").arg(image->scale())));
         const qreal boundX = qMax(0.0, (image->property("paintedWidth").toReal() * image->scale()
             - (window->width() - 128.0)) / 2.0);
         const qreal boundY = qMax(0.0, (image->property("paintedHeight").toReal() * image->scale()
@@ -23253,7 +23692,8 @@ NativeAvatarImage {
             return qAbs(c.x() - 60.0) < 0.75 && qAbs(c.y() - 45.0) < 0.75; })());
         // Stage 2: dragging far past the edge pins the picture at the bound
         // (edges reachable, no overscroll): the painted center sits exactly
-        // boundX/boundY right/down of the area center.
+        // boundX/boundY right/down of the area center. At 4x the bounds are
+        // 1284x732, which the (1260,1045)-leg drags overshoot on both axes.
         QTest::mousePress(window, Qt::LeftButton, {}, grab + QPoint(60, 45));
         QTest::mouseMove(window, grab + QPoint(660, 545));
         QTest::qWait(20);
@@ -23274,7 +23714,7 @@ NativeAvatarImage {
         // slot must arrive centered even though the previous one ended at
         // a panned, zoomed position.
         wheel({}, QPoint(0, 2000));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
         QTest::mousePress(window, Qt::LeftButton, {}, grab);
         QTest::mouseMove(window, grab + QPoint(40, 30));
         QTest::qWait(20);
@@ -23291,7 +23731,7 @@ NativeAvatarImage {
         // the reverse drag first chews through the slack and the picture is
         // stuck at the edge.
         wheel({}, QPoint(0, 4800));
-        QCOMPARE(image->scale(), 3.0);
+        QCOMPARE(image->scale(), 5.0);
         QTest::qWait(50);
         const qreal boundBefore = image->property("panBoundX").toReal();
         QVERIFY2(boundBefore > 60.0, qPrintable(QStringLiteral("bound too small: ")
@@ -23335,6 +23775,298 @@ NativeAvatarImage {
         // Escape still closes after all the pointer traffic.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
+    }
+
+    // Issue #919 reference zoom upgrade: clamp [1, 5], multiplicative wheel
+    // exp(0.0035 * delta) anchored at the cursor, a bottom-centered zoom pill
+    // (minus / percent-reset / plus, 36 px buttons, 40% disabled opacity),
+    // 1.25x button steps, +/-/0 keyboard zoom and Shift+arrow 48 px pan that
+    // never pages the gallery; slot change resets scale and pan.
+    void mediaViewerReferenceZoomToolbarStepsKeyboardPanAndClamps()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            for (const auto &fileUuid : {fileA, fileB}) {
+                const auto file = "/api/workspace/v1/messenger/files/" + fileUuid;
+                if (path.startsWith(file)) {
+                    if (path == file) {
+                        auto metadata = avatarProbeMetadata(fileUuid, png);
+                        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                        return Response{metadata};
+                    }
+                    if (path == file + "/actions/download") {
+                        Response result; result.rawBody = png; result.rawContentType = "image/png";
+                        return result;
+                    }
+                    return Response{QJsonObject{}, 404};
+                }
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerRow(second, fileB, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("media-viewer.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Zoom upgrade window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *viewer = controller.mediaViewer(); QVERIFY(viewer);
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        auto *image = visibleItem(content, "mediaViewer-image"); QVERIFY(image);
+        const auto wheelAt = [window](QPoint pos, QPoint angle) {
+            QWheelEvent event(pos, window->mapToGlobal(pos), {}, angle,
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(window, &event);
+        };
+        const QPoint center(window->width() / 2, window->height() / 2);
+        const auto scaleNear = [image](double want) {
+            return qAbs(image->scale() - want) < 1e-6;
+        };
+        // The pill: bottom-centered, 16 px above the bottom edge (bottom-4).
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-zoomBar"));
+        auto *zoomBar = visibleItem(content, "mediaViewer-zoomBar");
+        auto *zoomOut = visibleItem(content, "mediaViewer-zoomOutButton");
+        auto *zoomReset = visibleItem(content, "mediaViewer-zoomResetButton");
+        auto *zoomIn = visibleItem(content, "mediaViewer-zoomInButton");
+        auto *percent = item(content, "mediaViewer-zoomPercent"); QVERIFY(percent);
+        QCOMPARE(zoomBar->mapToItem(content, QPointF(zoomBar->width() / 2.0, 0)).x(),
+                 content->width() / 2.0);
+        QCOMPARE(zoomBar->mapToItem(content, QPointF(0, zoomBar->height())).y(),
+                 content->height() - 16.0);
+        QCOMPARE(zoomIn->height(), 36.0); QCOMPARE(zoomOut->height(), 36.0);
+        QCOMPARE(zoomReset->width() >= 56.0, true);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        // At 1x the minus button sits disabled (opacity-40 contract).
+        QVERIFY(!zoomOut->isEnabled()); QVERIFY(zoomIn->isEnabled());
+        // One wheel notch multiplies: exp(0.42) = 1.52 -> "152%".
+        wheelAt(center, QPoint(0, 120));
+        QVERIFY2(scaleNear(std::exp(0.42)), qPrintable(QString::number(image->scale())));
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("152%"));
+        // Ceiling: the clamp is exactly 5x and the plus button disables.
+        wheelAt(center, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 5.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("500%"));
+        QVERIFY(!zoomIn->isEnabled()); QVERIFY(zoomOut->isEnabled());
+        // Floor: the 0.5x floor of the old #204 contract is gone - 1x.
+        wheelAt(center, QPoint(0, -4800));
+        QCOMPARE(image->scale(), 1.0);
+        wheelAt(center, QPoint(0, -120));
+        QCOMPARE(image->scale(), 1.0);
+        // Cursor anchoring: zooming at center+200 keeps that pixel under the
+        // cursor, so the picture center moves 4x200/... the pan offset from
+        // the media-area center becomes cx * (1 - applied) = 200 * (1 - 5)
+        // = -800 (media area is centered horizontally on the window).
+        wheelAt(center + QPoint(200, 0), QPoint(0, 4800));
+        QCOMPARE(image->scale(), 5.0);
+        const QPointF areaCenter(window->width() / 2.0, window->height() / 2.0 - 28.0);
+        const auto paintedCenter = [&]() {
+            return image->mapToScene(QPointF(image->width() / 2.0, image->height() / 2.0));
+        };
+        const auto anchored = paintedCenter();
+        QVERIFY2(qAbs(anchored.x() - (areaCenter.x() - 800.0)) < 0.75,
+            qPrintable(QStringLiteral("anchored x: ") + QString::number(anchored.x())));
+        wheelAt(center, QPoint(0, -4800));
+        QCOMPARE(image->scale(), 1.0);
+        // Buttons step 1.25x from the clamp-down state.
+        click(window, zoomIn);
+        QCOMPARE(image->scale(), 1.25);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("125%"));
+        click(window, zoomIn);
+        QCOMPARE(image->scale(), 1.5625);
+        click(window, zoomOut);
+        QCOMPARE(image->scale(), 1.25);
+        click(window, zoomOut);
+        click(window, zoomOut);   // 1.25 -> 1.0 (clamped), then it disables
+        QCOMPARE(image->scale(), 1.0);
+        QVERIFY(!zoomOut->isEnabled());
+        click(window, zoomIn);    // 1.25
+        click(window, zoomReset); // percent button resets to 100%
+        QCOMPARE(image->scale(), 1.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        // Keyboard zoom: "+"/"=" in, "-" out, "0" reset.
+        QTest::keyClick(window, Qt::Key_Equal);
+        QCOMPARE(image->scale(), 1.25);
+        QTest::keyClick(window, Qt::Key_Equal);
+        QCOMPARE(image->scale(), 1.5625);
+        QTest::keyClick(window, Qt::Key_Minus);
+        QCOMPARE(image->scale(), 1.25);
+        QTest::keyClick(window, Qt::Key_0);
+        QCOMPARE(image->scale(), 1.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        // Shift+arrow pans 48 px while zoomed and never pages the gallery;
+        // plain arrows keep paging and the slot change resets scale and pan.
+        wheelAt(center, QPoint(0, 4800));
+        QCOMPARE(image->scale(), 5.0);
+        const QPointF beforePan = paintedCenter();
+        QTest::keyClick(window, Qt::Key_Right, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - (beforePan.x() + 48.0)) < 0.75;
+        })(), 2000);
+        QCOMPARE(viewer->index(), 0);
+        QTest::keyClick(window, Qt::Key_Down, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().y() - (beforePan.y() + 48.0)) < 0.75;
+        })(), 2000);
+        QCOMPARE(viewer->index(), 0);
+        // exordy finding 1: a second wheel notch at the SAME scene point must
+        // keep the pixel under the cursor fixed even though zoom != 1 now.
+        // The handler used to feed mediaImage-local (scaled) coords into the
+        // anchor, so the anchor offset diverged by hundreds of px here.
+        // State: zoom 5, pan (48, 48). One -120 notch at center+(200,0):
+        // applied = exp(-0.42); correct anchor = cx(1-a) + a*pan with
+        // cx = 200 (x of the cursor relative to the media-area center).
+        const double outA = std::exp(-0.42);
+        wheelAt(center + QPoint(200, 0), QPoint(0, -120));
+        const double anchoredPan = 200.0 * (1.0 - outA) + outA * 48.0;
+        QVERIFY2(qAbs(image->scale() - 5.0 * outA) < 1e-6,
+                 qPrintable(QString::number(image->scale())));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - (areaCenter.x() + anchoredPan)) < 1.0;
+        })(), 2000);
+        // exordy finding 2: a button/keyboard step while panned keeps the pan
+        // (picture center holds its offset) and only clamps into the new
+        // bounds; multiplying pan by the step ratio used to slide the center.
+        const double pannedX = paintedCenter().x();
+        QTest::keyClick(window, Qt::Key_Minus); // 3.29x -> 2.63x, no clamp
+        QCOMPARE(image->scale(), 5.0 * outA / 1.25);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - pannedX) < 0.75;
+        })(), 2000);
+        // exordy finding 3: only the pill BACKGROUND carries the /80 alpha;
+        // item opacity on the whole bar faded its buttons and label too.
+        QCOMPARE(zoomBar->opacity(), 1.0);
+        QVERIFY(qAbs(QColor(zoomBar->property("color").toString()).alphaF() - 0.8) < 0.01);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(viewer->index(), 1);
+        QCOMPARE(image->scale(), 1.0);
+        QCOMPARE(percent->property("text").toString(), QStringLiteral("100%"));
+        QTRY_VERIFY(image->isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - areaCenter.x()) < 0.75;
+        })(), 2000);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!viewer->open());
+    }
+
+    void mediaViewerZoomPillSwallowsStripClicksBeneathIt()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            for (const auto &fileUuid : {fileA, fileB}) {
+                const auto file = "/api/workspace/v1/messenger/files/" + fileUuid;
+                if (path.startsWith(file)) {
+                    if (path == file) {
+                        auto metadata = avatarProbeMetadata(fileUuid, png);
+                        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                        return Response{metadata};
+                    }
+                    if (path == file + "/actions/download") {
+                        Response result; result.rawBody = png; result.rawContentType = "image/png";
+                        return result;
+                    }
+                    return Response{QJsonObject{}, 404};
+                }
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerRow(second, fileB, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("zoom-pill-click.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Zoom pill click window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *viewer = controller.mediaViewer(); QVERIFY(viewer);
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-zoomBar"));
+        auto *zoomBar = visibleItem(content, "mediaViewer-zoomBar");
+        auto *counter = item(content, "mediaViewer-counter"); QVERIFY(counter);
+        // exordy finding 4717934505: the pill overlaps the bottom strip and its
+        // 4 px row gap sits exactly over the second thumbnail (the row spans
+        // center-68..center+68, so x=center+30 is the gap between the reset
+        // and the plus button; the thumbnails span center-60..center+60).
+        // A click inside the pill but outside its buttons must not fall
+        // through and select the slot underneath.
+        const QPointF gapInside(zoomBar->width() / 2.0 + 30.0, zoomBar->height() / 2.0);
+        auto *thumb = item(content, "mediaViewer-thumb-1"); QVERIFY(thumb);
+        const QPointF thumbPoint = thumb->mapFromItem(zoomBar, gapInside);
+        const QString gapProbe = QStringLiteral("gap point is not over thumb-1: %1,%2")
+                                     .arg(thumbPoint.x()).arg(thumbPoint.y());
+        QVERIFY2(thumb->contains(thumbPoint), qPrintable(gapProbe));
+        QCOMPARE(viewer->index(), 0);
+        const QPointF scenePoint = zoomBar->mapToScene(gapInside);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, scenePoint.toPoint());
+        QCOMPARE(viewer->index(), 0);
+        QCOMPARE(counter->property("text").toString(), QStringLiteral("1 / 2"));
+        // The pill only swallows its own dead zones: the plus button on top
+        // of the swallow area must still zoom.
+        auto *percent = item(content, "mediaViewer-zoomPercent"); QVERIFY(percent);
+        auto *zoomIn = visibleItem(content, "mediaViewer-zoomInButton"); QVERIFY(zoomIn);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          zoomIn->mapToScene(QPointF(zoomIn->width() / 2.0, zoomIn->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return percent->property("text").toString() != QStringLiteral("100%"); })(), 2000);
     }
 
     void mediaViewerBackdropClickClosesWhileSlotLoadsAndStaysOpenWhenReady()
@@ -23610,7 +24342,12 @@ NativeAvatarImage {
         QWheelEvent wheel(center, window->mapToGlobal(center), {}, QPoint(0, 240),
                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
         QCoreApplication::sendEvent(window, &wheel);
-        QCOMPARE(video->scale(), 1.24);
+        // #919: video slots keep zoom DISABLED (the reference binds the zoom
+        // hook to images only) and the zoom pill is not rendered for them;
+        // the wheel is still consumed so nothing behind the viewer scrolls.
+        QCOMPARE(video->scale(), 1.0);
+        QVERIFY2(!visibleItem(content, "mediaViewer-zoomBar"),
+            "the zoom toolbar must not render for a video slot");
         // Same media box as images: 64 px side padding and the
         // calc(100vh-12rem) height cap (media-viewer-overlay.ui.tsx:126,158).
         QCOMPARE(video->width(), content->width() - 128.0);
@@ -32631,9 +33368,9 @@ private:
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -38477,7 +39214,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
     // padding, glyph 64 px at opacity 0.5, heading 20 px Medium text-primary
     // (i18n nav.mail), body 14 px wrapped at max 512 px text-muted
     // (i18n app.webModeUnavailable).
-    void mailSectionUnavailableCardMatchesReferenceContract_data()
+    void mailSectionOpensMailboxMatchesReferenceContract_data()
     {
         QTest::addColumn<QString>("locale");
         QTest::addColumn<QString>("mode");
@@ -38486,7 +39223,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTest::newRow("en-dark") << QString("en") << QString("dark");
         QTest::newRow("ru-dark") << QString("ru") << QString("dark");
     }
-    void mailSectionUnavailableCardMatchesReferenceContract()
+    void mailSectionOpensMailboxMatchesReferenceContract()
     {
         QFETCH(QString, locale);
         QFETCH(QString, mode);
@@ -38496,7 +39233,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const QColor iconActive = dark ? QColor("#ffffff") : QColor("#1b1b1d");
         const QColor cardBgActive = dark ? QColor("#2c3747") : QColor("#cde6ff");
         const QColor borderSubtle = dark ? QColor("#33384d") : QColor("#d8e4ef");
-        WindowChannelFixture fixture; fixture.sourceScene = true;
+        WindowChannelFixture fixture; fixture.sourceScene = true; fixture.serveMail = true;
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale(locale); preferences.setMode(mode);
@@ -38527,7 +39264,6 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(chatButton->property("selected").toBool());
         click(window, mailButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
-        auto *page = view("mailSectionPage");
         // Active chip: card-bg-active + border-subtle + icon-active; the Chat
         // chip drops back to idle text-muted.
         QVERIFY(mailButton->property("selected").toBool());
@@ -38537,38 +39273,98 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(QQmlProperty::read(mailButton, "background.border.color").value<QColor>(), borderSubtle);
         QVERIFY(!chatButton->property("selected").toBool());
         QCOMPARE(chatButton->property("iconColor").value<QColor>(), textMuted);
-        // The fallback card occupies the conversation slot.
+        // The mailbox occupies the conversation slot (reference demo mailbox:
+        // header + folder sidebar + thread list + reader placeholder).
         QVERIFY(!view("messageComposer"));
-        auto *column = view("sectionUnavailableColumn"); QVERIFY(column);
-        auto *glyph = view("sectionUnavailableGlyph"); QVERIFY(glyph);
-        auto *heading = view("sectionUnavailableHeading"); QVERIFY(heading);
-        auto *body = view("sectionUnavailableBody"); QVERIFY(body);
-        // p-6 (24 px) padding box, centered gap-4 (16 px) column.
-        auto *padding = view("sectionUnavailablePadding"); QVERIFY(padding);
-        QCOMPARE(pos(padding).x() - pos(page).x(), 24.0);
-        QCOMPARE(pos(padding).y() - pos(page).y(), 24.0);
-        QCOMPARE(column->property("spacing").toInt(), 16);
-        // Icon name="mail" size={64} className="opacity-50" tinted text-muted.
-        QCOMPARE(glyph->width(), 64.0);
-        QCOMPARE(glyph->height(), 64.0);
-        QVERIFY(qAbs(glyph->property("opacity").toReal() - 0.5) < 0.001);
-        QCOMPARE(glyph->property("tint").value<QColor>(), textMuted);
-        QCOMPARE(pos(heading).y() - (pos(glyph).y() + glyph->height()), 16.0);
-        QCOMPARE(pos(body).y() - (pos(heading).y() + heading->height()), 16.0);
-        // h2 text-xl font-medium text-text-primary = i18n key nav.mail.
-        QCOMPARE(heading->property("text").toString(),
+        // h1 23 px text-text-primary = nav.mail.
+        auto *title = view("mailPageTitle"); QVERIFY(title);
+        QCOMPARE(title->property("text").toString(),
             locale == QLatin1String("ru") ? QString::fromUtf8("Почта") : QString("Mail"));
-        QCOMPARE(heading->property("font").value<QFont>().pixelSize(), 20);
-        QCOMPARE(heading->property("font").value<QFont>().weight(), QFont::Medium);
-        QCOMPARE(heading->property("color").value<QColor>(), textPrimary);
-        // p max-w-lg text-center text-sm = i18n key app.webModeUnavailable.
-        QCOMPARE(body->property("text").toString(), locale == QLatin1String("ru")
-            ? QString::fromUtf8("Раздел временно недоступен в веб-режиме.")
-            : QString("This section is temporarily unavailable in web mode."));
-        QCOMPARE(body->property("font").value<QFont>().pixelSize(), 14);
-        QCOMPARE(body->property("wrapMode").toInt(), 4 /* QQuickText::Wrap at Qt 6.10 */);
-        QVERIFY(body->width() <= 512.0);
-        QCOMPARE(body->property("color").value<QColor>(), textMuted);
+        QCOMPARE(title->property("font").value<QFont>().pixelSize(), 23);
+        QCOMPARE(title->property("color").value<QColor>(), textPrimary);
+        // Six folder rows with the fixture unread counts (Inbox 12).
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailFolderRow-inbox"), 5000);
+        QVERIFY(view("mailFolderRow-sent") && view("mailFolderRow-drafts")
+            && view("mailFolderRow-archive") && view("mailFolderRow-spam")
+            && view("mailFolderRow-trash"));
+        QCOMPARE(view("mailFolderTitle-inbox")->property("text").toString(), QString("Inbox"));
+        QCOMPARE(view("mailFolderTitle-inbox")->property("color").value<QColor>(),
+                 dark ? textPrimary : QColor("#2347a7"));
+        QCOMPARE(view("mailFolderUnread-inbox")->property("text").toString(), QString("12"));
+        // Inbox is the default selection: the fixture threads render.
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailMessageRow-mail-inbox-1"), 5000);
+        // 3-column grid 220px|1fr|1fr: the thread column gets an even split of
+        // the leftover (a content-hinted fillWidth starved it to a sliver).
+        // Freshly incubated delegates report non-zero size only after the next
+        // layout pass, so poll (re-fetching the items each round).
+        auto *sectionPage = view("mailSectionPage"); QVERIFY(sectionPage);
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *threadList = view("mailThreadColumn");
+            return threadList
+                && threadList->width() >= (sectionPage->width() - 224.0) / 2.0 - 64.0;
+        })()), 5000);
+        // The visible contract: thread cards actually paint at the column
+        // width (a collapsed ScrollView contentItem clipped them to pills).
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *threadRow = view("mailMessageRow-mail-inbox-1");
+            return threadRow
+                && threadRow->width() >= (sectionPage->width() - 224.0) / 2.0 - 84.0;
+        })()), 5000);
+        QVERIFY(view("mailMessageRow-mail-inbox-2") && view("mailMessageRow-mail-inbox-3"));
+        // The thread card insets its text (reference card padding): sender and
+        // timestamp must sit inside the card edges, not flush against them.
+        auto *threadCard = view("mailMessageRow-mail-inbox-1"); QVERIFY(threadCard);
+        auto *senderLabel = view("mailMessageSender-mail-inbox-1"); QVERIFY(senderLabel);
+        auto *timeLabel = view("mailMessageTime-mail-inbox-1"); QVERIFY(timeLabel);
+        const qreal cardLeft = threadCard->mapToItem(window->contentItem(), QPointF(0, 0)).x();
+        const qreal cardRight = cardLeft + threadCard->width();
+        const qreal senderLeft = senderLabel->mapToItem(window->contentItem(), QPointF(0, 0)).x();
+        const qreal timeRight = timeLabel->mapToItem(window->contentItem(), QPointF(0, 0)).x()
+            + timeLabel->width();
+        QVERIFY2(senderLeft - cardLeft >= 12.0, QByteArray::number(senderLeft - cardLeft));
+        QVERIFY2(cardRight - timeRight >= 12.0, QByteArray::number(cardRight - timeRight));
+        QCOMPARE(view("mailMessageSubject-mail-inbox-1")->property("text").toString(),
+                 QString("Release 0.5.0 checks passed"));
+        QCOMPARE(view("mailMessageSender-mail-inbox-1")->property("text").toString(),
+                 QString("Build Bot"));
+        QCOMPARE(view("mailMessageTime-mail-inbox-1")->property("text").toString(),
+                 QString("10:24"));
+        // exordy finding 4712325992: every server-supplied field renders as
+        // plain text, so HTML-shaped content cannot be parsed as rich text or
+        // request remote images. The fixture carries an HTML-shaped sender to
+        // prove the contract on real delegate text.
+        QCOMPARE(view("mailMessageSender-mail-inbox-3")->property("text").toString(),
+                 QString("<i>Design</i>"));
+        const QStringList plainFields{QStringLiteral("mailFolderTitle-inbox"),
+            QStringLiteral("mailMessageSender-mail-inbox-3"),
+            QStringLiteral("mailMessageTime-mail-inbox-1"),
+            QStringLiteral("mailMessageSubject-mail-inbox-1"),
+            QStringLiteral("mailMessageSnippet-mail-inbox-1")};
+        for (const QString &field : plainFields) {
+            auto *label = view(field); QVERIFY(label);
+            QCOMPARE(label->property("textFormat").toString(), QString("PlainText"));
+        }
+        // The reader column names the missing selection before any row is picked.
+        QCOMPARE(view("mailReaderTitle")->property("text").toString(),
+            locale == QLatin1String("ru") ? QString::fromUtf8("Выберите сообщение")
+                                          : QString("Select a message"));
+        // Selecting a thread drives the reader column.
+        click(window, view("mailMessageRow-mail-inbox-2"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            view("mailReaderTitle")
+            && view("mailReaderTitle")->property("text").toString() == QString("Demo agenda for Friday"),
+            5000);
+        // An empty folder shows the empty state; the inbox rows come back with
+        // the folder when switching back.
+        click(window, view("mailFolderRow-archive"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailEmptyState"), 5000);
+        auto *emptyText = view("mailEmptyStateText"); QVERIFY(emptyText);
+        QCOMPARE(emptyText->property("text").toString(),
+            locale == QLatin1String("ru") ? QString::fromUtf8("В этой папке нет сообщений")
+                                          : QString("No messages in this folder"));
+        click(window, view("mailFolderRow-inbox"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailMessageRow-mail-inbox-1"), 5000);
+        QVERIFY(!view("mailEmptyState"));
         // The Chat button restores the conversation (reference navigates the
         // section back to the chat root).
         click(window, chatButton);
@@ -38591,6 +39387,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, mailButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
         QTRY_VERIFY(!view("sidebar"));
+        const QRect geometryBeforeMatrix = window->geometry();
+        window->resize(1024, 768);
+        QTest::qWait(400);
+        // The three-column split must survive the narrow width: the thread
+        // column keeps its share and the reader placeholder stays inside.
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *narrowPage = view("mailSectionPage");
+            auto *narrowThread = view("mailThreadColumn");
+            return narrowPage && narrowThread
+                && narrowThread->width() >= narrowPage->width() / 3.0;
+        })()), 5000);
+        window->setGeometry(geometryBeforeMatrix);
+        QTest::qWait(400);
         // The Chat chip returns to the conversation with the sidebar
         // remounted; conversation restore via the Chat button is covered above.
         click(window, chatButton);
@@ -39107,6 +39916,112 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(!view("calendarSectionPage") && view("sidebar"), 5000);
     }
 
+    // #924: the self-built calendar cells must answer hover (per the #665
+    // interaction-state pattern) and event rows must elide inside their column/
+    // pane. Pins: mini-grid hover tint distinct from idle and from the selected
+    // accent (selected keeps the accent under hover), month-cell hover tint
+    // distinct from the event-day fill, and at 800x600 the long-titled week
+    // chip and month-agenda row stay inside their column/pane with ElideRight.
+    void calendarCellHoverStatesAndEventRowElide()
+    {
+        WindowCalendarPolishFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage");
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("events").toList().size() == 2, 5000);
+        const QColor hoverTint("#cde6ff"); // card-bg-active light (same token as the #910-era chip pins)
+        // Index of today in the 42-cell matrix: the grid starts at the leading
+        // Monday of the selected month (weekStart contract, #911).
+        const QDate today = QDate::currentDate();
+        const QDate monthStart(today.year(), today.month(), 1);
+        const int todayIndex = ((monthStart.dayOfWeek() % 7) + 6) % 7 + (today.day() - 1);
+        const auto cellPoint = [&](QQuickItem *item) {
+            return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
+        };
+        // --- mini grid: hover tint on an unselected cell. The QTRY guard waits
+        // for the first layout pass: a freshly incubated delegate still maps to
+        // the scene origin until the Grid has positioned it.
+        // An unselected cell: index 8 would equal todayIndex on some dates
+        // (exordy #941), so derive it from the selected cell instead.
+        auto *miniIdle = view(QStringLiteral("miniCellBg-%1").arg((todayIndex + 1) % 42)); QVERIFY(miniIdle);
+        QTRY_VERIFY_WITH_TIMEOUT(miniIdle->width() >= 20 && miniIdle->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        const QColor miniIdleFill = miniIdle->property("color").value<QColor>();
+        QTest::mouseMove(window, cellPoint(miniIdle));
+        QTRY_COMPARE_WITH_TIMEOUT(miniIdle->property("color").value<QColor>(), hoverTint, 2000);
+        // The selected cell keeps the accent fill even under hover.
+        auto *miniSelected = view(QStringLiteral("miniCellBg-%1").arg(todayIndex)); QVERIFY(miniSelected);
+        const QColor accent = page->property("colors").toMap().value("accent").value<QColor>();
+        QCOMPARE(miniSelected->property("color").value<QColor>(), accent);
+        QTest::mouseMove(window, cellPoint(miniSelected));
+        QTRY_COMPARE_WITH_TIMEOUT(miniSelected->property("color").value<QColor>(), accent, 1500);
+        // Pointer leave restores the idle fill.
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_COMPARE_WITH_TIMEOUT(miniIdle->property("color").value<QColor>(), miniIdleFill, 2000);
+        // --- month view: the selected cell carries a distinct selected fill
+        // (exordy #941): same token vocabulary and precedence as the mini grid,
+        // selected over hover, and it must survive hover.
+        page->setProperty("viewMode", "month");
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarMonthGrid"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
+        // Completing the range request removes the loading strip and moves
+        // the month cells. Pick their centers after that layout pass.
+        QSignalSpy frames(window, &QQuickWindow::afterAnimating);
+        window->update();
+        QVERIFY(frames.wait(2000));
+        const QColor monthAccent = page->property("colors").toMap().value("accent").value<QColor>();
+        QVERIFY2(monthAccent != hoverTint,
+                 "the selected fill must be distinguishable from the hover tint");
+        auto *selectedCell = view(QStringLiteral("monthCell-%1").arg(todayIndex)); QVERIFY(selectedCell);
+        QTRY_VERIFY_WITH_TIMEOUT(selectedCell->width() >= 40 && selectedCell->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        QCOMPARE(selectedCell->property("color").value<QColor>(), monthAccent);
+        QTest::mouseMove(window, cellPoint(selectedCell));
+        QTRY_COMPARE_WITH_TIMEOUT(selectedCell->property("color").value<QColor>(), monthAccent, 1500);
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_COMPARE_WITH_TIMEOUT(selectedCell->property("color").value<QColor>(), monthAccent, 1500);
+        // An unselected cell takes the hover tint and restores its fill on leave.
+        auto *monthIdle = view(QStringLiteral("monthCell-%1").arg((todayIndex + 1) % 42)); QVERIFY(monthIdle);
+        QTRY_VERIFY_WITH_TIMEOUT(monthIdle->width() >= 40 && monthIdle->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        const QColor monthIdleFill = monthIdle->property("color").value<QColor>();
+        QVERIFY2(monthIdleFill != hoverTint,
+                 "the un-hovered fill must be distinguishable from the hover tint");
+        QTest::mouseMove(window, cellPoint(monthIdle));
+        QTRY_COMPARE_WITH_TIMEOUT(monthIdle->property("color").value<QColor>(), hoverTint, 2000);
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_COMPARE_WITH_TIMEOUT(monthIdle->property("color").value<QColor>(), monthIdleFill, 2000);
+        // --- narrow window: the long-titled rows elide inside their containers.
+        window->resize(800, 600);
+        QTRY_VERIFY_WITH_TIMEOUT(window->width() <= 800 && window->height() <= 600, 5000);
+        const QString longUuid = WindowCalendarPolishFixture::longEventUuid();
+        auto *agendaRow = view(QStringLiteral("monthAgendaRow-%1").arg(longUuid)); QVERIFY(agendaRow);
+        QTRY_VERIFY_WITH_TIMEOUT(agendaRow->isVisible(), 5000);
+        auto *label = agendaRow->property("contentItem").value<QQuickItem *>();
+        QVERIFY(label);
+        QCOMPARE(label->property("elide").toInt(), int(Qt::ElideRight));
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("implicitWidth").toReal() > label->width(), 5000);
+        auto *agendaPane = view("calendarMonthAgenda"); QVERIFY(agendaPane);
+        QVERIFY(agendaRow->width() <= agendaPane->width());
+        page->setProperty("viewMode", "week");
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarWeekGrid"), 5000);
+        auto *chip = view(QStringLiteral("weekChip-%1").arg(longUuid)); QVERIFY(chip);
+        QTRY_VERIFY_WITH_TIMEOUT(chip->isVisible(), 5000);
+        QCOMPARE(chip->property("elide").toInt(), int(Qt::ElideRight));
+        QTRY_VERIFY_WITH_TIMEOUT(chip->property("implicitWidth").toReal() > chip->width(), 5000);
+        QVERIFY(chip->parentItem());
+        QVERIFY(chip->width() <= chip->parentItem()->width());
+    }
+
     // Issue #911: the month grid renders a FIXED 42-cell matrix that starts at
     // the leading week (weekStart) of the selected month, so a month whose 1st
     // is not a Monday renders trailing days of the previous month and leading
@@ -39116,6 +40031,15 @@ QTRY_VERIFY(create->property("enabled").toBool());
     void calendarMonthGridRequestCoversAdjacentWeeks()
     {
         WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        // Separate request arrival from delivery so each navigation must
+        // wait for the controller to consume the previous response.
+        const auto serve = fixture.server.handler;
+        fixture.server.handler = [serve](const Request &request) {
+            auto response = serve(request);
+            if (request.target.path().endsWith("/calendar/events"))
+                response.delay = 200;
+            return response;
+        };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
@@ -39133,21 +40057,535 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
         // Opening the section fires the initial day-view window; the calendar
         // fetch guard drops requests while one is in flight, so advance the
-        // sequence only after each window has been served (delay 0 in the mock).
+        // sequence only after the controller has consumed each response.
         QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
         click(window, view("viewTabMonth"));
         QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
         auto *page = view("calendarSectionPage"); QVERIFY(page);
         // Pin February 2026: the 1st is a Sunday, so the 42-cell grid spans
         // 2026-01-26 .. 2026-03-08 - six full weeks of rendered cells.
         QVERIFY(page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0))));
         QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 3, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
         QCOMPARE(fixture.calendarFrom.at(2), QStringLiteral("2026-01-26"));
         QCOMPARE(fixture.calendarTo.at(2), QStringLiteral("2026-03-08"));
         // The served adjacent-month event (2026-01-30) is inside the window,
         // so the grid data layer resolves it for that cell.
         const auto events = controller.property("calendarEvents").toList();
         QCOMPARE(events.size(), 1);
+    }
+
+    void calendarSectionTreatsMissingEndpointAsEmptyFeed_data()
+    {
+        QTest::addColumn<QString>("feed");
+        QTest::newRow("empty-page") << QStringLiteral("empty");
+        QTest::newRow("not-implemented-501") << QStringLiteral("501");
+    }
+    void calendarSectionTreatsMissingEndpointAsEmptyFeed()
+    {
+        QFETCH(QString, feed);
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        if (feed == QLatin1String("empty"))
+            fixture.emptyEvents = true;
+        else
+            fixture.eventsStatus = 501;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage"); QVERIFY(page);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 1, 5000);
+        // The section settles answered-but-empty: no spinner, NO error card
+        // and no dead Retry button (both are visible: false, so the filtered
+        // helper not finding them is the negative oracle).
+        QTRY_VERIFY(!page->property("loading").toBool());
+        QVERIFY2(!page->property("error").toBool(),
+            qPrintable(QStringLiteral("feed mode %1 must not surface the error card").arg(feed)));
+        QVERIFY(view("calendarEmpty"));
+        QVERIFY(!view("calendarError"));
+        QVERIFY(!view("calendarRetry"));
+        QVERIFY(controller.property("calendarEvents").toList().isEmpty());
+
+        // The endpoint can be deployed without restarting the client. Only
+        // the 501 case should probe it when reopening the same Calendar window.
+        fixture.eventsStatus = 200;
+        fixture.emptyEvents = false;
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY(!view("calendarSectionPage"));
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view("calendarSectionPage"));
+        if (feed == QLatin1String("501")) {
+            QTRY_COMPARE(controller.calendarEvents().size(), 1);
+            QCOMPARE(fixture.calendarFrom.size(), 2);
+            QCOMPARE(fixture.calendarFrom.first(), fixture.calendarFrom.last());
+            QCOMPARE(fixture.calendarTo.first(), fixture.calendarTo.last());
+        } else {
+            QCOMPARE(fixture.calendarFrom.size(), 1);
+            QVERIFY(controller.calendarEvents().isEmpty());
+        }
+    }
+
+    // Issue #925: both date grids must be reachable from the keyboard as ONE
+    // tab stop with arrow-key roving focus, Enter/Space running the same
+    // date-selection action the pointer uses. The regression drives each grid
+    // end to end: Tab enters the grid at the selected cell, arrows roam to
+    // the adjacent-month cell (the fixture's only event lives on 2026-01-30),
+    // Enter selects it and the same-view agenda updates, Tab leaves and
+    // Shift+Tab re-enters on the selected cell.
+    void calendarGridsSupportKeyboardDateSelection_data()
+    {
+        QTest::addColumn<QString>("grid");
+        QTest::newRow("mini-calendar") << QString("mini");
+        QTest::newRow("month-grid") << QString("month");
+    }
+    void calendarGridsSupportKeyboardDateSelection()
+    {
+        QFETCH(QString, grid);
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage");
+        if (grid == QLatin1String("month"))
+        {
+            click(window, view("viewTabMonth"));
+            QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        }
+        // Pin February 2026 (as the #911 grid case does): the 1st is a Sunday,
+        // so the 42-cell grids start at 2026-01-26; the served event
+        // (2026-01-30) sits on cell index 4 while the selection (Feb 10)
+        // sits at index 15.
+        page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0)));
+        auto *gridItem = view(grid == QLatin1String("mini") ? "calendarMini" : "calendarMonthGrid");
+        QVERIFY(gridItem);
+        const QString agendaHandle = grid == QLatin1String("mini")
+            ? QStringLiteral("calendarAgenda") : QStringLiteral("calendarMonthAgenda");
+        const QString ringName = grid == QLatin1String("mini")
+            ? QStringLiteral("miniFocusRing") : QStringLiteral("monthFocusRing");
+
+        const auto delegateAt = [&](int index) -> QQuickItem* {
+            const auto kids = gridItem->childItems();
+            for (auto *kid : kids)
+                if (kid->property("modelData").isValid() && kid->property("modelData").toInt() == index)
+                    return kid;
+            return nullptr;
+        };
+
+        // One Tab from the control that precedes the grid enters it (no
+        // 42-stop march), landing on the selected cell.
+        auto *entry = view(grid == QLatin1String("mini")
+            ? "calendarSampleToggle" : "calendarFilterPersonal");
+        QVERIFY(entry);
+        entry->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
+        QCOMPARE(gridItem->property("selectedGridIndex").toInt(), 15);
+        QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(), 15);
+        if (grid == QLatin1String("month")) {
+            auto *selected = delegateAt(15);
+            QVERIFY(selected);
+            auto *selectedRing = selected->findChild<QQuickItem *>(ringName);
+            QVERIFY(selectedRing && selectedRing->isVisible());
+            const auto border = QQmlProperty::read(selectedRing, "border.color").value<QColor>();
+            QVERIFY(border.isValid());
+            QVERIFY(border != selected->property("color").value<QColor>());
+        }
+
+        // exo-review #952 fix round: the four findings below are witnessed
+        // COLLECTIVELY (a hard-failing assert would abort the case before
+        // the later witnesses run, hiding their verdicts in a single pass).
+        QStringList witnessLeaks;
+        // Arrow roaming: Right steps one date and moves the visible ring.
+        QTest::keyClick(window, Qt::Key_Right);
+        QTRY_COMPARE(gridItem->property("focusIndex").toInt(), 16);
+        auto *stepped = delegateAt(16); QVERIFY(stepped);
+        QTRY_VERIFY(stepped->property("keyboardFocused").toBool());
+        auto *oldFocus = delegateAt(15); QVERIFY(oldFocus);
+        QVERIFY(!oldFocus->property("keyboardFocused").toBool());
+        // exo-review finding 4722010298: the roving focus never lands on a
+        // cell as a focus item, so the grid itself must expose the active
+        // cell to assistive technology - its accessible name announces the
+        // date the arrows roved to, and it carries the focus state.
+        QAccessible::setActive(true);
+        auto *gridIface = QAccessible::queryAccessibleInterface(gridItem);
+        const QString febEleven =
+            QLocale(QLocale::English).toString(QDate(2026, 2, 11),
+                                               QStringLiteral("dddd, MMMM d, yyyy"));
+        if (!gridIface)
+            witnessLeaks << QStringLiteral("4722010298: grid has no accessible interface");
+        else
+        {
+            if (gridIface->text(QAccessible::Name) != febEleven)
+                witnessLeaks << QStringLiteral("4722010298: grid name is '%1', must announce %2")
+                                    .arg(gridIface->text(QAccessible::Name), febEleven);
+            if (!gridIface->state().focused)
+                witnessLeaks << QStringLiteral("4722010298: focused grid lacks the focus state");
+        }
+        // Up + 5x Left walk back to the adjacent-month cell: Feb 11 ->
+        // Feb 4 (Up), then five day-steps Left land on Jan 30 (index 4).
+        QTest::keyClick(window, Qt::Key_Up);
+        for (int i = 0; i < 5; ++i) QTest::keyClick(window, Qt::Key_Left);
+        QTRY_COMPARE(gridItem->property("focusIndex").toInt(), 4);
+        auto *jan30 = delegateAt(4); QVERIFY(jan30);
+        QCOMPARE(jan30->property("cellDate").toDate(), QDate(2026, 1, 30));
+        QTRY_VERIFY(jan30->property("keyboardFocused").toBool());
+        auto *ring = jan30->findChild<QQuickItem*>(ringName); QVERIFY(ring);
+        QTRY_VERIFY(ring->isVisible());
+        auto *otherRing = stepped->findChild<QQuickItem*>(ringName); QVERIFY(otherRing);
+        QVERIFY(!otherRing->isVisible());
+        // The cell exposes a localized full date and selection state.
+        QAccessible::setActive(true);
+        auto *jan30Iface = QAccessible::queryAccessibleInterface(jan30); QVERIFY(jan30Iface);
+        const QString expectedName =
+            QLocale(QLocale::English).toString(QDate(2026, 1, 30),
+                                               QStringLiteral("dddd, MMMM d, yyyy"));
+        QCOMPARE(jan30Iface->text(QAccessible::Name), expectedName);
+        QVERIFY(!jan30Iface->state().selected);
+        QVERIFY(gridIface);
+        QCOMPARE(gridIface->text(QAccessible::Description), QStringLiteral("Date not selected"));
+        // Enter runs the same selection action: the date moves and the agenda
+        // in the same view updates (the fixture's only event is on Jan 30).
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            page->property("selectedDate").toDateTime().date(), QDate(2026, 1, 30), 5000);
+        auto *agenda = view(agendaHandle); QVERIFY(agenda);
+        QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
+        // The grids re-anchor to the month of the newly selected date (the
+        // Jan 30 selection pulls the grid to January 2026), so the selected
+        // cell must be located by date again before its state is asserted.
+        const auto delegateWithDate = [&](const QDate &d) -> QQuickItem* {
+            const auto kids = gridItem->childItems();
+            for (auto *kid : kids)
+                if (kid->property("cellDate").toDate() == d)
+                    return kid;
+            return nullptr;
+        };
+        QQuickItem *selectedCell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&]{ selectedCell = delegateWithDate(QDate(2026, 1, 30));
+                  return selectedCell != nullptr; })(), 5000);
+        QVERIFY(selectedCell != jan30); // the grid really re-anchored
+        auto *selectedIface = QAccessible::queryAccessibleInterface(selectedCell);
+        QVERIFY(selectedIface);
+        QTRY_VERIFY(selectedIface->state().selected);
+        QVERIFY(gridIface);
+        QCOMPARE(gridIface->text(QAccessible::Description), QStringLiteral("Selected date"));
+        // exo-review finding 4722010291: Enter selected an adjacent-month
+        // date and the grid re-anchored to its month; the roving focus must
+        // re-anchor with the grid. Without the fix the stale matrix index (4)
+        // survives the re-anchor and this immediate second Enter lands on
+        // Jan 2, silently moving the selection.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(250);
+        if (page->property("selectedDate").toDateTime().date() != QDate(2026, 1, 30))
+            witnessLeaks << QStringLiteral("4722010291: second Enter moved selection to %1")
+                                .arg(page->property("selectedDate").toDateTime()
+                                         .date().toString(Qt::ISODate));
+        // Tab leaves the grid; Shift+Tab re-enters it on the selected cell.
+        // (In RED the second Enter above moved the selection, so this oracle
+        // joins the leak collection instead of hard-aborting the witness.)
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() != gridItem, 2000);
+        QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
+        if (gridItem->property("effectiveFocusIndex").toInt()
+                != selectedCell->property("modelData").toInt())
+            witnessLeaks << QStringLiteral("re-entry landed on index %1, selected cell is %2")
+                                .arg(gridItem->property("effectiveFocusIndex").toInt())
+                                .arg(selectedCell->property("modelData").toInt());
+        // exo-review finding 4722010307: while the selected cell also holds
+        // the roving focus, the focus ring must stay visible - it paints
+        // AFTER the opaque selection fill among the delegate's siblings,
+        // never underneath it.
+        auto *ringOnSelected = selectedCell->findChild<QQuickItem*>(ringName);
+        if (!ringOnSelected || !ringOnSelected->isVisible())
+            witnessLeaks << QStringLiteral("4722010307: no visible focus ring on the selected cell");
+        if (grid == QLatin1String("mini"))
+        {
+            auto *fill = selectedCell->findChild<QQuickItem*>(
+                QStringLiteral("miniCellBg-%1").arg(selectedCell->property("modelData").toInt()));
+            if (!fill)
+                witnessLeaks << QStringLiteral("4722010307: selection fill not stackable-provable");
+            else if (ringOnSelected
+                     && selectedCell->childItems().indexOf(ringOnSelected)
+                            <= selectedCell->childItems().indexOf(fill))
+                witnessLeaks << QStringLiteral("4722010307: focus ring does not paint above the selection fill");
+        }
+        // exo-review finding 4722010314: an arrow move past the matrix edge
+        // re-anchors the displayed month instead of clamping. The selected
+        // Jan 30 sits at index 32 of the January matrix, so 33 Lefts try to
+        // step past index 0: the grid must pull into December 2025 and land
+        // on Dec 28 (index 27 of the December matrix) while the selection
+        // itself stays put - arrows roam the view, Enter moves the date.
+        for (int i = 0; i < 33; ++i) QTest::keyClick(window, Qt::Key_Left);
+        QQuickItem *edgeCell = nullptr;
+        for (int i = 0; i < 100 && edgeCell == nullptr; ++i)
+        {
+            QTest::qWait(50);
+            edgeCell = delegateWithDate(QDate(2025, 12, 28));
+            if (edgeCell && !edgeCell->property("keyboardFocused").toBool())
+                edgeCell = nullptr;
+        }
+        if (!edgeCell)
+            witnessLeaks << QStringLiteral("4722010314: arrow past the matrix edge did not"
+                                           " re-anchor the month (focus index %1)")
+                                .arg(gridItem->property("effectiveFocusIndex").toInt());
+        else if (gridItem->property("effectiveFocusIndex").toInt() != 27)
+            witnessLeaks << QStringLiteral("4722010314: re-anchored focus index %1, expected 27")
+                                .arg(gridItem->property("effectiveFocusIndex").toInt());
+        if (page->property("selectedDate").toDateTime().date() != QDate(2026, 1, 30))
+            witnessLeaks << QStringLiteral("4722010314: roaming arrows moved the selection");
+        // exo-review round 2, finding 4722274186 (evolved by round 3,
+        // finding 4722544596): after the edge re-anchor the fetched event
+        // window covers the DISPLAYED matrix (December 2025: 2025-12-01..
+        // 2026-01-11) AND still contains the selected date (Jan 30), so both
+        // the newly displayed cells and the selected-date agenda have their
+        // events - the exact window is now the union, 2025-12-01..2026-01-30.
+        if (grid == QLatin1String("month"))
+        {
+            bool windowFollowed = false;
+            for (int i = 0; i < 40 && !windowFollowed; ++i)
+            {
+                QTest::qWait(50);
+                windowFollowed = !fixture.calendarFrom.isEmpty()
+                    && fixture.calendarFrom.last() == QStringLiteral("2025-12-01")
+                    && fixture.calendarTo.last() == QStringLiteral("2026-01-30");
+            }
+            if (!windowFollowed)
+                witnessLeaks << QStringLiteral(
+                    "4722274186+4722544596: newest recorded window is %1..%2,"
+                    " must be 2025-12-01..2026-01-30 (matrix plus selection)")
+                                    .arg(fixture.calendarFrom.isEmpty()
+                                             ? QString() : fixture.calendarFrom.last(),
+                                         fixture.calendarTo.isEmpty()
+                                             ? QString() : fixture.calendarTo.last());
+        }
+        // exo-review round 2, finding 4722274191: the heading must describe the
+        // month its grid actually shows: after the December re-anchor the
+        // mini-calendar title (and, in month view, the header title) may not
+        // still announce the selected date's month (January 2026).
+        if (grid == QLatin1String("mini"))
+        {
+            auto *miniTitle = view("miniCalendarTitle"); QVERIFY(miniTitle);
+            const QString shown = miniTitle->property("text").toString();
+            if (shown != QStringLiteral("December 2025"))
+                witnessLeaks << QStringLiteral(
+                    "4722274191: mini-calendar title shows '%1' while its cells show December 2025")
+                                    .arg(shown);
+        }
+        else
+        {
+            auto *header = view("calendarDateTitle"); QVERIFY(header);
+            const QString shown = header->property("text").toString();
+            if (shown != QStringLiteral("December 2025"))
+                witnessLeaks << QStringLiteral(
+                    "4722274191: month-view header shows '%1' while the grid shows December 2025")
+                                    .arg(shown);
+        }
+        // One RED pass must print every verdict: qWarning each leak, then
+        // fail exactly once (a hard-failing assert would abort the case).
+        for (const QString &leak : std::as_const(witnessLeaks))
+            qWarning().noquote() << "#952-witness" << leak;
+        QCOMPARE(witnessLeaks, QStringList{});
+    }
+
+    // Issue #952 fix round 3, exo-review finding 4722544596: roaming the
+    // roving focus past the month matrix edge re-anchors the displayed month,
+    // but the month agenda keeps reading the SELECTED date - the fetched
+    // window must keep covering that selected date after the re-anchor, or
+    // its events vanish from the agenda. The window-filtering mock below is
+    // what makes the defect observable: only days inside the requested
+    // window are ever served, exactly like a real calendar backend.
+    void calendarMonthEdgeRoamKeepsSelectedDateEvents()
+    {
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        const auto inner = std::move(fixture.server.handler);
+        fixture.server.handler = [&fixture, inner](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/calendar/events")) {
+                const QUrlQuery query(request.target);
+                fixture.calendarFrom.append(query.queryItemValue("from"));
+                fixture.calendarTo.append(query.queryItemValue("to"));
+                const auto from = query.queryItemValue("from");
+                const auto to = query.queryItemValue("to");
+                QJsonArray rows;
+                const auto add = [&](const QString &day, const QString &uuid,
+                                     const QString &title) {
+                    if (day >= from && day <= to)
+                        rows.append(QJsonObject{{"uuid", uuid}, {"day", day},
+                            {"start", "09:00"}, {"end", "10:00"}, {"title", title},
+                            {"calendar", "work"}, {"color_token", "accent"}});
+                };
+                add(QStringLiteral("2026-01-30"),
+                    QStringLiteral("90000000-0000-4000-8000-000000009521"),
+                    QStringLiteral("Adjacent-month review"));
+                add(QStringLiteral("2026-02-10"),
+                    QStringLiteral("90000000-0000-4000-8000-000000009522"),
+                    QStringLiteral("Selected-day sync"));
+                return {rows};
+            }
+            return inner(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage");
+        click(window, view("viewTabMonth"));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        // Pin February 2026 (as the other calendar cases do): the month matrix
+        // spans 2026-01-26..2026-03-08, so BOTH served events (Jan 30 and the
+        // selected Feb 10) fall inside the fetched window and the agenda shows
+        // exactly the selected day's row.
+        page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0)));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.calendarFrom.size() >= 3, 5000);
+        auto *agenda = view("calendarMonthAgenda"); QVERIFY(agenda);
+        QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
+        // Enter the month grid with the keyboard (same one-tab-stop entry the
+        // selection case uses) and rove 16 Lefts: from Feb 10 that pushes the
+        // roved date to Jan 25, out of the matrix, and the grid re-anchors to
+        // the January matrix (2025-12-29..2026-02-08).
+        auto *entry = view("calendarFilterPersonal"); QVERIFY(entry);
+        entry->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
+        auto *gridItem = view("calendarMonthGrid"); QVERIFY(gridItem);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
+        for (int i = 0; i < 16; ++i) QTest::keyClick(window, Qt::Key_Left);
+        QTRY_COMPARE(gridItem->property("effectiveFocusIndex").toInt(), 27);
+        // The newest request must still cover the SELECTED date: the January
+        // matrix extended to its end cannot stop before Feb 10, otherwise the
+        // agenda (finding 4722544596) loses the selection's events.
+        bool covered = false;
+        for (int i = 0; i < 60 && !covered; ++i)
+        {
+            QTest::qWait(50);
+            covered = !fixture.calendarFrom.isEmpty()
+                && fixture.calendarFrom.last() == QStringLiteral("2025-12-29")
+                && fixture.calendarTo.last() == QStringLiteral("2026-02-10");
+        }
+        QVERIFY2(covered, qPrintable(QStringLiteral("newest window %1..%2 must be"
+                                                     " 2025-12-29..2026-02-10 (matrix plus selection)")
+            .arg(fixture.calendarFrom.isEmpty() ? QString() : fixture.calendarFrom.last(),
+                 fixture.calendarTo.isEmpty() ? QString() : fixture.calendarTo.last())));
+        // User-visible: the selected day's event survives the edge roam.
+        QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
+    }
+
+    void calendarMonthLayoutFitsWindow_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<int>("width");
+        for (const QString &locale : {QStringLiteral("en"), QStringLiteral("ru")}) {
+            for (int width : {700, 800, 1100})
+                QTest::newRow(qPrintable(locale + "-" + QString::number(width))) << locale << width;
+        }
+    }
+
+    void calendarMonthLayoutFitsWindow()
+    {
+        QFETCH(QString, locale);
+        QFETCH(int, width);
+        WindowCalendarRouteFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->showNormal();
+        window->resize(width, 600);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto fitsWindow = [&](QQuickItem *item) {
+            return item && item->isVisible() && !item->boundingRect().isEmpty()
+                && window->contentItem()->boundingRect().contains(item->mapRectToScene(item->boundingRect()));
+        };
+
+        clickCurrentItem(window, "sectionCalendarButton");
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading() && !controller.calendarEvents().isEmpty(), 5000);
+        clickCurrentItem(window, "viewTabMonth");
+        auto *page = view("calendarSectionPage");
+        QVERIFY(page);
+        QVERIFY(page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0))));
+        auto *today = view("calendarToday");
+        auto *grid = view("calendarMonthGrid");
+        auto *agenda = view("calendarMonthAgenda");
+        QVERIFY(today && grid && agenda);
+        QTRY_COMPARE(window->size(), QSize(width, 600));
+        QTRY_VERIFY(fitsWindow(today));
+        QCOMPARE(today->property("text").toString(), locale == "ru" ? QStringLiteral("Сегодня") : QStringLiteral("Today"));
+        QTRY_VERIFY(fitsWindow(grid));
+        QTRY_VERIFY(fitsWindow(agenda));
+
+        // Click the populated trailing January date from February's grid.
+        // Checking all 42 rectangles also covers the far edge of every column.
+        QQuickItem *eventCell = nullptr;
+        int cells = 0;
+        for (auto *item : grid->childItems()) {
+            const auto date = item->property("cellDate").toDateTime().date();
+            if (!date.isValid()) continue;
+            ++cells;
+            QVERIFY(fitsWindow(item));
+            if (date == QDate(2026, 1, 30)) eventCell = item;
+        }
+        QCOMPARE(cells, 42);
+        QVERIFY(eventCell);
+        click(window, eventCell);
+        QTRY_COMPARE(page->property("selectedDate").toDateTime().date(), QDate(2026, 1, 30));
+        QTRY_COMPARE(agenda->property("count").toInt(), 1);
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY((row = agenda->property("currentItem").value<QQuickItem *>()));
+        QCOMPARE(row->property("text").toString(), QStringLiteral("09:00 Adjacent-month review"));
+        QTRY_VERIFY(agenda->boundingRect().contains(row->mapRectToItem(agenda, row->boundingRect())));
+        QVERIFY(row->property("contentWidth").toReal() <= agenda->width());
+
+        click(window, today);
+        QTRY_COMPARE(page->property("selectedDate").toDateTime().date(), QDate::currentDate());
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string
@@ -39545,6 +40983,14 @@ private slots:
             QVERIFY(control() && control()->hasActiveFocus());
             QTest::keyClick(window, Qt::Key_Space);
         } else {
+            const auto palette = window->property("colors").toMap();
+            auto *reply = control();
+            auto *text = reply->property("contentItem").value<QQuickItem *>();
+            QVERIFY(text);
+            const auto bubbleCenter = bubble->mapToScene(bubble->boundingRect().center()).toPoint();
+            checkControlHover(window, reply, text->mapToScene(text->boundingRect().center()).toPoint(),
+                              bubbleCenter, "background.color", QColor(palette.value("card-bg").toString()),
+                              QColor(palette.value("card-bg-active").toString()));
             click(window, control());
         }
         QTRY_COMPARE(controller.replyMessageId(), messageId);
@@ -40184,8 +41630,8 @@ private slots:
     void windowSidebarDirectRowKeepsPlainAvatarBackground()
     {
         WindowStreamColorScene scene;
-        auto *probe = scene.circle(scene.fixture.directStream);
-        QVERIFY(probe);
+        QQuickItem *probe = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((probe = scene.circle(scene.fixture.directStream)), 4000);
         QCOMPARE(probe->size(), QSizeF(40, 40));
         // The DTO carries 0xff0000; a direct row must ignore it (reference
         // WorkspaceAvatar path) and keep the letter/photo fallback surface.
@@ -41795,6 +43241,234 @@ private slots:
         QCOMPARE(chatList->y(), closedTop);
     }
 
+    // Issue #944: Qt 6.10 delivers hover only to the claimant under the
+    // pointer and its ancestors, so the old sibling MouseArea stayed dead
+    // while the row label claimed the exact hover point. The row root now
+    // owns a HoverHandler; the witness moves the pointer to the LABEL
+    // CENTER (the claimant point) and asserts the fill change, then pins
+    // the revert after the pointer leaves the row.
+    void activityPanelRowsHighlightOnLabelCenterHover()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("activity-hover-944.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Activity row hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("activity-drafts"));
+        click(window, view("activityExpandButton"));
+        QTRY_VERIFY(controller.activityOpen());
+        auto *row = view("activityRow-inbox"); QVERIFY(row);
+        auto *label = view("activityRowLabel-inbox"); QVERIFY(label);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const auto palette = window->property("colors").toMap();
+        const auto point = label->mapToScene(QPointF(
+            qMin(label->property("contentWidth").toReal(), label->width()) / 2, label->height() / 2));
+        checkControlHover(window, row, point.toPoint(), QPoint(3, 3), "color",
+                          QColor(palette.value("card-bg").toString()), QColor(palette.value("card-bg-active").toString()));
+    }
+
+    // Issue #942 subtask B witness: the horizontal rail chip has no internal
+    // pointer surface - the strip-level MouseArea under the Flickable owns
+    // hover and publishes hoverKey, which the chip binds to (hovered).
+    // The witness hovers the LABEL CENTER (the claimant point) and pins the
+    // hover fill observable through the label colour flip: a claimant-centered
+    // dead strip MouseArea would leave the chip colour untouched.
+    void folderRailChipLabelCenterHoverFillsViaStripHoverKey()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chip-hover-944.ini"));
+        preferences.setLocale("en");
+        preferences.setFolderRailLayout("horizontal");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Chip hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("folderRailHorizontal"));
+        auto *label = view("folderChipLabel-personal"); QVERIFY(label);
+        const QColor base = label->property("color").value<QColor>();
+        QVERIFY2(base.isValid(), "chip label lost its base colour");
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("color").value<QColor>() != base, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("color").value<QColor>() == base, 2000);
+    }
+
+    // Issue #942 subtask B witness: the vertical folder cell fills its hover
+    // from the cell-wide MouseArea (folderCellPointer); the claimant at the
+    // title centre is a plain Text, so under Qt 6.10 hover-inert pass-through
+    // the MouseArea must still see the hover. The icon tint (interactive) is
+    // the observable; the icon button itself only claims the icon glyph area,
+    // which this point deliberately avoids.
+    void folderGridCellLabelCenterHoverTintsIcon()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("grid-hover-944.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Grid hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *cell = view("folder-personal"); QVERIFY(cell);
+        auto *icon = view("folderIcon-personal"); QVERIFY(icon);
+        const QColor base = icon->property("iconColor").value<QColor>();
+        QVERIFY2(base.isValid(), "folder icon lost its base tint");
+        // Title box spans x -2..50, y 42..58 inside the 72x72 cell.
+        QTest::mouseMove(window, cell->mapToScene(QPointF(24, 50)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(icon->property("iconColor").value<QColor>() != base, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(icon->property("iconColor").value<QColor>() == base, 2000);
+    }
+
+
+    // Issue #942 subtask B witness: the edit notice's Cancel strip keeps a
+    // trailing sibling MouseArea over its plain label; hover at the label
+    // centre must tint the strip.
+    void cancelEditNoticeLabelCenterHoverFillsStrip()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const auto note = message(QStringLiteral("Plain body for the hover witness"));
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{note}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Edit cancel hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-edit-cancel-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        QVERIFY(controller.beginEditMessage(messageId));
+        auto *content = window->contentItem();
+        auto *label = item(content, "cancelEditButton"); QVERIFY(label);
+        auto *strip = label->parentItem(); QVERIFY(strip);
+        const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        controller.cancelEditMessage();
+    }
+
+    void cancelReplyNoticeLabelCenterHoverFillsStrip_data()
+    {
+        QTest::addColumn<bool>("multiple");
+        QTest::newRow("single-reply") << false;
+        QTest::newRow("reply-tabs") << true;
+    }
+
+    void cancelReplyNoticeLabelCenterHoverFillsStrip()
+    {
+        QFETCH(bool, multiple);
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message(QStringLiteral("Peer origin for the hover witness"), messageId);
+        origin["is_own"] = false;
+        const QString secondMessageId = QStringLiteral("81000000-0000-4000-8000-000000000002");
+        const auto other = message(QStringLiteral("Another reply target"), secondMessageId);
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{origin, other}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Reply cancel hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-reply-cancel-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 2);
+        QVERIFY(controller.beginReply(messageId));
+        if (multiple) QVERIFY(controller.addReplyTab(secondMessageId));
+        auto *content = window->contentItem();
+        auto *tabs = item(content, "replyTabStrip");
+        QVERIFY(tabs);
+        QTRY_COMPARE(tabs->height() > 0, multiple);
+        QQuickItem *target = nullptr;
+        QTRY_VERIFY((target = visibleItem(content, "cancelReplyButton")));
+        // In the single-reply notice the named item is the label. In the tab
+        // strip it is the button, whose centered child paints that label.
+        auto *strip = multiple ? target : target->parentItem();
+        auto *label = multiple ? nullptr : target;
+        if (multiple) {
+            for (auto *child : strip->childItems()) {
+                if (child->property("text").toString() == QStringLiteral("Cancel")) label = child;
+            }
+        }
+        QVERIFY(label && strip);
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!painted.isEmpty());
+        QVERIFY(strip->boundingRect().contains(label->mapToItem(strip, label->boundingRect().center())));
+        const auto point = label->mapToScene(label->boundingRect().center()).toPoint();
+        QVERIFY(window->contentItem()->boundingRect().contains(point));
+        if (multiple) QVERIFY(tabs->contains(tabs->mapFromScene(point)));
+        QTest::mouseMove(window, QPoint(3, 3));
+        const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        QTest::mouseMove(window, point);
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        controller.cancelReply();
+    }
+
     // Issue #101: open/closed state persists per workspace session
     // (sidebar-config.model.ts activityOpen): the same preferences scope
     // restores the expanded list without another click.
@@ -42568,9 +44242,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *content = window->contentItem();
@@ -45809,7 +47483,8 @@ private slots:
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
         const auto openMenu = [&](const QString &rowName) {
-            auto *row = visibleItem(rowName); QVERIFY(row);
+            QPointer<QQuickItem> row;
+            QTRY_VERIFY_WITH_TIMEOUT((row = visibleItem(rowName)) && row->width() > 0 && row->height() > 0, 4000);
             QTest::mouseClick(window, Qt::RightButton, {},
                 row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
             auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
@@ -45976,7 +47651,8 @@ private slots:
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
         const auto openMenu = [&](const QString &rowName) {
-            auto *row = visibleItem(rowName); QVERIFY(row);
+            QQuickItem *row = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT((row = visibleItem(rowName)), 4000);
             QTest::mouseClick(window, Qt::RightButton, {},
                 row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
             auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
@@ -46255,15 +47931,12 @@ private:
 
         // The fenced block grows the mounted copy button (reference
         // workspace-message-body-interactions.hook.ts:137-214).
-        QTRY_VERIFY(item(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
-        auto *button = visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0");
+        QTRY_VERIFY(visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0"));
         auto *label = item(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
         QCOMPARE(label->property("text").toString(), QStringLiteral("Copy"));
 
-        // Pointer activation of the mounted button; the delegate exports one
-        // performCopy() code path shared by the MouseArea and this invoke
-        // (pointer routing itself is covered by the right-click Copy link case).
-        QMetaObject::invokeMethod(button, "performCopy");
+        // Activate at the painted text so competing bubble handlers participate.
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("echo copy-me"), 3000);
         // Success feedback lasts CODE_COPY_RESET_MS = 1200 ms before the idle
         // label returns (hook.ts:25,140-162).
@@ -46440,6 +48113,45 @@ private:
         clipboard->setText(QStringLiteral("f4-sentinel-after"));
     }
 
+    // Issue #944 witness: the code-copy chip floats above the bubble body,
+    // so under Qt 6.10 claimant-centered hover its own interior hover area
+    // never sees the pointer - the bubble-layer claimant above it wins. The
+    // fill must be observable by hovering the LABEL CENTER (the claimant
+    // point); a transparent fill there proves the hover wiring is dead.
+    void codeCopyButtonFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        BodyCopyWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("CodeCopy hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-codecopy-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.messages().size() == 2, 12000);
+        auto *content = window->contentItem();
+        QTRY_VERIFY(visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
+        auto *button = visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0");
+        auto *label = visibleItem(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
+        QVERIFY2(button->property("color").value<QColor>().alpha() == 0,
+            "the code-copy chip no longer starts transparent");
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() > 0, 2000);
+        // Neutral corner away from the bubble: the fill must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
     // Issue #110 review r3 (finding 4639247928): a message whose body is split
     // around an inline image still mounts a working copy button into its fence.
     void codeCopyButtonAppearsInMediaSplitBody()
@@ -46496,7 +48208,7 @@ private:
 
         auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
         clipboard->setText(QStringLiteral("media-copy-sentinel"));
-        QMetaObject::invokeMethod(button, "performCopy");
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("sed -i copy-media"), 3000);
         QTRY_VERIFY_WITH_TIMEOUT(label->property("text").toString() == QStringLiteral("Copied"), 600);
         clipboard->setText(QStringLiteral("media-copy-sentinel-after"));
@@ -48468,9 +50180,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
@@ -48537,9 +50249,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
@@ -48608,9 +50320,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
@@ -48702,9 +50414,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 3);
         // Both downloads complete, so both file uuids have a downloaded entry.
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
@@ -49285,9 +50997,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto tag = messageId + '-' + returnedId;
@@ -49382,9 +51094,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto tag = messageId + '-' + returnedId;
@@ -51435,6 +53147,676 @@ private slots:
         QVERIFY2(fresh.contains(QStringLiteral("samples")),
                  qPrintable(QString::fromUtf8(readReport())));
         QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
+    }
+
+
+    void calendarCreatesSampleMeetingWithoutInvitingParticipants_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("ru-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void calendarCreatesSampleMeetingWithoutInvitingParticipants()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowCalendarRouteFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view("calendarSampleToggle"));
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        const auto feed = controller.calendarEvents();
+        QVERIFY(!view("calendarCreateMeeting"));
+        click(window, view("calendarSampleToggle"));
+        QTRY_VERIFY(view("calendarCreateMeeting"));
+        QVERIFY(controller.calendarEvents().isEmpty());
+        click(window, view("calendarCreateMeeting"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QCOMPARE(view("calendarMeetingError")->property("text").toString(), locale == "en"
+            ? QStringLiteral("Enter a meeting title.") : QStringLiteral("Введите название встречи."));
+        QVERIFY(controller.calendarEvents().isEmpty());
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Cancelled meeting")));
+        click(window, view("calendarMeetingCancel"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QVERIFY(controller.calendarEvents().isEmpty());
+
+        click(window, view("calendarCreateMeeting"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QString());
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Planning")));
+        QVERIFY(view("calendarMeetingParticipants")->setProperty("text", QStringLiteral("Ari\nNoor")));
+        QVERIFY(view("calendarMeetingLocation")->setProperty("text", QStringLiteral("Room 5")));
+        QVERIFY(view("calendarMeetingEndTime")->setProperty("text", QStringLiteral("08:59")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QVERIFY(controller.calendarEvents().isEmpty());
+        QVERIFY(view("calendarMeetingEndTime")->setProperty("text", QStringLiteral("10:30")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        const auto event = controller.calendarEvents().first().toMap();
+        const auto id = event.value("uuid").toString();
+        QVERIFY(!QUuid(id).isNull());
+        QCOMPARE(event.value("title").toString(), QStringLiteral("Planning"));
+        QCOMPARE(event.value("location").toString(), QStringLiteral("Room 5"));
+        QCOMPARE(event.value("participants").toStringList(), QStringList({"Ari", "Noor"}));
+        QTRY_VERIFY(view("calendarAgendaRow-" + id));
+        click(window, view("viewTabWeek"));
+        QTRY_VERIFY(view("weekChip-" + id));
+        QVERIFY(view("weekChip-" + id)->property("text").toString().contains("Planning"));
+        // Switching back always restores the unmodified server feed.
+        click(window, view("calendarSampleToggle"));
+        QTRY_COMPARE(controller.calendarEvents(), feed);
+        click(window, view("calendarSampleToggle"));
+        QTRY_VERIFY(view("weekChip-" + id));
+        for (const auto &request : fixture.server.requests) {
+            if (request.target.path().contains("/calendar/"))
+                QCOMPARE(request.method, QByteArray("GET"));
+        }
+        controller.logout();
+        QTRY_VERIFY(!controller.sampleCalendar());
+        QVERIFY(controller.calendarEvents().isEmpty());
+    }
+
+    void calendarEditsAndDeletesSampleMeeting_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("ru-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void calendarEditsAndDeletesSampleMeeting()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowCalendarRouteFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view("calendarSampleToggle"));
+        click(window, view("calendarSampleToggle"));
+        QTRY_VERIFY(controller.sampleCalendar());
+        const auto day = QDate::currentDate();
+        const QDateTime start(day, QTime(9, 0));
+        const QDateTime end(day, QTime(10, 0));
+        const QVariantMap original = {{"title", "Planning"}, {"calendar", "work"},
+            {"start", start}, {"end", end}, {"location", "Room 5"},
+            {"participants", QStringList({"Ari", "Noor"})}};
+        QVERIFY(controller.saveSampleMeeting({}, original));
+        const auto uuid = controller.calendarEvents().first().toMap().value("uuid").toString();
+        const auto rowName = "calendarAgendaRow-" + uuid;
+        QTRY_VERIFY(view(rowName));
+        click(window, view(rowName));
+        QTRY_VERIFY(view("calendarDetailEdit"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QStringLiteral("Planning"));
+        QCOMPARE(view("calendarMeetingStartTime")->property("text").toString(), QStringLiteral("09:00"));
+        QCOMPARE(view("calendarMeetingLocation")->property("text").toString(), QStringLiteral("Room 5"));
+        QCOMPARE(view("calendarMeetingParticipants")->property("text").toString(), QStringLiteral("Ari\nNoor"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Disposable draft")));
+        click(window, view("calendarMeetingCancel"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QCOMPARE(view("calendarDetailTitle")->property("text").toString(), QStringLiteral("Planning"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QStringLiteral("Planning"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QString()));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Updated plan")));
+        QVERIFY(view("calendarMeetingStartTime")->setProperty("text", QStringLiteral("09:30")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QVERIFY(!view("calendarEventDetail"));
+        QCOMPARE(controller.calendarEvents().size(), 1);
+        const auto updated = controller.calendarEvents().first().toMap();
+        QCOMPARE(updated.value("uuid").toString(), uuid);
+        QCOMPARE(updated.value("title").toString(), QStringLiteral("Updated plan"));
+        QCOMPARE(QDateTime::fromString(updated.value("startUtc").toString(), Qt::ISODate).toLocalTime(),
+                 QDateTime(day, QTime(9, 30)));
+        click(window, view("viewTabWeek"));
+        const auto chipName = "weekChip-" + uuid;
+        QTRY_VERIFY(view(chipName));
+        QCOMPARE(view(chipName)->property("text").toString(), QStringLiteral("09:30 Updated plan"));
+        click(window, view(chipName));
+        QTRY_VERIFY(view("calendarDetailDelete"));
+        click(window, view("calendarDetailDelete"));
+        QTRY_VERIFY(view("calendarConfirmCancel"));
+        click(window, view("calendarConfirmCancel"));
+        QTRY_VERIFY(!view("calendarConfirmDelete"));
+        QCOMPARE(controller.calendarEvents().size(), 1);
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingDelete"));
+        click(window, view("calendarMeetingDelete"));
+        QTRY_VERIFY(view("calendarConfirmDelete"));
+        click(window, view("calendarConfirmDelete"));
+        QTRY_VERIFY(controller.calendarEvents().isEmpty());
+        QTRY_VERIFY(!view(chipName));
+        QVERIFY(!view("calendarConfirmDelete"));
+        QVERIFY(!view("calendarMeetingSave"));
+        QVERIFY(!view("calendarEventDetail"));
+        QVERIFY(!controller.saveSampleMeeting(uuid, original));
+        QVERIFY(!controller.deleteSampleMeeting(uuid));
+
+        // New York's 01:15 occurs twice on this date. Pin the exact instants
+        // even on runners in another zone, where dropping seconds still fails.
+        const auto first = QDateTime::fromString("2026-11-01T05:15:21Z", Qt::ISODate);
+        const auto second = QDateTime::fromString("2026-11-01T06:15:42Z", Qt::ISODate);
+        auto repeated = original;
+        repeated.insert("start", first);
+        repeated.insert("end", second);
+        QVERIFY(controller.saveSampleMeeting({}, repeated));
+        const auto repeatId = controller.calendarEvents().first().toMap().value("uuid").toString();
+        click(window, view("viewTabDay"));
+        QVERIFY(view("calendarSectionPage")->setProperty("selectedDate", first.toLocalTime()));
+        const auto repeatRow = "calendarAgendaRow-" + repeatId;
+        QTRY_VERIFY(view(repeatRow));
+        click(window, view(repeatRow));
+        QTRY_VERIFY(view("calendarDetailEdit"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Renamed")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        const auto retained = controller.calendarEvents().first().toMap();
+        QCOMPARE(retained.value("title").toString(), QStringLiteral("Renamed"));
+        QCOMPARE(QDateTime::fromString(retained.value("startUtc").toString(), Qt::ISODate), first);
+        QCOMPARE(QDateTime::fromString(retained.value("endUtc").toString(), Qt::ISODate), second);
+
+        click(window, view("calendarSampleToggle"));
+        QVERIFY(!controller.saveSampleMeeting({}, original));
+    }
+
+    // Issue #907 (Part of #882): clicking an agenda row opens the event detail
+    // card; the stored UTC instants must render converted to the client zone
+    // (DST-correct by construction - expectations derive from QDateTime
+    // conversions, never hardcoded day/time), participants collapse to three
+    // rows plus a "+N more" tail, and the close button restores the agenda.
+    void calendarEventDetailOpensFromAgendaWithLocalTimeRendering_data()
+    {
+        QTest::addColumn<QString>("agendaName");
+        QTest::newRow("day") << QStringLiteral("calendarAgenda");
+        QTest::newRow("month") << QStringLiteral("calendarMonthAgenda");
+    }
+
+    void calendarEventDetailOpensFromAgendaWithLocalTimeRendering()
+    {
+        QFETCH(QString, agendaName);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        const QString startUtc = day + "T09:30:00Z";
+        const QString endUtc = day + "T11:00:00Z";
+        QJsonArray people;
+        for (const auto *name : {"Anna", "Boris", "Vera", "Denis", "Elena"})
+            people.append(QString::fromLatin1(name));
+        const QJsonObject event{
+            {"uuid", "7a5f0c21-9b0d-4a49-a96f-6f2e6b8d1c55"},
+            {"day", day}, {"start", "09:30"}, {"end", "11:00"},
+            {"title", "Design sync"}, {"calendar", "work"},
+            {"color_token", "accent"},
+            {"location", "Meeting room 4 <img src=\"http://inval.id/x.png\" onerror=\"x\">"},
+            {"all_day", false}, {"start_utc", startUtc}, {"end_utc", endUtc},
+            {"participants", people}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        if (agendaName == QStringLiteral("calendarMonthAgenda"))
+            click(window, view("viewTabMonth"));
+        QTRY_VERIFY_WITH_TIMEOUT(view(agendaName), 5000);
+        QPointer<QQuickItem> row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QQuickItem *first = nullptr;
+            QMetaObject::invokeMethod(view(agendaName), "itemAtIndex",
+                Q_RETURN_ARG(QQuickItem *, first), Q_ARG(int, 0));
+            row = first;
+            return row && row->isVisible() && row->width() > 0;
+        })(), 5000);
+        click(window, row);
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        QCOMPARE(view("calendarDetailTitle")->property("text").toString(),
+                 QStringLiteral("Design sync"));
+        const QDateTime start = QDateTime::fromString(startUtc, Qt::ISODateWithMs).toLocalTime();
+        const QDateTime end = QDateTime::fromString(endUtc, Qt::ISODateWithMs).toLocalTime();
+        QString expected = start.toString("ddd, dd.MM.yyyy HH:mm");
+        expected += start.date() == end.date() ? end.toString(" - HH:mm")
+                                               : end.toString(" - dd.MM HH:mm");
+        QCOMPARE(view("calendarDetailTime")->property("text").toString(), expected);
+        QCOMPARE(view("calendarDetailTime")->property("textFormat").toString(), QStringLiteral("PlainText"));
+        QCOMPARE(view("calendarDetailLocation")->property("text").toString(),
+                 QStringLiteral("Meeting room 4 <img src=\"http://inval.id/x.png\" onerror=\"x\">"));
+        // Review on #907: event-supplied text is PLAIN format - rich-text
+        // markup must never be interpreted (a remote <img> would be fetched
+        // on the viewer's client) and must reach the label verbatim.
+        QCOMPARE(view("calendarDetailLocation")->property("textFormat").toInt(),
+                 0 /* Text.PlainText */);
+        QVERIFY(view("calendarDetailParticipant-0"));
+        QCOMPARE(view("calendarDetailParticipant-0")->property("textFormat").toInt(),
+                 0 /* Text.PlainText */);
+        QVERIFY(view("calendarDetailParticipant-2"));
+        QVERIFY(!view("calendarDetailParticipant-3"));
+        QTRY_VERIFY(view("calendarDetailParticipantsOverflow")->isVisible());
+        QCOMPARE(view("calendarDetailParticipantsOverflow")->property("text").toString(),
+                 QStringLiteral("+2 more"));
+        click(window, view("calendarDetailClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
+    // Review on #907: a long server-supplied location must not grow the card
+    // past the window (centering then placed the close button outside the
+    // page). The card caps to the page height and its body scrolls instead.
+    void calendarDetailLongLocationStaysWithinWindowAndScrolls()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        QString longLocation = QStringLiteral("Exordos HQ, Building C, Floor 3, Room 42 - ");
+        while (longLocation.length() < 3000)
+            longLocation += QStringLiteral(
+                "dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor. ");
+        const QJsonObject event{
+            {"uuid", "3c9d8b77-2f4e-4c1a-8e5b-9d0a6c4b8e11"},
+            {"day", day}, {"start", "09:00"}, {"end", "10:00"},
+            {"title", "Site walk"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"location", longLocation},
+            {"all_day", false}, {"start_utc", day + "T09:00:00Z"},
+            {"end_utc", day + "T10:00:00Z"}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-3c9d8b77-2f4e-4c1a-8e5b-9d0a6c4b8e11");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        auto *card = view("calendarEventDetail"); QVERIFY(card);
+        // The 3000-char location wraps across several polish passes; on a loaded
+        // CI shard the scroller reports its pre-wrap contentHeight for a frame
+        // after the card is already visible (one-shot reads raced red in CI
+        // part12, same family as #914). Re-look-up inside the wait and wait for
+        // the settled overflowing content instead of one pre-relayout frame.
+        QQuickItem *scroller = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            scroller = view("calendarDetailScroller");
+            return scroller != nullptr
+                && scroller->property("contentHeight").toDouble()
+                    > scroller->property("height").toDouble();
+        })(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(card->height() <= window->contentItem()->height(), 2000);
+        auto *closeButton = view("calendarDetailClose"); QVERIFY(closeButton);
+        const QPointF closePos = closeButton->mapToScene(QPointF(0, 0));
+        QVERIFY2(closePos.y() >= 0.0
+                 && closePos.y() + closeButton->height() <= window->contentItem()->height(),
+                 qPrintable(QStringLiteral("close button scene y=%1, window h=%2, card h=%3")
+                     .arg(closePos.y()).arg(window->contentItem()->height()).arg(card->height())));
+        // Closing still works from the visible header row.
+        click(window, closeButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
+    // Review round 2 on #907: WordWrap cannot break an unbreakable token
+    // (a URL-like run with no spaces): the single oversized word lays out on
+    // one line, overflows the scroller viewport, and the horizontal scrollbar
+    // is off - the text is clipped and unreadable. The location must wrap the
+    // token within the available width (Text.Wrap).
+    void calendarDetailUnbreakableLocationTokenWrapsWithinCard()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        QString token = QStringLiteral("https://exordos.com/meet/x?ref=");
+        while (token.length() < 2000)
+            token += QStringLiteral("9kQ3tL7wZ2pR8mN5vB1xC");
+        const QJsonObject event{
+            {"uuid", "5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34"},
+            {"day", day}, {"start", "11:00"}, {"end", "12:00"},
+            {"title", "Token stress"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"location", token},
+            {"all_day", false}, {"start_utc", day + "T11:00:00Z"},
+            {"end_utc", day + "T12:00:00Z"}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        auto *location = view("calendarDetailLocation"); QVERIFY(location);
+        auto *timeRow = view("calendarDetailTime"); QVERIFY(timeRow);
+        // WordWrap lays the 2k-char token out on ONE overflowing line (height
+        // ~= one line); a wrapped label covers it in many lines. Compare the
+        // location height against the same-font sibling instead of hardcoded
+        // font metrics (host-metric oracles are the documented trap).
+        QTRY_VERIFY_WITH_TIMEOUT(location->height() > 5.0 * timeRow->height(), 2000);
+        // The wrapped lines stay inside the card: the card itself is capped
+        // to the window and the close button remains on screen.
+        auto *card = view("calendarEventDetail"); QVERIFY(card);
+        QVERIFY(card->height() <= window->contentItem()->height());
+        auto *closeButton = view("calendarDetailClose"); QVERIFY(closeButton);
+        const QPointF closePos = closeButton->mapToScene(QPointF(0, 0));
+        QVERIFY2(closePos.y() >= 0.0
+                 && closePos.y() + closeButton->height() <= window->contentItem()->height(),
+                 qPrintable(QStringLiteral("close button scene y=%1, window h=%2, card h=%3")
+                     .arg(closePos.y()).arg(window->contentItem()->height()).arg(card->height())));
+        click(window, closeButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
+    // Issue #907: an all-day event shows the date only (no times), and an
+    // event without a location renders the graceful fallback text instead of
+    // a blank row.
+    void calendarDetailAllDayShowsDateOnlyWithLocationFallback()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        const QJsonObject event{
+            {"uuid", "2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8"},
+            {"day", day}, {"start", ""}, {"end", ""},
+            {"title", "Offsite"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"all_day", true},
+            {"participants", QJsonArray{QStringLiteral("Anna"), QStringLiteral("Boris")}}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        QCOMPARE(view("calendarDetailTime")->property("text").toString(),
+                 QDate::currentDate().toString("ddd, dd.MM.yyyy"));
+        QVERIFY(!view("calendarDetailTime")->property("text").toString().contains(':'));
+        QCOMPARE(view("calendarDetailLocation")->property("text").toString(),
+                 QStringLiteral("No location specified"));
+        QVERIFY(view("calendarDetailParticipant-0"));
+        QVERIFY(view("calendarDetailParticipant-1"));
+        QVERIFY(!view("calendarDetailParticipant-2"));
+        // The overflow label is hidden for a two-participant event, so the
+        // visibility-filtering lookup returns null for it: fetch it through the
+        // plain item() helper and assert invisibility on the real item.
+        auto *overflow = item(window->contentItem(),
+                              QStringLiteral("calendarDetailParticipantsOverflow"));
+        QVERIFY(overflow);
+        QVERIFY(!overflow->isVisible());
+    }
+
+    // Issue #946 witness: the channel-info member row fill (NativeChannelInfo.qml
+    // cardHover) must respond to the pointer over the row's text block, not only
+    // over the bare card background behind the labels. The witness moves the
+    // pointer to the member NAME center (the sibling claimant point) and asserts
+    // the hover-driven fill change, then pins the revert after the pointer leaves.
+    void channelInfoMemberRowFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        const QString binding = scene.fixture.bindingId(2);
+        QQuickItem *name = nullptr;
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY((name = visibleItem("channelInfoMemberName-" + binding)));
+        QTRY_VERIFY((row = visibleItem("channelInfoMember-" + binding)));
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const auto point = name->mapToScene(QPointF(
+            qMin(name->property("contentWidth").toReal(), name->width()) / 2, name->height() / 2));
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll && scroll->contains(scroll->mapFromScene(point)));
+        const auto colors = scene.window->property("colors").toMap();
+        checkControlHover(scene.window, row, point.toPoint(), QPoint(3, 3), "color",
+                          colors.value("card-bg").value<QColor>(), colors.value("card-bg-active").value<QColor>());
+    }
+
+    // Issue #946 site 2 witness: the member-row remove button is opacity-0 until
+    // the row hover group claims (NativeChannelInfo.qml removeButton), so the
+    // reveal is driven by the same `cardHover` MouseArea as the row fill. The
+    // pointer goes to the member NAME center (sibling claimant point) and the
+    // button opacity must animate in, then out again when the pointer leaves.
+    void channelInfoRemoveButtonRevealsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        // Alice is a removable member in this owner fixture. Wait for her row
+        // and the drawer layout before computing the pointer location.
+        const QString binding = scene.fixture.bindingId(2);
+        QQuickItem *name = nullptr;
+        QTRY_VERIFY((name = visibleItem("channelInfoMemberName-" + binding)));
+        QQuickItem *remove = nullptr;
+        QTRY_VERIFY((remove = visibleItem("channelInfoRemove-" + binding)));
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        QTest::mouseMove(scene.window, QPoint(3, 3));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->opacity(), 0.0, 2000);
+        const auto point = name->mapToScene(QPointF(
+            qMin(name->property("contentWidth").toReal(), name->width()) / 2, name->height() / 2));
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll && scroll->contains(scroll->mapFromScene(point)));
+        QTest::mouseMove(scene.window, point.toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(remove->opacity(), 1.0, 3000);
+        // Neutral corner away from the drawer: the reveal must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
+    }
+
+    // Issue #946 site 3 witness: the add-members picker option fill is driven by
+    // `optionArea` (NativeChannelInfo.qml :837), a MouseArea under the option
+    // name Text. The pointer to the option NAME center (sibling claimant point)
+    // must switch the row fill from transparent to the active surface, and the
+    // fill must revert when the pointer leaves.
+    void addMembersOptionFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QVERIFY(visibleItem("channelInfoAddButton"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        const QString optionId = scene.fixture.daveUser;
+        auto *option = visibleItem(QStringLiteral("addMembersOption-") + optionId);
+        QVERIFY(option);
+        auto *label = visibleItem(QStringLiteral("addMembersOptionName-") + optionId);
+        QVERIFY(label);
+        // The fill rect is the delegate's first child (declared before the
+        // MouseArea and the Texts); unread fill = transparent (alpha 0).
+        auto *fill = option->childItems().value(0);
+        QVERIFY(fill);
+        QVERIFY(fill->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(scene.window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() != 0, 2000);
+        // Leaving the dialog area must revert the fill.
+        QTest::mouseMove(scene.window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
+    // Issue #946 site 5 witness: the logs-modal close button (NativeDiagnosticsPage.qml
+    // logsCloseButton, :1350) paints its fill through `logsCloseMouseArea.containsMouse`
+    // while its Image glyph sits on top. The pointer to the glyph center must
+    // switch the fill in and revert it when the pointer leaves.
+    void logsModalCloseButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowOwnStatusFixture fixture;
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section() == QStringLiteral("diagnostics"), 4000);
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        auto *closeButton = visibleItem("logsCloseButton");
+        QVERIFY(closeButton);
+        QVERIFY(closeButton->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(window,
+            closeButton->mapToScene(QPointF(closeButton->width() / 2.0,
+                closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() != 0, 2000);
+        // Neutral corner: the fill must revert.
+        QTest::mouseMove(window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
+    // Issue #946 site 6 witness: the call-window header ShellIconButton glyph
+    // fill (ShellIconButton.qml `area`, :21) must flip on a pointer over the
+    // glyph center and revert once the pointer leaves the button. The button
+    // color is "transparent" at rest and Qt.alpha(bg, 0.5) on hover.
+    void callWindowShellButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call window shell teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(fixture.start(controller));
+        window->resize(1280, 800);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        clickCallCard(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        auto *closeButton = visibleItem(shell->contentItem(), QStringLiteral("callWindowCloseButton"));
+        QVERIFY(closeButton);
+        QCOMPARE(closeButton->property("color").value<QColor>().alpha(), 0);
+        QTest::mouseMove(shell, closeButton->mapToScene(
+            QPointF(closeButton->width() / 2.0, closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() > 0, 2000);
+        // Header far corner: the fill must revert.
+        QTest::mouseMove(shell, QPoint(20, 20));
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() == 0, 2000);
     }
 
 };

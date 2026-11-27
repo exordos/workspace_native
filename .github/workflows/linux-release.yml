@@ -38,6 +38,7 @@ jobs:
     permissions:
       contents: read
       checks: read
+      actions: read
     timeout-minutes: 75
     outputs:
       reuse: ${{ steps.lookup.outputs.reuse }}
@@ -54,59 +55,38 @@ jobs:
           set -uo pipefail
           deadline=$(( SECONDS + 3000 ))
           reuse=false
+          unresolved_red=false
           while :; do
-            # exordy findings 4712353365/369: the commit check-runs listing
-            # is paginated and a TRUNCATED listing must never authorize
-            # reuse. Pagination lives in the tested script (--fetch mode):
-            # it fetches every page until a short page ends the listing and
-            # exits non-zero on truncation or gh failure, so the verdict
-            # below is only ever computed from complete pages.
-            # exordy finding 4714995326: the fetch itself reports rc 2 when
-            # a fetched page already shows a completed non-success - that
-            # block is honoured even on a truncated listing, because the
-            # in-job fallback gate must never outrace an observed red.
-            fetch_rc=0
-            rm -f check-runs-page-*.json
+            # The helper joins the filtered Actions runs to their check-suite IDs.
+            # Only complete listings can authorize reuse. A visible red blocks
+            # even if a later API page could not be read.
+            verdict_rc=0
             python3 packages/native/scripts/master-gate-verdict.py \
                 --fetch "${GATE_SHA}" --repo "${GITHUB_REPOSITORY}" \
-                --out-prefix check-runs-page- || fetch_rc=$?
-            if [ "${fetch_rc}" -eq 2 ]; then
-              echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
-              exit 1
-            fi
-            fetch_ok=false
-            if [ "${fetch_rc}" -eq 0 ]; then
-              fetch_ok=true
-            fi
-            if [ "${fetch_ok}" = true ]; then
-              # The decision lives in one script that is covered by a
-              # regression test (packages/native/tests/
-              # master-gate-verdict-test.py). Verdicts:
-              #   block = a matching master-push check completed non-success,
-              #           fail at once - one red must never be outraced;
-              #   wait  = keep polling. Reuse is only accepted once EVERY
-              #           matching run has completed: an older green pair
-              #           must not authorize publication while a newer
-              #           matching run (re-check, rerun, or a second master
-              #           push of the same sha) may still return red;
-              #   reuse = completed green verdicts for each required name.
-              verdict=$(python3 packages/native/scripts/master-gate-verdict.py \
-                  check-runs-page-*.json) || true
-              if [[ "${verdict}" == block ]]; then
-                echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
-                exit 1
-              fi
-              if [[ "${verdict}" == reuse ]]; then
+                --budget-seconds "$(( deadline - SECONDS ))" || verdict_rc=$?
+            case "${verdict_rc}" in
+              0)
                 echo "The master-push gate on ${GATE_SHA} is green with no matching run still in flight; publishing reuses its verdict."
                 reuse=true
                 break
-              fi
-            fi
+                ;;
+              1) unresolved_red=false ;;  # A complete poll supersedes older partial data.
+              3) unresolved_red=true ;;
+              2)
+                echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
+                exit 1
+                ;;
+            esac
             if (( SECONDS >= deadline )); then
+              if [ "${unresolved_red}" = true ]; then
+                echo "::error::Could not establish the origin of a failed gate check; refusing to publish this tag."
+                exit 1
+              fi
               echo "No complete master-push gate verdict within the window; the publish job runs the full gate itself."
               break
             fi
-            sleep 30
+            remaining=$(( deadline - SECONDS ))
+            if (( remaining > 0 )); then sleep "$(( remaining < 30 ? remaining : 30 ))"; fi
           done
           echo "reuse=${reuse}" >> "${GITHUB_OUTPUT}"
 
