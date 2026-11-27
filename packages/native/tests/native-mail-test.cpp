@@ -143,6 +143,7 @@ private slots:
         const QString first = QStringLiteral("87654321-1111-4444-8888-333333333333");
         const QString second = QStringLiteral("87654321-1111-4444-8888-444444444444");
         QStringList requests;
+        bool failFolderRefresh = false;
         server.handler = [&](const Request &request) -> Response {
             const QUrlQuery query(request.target);
             const QString path = request.target.path();
@@ -150,6 +151,7 @@ private slots:
             const QString folder = query.queryItemValue("folder_uuid");
             requests << path + "|" + folder + "|" + marker;
             if (path == "/api/workspace/v1/mail/folders/") {
+                if (failFolderRefresh) return Response{QJsonObject{}, 503};
                 Response page{QJsonArray{QJsonObject{{"uuid", marker.isEmpty() ? archive : inbox},
                     {"name", marker.isEmpty() ? "Archive" : "Inbox"}, {"kind", marker.isEmpty() ? "archive" : "inbox"},
                     {"unread_count", marker.isEmpty() ? 0 : 2}}}};
@@ -202,6 +204,15 @@ private slots:
         QVERIFY(store->messages().isEmpty());
         QCOMPARE(requests.size(), 5);
         QCOMPARE(requests.last(), QStringLiteral("/api/workspace/v1/mail/messages/|") + archive + "|");
+        failFolderRefresh = true;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("error"));
+        QVERIFY(store->folders().isEmpty() && store->messages().isEmpty());
+        failFolderRefresh = false;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(store->folderId(), archive);
+        QVERIFY(store->messages().isEmpty());
     }
 
     void emptyWorkspaceMailboxStaysEmpty()

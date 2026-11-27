@@ -181,7 +181,6 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
             self->m_sampleMessages = false;
             if (folders) {
                 self->m_folders.clear();
-                self->m_folderId.clear();
                 self->m_sampleMode = false;
             }
             self->m_state = QStringLiteral("error");
