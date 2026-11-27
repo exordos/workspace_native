@@ -6,6 +6,11 @@ ScrollView {
     id: reader
     required property var colors
     property var message: null
+    required property var mail
+    readonly property bool live: !!message && !!mail?.live
+    readonly property bool canAct: live && !mail.actionBusy && mail.state === "ready"
+    readonly property bool inTrash: live && mail.folders.some(row => row.id === mail.folderId && row.kind === "trash")
+    readonly property bool hasTrash: live && mail.folders.some(row => row.account === message.account && row.kind === "trash")
     clip: true
     contentWidth: availableWidth
     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -68,23 +73,51 @@ ScrollView {
                     { key: "reply", label: qsTr("Reply") },
                     { key: "forward", label: qsTr("Forward") },
                     { key: "mark", label: reader.message && reader.message.unread ? qsTr("Mark as read") : qsTr("Mark as unread") },
-                    { key: "delete", label: qsTr("Delete") }
+                    { key: "delete", label: reader.live ? (reader.inTrash ? qsTr("Restore") : qsTr("Move to trash")) : qsTr("Delete") },
+                    { key: "star", label: reader.message?.starred ? qsTr("Unstar") : qsTr("Star") }
                 ]
                 delegate: NativeButton {
                     required property var modelData
                     objectName: "mailReaderAction-" + modelData.key
                     width: Math.min(implicitWidth, reader.availableWidth)
-                    enabled: false
+                    visible: modelData.key !== "star" || reader.live
+                    enabled: reader.canAct && (modelData.key === "mark" || modelData.key === "star"
+                        || (modelData.key === "delete" && (reader.inTrash || (reader.hasTrash && !reader.message.queued))))
+                    onClicked: {
+                        const action = modelData.key === "mark" ? (reader.message.unread ? "read" : "unread")
+                            : modelData.key === "star" ? (reader.message.starred ? "unstar" : "star")
+                            : reader.inTrash ? "restore" : "trash"
+                        reader.mail.applyMessageAction(action)
+                    }
                     colors: reader.colors
                     text: modelData.label
                     Accessible.description: actionNotice.text
                 }
             }
         }
+        NativeSelect {
+            objectName: "mailMoveFolder"
+            visible: reader.live && count > 0
+            enabled: reader.canAct
+            width: Math.min(implicitWidth, reader.availableWidth)
+            colors: reader.colors
+            model: reader.live ? reader.mail.moveTargets : []
+            currentIndex: -1
+            placeholderText: qsTr("Move to folder")
+            onActivated: index => {
+                reader.mail.applyMessageAction("move", valueAt(index))
+                currentIndex = -1
+            }
+        }
+        ReaderLine {
+            objectName: "mailReaderActionError"
+            visible: !!reader.mail?.actionError
+            text: reader.mail?.actionError ?? ""
+        }
         ReaderLine {
             id: actionNotice
             objectName: "mailReaderActionNotice"
-            text: qsTr("Mail actions are unavailable in this preview.")
+            text: reader.live ? qsTr("Reply and forward are unavailable.") : qsTr("Mail actions are unavailable in this preview.")
         }
     }
 
