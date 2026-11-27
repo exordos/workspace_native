@@ -41368,6 +41368,170 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == base, 2000);
     }
 
+    // Issue #942 subtask B witness: the horizontal rail chip has no internal
+    // pointer surface - the strip-level MouseArea under the Flickable owns
+    // hover and publishes hoverKey, which the chip binds to (hovered).
+    // The witness hovers the LABEL CENTER (the claimant point) and pins the
+    // hover fill observable through the label colour flip: a claimant-centered
+    // dead strip MouseArea would leave the chip colour untouched.
+    void folderRailChipLabelCenterHoverFillsViaStripHoverKey()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("chip-hover-944.ini"));
+        preferences.setLocale("en");
+        preferences.setFolderRailLayout("horizontal");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Chip hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("folderRailHorizontal"));
+        auto *label = view("folderChipLabel-personal"); QVERIFY(label);
+        const QColor base = label->property("color").value<QColor>();
+        QVERIFY2(base.isValid(), "chip label lost its base colour");
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("color").value<QColor>() != base, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("color").value<QColor>() == base, 2000);
+    }
+
+    // Issue #942 subtask B witness: the vertical folder cell fills its hover
+    // from the cell-wide MouseArea (folderCellPointer); the claimant at the
+    // title centre is a plain Text, so under Qt 6.10 hover-inert pass-through
+    // the MouseArea must still see the hover. The icon tint (interactive) is
+    // the observable; the icon button itself only claims the icon glyph area,
+    // which this point deliberately avoids.
+    void folderGridCellLabelCenterHoverTintsIcon()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("grid-hover-944.ini"));
+        preferences.setLocale("en");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Grid hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *cell = view("folder-personal"); QVERIFY(cell);
+        auto *icon = view("folderIcon-personal"); QVERIFY(icon);
+        const QColor base = icon->property("iconColor").value<QColor>();
+        QVERIFY2(base.isValid(), "folder icon lost its base tint");
+        // Title box spans x -2..50, y 42..58 inside the 72x72 cell.
+        QTest::mouseMove(window, cell->mapToScene(QPointF(24, 50)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(icon->property("iconColor").value<QColor>() != base, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(icon->property("iconColor").value<QColor>() == base, 2000);
+    }
+
+
+    // Issue #942 subtask B witness: the edit notice's Cancel strip keeps a
+    // trailing sibling MouseArea over its plain label; hover at the label
+    // centre must tint the strip.
+    void cancelEditNoticeLabelCenterHoverFillsStrip()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        const auto note = message(QStringLiteral("Plain body for the hover witness"));
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{note}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Edit cancel hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-edit-cancel-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        QVERIFY(controller.beginEditMessage(messageId));
+        auto *content = window->contentItem();
+        auto *label = item(content, "cancelEditButton"); QVERIFY(label);
+        auto *strip = label->parentItem(); QVERIFY(strip);
+        const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        controller.cancelEditMessage();
+    }
+
+    // Issue #942 subtask B witness: the single-reply Cancel strip mirrors the
+    // edit notice shape (plain label + trailing sibling MouseArea).
+    void cancelReplyNoticeLabelCenterHoverFillsStrip()
+    {
+        QTest::failOnWarning();
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        auto origin = message(QStringLiteral("Peer origin for the hover witness"), messageId);
+        origin["is_own"] = false;
+        fixture.server.handler = [&, fallback](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/messages/"))
+                return {QJsonArray{origin}};
+            return fallback(request);
+        };
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Reply cancel hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "cassi-reply-cancel-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_COMPARE(controller.messages().size(), 1);
+        QVERIFY(controller.beginReply(messageId));
+        auto *content = window->contentItem();
+        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
+        QTRY_VERIFY(notice->isVisible());
+        auto *label = item(content, "cancelReplyButton"); QVERIFY(label);
+        auto *strip = label->parentItem(); QVERIFY(strip);
+        const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
+        controller.cancelReply();
+    }
+
     // Issue #101: open/closed state persists per workspace session
     // (sidebar-config.model.ts activityOpen): the same preferences scope
     // restores the expanded list without another click.
