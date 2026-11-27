@@ -193,6 +193,8 @@ Item {
                                     id: messageColumn
                                     anchors.left: parent.left
                                     anchors.right: parent.right
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 12
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: 3
                                     RowLayout {

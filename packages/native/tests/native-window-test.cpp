@@ -38611,6 +38611,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 && threadRow->width() >= (sectionPage->width() - 224.0) / 2.0 - 84.0;
         })()), 5000);
         QVERIFY(view("mailMessageRow-mail-inbox-2") && view("mailMessageRow-mail-inbox-3"));
+        // The thread card insets its text (reference card padding): sender and
+        // timestamp must sit inside the card edges, not flush against them.
+        auto *threadCard = view("mailMessageRow-mail-inbox-1"); QVERIFY(threadCard);
+        auto *senderLabel = view("mailMessageSender-mail-inbox-1"); QVERIFY(senderLabel);
+        auto *timeLabel = view("mailMessageTime-mail-inbox-1"); QVERIFY(timeLabel);
+        const qreal cardLeft = threadCard->mapToItem(window->contentItem(), QPointF(0, 0)).x();
+        const qreal cardRight = cardLeft + threadCard->width();
+        const qreal senderLeft = senderLabel->mapToItem(window->contentItem(), QPointF(0, 0)).x();
+        const qreal timeRight = timeLabel->mapToItem(window->contentItem(), QPointF(0, 0)).x()
+            + timeLabel->width();
+        QVERIFY2(senderLeft - cardLeft >= 12.0, QByteArray::number(senderLeft - cardLeft));
+        QVERIFY2(cardRight - timeRight >= 12.0, QByteArray::number(cardRight - timeRight));
         QCOMPARE(view("mailMessageSubject-mail-inbox-1")->property("text").toString(),
                  QString("Release 0.5.0 checks passed"));
         QCOMPARE(view("mailMessageSender-mail-inbox-1")->property("text").toString(),
@@ -38675,6 +38687,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, mailButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
         QTRY_VERIFY(!view("sidebar"));
+        const QRect geometryBeforeMatrix = window->geometry();
+        window->resize(1024, 768);
+        QTest::qWait(400);
+        // The three-column split must survive the narrow width: the thread
+        // column keeps its share and the reader placeholder stays inside.
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *narrowPage = view("mailSectionPage");
+            auto *narrowThread = view("mailThreadColumn");
+            return narrowPage && narrowThread
+                && narrowThread->width() >= narrowPage->width() / 3.0;
+        })()), 5000);
+        window->setGeometry(geometryBeforeMatrix);
+        QTest::qWait(400);
         // The Chat chip returns to the conversation with the sidebar
         // remounted; conversation restore via the Chat button is covered above.
         click(window, chatButton);
