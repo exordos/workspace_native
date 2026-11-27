@@ -51515,7 +51515,7 @@ private slots:
         const QJsonObject event{
             {"uuid", "2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8"},
             {"day", day}, {"start", ""}, {"end", ""},
-            {"title", "Offsite"}, {"calendar", "team"},
+            {"title", "Offsite"}, {"calendar", "work"},
             {"color_token", "accent"}, {"all_day", true},
             {"participants", QJsonArray{QStringLiteral("Anna"), QStringLiteral("Boris")}}};
         fixture.server.handler = [&](const Request &request) -> Response {

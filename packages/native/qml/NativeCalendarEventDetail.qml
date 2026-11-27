@@ -132,7 +132,8 @@ Rectangle {
                 }
                 delegate: Label {
                     required property var modelData
-                    objectName: "calendarDetailParticipant-" + modelIndex
+                    required property int index
+                    objectName: "calendarDetailParticipant-" + index
                     Layout.fillWidth: true
                     text: String(modelData)
                     color: detail.colors["text-primary"]
