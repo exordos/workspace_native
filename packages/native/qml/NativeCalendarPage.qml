@@ -683,7 +683,8 @@ FocusScope {
                                     radius: 4
                                     color: "transparent"
                                     border.width: 2
-                                    border.color: page.colors["accent"]
+                                    border.color: monthCell.isSelected
+                                        ? page.colors["on-accent"] : page.colors["accent"]
                                     visible: monthCell.keyboardFocused
                                 }
                                 Label {
