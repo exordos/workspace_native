@@ -114,7 +114,7 @@ falls back to the day + `start`/`end` strings; no location shows the
 `No location specified` placeholder.
 
 Rendering: `NativeCalendarEventDetail.qml`, a centered card overlay inside
-`NativeCalendarPage` (`page.detailEvent` selects the row; agenda rows and
+`NativeCalendarPage` (`page.detailEvent` selects the row; day and month agenda rows and
 week chips open it, `calendarDetailClose` clears it). Fields: title
 (`(untitled)` fallback, elided with `Layout.minimumWidth: 0` per #879),
 time line, location block, participants (first three + `+%1 more` via
@@ -128,7 +128,7 @@ local date only, no time. Window tests derive expectations from
 names (TZ-pinned flake rule).
 
 Acceptance (window layer, calendar cases in `native-window-test.cpp`):
-clicking a fixture agenda row opens the detail with the fixture title,
+clicking a fixture row in either the day or month agenda opens the detail with the fixture title,
 time range, location and participants; an all-day fixture shows the date
 only; five participants render three rows + `+2 more`; the DST fixture
 instant renders the locally derived day/time; `calendarDetailClose` hides

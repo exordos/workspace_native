@@ -51437,14 +51437,22 @@ private slots:
         QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
     }
 
- 
+
     // Issue #907 (Part of #882): clicking an agenda row opens the event detail
     // card; the stored UTC instants must render converted to the client zone
     // (DST-correct by construction - expectations derive from QDateTime
     // conversions, never hardcoded day/time), participants collapse to three
     // rows plus a "+N more" tail, and the close button restores the agenda.
+    void calendarEventDetailOpensFromAgendaWithLocalTimeRendering_data()
+    {
+        QTest::addColumn<QString>("agendaName");
+        QTest::newRow("day") << QStringLiteral("calendarAgenda");
+        QTest::newRow("month") << QStringLiteral("calendarMonthAgenda");
+    }
+
     void calendarEventDetailOpensFromAgendaWithLocalTimeRendering()
     {
+        QFETCH(QString, agendaName);
         WindowChannelFixture fixture; fixture.sourceScene = true;
         const auto fallback = fixture.server.handler;
         const QString day = QDate::currentDate().toString(Qt::ISODate);
@@ -51480,10 +51488,18 @@ private slots:
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
         click(window, view("sectionCalendarButton"));
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
-        const QString rowName =
-            QStringLiteral("calendarAgendaRow-7a5f0c21-9b0d-4a49-a96f-6f2e6b8d1c55");
-        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
-        click(window, view(rowName));
+        if (agendaName == QStringLiteral("calendarMonthAgenda"))
+            click(window, view("viewTabMonth"));
+        QTRY_VERIFY_WITH_TIMEOUT(view(agendaName), 5000);
+        QPointer<QQuickItem> row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QQuickItem *first = nullptr;
+            QMetaObject::invokeMethod(view(agendaName), "itemAtIndex",
+                Q_RETURN_ARG(QQuickItem *, first), Q_ARG(int, 0));
+            row = first;
+            return row && row->isVisible() && row->width() > 0;
+        })(), 5000);
+        click(window, row);
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
         QCOMPARE(view("calendarDetailTitle")->property("text").toString(),
                  QStringLiteral("Design sync"));

@@ -416,10 +416,18 @@ FocusScope {
                         Layout.fillHeight: true
                         clip: true
                         model: page.dayEvents()
-                        delegate: Label {
+                        delegate: ItemDelegate {
+                            id: monthAgendaRow
                             required property var modelData
+                            width: ListView.view.width
                             text: modelData.start + " " + modelData.title
-                            color: page.colors["text-primary"]
+                            onClicked: page.detailEvent = modelData
+                            contentItem: Label {
+                                text: monthAgendaRow.text
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                color: page.colors["text-primary"]
+                            }
                         }
                     }
                 }
