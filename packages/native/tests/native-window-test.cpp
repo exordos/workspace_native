@@ -662,6 +662,34 @@ public:
     }
 };
 
+// Issue #911: the calendar section route layered over the same catalog, topics,
+// session and Main.qml harness. Serves GET /calendar/events and records every
+// emitted from/to window so the month-grid coverage contract is assertable.
+class WindowCalendarRouteFixture final : public WindowChannelFixture {
+public:
+    QStringList calendarFrom, calendarTo;
+    WindowCalendarRouteFixture()
+    {
+        auto parentHandler = std::move(server.handler);
+        server.handler = [this, parentHandler](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/calendar/events")) {
+                const QUrlQuery query(request.target);
+                calendarFrom.append(query.queryItemValue("from"));
+                calendarTo.append(query.queryItemValue("to"));
+                // One event on a trailing day of the month BEFORE the pinned
+                // test month (February 2026): only a window that starts at the
+                // leading week can ever deliver it to the grid.
+                return {QJsonArray{QJsonObject{{"uuid", "90000000-0000-4000-8000-000000000001"},
+                    {"day", "2026-01-30"}, {"start", "09:00"}, {"end", "10:00"},
+                    {"title", "Adjacent-month review"}, {"calendar", "work"},
+                    {"color_token", "accent"}}}};
+            }
+            return parentHandler(request);
+        };
+    }
+};
+
 // Draft HTTP remains synthetic and is layered over the same catalog, topics,
 // session and actual Main.qml harness as ordinary conversation tests.
 class WindowDraftFixture : public WindowChannelFixture {
@@ -38612,6 +38640,49 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(!view("sidebar"));
         click(window, view("sectionChatButton"));
         QTRY_VERIFY_WITH_TIMEOUT(!view("calendarSectionPage") && view("sidebar"), 5000);
+    }
+
+    // Issue #911: the month grid renders a FIXED 42-cell matrix that starts at
+    // the leading week (weekStart) of the selected month, so a month whose 1st
+    // is not a Monday renders trailing days of the previous month and leading
+    // days of the next month as real cells. The window request must cover every
+    // rendered cell or events on those days never reach the grid (they show in
+    // the week/agenda views but not in the month cells).
+    void calendarMonthGridRequestCoversAdjacentWeeks()
+    {
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *calendarButton = view("sectionCalendarButton"); QVERIFY(calendarButton);
+        click(window, calendarButton);
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        // Opening the section fires the initial day-view window; the calendar
+        // fetch guard drops requests while one is in flight, so advance the
+        // sequence only after each window has been served (delay 0 in the mock).
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 1, 5000);
+        click(window, view("viewTabMonth"));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        auto *page = view("calendarSectionPage"); QVERIFY(page);
+        // Pin February 2026: the 1st is a Sunday, so the 42-cell grid spans
+        // 2026-01-26 .. 2026-03-08 - six full weeks of rendered cells.
+        QVERIFY(page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0))));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 3, 5000);
+        QCOMPARE(fixture.calendarFrom.at(2), QStringLiteral("2026-01-26"));
+        QCOMPARE(fixture.calendarTo.at(2), QStringLiteral("2026-03-08"));
+        // The served adjacent-month event (2026-01-30) is inside the window,
+        // so the grid data layer resolves it for that cell.
+        const auto events = controller.property("calendarEvents").toList();
+        QCOMPARE(events.size(), 1);
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string
