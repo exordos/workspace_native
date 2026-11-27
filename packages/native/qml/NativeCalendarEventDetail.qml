@@ -115,6 +115,7 @@ Rectangle {
             objectName: "calendarDetailTime"
             Layout.fillWidth: true
             text: detail.instantText(detail.event)
+            textFormat: Text.PlainText
             color: detail.colors["text-muted"]
         }
 

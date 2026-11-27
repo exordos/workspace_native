@@ -6761,18 +6761,31 @@ mv -Tf "$root/.current-new" "$root/current"
             && view("inbox-row-title-" + releasesId), 5000);
         auto *row = view("inbox-row-" + releasesId); QVERIFY(row);
         auto *title = view("inbox-row-title-" + releasesId); QVERIFY(title);
-        const QColor before = row->property("color").value<QColor>();
-        const QColor borderBefore = QQmlProperty(row, "border.color").read().value<QColor>();
-        QVERIFY(borderBefore.isValid());
-        QTest::mouseMove(window,
-            title->mapToScene(QPointF(title->width() / 2.0, title->height() / 2.0)).toPoint());
-        // Both hover channels must move: the fill AND the border accent.
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before
-            && QQmlProperty(row, "border.color").read().value<QColor>() != borderBefore, 2000);
-        // Neutral corner away from the card: fill and border must revert.
-        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before
-            && QQmlProperty(row, "border.color").read().value<QColor>() == borderBefore, 2000);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const QPoint away(window->width() - 40, 8);
+        const auto colors = window->property("colors").toMap();
+        auto idle = colors.value("bg-elevated").value<QColor>();
+        idle.setAlphaF(0.5);
+        auto hoverBorder = colors.value("accent-soft").value<QColor>();
+        hoverBorder.setAlphaF(0.4);
+        const auto hover = colors.value("card-bg").value<QColor>();
+        const auto idleBorder = colors.value("border-subtle").value<QColor>();
+        QVERIFY(idle.isValid() && hover.isValid() && idleBorder.isValid() && hoverBorder.isValid());
+        const auto fill = [&] { return row->property("color").value<QColor>().rgba(); };
+        const auto border = [&] { return QQmlProperty::read(row, "border.color").value<QColor>().rgba(); };
+        QTest::mouseMove(window, away);
+        QTRY_COMPARE(fill(), idle.rgba());
+        QTRY_COMPARE(border(), idleBorder.rgba());
+        const QPointF textCenter(qMin(title->property("contentWidth").toReal(), title->width()) / 2,
+                                 title->height() / 2);
+        QTest::mouseMove(window, title->mapToScene(textCenter).toPoint());
+        QTRY_COMPARE(fill(), hover.rgba());
+        QTRY_COMPARE(border(), hoverBorder.rgba());
+        QTest::mouseMove(window, away);
+        QTRY_COMPARE(fill(), idle.rgba());
+        QTRY_COMPARE(border(), idleBorder.rgba());
     }
 
     // Issue #945 witness: the starred card fill and the hover-revealed action
@@ -40192,6 +40205,15 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
         QCOMPARE(gridItem->property("selectedGridIndex").toInt(), 15);
         QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(), 15);
+        if (grid == QLatin1String("month")) {
+            auto *selected = delegateAt(15);
+            QVERIFY(selected);
+            auto *selectedRing = selected->findChild<QQuickItem *>(ringName);
+            QVERIFY(selectedRing && selectedRing->isVisible());
+            const auto border = QQmlProperty::read(selectedRing, "border.color").value<QColor>();
+            QVERIFY(border.isValid());
+            QVERIFY(border != selected->property("color").value<QColor>());
+        }
 
         // exo-review #952 fix round: the four findings below are witnessed
         // COLLECTIVELY (a hard-failing assert would abort the case before
@@ -53417,6 +53439,7 @@ private slots:
         expected += start.date() == end.date() ? end.toString(" - HH:mm")
                                                : end.toString(" - dd.MM HH:mm");
         QCOMPARE(view("calendarDetailTime")->property("text").toString(), expected);
+        QCOMPARE(view("calendarDetailTime")->property("textFormat").toString(), QStringLiteral("PlainText"));
         QCOMPARE(view("calendarDetailLocation")->property("text").toString(),
                  QStringLiteral("Meeting room 4 <img src=\"http://inval.id/x.png\" onerror=\"x\">"));
         // Review on #907: event-supplied text is PLAIN format - rich-text
@@ -53633,23 +53656,21 @@ private slots:
     {
         ChannelInfoWindowScene scene;
         scene.openChannelInfo();
-        // Members arrive asynchronously with the info fetch: the lookup must be
-        // re-run inside the wait (#718 wrapped-assignment QTRY), never one-shot.
-        const QString prefix = QStringLiteral("channelInfoMember-");
+        const QString binding = scene.fixture.bindingId(2);
+        QQuickItem *name = nullptr;
         QQuickItem *row = nullptr;
-        QTRY_VERIFY_WITH_TIMEOUT(
-            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
-        const QString suffix = row->objectName().mid(prefix.size());
-        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
-        QVERIFY(name);
-        const QColor before = row->property("color").value<QColor>();
-        QVERIFY(before.isValid());
-        QTest::mouseMove(scene.window,
-            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
-        // Neutral corner away from the drawer: the fill must revert.
-        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
+        QTRY_VERIFY((name = visibleItem("channelInfoMemberName-" + binding)));
+        QTRY_VERIFY((row = visibleItem("channelInfoMember-" + binding)));
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const auto point = name->mapToScene(QPointF(
+            qMin(name->property("contentWidth").toReal(), name->width()) / 2, name->height() / 2));
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll && scroll->contains(scroll->mapFromScene(point)));
+        const auto colors = scene.window->property("colors").toMap();
+        checkControlHover(scene.window, row, point.toPoint(), QPoint(3, 3), "color",
+                          colors.value("card-bg").value<QColor>(), colors.value("card-bg-active").value<QColor>());
     }
 
     // Issue #946 site 2 witness: the member-row remove button is opacity-0 until
