@@ -38495,15 +38495,17 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(preferences.mode(), QString("dark"));
     }
 
-    // Issue #36: the top-bar Calendar chip opens the unavailable-state section
-    // page measured from workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af
-    // (calendar-page.ui.tsx fallback branch + top-bar.lib.ts
-    // getTopBarSectionNavItems): chip 48x48 with 12 px radius and 32 px glyph,
-    // active = card-bg-active + border-subtle + icon-active; card = centered
-    // column gap 16 inside 24 px padding, glyph "calendar" 64 px at opacity
-    // 0.5 tinted text-muted, heading 20 px Medium text-primary
-    // (i18n nav.calendar), body 14 px wrapped at max 512 px text-muted
-    // (i18n app.webModeUnavailable). Structurally identical to the Mail case.
+    // Issue #36 top-bar chip contract, RETARGETED by #881 slice 2: the top-bar
+    // Calendar chip geometry/state pins stand unchanged (workspace_ui
+    // 61dacef78dab2f5d0be76f283bebf49fe29b84af top-bar.lib.ts
+    // getTopBarSectionNavItems: chip 48x48 with 12 px radius and 32 px glyph,
+    // active = card-bg-active + border-subtle + icon-active). The click now
+    // opens the functional NativeCalendarPage (#881,
+    // docs/NATIVE_DESKTOP_CALENDAR.md) instead of the retired #36 fallback
+    // card, so the content block pins the page shell (header strip,
+    // mini-calendar, filters, agenda) instead of the unavailable card; the
+    // shared unavailable-card content stays pinned by the Mail sibling case.
+    // The function name is kept because bucket membership is name-keyed.
     void calendarSectionUnavailableCardMatchesReferenceContract_data()
     {
         QTest::addColumn<QString>("locale");
@@ -38518,7 +38520,6 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QFETCH(QString, locale);
         QFETCH(QString, mode);
         const bool dark = mode == QLatin1String("dark");
-        const QColor textPrimary = dark ? QColor("#ffffff") : QColor("#1b1b1d");
         const QColor textMuted = dark ? QColor("#707070") : QColor("#989898");
         const QColor iconActive = dark ? QColor("#ffffff") : QColor("#1b1b1d");
         const QColor cardBgActive = dark ? QColor("#2c3747") : QColor("#cde6ff");
@@ -38536,7 +38537,6 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
-        const auto pos = [window](QQuickItem *item) { return item->mapToItem(window->contentItem(), QPointF(0, 0)); };
         auto *chatButton = view("sectionChatButton"); QVERIFY(chatButton);
         auto *calendarButton = view("sectionCalendarButton"); QVERIFY(calendarButton);
         // Shared top-bar chip geometry (top-bar.lib.ts resolveTopBarSectionButtonLayoutClassName).
@@ -38555,8 +38555,11 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, calendarButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
         auto *page = view("calendarSectionPage");
-        // Reference icon name "calendar" on the page glyph.
-        QCOMPARE(page->property("asset").toString(), QStringLiteral("calendar.svg"));
+        // #881 slice 2 retires the #36 fallback card for Calendar: the handle
+        // is now the functional page root (viewMode starts on "day"), not the
+        // card. The shared unavailable-card content stays pinned by the
+        // structurally identical Mail case.
+        QCOMPARE(page->property("viewMode").toString(), QStringLiteral("day"));
         // Active chip: card-bg-active + border-subtle + icon-active; the Chat
         // chip drops back to idle text-muted.
         QVERIFY(calendarButton->property("selected").toBool());
@@ -38566,38 +38569,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(QQmlProperty::read(calendarButton, "background.border.color").value<QColor>(), borderSubtle);
         QVERIFY(!chatButton->property("selected").toBool());
         QCOMPARE(chatButton->property("iconColor").value<QColor>(), textMuted);
-        // The fallback card occupies the conversation slot.
+        // The functional page occupies the conversation slot (#881 slice 2,
+        // docs/NATIVE_DESKTOP_CALENDAR.md header strip + body row contract).
         QVERIFY(!view("messageComposer"));
-        auto *column = view("sectionUnavailableColumn"); QVERIFY(column);
-        auto *glyph = view("sectionUnavailableGlyph"); QVERIFY(glyph);
-        auto *heading = view("sectionUnavailableHeading"); QVERIFY(heading);
-        auto *body = view("sectionUnavailableBody"); QVERIFY(body);
-        // p-6 (24 px) padding box, centered gap-4 (16 px) column.
-        auto *padding = view("sectionUnavailablePadding"); QVERIFY(padding);
-        QCOMPARE(pos(padding).x() - pos(page).x(), 24.0);
-        QCOMPARE(pos(padding).y() - pos(page).y(), 24.0);
-        QCOMPARE(column->property("spacing").toInt(), 16);
-        // Icon name="calendar" size={64} className="opacity-50" tinted text-muted.
-        QCOMPARE(glyph->width(), 64.0);
-        QCOMPARE(glyph->height(), 64.0);
-        QVERIFY(qAbs(glyph->property("opacity").toReal() - 0.5) < 0.001);
-        QCOMPARE(glyph->property("tint").value<QColor>(), textMuted);
-        QCOMPARE(pos(heading).y() - (pos(glyph).y() + glyph->height()), 16.0);
-        QCOMPARE(pos(body).y() - (pos(heading).y() + heading->height()), 16.0);
-        // h2 text-xl font-medium text-text-primary = i18n key nav.calendar.
-        QCOMPARE(heading->property("text").toString(),
-            locale == QLatin1String("ru") ? QString::fromUtf8("Календарь") : QString("Calendar"));
-        QCOMPARE(heading->property("font").value<QFont>().pixelSize(), 20);
-        QCOMPARE(heading->property("font").value<QFont>().weight(), QFont::Medium);
-        QCOMPARE(heading->property("color").value<QColor>(), textPrimary);
-        // p max-w-lg text-center text-sm = i18n key app.webModeUnavailable.
-        QCOMPARE(body->property("text").toString(), locale == QLatin1String("ru")
-            ? QString::fromUtf8("Раздел временно недоступен в веб-режиме.")
-            : QString("This section is temporarily unavailable in web mode."));
-        QCOMPARE(body->property("font").value<QFont>().pixelSize(), 14);
-        QCOMPARE(body->property("wrapMode").toInt(), 4 /* QQuickText::Wrap at Qt 6.10 */);
-        QVERIFY(body->width() <= 512.0);
-        QCOMPARE(body->property("color").value<QColor>(), textMuted);
+        QVERIFY(page->width() >= window->contentItem()->width() * 0.5);
+        for (const QString &handle : QStringList{"viewTabDay", "viewTabWeek", "viewTabMonth",
+            "calendarPrev", "calendarNext", "calendarToday", "calendarDateTitle",
+            "calendarMini", "calendarFilters", "calendarAgenda"})
+        {
+            QVERIFY2(view(handle), qPrintable(QStringLiteral("missing calendar handle %1").arg(handle)));
+        }
+        // The selected-date title is localized per locale (non-empty title).
+        QVERIFY(!view("calendarDateTitle")->property("text").toString().isEmpty());
         // The Chat button restores the conversation (reference navigates the
         // section back to the chat root).
         click(window, chatButton);

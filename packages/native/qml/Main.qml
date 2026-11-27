@@ -13804,18 +13804,24 @@ component NativeMentionChip: Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
-        // Calendar section page (issue #36): like Mail, the packaged desktop
-        // reference exposes only the unavailable fallback card for /calendar
-        // (workspace_ui 61dacef7 calendar-page.ui.tsx + electron main.ts:452);
-        // WebView is forbidden. The shared component already serves any
-        // section via heading/body/asset (nav.calendar, app.webModeUnavailable).
-        NativeSectionUnavailablePage {
+        // Calendar section page (issue #881, Part of #851,
+        // docs/NATIVE_DESKTOP_CALENDAR.md): the Figma-driven calendar shell
+        // replaces the #36 fallback card. The objectName calendarSectionPage
+        // is KEPT on the instance so the route-gate layout pins that click
+        // sectionCalendarButton and measure the page fill stay valid. The
+        // instance objectName overrides the component root's, as intended.
+        // Fetch is driven by visibility only: fixtures never navigate here,
+        // so traffic-pinned window cases see no new requests.
+        NativeCalendarPage {
             objectName: "calendarSectionPage"
             colors: root.colors
-            asset: "calendar.svg"
-            heading: qsTr("Calendar")
-            body: qsTr("This section is temporarily unavailable in web mode.")
+            events: root.controller.calendarEvents
+            loading: root.controller.calendarLoading
+            error: root.controller.calendarError
             visible: root.controller.section === "calendar"
+            onVisibleChanged: if (visible) refreshWindow()
+            onVisibleWindowChanged: (from, to) => root.controller.requestCalendarWindow(from, to)
+            onRetryRequested: root.controller.retryCalendar()
             Layout.fillWidth: true
             Layout.fillHeight: true
         }

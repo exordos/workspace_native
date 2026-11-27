@@ -8946,6 +8946,82 @@ void NativeController::resetFeed()
     m_feed.version = version;
 }
 
+// ---- Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md) ----
+// UI-phase data contract: GET /calendar/events?from&to serves the events
+// intersecting the visible window; the live server adapter is #852. Rows stay
+// plain maps ({uuid, day, start, end, title, calendar, colorToken}) because
+// every view (agenda, week columns, month cells) needs random per-day access,
+// not a paginated sequence - the QAbstractListModel shape would only serve the
+// agenda list and force a second index for the grids (design doc amended).
+
+void NativeController::requestCalendarWindow(const QString &from, const QString &to)
+{
+    if (!authenticated() || m_calendar.inflight)
+        return;
+    // Re-showing the same loaded window must not re-storm the server; the
+    // window only re-fetches after an error or an explicit retry.
+    if (m_calendar.hasLoaded && !m_calendar.error
+        && m_calendar.from == from && m_calendar.to == to)
+        return;
+    m_calendar.from = from;
+    m_calendar.to = to;
+    m_calendar.inflight = true;
+    m_calendar.loading = true;
+    m_calendar.error = false;
+    const quint64 version = ++m_calendar.version;
+    const auto owner = creationOwnerKey();
+    QUrlQuery query;
+    query.addQueryItem("from", from);
+    query.addQueryItem("to", to);
+    emit calendarChanged();
+    request("GET", messenger + "/calendar/events", {}, query,
+        [this, version, owner](const ApiResult &result) {
+        if (version != m_calendar.version || owner != creationOwnerKey())
+            return; // a newer window or an owner switch owns the state now
+        m_calendar.inflight = false;
+        if (!result.ok() || !result.data.isArray()) {
+            m_calendar.loading = false;
+            m_calendar.error = true;
+            emit calendarChanged();
+            return;
+        }
+        QVariantList events;
+        for (const auto &value : result.data.toArray()) {
+            const auto row = value.toObject();
+            events.append(QVariantMap{
+                {"uuid", row.value("uuid").toString()},
+                {"day", row.value("day").toString()},
+                {"start", row.value("start").toString()},
+                {"end", row.value("end").toString()},
+                {"title", row.value("title").toString()},
+                {"calendar", row.value("calendar").toString()},
+                {"colorToken", row.value("color_token").toString()},
+            });
+        }
+        m_calendar.events = events;
+        m_calendar.hasLoaded = true;
+        m_calendar.loading = false;
+        m_calendar.error = false;
+        emit calendarChanged();
+    });
+}
+
+void NativeController::retryCalendar()
+{
+    if (!authenticated() || m_calendar.inflight)
+        return;
+    m_calendar.hasLoaded = false; // force the re-fetch of the visible window
+    requestCalendarWindow(m_calendar.from, m_calendar.to);
+}
+
+void NativeController::resetCalendar()
+{
+    // Same monotonic identity discipline as resetFeed (issue #356).
+    const auto version = m_calendar.version + 1;
+    m_calendar = CalendarState{};
+    m_calendar.version = version;
+}
+
 // Issue #356: replacing the access token bumps the API generation, the shared
 // request wrapper then drops every callback of the retired generation, and the
 // Feed page would keep inflight/loading (or the loadingMore overlay) forever -
@@ -12869,6 +12945,7 @@ void NativeController::reset()
     resetStarred();
     resetInbox();
     resetFeed();
+    resetCalendar();
     m_reactionsVisible = false;
     const QPointer<NativeController> guard(this);
     interruptOwnStatusUpdate();

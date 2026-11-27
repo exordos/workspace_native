@@ -316,6 +316,17 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantMap inboxPage READ inboxPage NOTIFY stateChanged)
     Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
+    // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): events
+    // for the visible window, fetched from GET /calendar/events?from&to.
+    // Calendar state carries its own NOTIFY (issue #881, #89 lesson): the fetch
+    // fires while Main.qml's `visible: section === "calendar"` binding is still
+    // being evaluated (page onVisibleChanged -> refreshWindow -> request), and a
+    // stateChanged emission here re-dirtied the section dependency mid-evaluation
+    // - Qt raised "Binding loop detected for property visible" and the warning
+    // poisoned every window case in the shard. Notify only what calendar changed.
+    Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY calendarChanged)
+    Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY calendarChanged)
+    Q_PROPERTY(bool calendarError READ calendarError NOTIFY calendarChanged)
     // Activity panel (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md): open/closed
     // state persisted per workspace session, plus the compact-rail counts.
     // Counts use -1 for "not known yet" (the reference null): no badge renders.
@@ -709,6 +720,11 @@ public:
     // "All messages" of the current project, marker-paginated.
     bool feedVisible() const { return m_feedVisible; }
     QVariantMap feedPage() const;
+    // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): UI-phase
+    // events for the last fetched window; the live adapter is #852.
+    QVariantList calendarEvents() const { return m_calendar.events; }
+    bool calendarLoading() const { return m_calendar.loading; }
+    bool calendarError() const { return m_calendar.error; }
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     bool starredVisible() const { return m_starredVisible; }
     QVariantMap starredPage() const;
@@ -810,6 +826,10 @@ public:
     Q_INVOKABLE void retryFavorites();
     Q_INVOKABLE void showInbox();
     Q_INVOKABLE void showSection(const QString &name);
+    // Calendar section page (#881): fetch the visible [from,to] window of
+    // events (GET /calendar/events?from&to) and re-fetch it on retry.
+    Q_INVOKABLE void requestCalendarWindow(const QString &from, const QString &to);
+    Q_INVOKABLE void retryCalendar();
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
     // read from the build-time Qt resource as one JSON string.
     Q_INVOKABLE static QString licensesDatasetJson();
@@ -1178,6 +1198,7 @@ signals:
     void sessionLogChanged();
     void supportScopeChanged();
     void stateChanged();
+    void calendarChanged();
     void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
@@ -2665,6 +2686,18 @@ private:
     bool m_feedVisible = false;
     bool m_reactionsVisible = false;
     FeedState m_feed;
+    // Calendar section page (#881): fetch state for the visible date window.
+    // The version fences late answers of a retired window (same monotonic
+    // identity discipline as FeedState, issue #356); a re-show of the same
+    // loaded window is not re-fetched, so section re-entry is traffic-free.
+    struct CalendarState {
+        QVariantList events;
+        QString from, to;
+        bool loading = false, error = false, inflight = false, hasLoaded = false;
+        quint64 version = 0;
+    };
+    CalendarState m_calendar;
+    void resetCalendar();
     void loadFeedPage(bool append);
     void interruptFeedRequest();
     // Issue #423: settle a folder mutation retired by a generation bump.

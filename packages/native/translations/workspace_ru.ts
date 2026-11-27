@@ -5920,4 +5920,47 @@
             <translation>Русский</translation>
         </message>
     </context>
+    <context>
+        <name>NativeCalendarPage</name>
+        <message>
+            <source>Day</source>
+            <translation>День</translation>
+        </message>
+        <message>
+            <source>Week</source>
+            <translation>Неделя</translation>
+        </message>
+        <message>
+            <source>Month</source>
+            <translation>Месяц</translation>
+        </message>
+        <message>
+            <source>Today</source>
+            <translation>Сегодня</translation>
+        </message>
+        <message>
+            <source>Loading...</source>
+            <translation>Загрузка...</translation>
+        </message>
+        <message>
+            <source>Could not load the calendar.</source>
+            <translation>Не удалось загрузить календарь.</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
+            <source>Work</source>
+            <translation>Работа</translation>
+        </message>
+        <message>
+            <source>Personal</source>
+            <translation>Личное</translation>
+        </message>
+        <message>
+            <source>No events on this day.</source>
+            <translation>На этот день событий нет.</translation>
+        </message>
+    </context>
 </TS>
