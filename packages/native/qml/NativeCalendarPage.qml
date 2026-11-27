@@ -394,25 +394,32 @@ FocusScope {
                                 }
                                 readonly property int eventCount: page.visibleEvents(
                                     page.calDate(cellDate), page.calDate(cellDate)).length
+                                readonly property bool isSelected: page.calDate(cellDate) === page.calDate(page.selectedDate)
                                 HoverHandler {
                                     id: monthHover
                                     cursorShape: Qt.PointingHandCursor
                                 }
-                                // #924: the hover tint is distinct from the
-                                // event-day fill so both states are separable.
-                                // Bound to the root HoverHandler: in Qt 6.10 a
-                                // sibling MouseArea never receives hover once a
-                                // Label claims the point (probe-verified).
-                                color: monthHover.hovered ? page.colors["card-bg-active"]
-                                                          : (monthCell.eventCount > 0
-                                                             ? page.colors["bg-elevated"] : "transparent")
+                                // #924 + exordy finding: the selected fill wins
+                                // over hover (same precedence as the mini grid),
+                                // so the clicked day stays identifiable while the
+                                // agenda below already shows its events. The hover
+                                // tint stays distinct from both selected and the
+                                // event-day fill. Bound to the root HoverHandler:
+                                // in Qt 6.10 a sibling MouseArea never receives
+                                // hover once a Label claims the point (probe-verified).
+                                color: monthCell.isSelected ? page.colors["accent"]
+                                                           : (monthHover.hovered
+                                                              ? page.colors["card-bg-active"]
+                                                              : (monthCell.eventCount > 0
+                                                                 ? page.colors["bg-elevated"] : "transparent"))
                                 radius: 4
                                 Label {
                                     anchors.top: parent.top
                                     anchors.left: parent.left
                                     anchors.margins: 4
                                     text: monthCell.cellDate.getDate()
-                                    color: page.colors["text-primary"]
+                                    color: monthCell.isSelected ? page.colors["on-accent"]
+                                                                : page.colors["text-primary"]
                                 }
                                 Row {
                                     anchors.bottom: parent.bottom
@@ -421,7 +428,7 @@ FocusScope {
                                     spacing: 2
                                     Repeater {
                                         model: monthCell.eventCount > 3 ? 3 : monthCell.eventCount
-                                        Rectangle { width: 6; height: 6; radius: 3; color: page.colors["accent"] }
+                                        Rectangle { width: 6; height: 6; radius: 3; color: monthCell.isSelected ? page.colors["on-accent"] : page.colors["accent"] }
                                     }
                                 }
                                 MouseArea {

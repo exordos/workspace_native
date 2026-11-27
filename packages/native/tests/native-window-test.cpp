@@ -38706,7 +38706,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // --- mini grid: hover tint on an unselected cell. The QTRY guard waits
         // for the first layout pass: a freshly incubated delegate still maps to
         // the scene origin until the Grid has positioned it.
-        auto *miniIdle = view(QStringLiteral("miniCellBg-8")); QVERIFY(miniIdle);
+        // An unselected cell: index 8 would equal todayIndex on some dates
+        // (exordy #941), so derive it from the selected cell instead.
+        auto *miniIdle = view(QStringLiteral("miniCellBg-%1").arg((todayIndex + 1) % 42)); QVERIFY(miniIdle);
         QTRY_VERIFY_WITH_TIMEOUT(miniIdle->width() >= 20 && miniIdle->mapToScene(QPointF(0, 0)).y() > 30, 5000);
         const QColor miniIdleFill = miniIdle->property("color").value<QColor>();
         QTest::mouseMove(window, cellPoint(miniIdle));
@@ -38720,19 +38722,31 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // Pointer leave restores the idle fill.
         QTest::mouseMove(window, QPoint(4, 4));
         QTRY_COMPARE_WITH_TIMEOUT(miniIdle->property("color").value<QColor>(), miniIdleFill, 2000);
-        // --- month view: hover on the today cell (which carries an event) must
-        // be distinguishable from the event-day fill and restore after leave.
+        // --- month view: the selected cell carries a distinct selected fill
+        // (exordy #941): same token vocabulary and precedence as the mini grid,
+        // selected over hover, and it must survive hover.
         page->setProperty("viewMode", "month");
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarMonthGrid"), 5000);
-        auto *todayCell = view(QStringLiteral("monthCell-%1").arg(todayIndex)); QVERIFY(todayCell);
-        QTRY_VERIFY_WITH_TIMEOUT(todayCell->width() >= 40 && todayCell->mapToScene(QPointF(0, 0)).y() > 30, 5000);
-        const QColor eventFill = todayCell->property("color").value<QColor>();
-        QVERIFY2(eventFill != hoverTint,
-                 "the hover tint must be distinguishable from the event-day fill");
-        QTest::mouseMove(window, cellPoint(todayCell));
-        QTRY_COMPARE_WITH_TIMEOUT(todayCell->property("color").value<QColor>(), hoverTint, 2000);
+        const QColor monthAccent = page->property("colors").toMap().value("accent").value<QColor>();
+        QVERIFY2(monthAccent != hoverTint,
+                 "the selected fill must be distinguishable from the hover tint");
+        auto *selectedCell = view(QStringLiteral("monthCell-%1").arg(todayIndex)); QVERIFY(selectedCell);
+        QTRY_VERIFY_WITH_TIMEOUT(selectedCell->width() >= 40 && selectedCell->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        QCOMPARE(selectedCell->property("color").value<QColor>(), monthAccent);
+        QTest::mouseMove(window, cellPoint(selectedCell));
+        QTRY_COMPARE_WITH_TIMEOUT(selectedCell->property("color").value<QColor>(), monthAccent, 1500);
         QTest::mouseMove(window, QPoint(4, 4));
-        QTRY_COMPARE_WITH_TIMEOUT(todayCell->property("color").value<QColor>(), eventFill, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(selectedCell->property("color").value<QColor>(), monthAccent, 1500);
+        // An unselected cell takes the hover tint and restores its fill on leave.
+        auto *monthIdle = view(QStringLiteral("monthCell-%1").arg((todayIndex + 1) % 42)); QVERIFY(monthIdle);
+        QTRY_VERIFY_WITH_TIMEOUT(monthIdle->width() >= 40 && monthIdle->mapToScene(QPointF(0, 0)).y() > 30, 5000);
+        const QColor monthIdleFill = monthIdle->property("color").value<QColor>();
+        QVERIFY2(monthIdleFill != hoverTint,
+                 "the un-hovered fill must be distinguishable from the hover tint");
+        QTest::mouseMove(window, cellPoint(monthIdle));
+        QTRY_COMPARE_WITH_TIMEOUT(monthIdle->property("color").value<QColor>(), hoverTint, 2000);
+        QTest::mouseMove(window, QPoint(4, 4));
+        QTRY_COMPARE_WITH_TIMEOUT(monthIdle->property("color").value<QColor>(), monthIdleFill, 2000);
         // --- narrow window: the long-titled rows elide inside their containers.
         window->resize(800, 600);
         QTRY_VERIFY_WITH_TIMEOUT(window->width() <= 800 && window->height() <= 600, 5000);
