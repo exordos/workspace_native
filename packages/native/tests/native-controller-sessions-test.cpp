@@ -2,6 +2,7 @@
 #include "native-realtime-cursor-store.h"
 #include "workspace-sessions.h"
 #include "support/native-test-harness.h"
+#include "support/controller-folder-fixtures.h"
 #include "support/controller-identity-fixtures.h"
 #include "support/controller-realtime-fixtures.h"
 #include "support/controller-notifications-fixtures.h"
@@ -946,10 +947,15 @@ private slots:
         QTRY_COMPARE(notifications.shows.size(), 2);
         const auto tagA = notifications.lastTag();
         QVERIFY(tagA != tagB);
+        QTRY_VERIFY(folderKeys(controller.folders()).contains(QStringLiteral("channels")));
+        controller.selectFolder(channelsFolder);
+        QCOMPARE(controller.selectedFolder(), channelsFolder);
         controller.selectWorkspaceSession(accountA);
         QCOMPARE(session.currentSavedAccountId(), accountA);
+        QCOMPARE(controller.selectedFolder(), allChatsFolder);
         controller.selectWorkspaceSession(accountB);
         QCOMPARE(session.currentSavedAccountId(), accountB);
+        QCOMPARE(controller.selectedFolder(), channelsFolder);
         QVERIFY(controller.sidebarTopicState(streamId, true).value("known").toBool());
         QCOMPARE(gatewayA.sockets.size(), 1);
         QCOMPARE(gatewayB.sockets.size(), 1);
@@ -980,6 +986,69 @@ private slots:
         QTRY_VERIFY(!controller.busy());
         controller.logoutWorkspaceSession(accountA);
         QTRY_VERIFY(!controller.authenticated() && !socketA);
+    }
+
+    void visibleWorkspaceKeepsSelectedFolderWhenFirstStreamArrives()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        LoopbackKeyTls tls(gateway.serverPort());
+        QVERIFY(tls.isListening());
+        const QString customFolder = "9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f";
+        QJsonArray catalog;
+        QJsonArray events;
+        fixture.streams = [&](const Request &) { return Response{catalog}; };
+        fixture.folders = [&](const Request &) {
+            return Response{QJsonArray{
+                folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+                folderRailFolder(customFolder, "Focus", "created", 0, 0)}};
+        };
+        fixture.realtime = [&](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            return Response{events};
+        };
+
+        ControllerMemorySecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const SavedAccount account{SessionVault::accountId(tls.origin(), projectId, userId),
+            tls.origin(), projectId, userId, "synthetic", "Synthetic"};
+        vault.save(account, "synthetic-refresh-token");
+        QTRY_COMPARE(vault.accounts().size(), 1);
+        QVERIFY(vault.setCurrentAccountId(account.id).isEmpty());
+
+        ApiClient api;
+        Session session(&api);
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        auto *model = controller.sidebarStreamListModel();
+        RealtimeCursorStore cursors(directory.filePath("cursors"));
+        WorkspaceSessions workspaces(session, controller, vault, cursors);
+        QSignalSpy received(&workspaces, &WorkspaceSessions::eventReceived);
+        workspaces.start();
+        QTRY_COMPARE(controller.syncState(), QString("live"));
+        QTRY_VERIFY(folderKeys(controller.folders()).contains(customFolder));
+        QTRY_COMPARE(gateway.sockets.size(), 1);
+        QVERIFY(gateway.sockets.first());
+        QCOMPARE(model->rowCount(), 0);
+        controller.selectFolder(customFolder);
+        QCOMPARE(controller.selectedFolder(), customFolder);
+
+        const auto stream = notificationStreamDto();
+        const auto created = controllerEvent("stream.created", stream, 11);
+        catalog.append(stream);
+        events.append(created);
+        gateway.sockets.first()->sendTextMessage(
+            QString::fromUtf8(QJsonDocument(created).toJson(QJsonDocument::Compact)));
+        QTRY_COMPARE(received.size(), 1);
+        QVERIFY(!controller.streamById(streamId).isEmpty());
+        QCOMPARE(controller.selectedFolder(), customFolder);
+        QCOMPARE(model->rowCount(), 0);
+        controller.selectFolder(allChatsFolder);
+        QTRY_COMPARE(model->rowCount(), 1);
     }
 
     void sessionTransitionsRetireNotificationOwner_data()

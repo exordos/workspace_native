@@ -16634,7 +16634,6 @@ void NativeController::publishWorkspaceCatalog(const NativeController &source)
     m_streams = source.m_streams;
     ++m_streamsMutation;
     m_folders = source.m_folders;
-    m_selectedFolder = source.m_selectedFolder;
     m_inboxTopics = source.m_inboxTopics;
     m_inboxStaleTopics = source.m_inboxStaleTopics;
     m_names = source.m_names;
@@ -16646,6 +16645,7 @@ void NativeController::publishWorkspaceCatalog(const NativeController &source)
     const auto *prepared = source.m_sidebarStreamModel;
     const auto mode = sidebarSortMode();
     if (!prepared || prepared->m_syncScheduled || !m_sidebarSearchQuery.isEmpty()
+        || selectedFolder() != source.selectedFolder()
         || mode != source.sidebarSortMode()
         || (mode == QLatin1String("alphabetical") && sidebarSortLocale() != source.sidebarSortLocale()))
         prepared = nullptr;

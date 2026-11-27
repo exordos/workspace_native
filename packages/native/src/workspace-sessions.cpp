@@ -286,6 +286,7 @@ void WorkspaceSessions::present(Runtime &runtime)
     m_destination = destination;
     m_window.m_realtime = &runtime.realtime;
     m_window.m_workspaceNotifications = runtime.controller.notifications();
+    if (switching) m_window.m_selectedFolder = runtime.controller.m_selectedFolder;
     m_window.publishWorkspaceCatalog(runtime.controller);
     if (!runtime.controller.m_syncState.isEmpty())
         m_window.publishRealtimeState(runtime.controller.m_syncState);
