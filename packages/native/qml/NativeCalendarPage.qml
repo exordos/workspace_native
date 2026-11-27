@@ -22,6 +22,23 @@ FocusScope {
     property bool loading: false
     property bool error: false
     property var activeCalendars: ["work", "personal"]
+    property string uiLocale: "en"
+
+    // Localized full date for keyboard-focus announced cell names (#925).
+    // Pattern-per-language follows the Main.qml date-label precedent;
+    // QLocale is not exposed as a QML type, so enum formats are not
+    // reachable from QML.
+    function localizedCellDate(d) {
+        const pattern = uiLocale === "ru" ? "dddd, d MMMM yyyy" : "dddd, MMMM d, yyyy"
+        return Qt.locale(uiLocale).toString(d, pattern)
+    }
+
+    function selectionDescription(grid) {
+        if (!grid.activeFocus)
+            return "";
+        return grid.effectiveFocusIndex === grid.selectedGridIndex
+            ? qsTr("Selected date") : qsTr("Date not selected");
+    }
 
     signal visibleWindowChanged(string from, string to)
     signal retryRequested()
@@ -58,6 +75,12 @@ FocusScope {
         const day = calDate(selectedDate);
         return visibleEvents(day, day);
     }
+    // #925: whole-day difference between two dates (UTC math, DST-proof),
+    // used by the grids to map a date to its cell index.
+    function dayDiff(from, to) {
+        return Math.round((Date.UTC(to.getFullYear(), to.getMonth(), to.getDate())
+                          - Date.UTC(from.getFullYear(), from.getMonth(), from.getDate())) / 86400000);
+    }
     function refreshWindow() {
         if (viewMode === "day")
             visibleWindowChanged(calDate(selectedDate), calDate(selectedDate));
@@ -69,9 +92,36 @@ FocusScope {
             // starts at the leading week of the month, so the requested window
             // must span exactly those 42 cells - the leading/trailing rows
             // show adjacent-month days and events on them are real content.
-            const gridStart = weekStart(monthStart(selectedDate));
-            visibleWindowChanged(calDate(gridStart),
-                                 calDate(shiftDate(gridStart, 41)));
+            // #952 round 2 (finding 4722274186): the window spans the DISPLAYED
+            // matrix - a keyboard rove past the matrix edge re-anchors the month,
+            // and the newly shown cells must not render without their events.
+            // Duplicate requests from a selection-driven re-anchor (which fires
+            // both onSelectedDateChanged and onGridAnchorChanged) are dropped by
+            // the controller-side in-flight / same-loaded-window guards in
+            // requestCalendarWindow, exactly as other refresh seams already.
+            // Round 3: recompute the anchor from the grids' plain state here.
+            // monthGrid.gridAnchor is a binding that only re-evaluates on the
+            // next polish pass, so reading it from onSelectedDateChanged saw a
+            // stale month (diagnosed: adjacent-weeks at(2) window). The
+            // expression below is gridAnchor's own definition, always fresh.
+            const roved = monthGrid.focusDate !== null
+                ? new Date(monthGrid.focusDate.getTime())
+                : new Date(selectedDate.getTime());
+            const monthFirst = monthStart(selectedDate);
+            const anchorIdx = dayDiff(monthFirst, roved) + (monthFirst.getDay() + 6) % 7;
+            const gridStart = weekStart(anchorIdx < 0 || anchorIdx >= 42
+                ? monthStart(roved) : monthFirst);
+            const matrixEnd = shiftDate(gridStart, 41);
+            // #952 round 3 (finding 4722544596): the month agenda reads the
+            // SELECTED date, so when the re-anchored matrix no longer covers
+            // the selection (a rove that pulled the grid away from it), the
+            // window extends across the gap - the union of two contiguous
+            // spans is one span. The same-window controller guard keeps this
+            // from adding requests while the selection is inside the matrix.
+            const sel = new Date(selectedDate.getTime());
+            const winFrom = sel.getTime() < gridStart.getTime() ? sel : gridStart;
+            const winTo = sel.getTime() > matrixEnd.getTime() ? sel : matrixEnd;
+            visibleWindowChanged(calDate(winFrom), calDate(winTo));
         }
     }
     onSelectedDateChanged: refreshWindow()
@@ -135,7 +185,11 @@ FocusScope {
                         return Qt.formatDate(page.weekStart(page.selectedDate), "dd.MM")
                                + " - "
                                + Qt.formatDate(page.shiftDate(page.weekStart(page.selectedDate), 6), "dd.MM.yyyy");
-                    return Qt.formatDate(page.selectedDate, "MMMM yyyy");
+                    // #952 round 2 (finding 4722274191): same contract as the
+                    // mini-calendar title - the header names the month the
+                    // month grid displays, which a keyboard edge re-anchor
+                    // moves independently of the selection.
+                    return Qt.formatDate(monthGrid.gridAnchor, "MMMM yyyy");
                 }
             }
             Button {
@@ -198,7 +252,10 @@ FocusScope {
                 Label {
                     objectName: "miniCalendarTitle"
                     color: page.colors["text-primary"]
-                    text: Qt.formatDate(page.selectedDate, "MMMM yyyy")
+                    // #952 round 2 (finding 4722274191): the heading names the
+                    // month the cells SHOW - a rove past the matrix edge
+                    // re-anchors the grid without moving the selection.
+                    text: Qt.formatDate(miniGrid.gridAnchor, "MMMM yyyy")
                 }
                 // Stable positional model (issue pitfall): delegates read
                 // live state through `page`, never through modelData identity.
@@ -207,6 +264,73 @@ FocusScope {
                     objectName: "calendarMini"
                     columns: 7
                     spacing: 2
+                    // #925: the grid is ONE tab stop. Roving keyboard focus is
+                    // kept as ONE date (never 42 tab stops), arrow keys roam
+                    // it, and Enter/Space runs the same selection action the
+                    // pointer uses. The roving state is a date rather than a
+                    // matrix index (exo-review #952 findings 4722010291 /
+                    // 4722010314): selecting re-anchors focus to the selected
+                    // cell, and an arrow move that leaves the 42-cell matrix
+                    // re-anchors the displayed month instead of clamping.
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Table // no Grid role in QAccessible::Role (round-3 gate red)
+                    // Equivalent accessible mechanism for the roving focus
+                    // (finding 4722010298): while the grid holds keyboard
+                    // focus it announces the active cell's date as its name;
+                    // Qt derives the focused state from the item's own
+                    // activeFocus automatically.
+                    Accessible.name: miniGrid.activeFocus
+                        ? page.localizedCellDate(miniGrid.rovedDate) : ""
+                    Accessible.description: page.selectionDescription(miniGrid)
+                    property var focusDate: null
+                    readonly property var rovedDate:
+                        miniGrid.focusDate !== null ? miniGrid.focusDate : page.selectedDate
+                    readonly property date gridAnchor: {
+                        page.selectedDate; // re-evaluate on selection
+                        const roved = miniGrid.rovedDate;
+                        const first = page.monthStart(page.selectedDate);
+                        const offset = (first.getDay() + 6) % 7;
+                        const idx = page.dayDiff(first, roved) + offset;
+                        if (idx < 0 || idx >= 42)
+                            return page.monthStart(roved);
+                        return first;
+                    }
+                    readonly property int selectedGridIndex: {
+                        miniGrid.gridAnchor; // re-evaluate when the grid re-anchors
+                        const offset = (miniGrid.gridAnchor.getDay() + 6) % 7;
+                        return page.dayDiff(miniGrid.gridAnchor, page.selectedDate) + offset;
+                    }
+                    readonly property int effectiveFocusIndex: {
+                        miniGrid.gridAnchor; // re-evaluate when the grid re-anchors
+                        const offset = (miniGrid.gridAnchor.getDay() + 6) % 7;
+                        return page.dayDiff(miniGrid.gridAnchor, miniGrid.rovedDate) + offset;
+                    }
+                    readonly property int focusIndex:
+                        miniGrid.focusDate === null ? -1 : miniGrid.effectiveFocusIndex
+                    function moveFocus(delta)
+                    {
+                        miniGrid.focusDate = page.shiftDate(miniGrid.rovedDate, delta);
+                    }
+                    function selectFocused()
+                    {
+                        page.selectedDate = miniGrid.rovedDate;
+                        miniGrid.focusDate = null; // re-anchor onto the selected cell
+                    }
+                    onActiveFocusChanged: if (!miniGrid.activeFocus)
+                        miniGrid.focusDate = null
+                    Keys.onPressed: (event) => {
+                        switch (event.key) {
+                        case Qt.Key_Left:  miniGrid.moveFocus(-1); break;
+                        case Qt.Key_Right: miniGrid.moveFocus(1); break;
+                        case Qt.Key_Up:    miniGrid.moveFocus(-7); break;
+                        case Qt.Key_Down:  miniGrid.moveFocus(7); break;
+                        case Qt.Key_Return:
+                        case Qt.Key_Enter:
+                        case Qt.Key_Space: miniGrid.selectFocused(); break;
+                        default: return;
+                        }
+                        event.accepted = true;
+                    }
                     Repeater {
                         id: miniRepeater
                         objectName: "miniCells"
@@ -221,14 +345,21 @@ FocusScope {
                                 cursorShape: Qt.PointingHandCursor
                             }
                             readonly property var cellDate: {
-                                page.selectedDate; // re-evaluate on selection
-                                const first = page.monthStart(page.selectedDate);
+                                miniGrid.gridAnchor; // re-evaluate when the grid re-anchors
+                                const first = miniGrid.gridAnchor;
                                 const offset = (first.getDay() + 6) % 7;
                                 return page.shiftDate(first, modelData - offset);
                             }
-                            readonly property bool inMonth: cellDate.getMonth() === page.selectedDate.getMonth()
+                            readonly property bool inMonth:
+                                cellDate.getMonth() === miniGrid.gridAnchor.getMonth()
                             readonly property bool isToday: page.calDate(cellDate) === page.calDate(new Date())
                             readonly property bool isSelected: page.calDate(cellDate) === page.calDate(page.selectedDate)
+                            readonly property bool keyboardFocused: miniGrid.activeFocus
+                                && miniGrid.effectiveFocusIndex === modelData
+                            Accessible.role: Accessible.Button
+                            Accessible.name: page.localizedCellDate(miniCell.cellDate)
+                            Accessible.selected: miniCell.isSelected
+                            Accessible.onPressAction: page.selectedDate = miniCell.cellDate
                             Rectangle {
                                 objectName: "miniCellBg-" + miniCell.modelData
                                 anchors.fill: parent
@@ -243,6 +374,20 @@ FocusScope {
                                                            : (miniHover.hovered
                                                               ? page.colors["card-bg-active"]
                                                               : "transparent")
+                            }
+                            // The ring paints AFTER the selection fill so it
+                            // stays visible over it, with a contrasting border
+                            // while the focused cell is also the selected one
+                            // (exo-review #952 finding 4722010307).
+                            Rectangle {
+                                objectName: "miniFocusRing"
+                                anchors.fill: parent
+                                radius: 6
+                                color: "transparent"
+                                border.width: 2
+                                border.color: miniCell.isSelected
+                                    ? page.colors["on-accent"] : page.colors["accent"]
+                                visible: miniCell.keyboardFocused
                             }
                             Label {
                                 anchors.centerIn: parent
@@ -374,10 +519,75 @@ FocusScope {
                 RowLayout {
                     spacing: 12
                     Grid {
+                        id: monthGrid
                         objectName: "calendarMonthGrid"
                         columns: 7
                         spacing: 1
+                        // #925: same roving-focus keyboard contract as the
+                        // mini-calendar (one tab stop, arrows roam, Enter
+                        // selects), including the date-based roving state
+                        // with selection re-anchor and month-edge re-anchor.
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Table // no Grid role in QAccessible::Role (round-3 gate red)
+                        Accessible.name: monthGrid.activeFocus
+                            ? page.localizedCellDate(monthGrid.rovedDate) : ""
+                        Accessible.description: page.selectionDescription(monthGrid)
+                        property var focusDate: null
+                        readonly property var rovedDate:
+                            monthGrid.focusDate !== null ? monthGrid.focusDate : page.selectedDate
+                        readonly property date gridAnchor: {
+                            page.selectedDate; // re-evaluate on selection
+                            const roved = monthGrid.rovedDate;
+                            const first = page.monthStart(page.selectedDate);
+                            const offset = (first.getDay() + 6) % 7;
+                            const idx = page.dayDiff(first, roved) + offset;
+                            if (idx < 0 || idx >= 42)
+                                return page.monthStart(roved);
+                            return first;
+                        }
+                        readonly property int selectedGridIndex: {
+                            monthGrid.gridAnchor; // re-evaluate when the grid re-anchors
+                            const offset = (monthGrid.gridAnchor.getDay() + 6) % 7;
+                            return page.dayDiff(monthGrid.gridAnchor, page.selectedDate) + offset;
+                        }
+                        readonly property int effectiveFocusIndex: {
+                            monthGrid.gridAnchor; // re-evaluate when the grid re-anchors
+                            const offset = (monthGrid.gridAnchor.getDay() + 6) % 7;
+                            return page.dayDiff(monthGrid.gridAnchor, monthGrid.rovedDate) + offset;
+                        }
+                        readonly property int focusIndex:
+                            monthGrid.focusDate === null ? -1 : monthGrid.effectiveFocusIndex
+                        function moveFocus(delta)
+                        {
+                            monthGrid.focusDate = page.shiftDate(monthGrid.rovedDate, delta);
+                        }
+                        function selectFocused()
+                        {
+                            page.selectedDate = monthGrid.rovedDate;
+                            monthGrid.focusDate = null; // re-anchor onto the selected cell
+                        }
+                        // #952 round 2 (finding 4722274186): keep the fetched
+                        // event window synchronized with the displayed matrix
+                        // when an edge rove re-anchors the month grid.
+                        onGridAnchorChanged: if (page.viewMode === "month")
+                            page.refreshWindow()
+                        onActiveFocusChanged: if (!monthGrid.activeFocus)
+                            monthGrid.focusDate = null
+                        Keys.onPressed: (event) => {
+                            switch (event.key) {
+                            case Qt.Key_Left:  monthGrid.moveFocus(-1); break;
+                            case Qt.Key_Right: monthGrid.moveFocus(1); break;
+                            case Qt.Key_Up:    monthGrid.moveFocus(-7); break;
+                            case Qt.Key_Down:  monthGrid.moveFocus(7); break;
+                            case Qt.Key_Return:
+                            case Qt.Key_Enter:
+                            case Qt.Key_Space: monthGrid.selectFocused(); break;
+                            default: return;
+                            }
+                            event.accepted = true;
+                        }
                         Repeater {
+                            id: monthRepeater
                             objectName: "monthCells"
                             model: Array.from({ length: 42 }, (_, i) => i)
                             delegate: Rectangle {
@@ -387,14 +597,20 @@ FocusScope {
                                 width: 64
                                 height: 64
                                 readonly property var cellDate: {
-                                    page.selectedDate;
-                                    const first = page.monthStart(page.selectedDate);
+                                    monthGrid.gridAnchor; // re-evaluate when the grid re-anchors
+                                    const first = monthGrid.gridAnchor;
                                     const offset = (first.getDay() + 6) % 7;
                                     return page.shiftDate(first, modelData - offset);
                                 }
                                 readonly property int eventCount: page.visibleEvents(
                                     page.calDate(cellDate), page.calDate(cellDate)).length
                                 readonly property bool isSelected: page.calDate(cellDate) === page.calDate(page.selectedDate)
+                                readonly property bool keyboardFocused: monthGrid.activeFocus
+                                    && monthGrid.effectiveFocusIndex === modelData
+                                Accessible.role: Accessible.Button
+                                Accessible.name: page.localizedCellDate(monthCell.cellDate)
+                                Accessible.selected: monthCell.isSelected
+                                Accessible.onPressAction: page.selectedDate = monthCell.cellDate
                                 HoverHandler {
                                     id: monthHover
                                     cursorShape: Qt.PointingHandCursor
@@ -413,6 +629,15 @@ FocusScope {
                                                               : (monthCell.eventCount > 0
                                                                  ? page.colors["bg-elevated"] : "transparent"))
                                 radius: 4
+                                Rectangle {
+                                    objectName: "monthFocusRing"
+                                    anchors.fill: parent
+                                    radius: 4
+                                    color: "transparent"
+                                    border.width: 2
+                                    border.color: page.colors["accent"]
+                                    visible: monthCell.keyboardFocused
+                                }
                                 Label {
                                     anchors.top: parent.top
                                     anchors.left: parent.left
