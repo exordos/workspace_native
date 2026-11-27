@@ -670,6 +670,10 @@ public:
 class WindowCalendarRouteFixture final : public WindowChannelFixture {
 public:
     QStringList calendarFrom, calendarTo;
+    // Issue #953 knobs: serve an empty page, or the server's real
+    // "endpoint absent" verdict (501 NotImplementedError while #852 is open).
+    int eventsStatus = 200;
+    bool emptyEvents = false;
     WindowCalendarRouteFixture()
     {
         auto parentHandler = std::move(server.handler);
@@ -679,6 +683,12 @@ public:
                 const QUrlQuery query(request.target);
                 calendarFrom.append(query.queryItemValue("from"));
                 calendarTo.append(query.queryItemValue("to"));
+                if (eventsStatus != 200)
+                    return {QJsonObject{{"type", "NotImplementedError"}, {"code", eventsStatus},
+                            {"message", "Not implemented ('method get in MessengerApiEndpointController')."}}
+                        , eventsStatus};
+                if (emptyEvents)
+                    return {QJsonArray{}};
                 // One event on a trailing day of the month BEFORE the pinned
                 // test month (February 2026): only a window that starts at the
                 // leading week can ever deliver it to the grid.
@@ -39148,6 +39158,66 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // so the grid data layer resolves it for that cell.
         const auto events = controller.property("calendarEvents").toList();
         QCOMPARE(events.size(), 1);
+    }
+
+    void calendarSectionTreatsMissingEndpointAsEmptyFeed_data()
+    {
+        QTest::addColumn<QString>("feed");
+        QTest::newRow("empty-page") << QStringLiteral("empty");
+        QTest::newRow("not-implemented-501") << QStringLiteral("501");
+    }
+    void calendarSectionTreatsMissingEndpointAsEmptyFeed()
+    {
+        QFETCH(QString, feed);
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        if (feed == QLatin1String("empty"))
+            fixture.emptyEvents = true;
+        else
+            fixture.eventsStatus = 501;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage"); QVERIFY(page);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 1, 5000);
+        // The section settles answered-but-empty: no spinner, NO error card
+        // and no dead Retry button (both are visible: false, so the filtered
+        // helper not finding them is the negative oracle).
+        QTRY_VERIFY(!page->property("loading").toBool());
+        QVERIFY2(!page->property("error").toBool(),
+            qPrintable(QStringLiteral("feed mode %1 must not surface the error card").arg(feed)));
+        QVERIFY(view("calendarEmpty"));
+        QVERIFY(!view("calendarError"));
+        QVERIFY(!view("calendarRetry"));
+        QVERIFY(controller.property("calendarEvents").toList().isEmpty());
+
+        // The endpoint can be deployed without restarting the client. Only
+        // the 501 case should probe it when reopening the same Calendar window.
+        fixture.eventsStatus = 200;
+        fixture.emptyEvents = false;
+        click(window, view("sectionChatButton"));
+        QTRY_VERIFY(!view("calendarSectionPage"));
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view("calendarSectionPage"));
+        if (feed == QLatin1String("501")) {
+            QTRY_COMPARE(controller.calendarEvents().size(), 1);
+            QCOMPARE(fixture.calendarFrom.size(), 2);
+            QCOMPARE(fixture.calendarFrom.first(), fixture.calendarFrom.last());
+            QCOMPARE(fixture.calendarTo.first(), fixture.calendarTo.last());
+        } else {
+            QCOMPARE(fixture.calendarFrom.size(), 1);
+            QVERIFY(controller.calendarEvents().isEmpty());
+        }
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string

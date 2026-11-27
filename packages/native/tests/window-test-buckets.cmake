@@ -411,6 +411,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_17
     avatarHttpFailureKeepsFallbackAndRealtimeReplacementUpdatesPeerFaces
     bootstrapFailureWithoutSavedHistoryKeepsItsRetry
+    calendarSectionTreatsMissingEndpointAsEmptyFeed
     callWindowEmbedReadyEchoStaysBoundedForForeignReadyId
     callWindowFullscreenControlDrivesTheWindow
     callWindowKeepsOneEmbedSurfaceAcrossPiPToggles

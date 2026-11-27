@@ -98,3 +98,12 @@ New ctest group `native-native-calendar` (window layer):
 4. Mini-calendar selection and visibility filters react.
 5. loading/empty/error render; `calendarRetry` re-fetches.
 Bucket registration via `gen-test-buckets.py` with measured timings.
+
+## Feed availability
+
+A successful empty response shows the empty agenda and is cached for the
+requested date range. HTTP 501 also shows the empty agenda. Returning to
+Calendar requests that range again so an endpoint deployed during the session
+can supply events. Other errors keep the error card and Retry action.
+The window test `calendarSectionTreatsMissingEndpointAsEmptyFeed` exercises
+both responses and reopens Calendar after the fixture starts serving events.
