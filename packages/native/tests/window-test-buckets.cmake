@@ -376,6 +376,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     globalChannelRealtimeKeepsTheCorrectFormLifetime
     globalTopicSelectorKeepsSourceChevronAspect
     loginProjectStepDropdownScrollsOverflowingOptions
+    mediaViewerReferenceZoomToolbarStepsKeyboardPanAndClamps
     ownStatusActualMainClearCancelPickerAndFailurePreserveTheDraft
     pollBubbleAnonymousShowsNoVoterPreviews
     quotedMediaMessageShowsAThumbnailInBothPreviewFrames
