@@ -42,6 +42,7 @@ set(WORKSPACE_NATIVE_E2EE_UI_BUCKET_3
     encryptedSidebarPreviewsFollowTheLocalPresentation
     uiE2eeQuoteErrorFrameRetryRepairsTheOrigin
     uiEncryptedChatInfoDrawerShowsProtectedIdentity
+    uiEncryptedChatInfoMemberRowFillsOnLabelCenterHover
     uiEncryptedChatKeyScreenInventoryAndDetails
     uiEncryptedChatKeyScreenSourceGeometry
     uiEncryptedComposerEmojiUsesActualSourcePeer

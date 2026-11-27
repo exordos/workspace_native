@@ -1,3 +1,4 @@
+calendarEditsAndDeletesSampleMeeting=11.1677
 channelHeaderOpensInfoOverSettingsAndRestoresTheLayer=3.90831
 conversationTailAndReentryAnchorStaySteadyThroughUpdates=7.04215
 diagnosticsLogViewerModalLongPayloadRemainsScrollable=1.10949

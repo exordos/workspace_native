@@ -1,4 +1,6 @@
+#include "mail-store.h"
 #include "support/native-test-harness.h"
+#include "support/controller-realtime-fixtures.h"
 #include "support/controller-identity-fixtures.h"
 #include "support/controller-mention-fixtures.h"
 #include "support/controller-folder-fixtures.h"
@@ -1540,6 +1542,93 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    // Issue #910: navigating the calendar while a window request is in flight
+    // must not drop the navigation. The in-flight reply may only populate the
+    // window it was sent for; the newest requested window has to be re-issued
+    // once the current request settles (deterministic defer-gate repro).
+    void calendarNavigationDuringInflightReissuesNewestWindow_data()
+    {
+        QTest::addColumn<int>("firstStatus");
+        QTest::newRow("loaded") << 200;
+        QTest::newRow("feed-unavailable") << 501;
+        QTest::newRow("request-error") << 503;
+    }
+
+    void calendarNavigationDuringInflightReissuesNewestWindow()
+    {
+        QFETCH(int, firstStatus);
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto queries = std::make_shared<QStringList>();
+        fixture.calendar = [gates, queries, firstStatus](const Request &request) {
+            queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
+            Response response{QJsonArray{}, queries->size() == 1 ? firstStatus : 200};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        // Navigation lands while the first window is still in flight.
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(queries->size() == 2, 3000);
+        QCOMPARE(calendarFirstDay(QUrlQuery(queries->at(1))), QStringLiteral("2026-12-01"));
+        QCOMPARE(calendarLastDay(QUrlQuery(queries->at(1))), QStringLiteral("2026-12-31"));
+        // exo-review on #910: settle the re-issued window's reply before
+        // re-requesting it, otherwise the final request would exercise the
+        // in-flight branch instead of the settled-window guard under test.
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 3000); // the re-issue is gated
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 3000);
+        // The settled newest window re-shows without re-fetching (guard intact).
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        QTest::qWait(200);
+        QCOMPARE(queries->size(), 2);
+    }
+
+    // Review follow-up on #910: returning to the window that is CURRENTLY in
+    // flight makes every queued window stale - the newest requested window is
+    // the one being fetched, so the queue must be dropped instead of fired
+    // when the in-flight reply settles.
+    void calendarReturnToInflightWindowDropsQueuedWindow()
+    {
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto queries = std::make_shared<QStringList>();
+        fixture.calendar = [gates, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
+            Response response{QJsonArray{}};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        // A newer window is queued, then the user returns to the in-flight one.
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        // The in-flight reply settles as the newest requested window; the
+        // dropped queue must never fire afterwards.
+        QTest::qWait(400);
+        QCOMPARE(queries->size(), 1);
+        QVERIFY(gates->empty());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 3000);
+    }
+
     // Issue #37: the recent-calls page is a rendered section (calls-page.ui.tsx
     // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af). The reference
     // top-bar Calls chip sits behind the TOP_BAR_CALLS_NAV build gate
@@ -1587,6 +1676,456 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    void calendarUnchangedWireTextSurvivesUnrelatedEdits()
+    {
+        Fixture fixture;
+        const auto base = fixture.server.handler;
+        const auto id = QStringLiteral("95000000-0000-4000-8000-000000000001");
+        auto event = calendarEvent(id, "2026-11-01", "09:00", "10:00", "  Existing title ",
+                                   workCalendarId, " Room 4  ");
+        auto original = event.value("payload").toObject();
+        QJsonObject sent;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/calendar/calendars/") {
+                auto row = calendarList().first().toObject();
+                row["read_only"] = false;
+                row["external_account_uuid"] = QJsonValue::Null;
+                return {QJsonArray{row}};
+            }
+            if (path == "/api/workspace/v1/calendar/events/")
+                return {QJsonArray{event}};
+            if (request.method == "PUT" && path == "/api/workspace/v1/calendar/events/" + id) {
+                sent = request.body.value("payload").toObject();
+                event["payload"] = sent;
+                return {event};
+            }
+            return base(request);
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        QVariantMap draft{{"title", "Renamed"}, {"location", original.value("location").toString()},
+                          {"startUtc", original.value("starts_at").toString()},
+                          {"endUtc", original.value("ends_at").toString()}};
+        QVERIFY(controller.writeCalendarMeeting("edit", id, draft));
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent.value("location"), original.value("location"));
+        QTRY_VERIFY(!controller.calendarWriting() && !controller.calendarLoading());
+        original["location"] = QJsonValue::Null;
+        event["payload"] = original;
+        controller.retryCalendar();
+        QTRY_VERIFY(!controller.calendarLoading());
+        draft["title"] = original.value("title").toString();
+        draft["location"] = "";
+        draft["endUtc"] = "2026-11-01T23:00:00Z";
+        sent = {};
+        QVERIFY(controller.writeCalendarMeeting("edit", id, draft));
+        QTRY_VERIFY(!sent.isEmpty());
+        QCOMPARE(sent.value("title"), original.value("title"));
+        QVERIFY(sent.value("location").isNull());
+    }
+
+    void calendarWritesFenceReadOnlyAndForeignResources()
+    {
+        Fixture fixture;
+        const QString foreign = "a0000000-0000-4000-8000-000000000001";
+        const QString eventId = "a0000000-0000-4000-8000-000000000002";
+        const auto initial = fixture.server.handler;
+        int writes = 0, recoveries = 0;
+        QJsonObject submitted;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/calendar/calendars/") {
+                auto work = calendarList().first().toObject();
+                work["read_only"] = false;
+                work["external_account_uuid"] = QJsonValue::Null;
+                auto frozen = calendarList().last().toObject();
+                frozen["read_only"] = true;
+                frozen["external_account_uuid"] = QJsonValue::Null;
+                auto imported = work;
+                imported["uuid"] = streamId;
+                imported["external_account_uuid"] = topicId;
+                return {QJsonArray{work, frozen, imported}};
+            }
+            if (!path.startsWith("/api/workspace/v1/calendar/events/"))
+                return initial(request);
+            if (request.method == "GET" && path.endsWith('/'))
+                return {QJsonArray{calendarEvent(eventId, "2026-11-01", "09:00", "10:00", "Read-only", personalCalendarId)}};
+            if (request.method == "GET") {
+                ++recoveries;
+                auto wrong = submitted;
+                wrong["project_id"] = foreign;
+                return {wrong};
+            }
+            ++writes;
+            submitted = request.body;
+            return {QJsonObject{}, 409};
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        QVariantMap draft{{"calendar", workCalendarId}, {"title", "Test"}, {"startUtc", "2026-11-01T11:30:00Z"},
+                          {"endUtc", "2026-11-01T12:00:00Z"}};
+        for (const auto &id : {foreign, personalCalendarId, streamId}) {
+            auto unavailable = draft;
+            unavailable["calendar"] = id;
+            QVERIFY(!controller.writeCalendarMeeting("create", topicId, unavailable));
+        }
+        QVERIFY(!controller.writeCalendarMeeting("move", eventId, draft));
+        QVERIFY(!controller.writeCalendarMeeting("delete", eventId, {}));
+        QVERIFY(!controller.writeCalendarMeeting("edit", foreign, draft));
+        QCOMPARE(writes, 0);
+        QSignalSpy finished(&controller, &NativeController::calendarWriteFinished);
+        QVERIFY(controller.writeCalendarMeeting("create", topicId, draft));
+        QVERIFY(!controller.writeCalendarMeeting("create", topicId, draft));
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 4000);
+        QVERIFY(!finished.first().first().toBool());
+        QCOMPARE(writes, 1);
+        QCOMPARE(recoveries, 1);
+        QCOMPARE(controller.calendarEvents().size(), 1);
+        auto changed = draft;
+        changed["title"] = "Another draft";
+        QVERIFY(!controller.writeCalendarMeeting("create", topicId, changed));
+        // Retrying the form retains its UUID even when recovery could not
+        // confirm the first result.
+        QVERIFY(controller.writeCalendarMeeting("create", topicId, draft));
+        QTRY_COMPARE(finished.size(), 2);
+        QCOMPARE(submitted.value("uuid").toString(), topicId);
+        QCOMPARE(writes, 2);
+    }
+
+    void calendarMutationFromPreviousUserCannotCompleteForNewUser()
+    {
+        Fixture fixture;
+        QString user = userId;
+        const auto fallback = fixture.server.handler;
+        std::function<void()> release;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path.endsWith("/actions/introspect"))
+                return {QJsonObject{{"user_info", QJsonObject{{"uuid", user}}},
+                                    {"project_id", projectId}, {"otp_verified", true}}};
+            if (path == "/api/workspace/v1/calendar/calendars/") {
+                auto row = calendarList().first().toObject();
+                row["read_only"] = false;
+                row["external_account_uuid"] = QJsonValue::Null;
+                return {QJsonArray{row}};
+            }
+            if (path == "/api/workspace/v1/calendar/events/" && request.method == "POST") {
+                auto answer = request.body;
+                answer["project_id"] = projectId;
+                Response response{answer};
+                response.defer = [&](auto send) { release = std::move(send); };
+                return response;
+            }
+            return fallback(request);
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_VERIFY(!controller.calendarLoading());
+        const QVariantMap draft{{"calendar", workCalendarId}, {"title", "Old owner"},
+                                {"startUtc", "2026-11-01T11:30:00Z"}, {"endUtc", "2026-11-01T12:00:00Z"}};
+        QVERIFY(controller.writeCalendarMeeting("create", topicId, draft));
+        QTRY_VERIFY(release);
+        controller.logout();
+        QTRY_VERIFY(!controller.authenticated());
+        user = streamId;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.session.user(), user);
+        QVERIFY(!controller.calendarWriting());
+        QSignalSpy finished(&controller, &NativeController::calendarWriteFinished);
+        release();
+        QTest::qWait(150);
+        QVERIFY(finished.isEmpty());
+        QVERIFY(controller.calendarEvents().isEmpty());
+        QVERIFY(controller.calendarCatalog().isEmpty());
+    }
+
+    void groupwareCursorRefreshesVisibleCalendarAndDefersMailUntilEntry()
+    {
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        QVector<QJsonObject> envelopes;
+        fixture.realtime = [&](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            QJsonArray rows;
+            const auto after = QUrlQuery(request.target).queryItemValue("epoch_version>").toInt();
+            for (const auto &event : envelopes)
+                if (event.value("epoch_version").toInt() > after) rows.append(event);
+            return Response{rows};
+        };
+        int calendarReads = 0, mailReads = 0;
+        bool messageExists = true;
+        const QString eventId = "a2000000-0000-4000-8000-000000000001";
+        fixture.calendar = [&](const Request &) {
+            ++calendarReads;
+            return Response{QJsonArray{calendarEvent(eventId, "2026-11-01", "11:00", "12:00",
+                QString::number(calendarReads))}};
+        };
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/mail/folders/")
+                return {QJsonArray{QJsonObject{{"uuid", topicId}, {"kind", "inbox"}, {"name", "Inbox"},
+                                              {"project_id", projectId}}}};
+            if (path == "/api/workspace/v1/mail/messages/") {
+                ++mailReads;
+                const QJsonObject row{{"uuid", messageId}, {"project_id", projectId}, {"folder_uuid", topicId},
+                                      {"subject", QString::number(mailReads)}};
+                return {messageExists ? QJsonArray{row} : QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        auto &controller = fixture.controller;
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        controller.useRealtime(&realtime);
+        QTRY_COMPARE(controller.syncState(), "live");
+        QTRY_COMPARE(gateway.sockets.size(), 1);
+        auto *mail = controller.mail();
+        controller.showSection("mail");
+        mail->refresh();
+        QTRY_COMPARE(mail->messages().size(), 1);
+        mail->selectMessage(messageId);
+        QSignalSpy ownerRetired(mail, &MailStore::ownerRetired);
+        controller.showSection("calendar");
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        const auto send = [&](QJsonObject event) {
+            envelopes.append(event);
+            gateway.sockets.last()->sendTextMessage(QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)));
+        };
+        auto calendar = controllerEvent("calendar.event.updated", QJsonObject{{"uuid", eventId}}, 11);
+        auto foreign = calendar;
+        foreign["user_uuid"] = streamId;
+        QVERIFY(!controller.applyRealtimeEvent(foreign));
+        send(calendar);
+        QTRY_COMPARE(calendarReads, 2);
+        QTRY_COMPARE(controller.calendarEvents().first().toMap().value("title").toString(), QStringLiteral("2"));
+        // A duplicate envelope UUID at a newer epoch is acknowledged without
+        // repeating the HTTP read or blocking the shared cursor.
+        calendar["epoch_version"] = 12;
+        send(calendar);
+        send(controllerEvent("mail.message.updated", QJsonObject{{"uuid", messageId}}, 13));
+        QTRY_COMPARE(realtime.acknowledgedEpoch(), quint64(13));
+        QTest::qWait(200);
+        QCOMPARE(calendarReads, 2);
+        QCOMPARE(mailReads, 1);
+        controller.showSection("mail");
+        QTRY_COMPARE(mailReads, 2);
+        QTRY_COMPARE(mail->state(), QStringLiteral("ready"));
+        QCOMPARE(mail->selectedMessageUuid(), messageId);
+        QVERIFY(ownerRetired.isEmpty());
+        // The second live handshake must pick up a missed deletion. It also
+        // marks Calendar stale without fetching that hidden section.
+        messageExists = false;
+        gateway.sockets.last()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(gateway.sockets.size() >= 2, 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(mailReads, 3, 5000);
+        QTRY_VERIFY(mail->messages().isEmpty());
+        QVERIFY(mail->selectedMessageUuid().isEmpty());
+        QVERIFY(ownerRetired.isEmpty());
+        QCOMPARE(calendarReads, 2);
+        controller.showSection("calendar");
+        QTRY_COMPARE(calendarReads, 3);
+    }
+
+    void groupwareEventDuringCalendarReadRefreshesAfterTheCurrentPage()
+    {
+        Fixture fixture;
+        int reads = 0;
+        std::function<void()> release;
+        fixture.calendar = [&](const Request &) {
+            ++reads;
+            Response response{QJsonArray{}};
+            if (reads == 1)
+                response.defer = [&](auto send) { release = std::move(send); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.showSection("calendar");
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_VERIFY(release);
+        QVERIFY(controller.applyRealtimeEvent(controllerEvent("calendar.calendar.updated", {{"uuid", workCalendarId}}, 42)));
+        QTest::qWait(150);
+        QCOMPARE(reads, 1);
+        release();
+        QTRY_COMPARE_WITH_TIMEOUT(reads, 2, 4000);
+        QTRY_VERIFY(!controller.calendarLoading());
+    }
+
+    void calendarReadsOwnedPagedCollectionsWithLocalOverlap()
+    {
+        Fixture fixture;
+        const auto fallback = fixture.server.handler;
+        const auto firstDay = QDate(2026, 11, 1); // 25 hours in America/New_York
+        const auto nextMidnight = firstDay.addDays(1).startOfDay().toUTC();
+        const auto nextUtcSecond = nextMidnight.toString("yyyy-MM-dd'T'HH:mm:ss");
+        const QString firstId = "92000000-0000-4000-8000-000000000001";
+        const QString secondId = "92000000-0000-4000-8000-000000000002";
+        const QString otherId = "92000000-0000-4000-8000-000000000003";
+        const auto event = [&](const QString &id, const QString &end) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"calendar_uuid", personalCalendarId},
+                {"payload", QJsonObject{{"kind", "event"}, {"title", "Night shift"}, {"location", "Room 4"},
+                    {"starts_at", nextMidnight.addSecs(-3600).toString(Qt::ISODate)}, {"ends_at", end}}}};
+        };
+        const auto exclusiveEnd = event(firstId, nextUtcSecond + ".000000Z");
+        const auto inclusiveEnd = event(secondId, nextUtcSecond + ".000001Z");
+        QVector<Request> seen;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (!path.startsWith("/api/workspace/v1/calendar/"))
+                return fallback(request);
+            seen.append(request);
+            const QUrlQuery query(request.target);
+            Response response{QJsonArray{}};
+            if (path.endsWith("/calendars/")) {
+                const auto catalog = calendarList();
+                if (!query.hasQueryItem("page_marker")) {
+                    auto foreign = catalog.first().toObject();
+                    foreign["uuid"] = otherId;
+                    foreign["project_id"] = streamId;
+                    response.data = QJsonArray{catalog.first(), foreign};
+                    response.headers.insert("X-Pagination-Marker", "next");
+                } else {
+                    response.data = QJsonArray{catalog.last()};
+                }
+            } else if (path.endsWith("/events/")) {
+                if (!query.hasQueryItem("page_marker")) {
+                    response.data = QJsonArray{exclusiveEnd};
+                    response.headers.insert("X-Pagination-Marker", "next");
+                } else {
+                    auto foreign = event(otherId, nextUtcSecond + "Z");
+                    foreign["project_id"] = streamId;
+                    auto unowned = event(topicId, nextUtcSecond + "Z");
+                    unowned["calendar_uuid"] = otherId;
+                    response.data = QJsonArray{exclusiveEnd, inclusiveEnd, foreign, unowned};
+                }
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        const auto day = firstDay.toString(Qt::ISODate);
+        fixture.controller.requestCalendarWindow(day, day);
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.calendarEvents().size(), 2, 4000);
+        QCOMPARE(seen.size(), 4);
+        for (int i = 0; i < seen.size(); ++i) {
+            const auto &request = seen.at(i);
+            const auto eventPage = i >= 2;
+            QCOMPARE(request.method, QByteArray("GET"));
+            QCOMPARE(request.target.path(), eventPage ? "/api/workspace/v1/calendar/events/"
+                                                      : "/api/workspace/v1/calendar/calendars/");
+            const QUrlQuery query(request.target);
+            QCOMPARE(query.queryItemValue("page_limit"), QStringLiteral("200"));
+            QCOMPARE(query.queryItemValue("page_marker"), i % 2 ? QStringLiteral("next") : QString{});
+            QVERIFY(!query.hasQueryItem("project_id"));
+            QVERIFY(!query.hasQueryItem("user_uuid"));
+            QCOMPARE(query.hasQueryItem("ends_after"), eventPage);
+            QCOMPARE(query.hasQueryItem("starts_before"), eventPage);
+            if (eventPage) {
+                QCOMPARE(query.queryItemValue("ends_after"), firstDay.startOfDay().toUTC().toString(Qt::ISODate));
+                QCOMPARE(query.queryItemValue("starts_before"), nextUtcSecond + "Z");
+            }
+        }
+        const auto calendars = fixture.controller.property("calendarCatalog").toList();
+        QCOMPARE(calendars.size(), 2);
+        QCOMPARE(calendars.last().toMap().value("label").toString(), QStringLiteral("On call"));
+        const auto rows = fixture.controller.calendarEvents();
+        QCOMPARE(rows.first().toMap().value("lastDay").toString(), day);
+        const auto spill = rows.last().toMap();
+        QCOMPARE(spill.value("day").toString(), day);
+        QCOMPARE(spill.value("lastDay").toString(), firstDay.addDays(1).toString(Qt::ISODate));
+        QCOMPARE(spill.value("calendar").toString(), personalCalendarId);
+        QCOMPARE(spill.value("endUtc").toString(), nextUtcSecond + ".000001Z");
+        QCOMPARE(spill.value("location").toString(), QStringLiteral("Room 4"));
+        QVERIFY(spill.value("participants").toList().isEmpty());
+    }
+
+    void calendarSwitchingUserRetiresDelayedOwnedRows()
+    {
+        Fixture fixture;
+        QString loginUser = userId;
+        fixture.authentication = [&](const Request &request) {
+            if (request.target.path().endsWith("/actions/introspect"))
+                return Response{QJsonObject{{"user_info", QJsonObject{{"uuid", loginUser}}},
+                                            {"project_id", projectId}, {"otp_verified", true}}};
+            return sessionResponse(request);
+        };
+        std::function<void()> oldResponse;
+        fixture.calendar = [&](const Request &) {
+            const auto title = loginUser == userId ? QStringLiteral("First owner's meeting")
+                                                   : QStringLiteral("Second owner's meeting");
+            Response response{QJsonArray{calendarEvent("93000000-0000-4000-8000-000000000001",
+                "2026-11-01", "09:00", "10:00", title)}};
+            if (loginUser == userId)
+                response.defer = [&](auto send) { oldResponse = std::move(send); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_VERIFY_WITH_TIMEOUT(oldResponse, 3000);
+        fixture.controller.logout();
+        QTRY_VERIFY(!fixture.controller.authenticated());
+        loginUser = streamId;
+        QVERIFY(fixture.start());
+        QCOMPARE(fixture.session.user(), loginUser);
+        QVERIFY(fixture.controller.calendarEvents().isEmpty());
+        QVERIFY(fixture.controller.property("calendarCatalog").toList().isEmpty());
+        fixture.controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.calendarEvents().size(), 1, 4000);
+        oldResponse();
+        QTest::qWait(150);
+        QCOMPARE(fixture.controller.calendarEvents().first().toMap().value("title").toString(),
+                 QStringLiteral("Second owner's meeting"));
+    }
+
+    void calendarInterruptedPaginationNeverPublishesPartialData_data()
+    {
+        QTest::addColumn<bool>("cycle");
+        QTest::newRow("forbidden") << false;
+        QTest::newRow("repeated-marker") << true;
+    }
+
+    void calendarInterruptedPaginationNeverPublishesPartialData()
+    {
+        QFETCH(bool, cycle);
+        Fixture fixture;
+        int pages = 0;
+        bool recovering = false;
+        const auto row = calendarEvent("94000000-0000-4000-8000-000000000001", "2026-11-01",
+                                      "09:00", "10:00", "First page");
+        fixture.calendar = [&](const Request &request) {
+            ++pages;
+            const bool more = QUrlQuery(request.target).hasQueryItem("page_marker");
+            Response response{QJsonArray{row}};
+            if (!recovering) {
+                if (more && !cycle)
+                    return Response{QJsonObject{}, 403};
+                response.headers.insert("X-Pagination-Marker", "same");
+            }
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.calendarError(), 4000);
+        QCOMPARE(pages, 2);
+        QVERIFY(!fixture.controller.calendarLoading());
+        QVERIFY(fixture.controller.calendarEvents().isEmpty());
+        QVERIFY(fixture.controller.property("calendarCatalog").toList().isEmpty());
+        recovering = true;
+        fixture.controller.retryCalendar();
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.controller.calendarEvents().size(), 1, 4000);
+        QCOMPARE(pages, 3);
+        QVERIFY(!fixture.controller.calendarError());
+    }
+
     // Issue #926: a same-account token renewal bumps the API generation and
     // aborts the in-flight GET /calendar/events; the shared request wrapper
     // drops the retired callback, so nothing ever cleared the calendar
@@ -1602,12 +2141,8 @@ private slots:
         auto calendarGets = std::make_shared<int>(0);
         fixture.calendar = [gates, calendarGets](const Request &) {
             ++*calendarGets;
-            QJsonArray events;
-            events.append(QJsonObject{{"uuid", QStringLiteral("evt-1")},
-                {"day", QStringLiteral("2026-07-02")}, {"start", QStringLiteral("09:00")},
-                {"end", QStringLiteral("10:00")}, {"title", QStringLiteral("Standup")},
-                {"calendar", QStringLiteral("work")}, {"color_token", QStringLiteral("accent")}});
-            Response response{events};
+            Response response{QJsonArray{calendarEvent("91000000-0000-4000-8000-000000000001",
+                "2026-07-02", "09:00", "10:00", "Standup")}};
             response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
             return response;
         };

@@ -216,9 +216,9 @@ FocusScope {
                     width: parent ? parent.width : 0
                     radius: 12
                     border.width: 1
-                    border.color: rowArea.containsMouse
+                    border.color: rowHover.hovered
                         ? Qt.alpha(page.colors["accent-soft"], 0.4) : page.colors["border-subtle"]
-                    color: rowArea.containsMouse ? page.colors["card-bg"]
+                    color: rowHover.hovered ? page.colors["card-bg"]
                                                  : Qt.alpha(page.colors["bg-elevated"], 0.5)
                     implicitHeight: rowContent.implicitHeight + 20 // p-2.5
                     Behavior on color { ColorAnimation { duration: 100 } }
@@ -264,10 +264,10 @@ FocusScope {
                             name: "inbox-row-badge-" + String(row.modelData.id)
                         }
                     }
+                    HoverHandler { id: rowHover }
                     MouseArea {
                         id: rowArea
                         anchors.fill: parent
-                        hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: page.controller.openInboxRow(
                             String(row.modelData.stream), String(row.modelData.topic))

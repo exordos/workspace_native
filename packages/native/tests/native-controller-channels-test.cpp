@@ -620,21 +620,31 @@ private slots:
         if (change.startsWith("cache-")) test.fixture.controller.useCache(cache.get());
         QVERIFY(test.fixture.start()); auto &controller = test.fixture.controller;
         QSignalSpy done(&controller, &NativeController::channelCreated);
-        if (stage == "post") test.postDelay = 150;
-        else if (stage == "canonical") test.getDelay = 150;
-        else if (stage == "default") test.topicDelay = 150;
-        else if (stage == "members") test.addDelay = 150;
-        else if (stage == "bindings") { test.postStatus = 503; test.bindingDelay = 150; }
-        else test.catalogDelay = 150;
+        if (stage == "bindings") test.postStatus = 503;
+        // #923: the sleep-based stage delay let the held response land before the
+        // context change under parallel load (the fence then fenced nothing and
+        // channelCreated fired). Gate the staged response with the mock's defer
+        // instead: it cannot settle before the change lands, whatever the host load.
         const auto streams = test.streamGets;
+        std::function<void()> release; bool arrived = false;
+        const auto base = test.fixture.server.handler;
+        test.fixture.server.handler = [&](const Request &request) {
+            auto response = base(request);
+            if (arrived) return response;
+            const bool target = (stage == "post" && test.posts == 1)
+                || (stage == "canonical" && test.gets == 1)
+                || (stage == "default" && test.topicGets == 1)
+                || (stage == "members" && test.memberPosts == 1)
+                || (stage == "bindings" && test.bindingGets == 1)
+                || (stage == "catalog" && test.streamGets == streams + 1);
+            if (!target) return response;
+            arrived = true;
+            response.defer = [&release](auto send) { release = std::move(send); };
+            return response;
+        };
         controller.createChannel("Frozen stage context", "", false, true, {channelMemberA});
         if (stage == "bindings") { QTRY_VERIFY(controller.channelCreationUncertain()); controller.checkChannelCreation(); }
-        if (stage == "post") QTRY_COMPARE(test.posts, 1);
-        else if (stage == "canonical") QTRY_COMPARE(test.gets, 1);
-        else if (stage == "default") QTRY_COMPARE(test.topicGets, 1);
-        else if (stage == "members") QTRY_COMPARE(test.memberPosts, 1);
-        else if (stage == "bindings") QTRY_COMPARE(test.bindingGets, 1);
-        else QTRY_COMPARE(test.streamGets, streams + 1);
+        QTRY_VERIFY(arrived);
         const auto form = controller.channelCreationForm(); const auto context = controller.channelCreationContextKey();
         if (change == "route") controller.selectStream({});
         else if (change == "logout") controller.logout();
@@ -649,6 +659,7 @@ private slots:
             };
             test.fixture.session.requestRefresh();
         }
+        QVERIFY(release); release();
         QTRY_VERIFY(test.fixture.api.findChildren<QNetworkReply *>().isEmpty());
         QVERIFY(!controller.channelCreationBusy()); QCOMPARE(done.size(), 0); QCOMPARE(test.posts, 1);
         QCOMPARE(test.memberPosts, stage == "members" || stage == "catalog" ? 1 : 0);

@@ -43,6 +43,7 @@ class MediaViewerModel;
 class NativePreferences;
 class NativeAuthGuard;
 class RealtimeClient;
+class MailStore;
 class PowerWatcher;
 class FileClient;
 class NativeChatKeyVault;
@@ -106,6 +107,10 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool sessionRenewalUnavailable READ sessionRenewalUnavailable NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
+    // Mail mailbox mock (#879, part of #851): the page owns its fetch lifecycle
+    // (refresh on first visibility); the store stays idle for every session
+    // that never opens the Mail section, so unrelated traffic pins are intact.
+    Q_PROPERTY(workspace::MailStore* mail READ mail CONSTANT)
     Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
@@ -322,14 +327,17 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool feedVisible READ feedVisible NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap feedPage READ feedPage NOTIFY stateChanged)
     // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): events
-    // for the visible window, fetched from GET /calendar/events?from&to.
+    // for the visible window and the authenticated account’s calendar list.
     // Calendar state carries its own NOTIFY (issue #881, #89 lesson): the fetch
     // fires while Main.qml's `visible: section === "calendar"` binding is still
     // being evaluated (page onVisibleChanged -> refreshWindow -> request), and a
     // stateChanged emission here re-dirtied the section dependency mid-evaluation
     // - Qt raised "Binding loop detected for property visible" and the warning
     // poisoned every window case in the shard. Notify only what calendar changed.
+    Q_PROPERTY(QVariantList calendarCatalog READ calendarCatalog NOTIFY calendarChanged)
     Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY calendarChanged)
+    Q_PROPERTY(bool sampleCalendar READ sampleCalendar WRITE setSampleCalendar NOTIFY calendarChanged)
+    Q_PROPERTY(bool calendarWriting READ calendarWriting NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarError READ calendarError NOTIFY calendarChanged)
     // Activity panel (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md): open/closed
@@ -760,9 +768,17 @@ public:
     QVariantMap feedPage() const;
     // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): UI-phase
     // events for the last fetched window; the live adapter is #852.
-    QVariantList calendarEvents() const { return m_calendar.events; }
-    bool calendarLoading() const { return m_calendar.loading; }
-    bool calendarError() const { return m_calendar.error; }
+    QVariantList calendarCatalog() const { return m_calendar.calendars; }
+    bool sampleCalendar() const { return m_calendar.sample; }
+    void setSampleCalendar(bool enabled);
+    bool calendarWriting() const { return m_calendar.writing; }
+    Q_INVOKABLE QString newCalendarMeetingUuid() const;
+    Q_INVOKABLE bool writeCalendarMeeting(const QString &operation, const QString &uuid, const QVariantMap &draft);
+    Q_INVOKABLE bool saveSampleMeeting(const QString &uuid, const QVariantMap &draft);
+    Q_INVOKABLE bool deleteSampleMeeting(const QString &uuid);
+    QVariantList calendarEvents() const { return sampleCalendar() ? m_calendar.sampleEvents.values() : m_calendar.events; }
+    bool calendarLoading() const { return !sampleCalendar() && m_calendar.loading; }
+    bool calendarError() const { return !sampleCalendar() && m_calendar.error; }
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     bool starredVisible() const { return m_starredVisible; }
     QVariantMap starredPage() const;
@@ -835,6 +851,7 @@ public:
     Q_INVOKABLE void setWindowVisible(bool visible);
     Q_INVOKABLE void setWindowMinimized(bool minimized);
     NativeExternalAccounts *externalAccounts() const { return m_externalAccounts; }
+    MailStore *mail() const { return m_mail; }
     NativeExternalProviderAdmin *externalProviderAdmin() const { return m_externalProviderAdmin; }
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
@@ -865,7 +882,7 @@ public:
     Q_INVOKABLE void showInbox();
     Q_INVOKABLE void showSection(const QString &name);
     // Calendar section page (#881): fetch the visible [from,to] window of
-    // events (GET /calendar/events?from&to) and re-fetch it on retry.
+    // events and re-fetch it on retry.
     Q_INVOKABLE void requestCalendarWindow(const QString &from, const QString &to);
     Q_INVOKABLE void retryCalendar();
     // Issue #46: the Licenses page dataset (docs/NATIVE_DESKTOP_LICENSES.md),
@@ -1237,6 +1254,9 @@ signals:
     void supportScopeChanged();
     void stateChanged();
     void calendarChanged();
+    void calendarWriteFinished(bool accepted, bool retryUnchanged);
+    void calendarSessionReset();
+    void groupwareSectionInvalidated(const QString &section);
     void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
@@ -2039,6 +2059,7 @@ private:
 
     NativeExternalAccounts *m_externalAccounts;
     NativeExternalProviderAdmin *m_externalProviderAdmin;
+    MailStore *m_mail = nullptr;
     ApiClient *m_api;
     // Per-saved-account background projection facts keyed by saved account id
     // (issue #144); unread badges for remembered sessions derive from these.
@@ -2758,13 +2779,35 @@ private:
     // The version fences late answers of a retired window (same monotonic
     // identity discipline as FeedState, issue #356); a re-show of the same
     // loaded window is not re-fetched, so section re-entry is traffic-free.
+    struct CalendarWindowRead {
+        quint64 version;
+        QString owner;
+        QUrlQuery range;
+        QVariantMap calendars, events;
+        QSet<QByteArray> markers;
+        bool readingEvents = false;
+        qsizetype seenRows = 0;
+    };
+    void readCalendarPage(const std::shared_ptr<CalendarWindowRead> &read, const QByteArray &marker = {});
+    void finishCalendarWindow(const CalendarWindowRead &read, int status);
     struct CalendarState {
-        QVariantList events;
+        QVariantList calendars, events;
+        QVariantMap sampleEvents; // UUID -> session-local meeting
+        bool writing = false;
+        QString uncertainCreate;
+        QJsonObject createBody;
+        bool sample = false;
         QString from, to;
         bool loading = false, error = false, inflight = false, hasLoaded = false;
         quint64 version = 0;
+        // Issue #910: the newest window requested while a fetch is in flight,
+        // re-issued the moment the current reply settles.
+        QString pendingFrom, pendingTo;
+        bool hasPending = false;
     };
     CalendarState m_calendar;
+    quint64 m_calendarWriteVersion = 0;
+    void finishCalendarWrite(bool accepted, bool retryUnchanged = false);
     void resetCalendar();
     void loadFeedPage(bool append);
     void interruptFeedRequest();
@@ -2888,6 +2931,11 @@ private:
     int m_realtimeEventsReceived = 0;
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;
+    void refreshInvalidatedSection();
+    QTimer m_groupwareRefreshTimer;
+    QSet<QString> m_groupwareDirty;
+    QQueue<QString> m_recentGroupwareEvents;
+    bool m_groupwareConnecting = false;
     int m_realtimeReconnectAttempts = 0;
     // Issue #717: backoff retries seen since the last live link. The
     // reconnecting banner stays quiet while a drop is self-recovering and

@@ -1,0 +1,214 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+// Calendar event detail card (issue #907, Part of #882,
+// docs/NATIVE_DESKTOP_CALENDAR.md "Event detail"). Opened by clicking an
+// event row in the day agenda or a week chip; read-only in the UI phase.
+// The reference app ships no functional calendar screen (embed placeholder),
+// so metrics are pending-Figma and follow native token conventions; the
+// close/footer chrome follows the existing native dialog pattern.
+//
+// Time-zone rule (issue contract): the stored instants are UTC
+// (startUtc/endUtc); the card renders them converted to the client zone via
+// the JS Date pipeline (new Date parses the ISO instant, Qt.format* prints in
+// the local zone), so DST boundaries come out right with no offset math.
+Rectangle {
+    id: detail
+    objectName: "calendarEventDetail"
+    radius: 12
+    color: detail.colors["bg-elevated"]
+    border.color: detail.colors["border-subtle"]
+    border.width: 1
+    implicitWidth: Math.min(420, Math.max(320, implicitChildrenWidth))
+    // A plain Rectangle never auto-sizes from implicit* - bind width
+    // explicitly, or the card renders as a 0-wide box with its children
+    // floating unclipped (found while reproducing the #907 review finding).
+    width: implicitWidth
+    implicitHeight: scroller.contentHeight + 32
+    // Review on #907: a long server-supplied location used to grow the card
+    // past the window, and centering then placed the header (close button)
+    // outside the page. Cap the card to the available page height and let the
+    // body scroll instead; short events still use the natural implicit height.
+    height: Math.min(implicitHeight,
+                     Math.max(160, (parent ? parent.height : implicitHeight) - 32))
+    clip: true
+
+    required property var colors
+    property var event: ({})
+    property bool editable: false
+    signal closed()
+    property bool showParticipants: true
+    property bool movable: false
+    signal moveRequested()
+    signal editRequested()
+    signal deleteRequested()
+
+    // Fallback width when the rows are all short: keep a readable card.
+    readonly property real implicitChildrenWidth: 320
+
+    function isAllDay(ev) {
+        return ev.allDay === true
+    }
+    function instantText(ev) {
+        if (isAllDay(ev))
+            return Qt.formatDate(new Date(String(ev.day) + "T00:00:00"), "ddd, dd.MM.yyyy")
+        const rawStart = String(ev.startUtc || "")
+        if (rawStart.length === 0)
+            return Qt.formatDate(new Date(String(ev.day) + "T00:00:00"), "ddd, dd.MM.yyyy")
+                   + " " + String(ev.start) + " - " + String(ev.end)
+        const start = new Date(rawStart)
+        const text = Qt.formatDate(start, "ddd, dd.MM.yyyy") + " "
+                   + Qt.formatTime(start, "HH:mm")
+        const rawEnd = String(ev.endUtc || "")
+        if (rawEnd.length === 0)
+            return text
+        const end = new Date(rawEnd)
+        if (Qt.formatDate(end, "yyyy-MM-dd") === Qt.formatDate(start, "yyyy-MM-dd"))
+            return text + " - " + Qt.formatTime(end, "HH:mm")
+        return text + " - " + Qt.formatDate(end, "dd.MM HH:mm")
+    }
+
+    ScrollView {
+        id: scroller
+        objectName: "calendarDetailScroller"
+        anchors.fill: parent
+        anchors.margins: 16
+        clip: true
+        padding: 0
+        contentWidth: availableWidth
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+        ColumnLayout {
+            id: contentColumn
+            width: scroller.availableWidth
+            spacing: 10
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Label {
+                objectName: "calendarDetailTitle"
+                // #879 lesson: a fill child beside a sibling needs the zero
+                // minimum or its implicit width wins and elide never engages.
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                text: String(detail.event.title || "") .length > 0
+                      ? String(detail.event.title) : qsTr("(untitled)")
+                // Review on #907: server-supplied strings render as PLAIN
+                // text only - AutoText would interpret rich-text markup and
+                // could fetch remote images on the viewer's client.
+                textFormat: Text.PlainText
+                color: detail.colors["text-primary"]
+                font.pixelSize: 16
+                font.bold: true
+                elide: Text.ElideRight
+            }
+            Button {
+                objectName: "calendarDetailClose"
+                text: "\u00d7"
+                flat: true
+                onClicked: detail.closed()
+            }
+        }
+
+        Label {
+            objectName: "calendarDetailTime"
+            Layout.fillWidth: true
+            text: detail.instantText(detail.event)
+            textFormat: Text.PlainText
+            color: detail.colors["text-muted"]
+        }
+
+        // Location row: the contract asks for a graceful empty state.
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 2
+            Label {
+                objectName: "calendarDetailLocationLabel"
+                text: qsTr("Location")
+                color: detail.colors["text-muted"]
+                font.pixelSize: 12
+            }
+            Label {
+                objectName: "calendarDetailLocation"
+                Layout.fillWidth: true
+                text: String(detail.event.location || "").length > 0
+                      ? String(detail.event.location) : qsTr("No location specified")
+                // Plain text only for event-supplied content (#907 review).
+                textFormat: Text.PlainText
+                color: String(detail.event.location || "").length > 0
+                       ? detail.colors["text-primary"] : detail.colors["text-muted"]
+                // Text.Wrap, not WordWrap: a URL-like unbreakable token must
+                // break within the available width - the scroller keeps
+                // horizontal scrolling off, so WordWrap would clip it
+                // unreadable (#907 review round 2).
+                wrapMode: Text.Wrap
+            }
+        }
+
+        // Participants: first three names, the rest collapse to "+N more".
+        ColumnLayout {
+            visible: detail.showParticipants
+            Layout.fillWidth: true
+            spacing: 2
+            Label {
+                objectName: "calendarDetailParticipantsHeader"
+                text: qsTr("Participants")
+                color: detail.colors["text-muted"]
+                font.pixelSize: 12
+            }
+            Repeater {
+                objectName: "calendarDetailParticipantRows"
+                model: {
+                    const people = detail.event.participants || []
+                    return people.slice(0, 3)
+                }
+                delegate: Label {
+                    required property var modelData
+                    required property int index
+                    objectName: "calendarDetailParticipant-" + index
+                    Layout.fillWidth: true
+                    text: String(modelData)
+                    // Plain text only for event-supplied content (#907 review).
+                    textFormat: Text.PlainText
+                    color: detail.colors["text-primary"]
+                    elide: Text.ElideRight
+                }
+            }
+            Label {
+                objectName: "calendarDetailParticipantsOverflow"
+                visible: (detail.event.participants || []).length > 3
+                text: qsTr("+%1 more").arg((detail.event.participants || []).length - 3)
+                color: detail.colors["text-muted"]
+            }
+        }
+        Flow {
+            visible: detail.editable
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: 0
+            spacing: 6
+            Button {
+                objectName: "calendarDetailEdit"
+                text: qsTr("Edit meeting")
+                onClicked: detail.editRequested()
+            }
+            Button {
+                objectName: "calendarDetailMove"
+                visible: detail.movable
+                text: qsTr("Move meeting")
+                onClicked: detail.moveRequested()
+            }
+            Button {
+                objectName: "calendarDetailDelete"
+                text: qsTr("Delete meeting")
+                palette.buttonText: detail.colors["danger"]
+                onClicked: detail.deleteRequested()
+            }
+        }
+        }
+    }
+}
