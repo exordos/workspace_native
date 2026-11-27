@@ -40,6 +40,9 @@ FocusScope {
             ? qsTr("Selected date") : qsTr("Date not selected");
     }
 
+    // Event detail overlay (#907): the clicked event map, or null when closed.
+    property var detailEvent: null
+
     signal visibleWindowChanged(string from, string to)
     signal retryRequested()
 
@@ -461,7 +464,9 @@ FocusScope {
                     delegate: ItemDelegate {
                         id: agendaRow
                         required property var modelData
+                        objectName: "calendarAgendaRow-" + String(modelData.uuid)
                         width: agendaList.width
+                        onClicked: page.detailEvent = agendaRow.modelData
                         contentItem: Row {
                             spacing: 8
                             Label {
@@ -509,6 +514,7 @@ FocusScope {
                                     page.calDate(weekColumn.cellDate),
                                     page.calDate(weekColumn.cellDate))
                                 delegate: Label {
+                                    id: weekChip
                                     required property var modelData
                                     objectName: "weekChip-" + modelData.uuid
                                     // #924: bound to the day column and elided,
@@ -517,6 +523,10 @@ FocusScope {
                                     elide: Text.ElideRight
                                     text: modelData.start + " " + modelData.title
                                     color: page.colors["text-primary"]
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: page.detailEvent = weekChip.modelData
+                                    }
                                 }
                             }
                         }
@@ -687,19 +697,34 @@ FocusScope {
                         anchors.bottom: parent.bottom
                         clip: true
                         model: page.dayEvents()
-                        delegate: Label {
+                        delegate: ItemDelegate {
+                            id: monthAgendaRow
                             required property var modelData
                             objectName: "monthAgendaRow-" + modelData.uuid
-                            // #924: width bound to the agenda pane, long titles
-                            // elide instead of spilling past the pane edge.
-                            width: monthAgendaList.width
-                            elide: Text.ElideRight
+                            width: ListView.view.width
                             text: modelData.start + " " + modelData.title
-                            color: page.colors["text-primary"]
+                            onClicked: page.detailEvent = modelData
+                            contentItem: Label {
+                                text: monthAgendaRow.text
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                color: page.colors["text-primary"]
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Event detail overlay (#907): a later sibling of the layout so it
+    // renders above the active view; shown only while an event is selected.
+    NativeCalendarEventDetail {
+        anchors.centerIn: parent
+        z: 10
+        visible: page.detailEvent !== null
+        colors: page.colors
+        event: page.detailEvent !== null ? page.detailEvent : ({})
+        onClosed: page.detailEvent = null
     }
 }

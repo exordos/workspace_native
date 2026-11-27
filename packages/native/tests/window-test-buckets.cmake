@@ -286,6 +286,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     windowResizeHandOffReArmsForWheelAfterSendCapture
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
+    calendarDetailLongLocationStaysWithinWindowAndScrolls
     callWindowInvalidLinkStaysVisibleWithTheNotice
     channelTopicSummaryDialogSendsOnlyUserEditedEffortAfterRemotePromptUpdate
     chatHeaderCountersRenderMembersAndOnline
@@ -384,6 +385,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     archiveCatalogStatesKeepRowsAndDistinguishLoadingFromFailure
     bottomReadAnchorRepairsServerCounter
+    calendarDetailUnbreakableLocationTokenWrapsWithinCard
     captionAndPickedImageSendThenPaintOwnInlinePixels
     channelTopicSummaryDialogFailedGatesLoadKeepsSwitchesLocked
     channelTopicSummaryEndpointNumericFieldsKeepVisibleLabels
@@ -562,6 +564,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     activityReactionsDeeplinkRendersUnsupportedState
     activityStarredChipOpensPageAndCloseFlow
+    calendarEventDetailOpensFromAgendaWithLocalTimeRendering
     codeCopyButtonIsKeyboardOperableAndAccessible
     confirmedSlowClipboardCopyRemainsVisibleAndCancellable
     diagnosticsLogViewerModalFiltersClearAndExports
@@ -646,6 +649,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_26
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     activityPanelExpandedListTogglesRoutesAndDisabledFavorites
+    calendarDetailAllDayShowsDateOnlyWithLocationFallback
     channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
     channelTopicSummaryEndpointFailedSaveKeepsMarkerUnderUnrelatedBusy
     channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity

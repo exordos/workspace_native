@@ -39228,8 +39228,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const QString longUuid = WindowCalendarPolishFixture::longEventUuid();
         auto *agendaRow = view(QStringLiteral("monthAgendaRow-%1").arg(longUuid)); QVERIFY(agendaRow);
         QTRY_VERIFY_WITH_TIMEOUT(agendaRow->isVisible(), 5000);
-        QCOMPARE(agendaRow->property("elide").toInt(), int(Qt::ElideRight));
-        QTRY_VERIFY_WITH_TIMEOUT(agendaRow->property("implicitWidth").toReal() > agendaRow->width(), 5000);
+        auto *label = agendaRow->property("contentItem").value<QQuickItem *>();
+        QVERIFY(label);
+        QCOMPARE(label->property("elide").toInt(), int(Qt::ElideRight));
+        QTRY_VERIFY_WITH_TIMEOUT(label->property("implicitWidth").toReal() > label->width(), 5000);
         auto *agendaPane = view("calendarMonthAgenda"); QVERIFY(agendaPane);
         QVERIFY(agendaRow->width() <= agendaPane->width());
         page->setProperty("viewMode", "week");
@@ -52074,6 +52076,284 @@ private slots:
         QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
     }
 
+
+    // Issue #907 (Part of #882): clicking an agenda row opens the event detail
+    // card; the stored UTC instants must render converted to the client zone
+    // (DST-correct by construction - expectations derive from QDateTime
+    // conversions, never hardcoded day/time), participants collapse to three
+    // rows plus a "+N more" tail, and the close button restores the agenda.
+    void calendarEventDetailOpensFromAgendaWithLocalTimeRendering_data()
+    {
+        QTest::addColumn<QString>("agendaName");
+        QTest::newRow("day") << QStringLiteral("calendarAgenda");
+        QTest::newRow("month") << QStringLiteral("calendarMonthAgenda");
+    }
+
+    void calendarEventDetailOpensFromAgendaWithLocalTimeRendering()
+    {
+        QFETCH(QString, agendaName);
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        const QString startUtc = day + "T09:30:00Z";
+        const QString endUtc = day + "T11:00:00Z";
+        QJsonArray people;
+        for (const auto *name : {"Anna", "Boris", "Vera", "Denis", "Elena"})
+            people.append(QString::fromLatin1(name));
+        const QJsonObject event{
+            {"uuid", "7a5f0c21-9b0d-4a49-a96f-6f2e6b8d1c55"},
+            {"day", day}, {"start", "09:30"}, {"end", "11:00"},
+            {"title", "Design sync"}, {"calendar", "work"},
+            {"color_token", "accent"},
+            {"location", "Meeting room 4 <img src=\"http://inval.id/x.png\" onerror=\"x\">"},
+            {"all_day", false}, {"start_utc", startUtc}, {"end_utc", endUtc},
+            {"participants", people}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        if (agendaName == QStringLiteral("calendarMonthAgenda"))
+            click(window, view("viewTabMonth"));
+        QTRY_VERIFY_WITH_TIMEOUT(view(agendaName), 5000);
+        QPointer<QQuickItem> row;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QQuickItem *first = nullptr;
+            QMetaObject::invokeMethod(view(agendaName), "itemAtIndex",
+                Q_RETURN_ARG(QQuickItem *, first), Q_ARG(int, 0));
+            row = first;
+            return row && row->isVisible() && row->width() > 0;
+        })(), 5000);
+        click(window, row);
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        QCOMPARE(view("calendarDetailTitle")->property("text").toString(),
+                 QStringLiteral("Design sync"));
+        const QDateTime start = QDateTime::fromString(startUtc, Qt::ISODateWithMs).toLocalTime();
+        const QDateTime end = QDateTime::fromString(endUtc, Qt::ISODateWithMs).toLocalTime();
+        QString expected = start.toString("ddd, dd.MM.yyyy HH:mm");
+        expected += start.date() == end.date() ? end.toString(" - HH:mm")
+                                               : end.toString(" - dd.MM HH:mm");
+        QCOMPARE(view("calendarDetailTime")->property("text").toString(), expected);
+        QCOMPARE(view("calendarDetailLocation")->property("text").toString(),
+                 QStringLiteral("Meeting room 4 <img src=\"http://inval.id/x.png\" onerror=\"x\">"));
+        // Review on #907: event-supplied text is PLAIN format - rich-text
+        // markup must never be interpreted (a remote <img> would be fetched
+        // on the viewer's client) and must reach the label verbatim.
+        QCOMPARE(view("calendarDetailLocation")->property("textFormat").toInt(),
+                 0 /* Text.PlainText */);
+        QVERIFY(view("calendarDetailParticipant-0"));
+        QCOMPARE(view("calendarDetailParticipant-0")->property("textFormat").toInt(),
+                 0 /* Text.PlainText */);
+        QVERIFY(view("calendarDetailParticipant-2"));
+        QVERIFY(!view("calendarDetailParticipant-3"));
+        QTRY_VERIFY(view("calendarDetailParticipantsOverflow")->isVisible());
+        QCOMPARE(view("calendarDetailParticipantsOverflow")->property("text").toString(),
+                 QStringLiteral("+2 more"));
+        click(window, view("calendarDetailClose"));
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
+    // Review on #907: a long server-supplied location must not grow the card
+    // past the window (centering then placed the close button outside the
+    // page). The card caps to the page height and its body scrolls instead.
+    void calendarDetailLongLocationStaysWithinWindowAndScrolls()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        QString longLocation = QStringLiteral("Exordos HQ, Building C, Floor 3, Room 42 - ");
+        while (longLocation.length() < 3000)
+            longLocation += QStringLiteral(
+                "dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor. ");
+        const QJsonObject event{
+            {"uuid", "3c9d8b77-2f4e-4c1a-8e5b-9d0a6c4b8e11"},
+            {"day", day}, {"start", "09:00"}, {"end", "10:00"},
+            {"title", "Site walk"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"location", longLocation},
+            {"all_day", false}, {"start_utc", day + "T09:00:00Z"},
+            {"end_utc", day + "T10:00:00Z"}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-3c9d8b77-2f4e-4c1a-8e5b-9d0a6c4b8e11");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        auto *card = view("calendarEventDetail"); QVERIFY(card);
+        // The 3000-char location wraps across several polish passes; on a loaded
+        // CI shard the scroller reports its pre-wrap contentHeight for a frame
+        // after the card is already visible (one-shot reads raced red in CI
+        // part12, same family as #914). Re-look-up inside the wait and wait for
+        // the settled overflowing content instead of one pre-relayout frame.
+        QQuickItem *scroller = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            scroller = view("calendarDetailScroller");
+            return scroller != nullptr
+                && scroller->property("contentHeight").toDouble()
+                    > scroller->property("height").toDouble();
+        })(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(card->height() <= window->contentItem()->height(), 2000);
+        auto *closeButton = view("calendarDetailClose"); QVERIFY(closeButton);
+        const QPointF closePos = closeButton->mapToScene(QPointF(0, 0));
+        QVERIFY2(closePos.y() >= 0.0
+                 && closePos.y() + closeButton->height() <= window->contentItem()->height(),
+                 qPrintable(QStringLiteral("close button scene y=%1, window h=%2, card h=%3")
+                     .arg(closePos.y()).arg(window->contentItem()->height()).arg(card->height())));
+        // Closing still works from the visible header row.
+        click(window, closeButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
+    // Review round 2 on #907: WordWrap cannot break an unbreakable token
+    // (a URL-like run with no spaces): the single oversized word lays out on
+    // one line, overflows the scroller viewport, and the horizontal scrollbar
+    // is off - the text is clipped and unreadable. The location must wrap the
+    // token within the available width (Text.Wrap).
+    void calendarDetailUnbreakableLocationTokenWrapsWithinCard()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        QString token = QStringLiteral("https://exordos.com/meet/x?ref=");
+        while (token.length() < 2000)
+            token += QStringLiteral("9kQ3tL7wZ2pR8mN5vB1xC");
+        const QJsonObject event{
+            {"uuid", "5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34"},
+            {"day", day}, {"start", "11:00"}, {"end", "12:00"},
+            {"title", "Token stress"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"location", token},
+            {"all_day", false}, {"start_utc", day + "T11:00:00Z"},
+            {"end_utc", day + "T12:00:00Z"}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        auto *location = view("calendarDetailLocation"); QVERIFY(location);
+        auto *timeRow = view("calendarDetailTime"); QVERIFY(timeRow);
+        // WordWrap lays the 2k-char token out on ONE overflowing line (height
+        // ~= one line); a wrapped label covers it in many lines. Compare the
+        // location height against the same-font sibling instead of hardcoded
+        // font metrics (host-metric oracles are the documented trap).
+        QTRY_VERIFY_WITH_TIMEOUT(location->height() > 5.0 * timeRow->height(), 2000);
+        // The wrapped lines stay inside the card: the card itself is capped
+        // to the window and the close button remains on screen.
+        auto *card = view("calendarEventDetail"); QVERIFY(card);
+        QVERIFY(card->height() <= window->contentItem()->height());
+        auto *closeButton = view("calendarDetailClose"); QVERIFY(closeButton);
+        const QPointF closePos = closeButton->mapToScene(QPointF(0, 0));
+        QVERIFY2(closePos.y() >= 0.0
+                 && closePos.y() + closeButton->height() <= window->contentItem()->height(),
+                 qPrintable(QStringLiteral("close button scene y=%1, window h=%2, card h=%3")
+                     .arg(closePos.y()).arg(window->contentItem()->height()).arg(card->height())));
+        click(window, closeButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
+    // Issue #907: an all-day event shows the date only (no times), and an
+    // event without a location renders the graceful fallback text instead of
+    // a blank row.
+    void calendarDetailAllDayShowsDateOnlyWithLocationFallback()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        const QJsonObject event{
+            {"uuid", "2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8"},
+            {"day", day}, {"start", ""}, {"end", ""},
+            {"title", "Offsite"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"all_day", true},
+            {"participants", QJsonArray{QStringLiteral("Anna"), QStringLiteral("Boris")}}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        QCOMPARE(view("calendarDetailTime")->property("text").toString(),
+                 QDate::currentDate().toString("ddd, dd.MM.yyyy"));
+        QVERIFY(!view("calendarDetailTime")->property("text").toString().contains(':'));
+        QCOMPARE(view("calendarDetailLocation")->property("text").toString(),
+                 QStringLiteral("No location specified"));
+        QVERIFY(view("calendarDetailParticipant-0"));
+        QVERIFY(view("calendarDetailParticipant-1"));
+        QVERIFY(!view("calendarDetailParticipant-2"));
+        // The overflow label is hidden for a two-participant event, so the
+        // visibility-filtering lookup returns null for it: fetch it through the
+        // plain item() helper and assert invisibility on the real item.
+        auto *overflow = item(window->contentItem(),
+                              QStringLiteral("calendarDetailParticipantsOverflow"));
+        QVERIFY(overflow);
+        QVERIFY(!overflow->isVisible());
+    }
 };
 
 
