@@ -23139,6 +23139,7 @@ quint64 NativeController::beginTopicSummaryOp(const QString &key)
     m_topicSummarySettingsStatus.clear();
     m_topicSummarySettingsError.clear();
     m_topicSummarySettingsErrorOps.clear();
+    m_topicSummarySettingsErrorKey.clear();
     emit topicSummaryStateChanged();
     return token;
 }
@@ -23181,36 +23182,53 @@ void NativeController::interruptTopicSummaryOps()
             interruptedFamilies.append(family);
     }
     interruptedFamilies.sort();
+    // Finding 4693632013 companion: the dialog retires an in-flight write on
+    // the exact errored key, so the sweep must attribute the interruption to a
+    // retired WRITE key when one exists (sorted pick for determinism).
+    QStringList interruptedWrites;
+    for (const auto &key : m_topicSummaryOps.keys())
+        if (key.startsWith(QLatin1String("endpoint-"))) interruptedWrites.append(key);
+    interruptedWrites.sort();
+    const QString interruptedWriteKey =
+        interruptedWrites.isEmpty() ? QString() : interruptedWrites.first();
     m_topicSummaryOps.clear();
     m_topicSummarySettingsBusy = false;
     setTopicSummaryStatusOps(QStringLiteral("error"), QStringLiteral("interrupted"),
-        interruptedFamilies);
+        interruptedFamilies, interruptedWriteKey);
 }
 
 void NativeController::setTopicSummaryStatus(const QString &status, const QString &error,
-    const QString &errorOp)
+    const QString &errorOp, const QString &errorKey)
 {
+    // errorKey defaults to the family key: read sites keep their "endpoints"/
+    // "gates" attribution, write sites pass the exact op key (finding 4693632013).
     setTopicSummaryStatusOps(status, error,
-        errorOp.isEmpty() ? QStringList{} : QStringList{errorOp});
+        errorOp.isEmpty() ? QStringList{} : QStringList{errorOp},
+        errorKey.isEmpty() ? errorOp : errorKey);
 }
 
 void NativeController::setTopicSummaryStatusOps(const QString &status, const QString &error,
-    const QStringList &errorOps)
+    const QStringList &errorOps, const QString &errorKey)
 {
     if (m_topicSummarySettingsStatus == status && m_topicSummarySettingsError == error) {
         // Same visible state and producers: a re-notify would only add traffic
         // pins. A different producer set is a visible change though - the error
         // bands bind on topicSummarySettingsErrorOps (dialog gates on it), so
         // the ledger switch must be announced or the bands stay bound to the
-        // first producers (exo-review finding on #829).
-        if (m_topicSummarySettingsErrorOps == errorOps) return;
+        // first producers (exo-review finding on #829). The exact errored key
+        // rides the same rule: two same-kind write failures of different
+        // endpoints must re-announce or the retirement gate keeps the stale key.
+        if (m_topicSummarySettingsErrorOps == errorOps
+            && m_topicSummarySettingsErrorKey == errorKey) return;
         m_topicSummarySettingsErrorOps = errorOps;
+        m_topicSummarySettingsErrorKey = errorKey;
         emit topicSummaryStateChanged();
         return;
     }
     m_topicSummarySettingsStatus = status;
     m_topicSummarySettingsError = error;
     m_topicSummarySettingsErrorOps = errorOps;
+    m_topicSummarySettingsErrorKey = errorKey;
     emit topicSummaryStateChanged();
 }
 
@@ -23413,11 +23431,13 @@ QStringList NativeController::topicSummaryEndpointValidationErrors(const QVarian
 bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
 {
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"),
+            QStringLiteral("endpoint-new"));
         return false;
     }
     if (!topicSummaryEndpointValidationErrors(form, true).isEmpty()) {
-        setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"));
+        setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"),
+            QStringLiteral("endpoint-new"));
         return false;
     }
     if (m_topicSummaryCreateNeedsReconcile) {
@@ -23450,7 +23470,7 @@ bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
         [this, token, owner, body](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoint-new", token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints"), QStringLiteral("endpoint-new")); return; }
         QVariantMap row;
         if (!response.data.isNull() && topicSummaryEndpointRow(response.data.toObject(), row)) {
             m_topicSummaryEndpoints.append(row);
@@ -23476,13 +23496,14 @@ bool NativeController::createTopicSummaryEndpoint(const QVariantMap &form)
 
 bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVariantMap &form)
 {
+    const auto exactKey = QStringLiteral("endpoint-") + uuid;
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"), exactKey);
         return false;
     }
-    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints")); return false; }
+    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"), exactKey); return false; }
     if (!topicSummaryEndpointValidationErrors(form, false).isEmpty()) {
-        setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"));
+        setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"), exactKey);
         return false;
     }
     // Partial update: only the fields the caller actually carries, and never an
@@ -23499,7 +23520,7 @@ bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVa
             if (!value.toString().isEmpty()) body.insert(field, value.toString());
         } else body.insert(field, QJsonValue::fromVariant(value));
     }
-    if (body.isEmpty()) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints")); return false; }
+    if (body.isEmpty()) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"), exactKey); return false; }
     const auto token = beginTopicSummaryOp("endpoint-" + uuid);
     if (!token) return false;
     const auto owner = ownerKey();
@@ -23507,7 +23528,7 @@ bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVa
         [this, token, owner, uuid, body](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints"), QStringLiteral("endpoint-") + uuid); return; }
         for (auto &entry : m_topicSummaryEndpoints) {
             auto row = entry.toMap();
             if (row.value("uuid").toString() != uuid) continue;
@@ -23525,11 +23546,12 @@ bool NativeController::updateTopicSummaryEndpoint(const QString &uuid, const QVa
 
 void NativeController::deleteTopicSummaryEndpoint(const QString &uuid)
 {
+    const auto exactKey = QStringLiteral("endpoint-") + uuid;
     if (!authenticated() || !m_session->canManageSummaryEndpoints()) {
-        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"));
+        setTopicSummaryStatus("error", "forbidden", QStringLiteral("endpoints"), exactKey);
         return;
     }
-    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints")); return; }
+    if (!isUuid(uuid)) { setTopicSummaryStatus("error", "invalid", QStringLiteral("endpoints"), exactKey); return; }
     const auto token = beginTopicSummaryOp("endpoint-" + uuid);
     if (!token) return;
     const auto owner = ownerKey();
@@ -23537,7 +23559,7 @@ void NativeController::deleteTopicSummaryEndpoint(const QString &uuid)
         [this, token, owner, uuid](const ApiResult &response) {
         const bool current = finishTopicSummaryOp("endpoint-" + uuid, token);
         if (!current || !authenticated() || ownerKey() != owner) return;
-        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints")); return; }
+        if (!response.ok()) { setTopicSummaryStatus("error", topicSummaryErrorKind(response), QStringLiteral("endpoints"), QStringLiteral("endpoint-") + uuid); return; }
         for (int i = 0; i < m_topicSummaryEndpoints.size(); ++i) {
             if (m_topicSummaryEndpoints.at(i).toMap().value("uuid").toString() == uuid) {
                 m_topicSummaryEndpoints.removeAt(i);
