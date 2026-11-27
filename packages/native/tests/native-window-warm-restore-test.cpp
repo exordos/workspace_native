@@ -68,12 +68,18 @@ private slots:
         };
         fixture.users = [&](const Request &) { return Response{users}; };
         fixture.aggregateMessages = true;
+        bool holdHistory = true;
+        QList<std::function<void()>> pendingHistory;
         fixture.messages = [&](const Request &r) {
             const QUrlQuery query(r.target);
             const auto requestedTopic = query.queryItemValue("topic_uuid");
-            return Response{query.queryItemValue("stream_uuid") == streamId
-                && (requestedTopic.isEmpty() || requestedTopic == topicId)
-                && !query.hasQueryItem("mentioned") ? history : QJsonArray{}};
+            if (query.queryItemValue("stream_uuid") != streamId
+                || (!requestedTopic.isEmpty() && requestedTopic != topicId)
+                || query.hasQueryItem("mentioned")) return Response{QJsonArray{}};
+            Response response{history};
+            if (holdHistory && requestedTopic.isEmpty())
+                response.defer = [&](std::function<void()> deliver) { pendingHistory.append(std::move(deliver)); };
+            return response;
         };
         fixture.realtime = [](const Request &r) {
             if (r.target.path().endsWith("/epoch/"))
@@ -143,6 +149,9 @@ private slots:
         QTRY_VERIFY(lastBubble() && lastBubble()->isVisible()
             && list->boundingRect().contains(lastBubble()->mapToItem(list, lastBubble()->boundingRect().center())));
         const qint64 firstHistoryMs = startup.elapsed();
+        QTRY_VERIFY(!pendingHistory.isEmpty());
+        holdHistory = false;
+        for (const auto &deliver : std::as_const(pendingHistory)) deliver();
         // Include asynchronous revalidation, viewport positioning and deferred delegates.
         QTest::qWait(1500);
         const auto gaps = sampler.summary();

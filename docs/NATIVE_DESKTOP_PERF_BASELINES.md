@@ -118,9 +118,10 @@ The `native-native-window-warm-restore` CTest opens the actual Qt Quick
 window. It resumes the saved account through `WorkspaceSessions`, using a
 temporary SQLite cache, a loopback HTTPS/WebSocket server, 120 channels,
 800 user records, 364 topics in the saved channel and 100 messages. The
-fixture holds the refresh grant until the cached channel is visible. It then
-checks the restored aggregate route, the last message in the viewport, and
-the reaction control when the pointer enters that message.
+fixture holds the refresh grant until the cached channel is visible. Once
+the session is authenticated it holds history revalidation until the last
+cached message appears in the restored aggregate viewport. It then releases
+the network replies and checks the reaction control on hover.
 
 The `WARM_RESTORE` JSON line records time from loading the window to its
 first exposure and to visible history. Its 10 ms `GuiStallSampler` starts

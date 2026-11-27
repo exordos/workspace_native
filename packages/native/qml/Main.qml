@@ -11399,8 +11399,7 @@ component NativeMentionChip: Item {
                         }
                         Loader {
                             id: reactionLoader
-                            width: 0
-                            height: 0
+                            // NativeQuickReactions owns its anchor geometry and extends around that point.
                             x: messageRow.own ? 0 : parent.width
                             y: parent.height + 4
                             z: 3
