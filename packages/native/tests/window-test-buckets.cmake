@@ -182,6 +182,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_7
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     alreadyInstalledUpdateOffersExplicitRestart
+    calendarGridsSupportKeyboardDateSelection
     callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady
     callWindowLiveParticipantCountArrivesFromEmbedPageEvents
     channelInfoTopicRowsNavigateAndCollapse
