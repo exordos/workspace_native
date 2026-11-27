@@ -52003,6 +52003,173 @@ private slots:
         QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
     }
 
+    // Issue #946 witness: the channel-info member row fill (NativeChannelInfo.qml
+    // cardHover) must respond to the pointer over the row's text block, not only
+    // over the bare card background behind the labels. The witness moves the
+    // pointer to the member NAME center (the sibling claimant point) and asserts
+    // the hover-driven fill change, then pins the revert after the pointer leaves.
+    void channelInfoMemberRowFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        // Members arrive asynchronously with the info fetch: the lookup must be
+        // re-run inside the wait (#718 wrapped-assignment QTRY), never one-shot.
+        const QString prefix = QStringLiteral("channelInfoMember-");
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
+        const QString suffix = row->objectName().mid(prefix.size());
+        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+        QVERIFY(name);
+        const QColor before = row->property("color").value<QColor>();
+        QVERIFY(before.isValid());
+        QTest::mouseMove(scene.window,
+            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
+        // Neutral corner away from the drawer: the fill must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
+    }
+
+    // Issue #946 site 2 witness: the member-row remove button is opacity-0 until
+    // the row hover group claims (NativeChannelInfo.qml removeButton), so the
+    // reveal is driven by the same `cardHover` MouseArea as the row fill. The
+    // pointer goes to the member NAME center (sibling claimant point) and the
+    // button opacity must animate in, then out again when the pointer leaves.
+    void channelInfoRemoveButtonRevealsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        const QString prefix = QStringLiteral("channelInfoMember-");
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
+        const QString suffix = row->objectName().mid(prefix.size());
+        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+        QVERIFY(name);
+        auto *remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
+        QVERIFY(remove);
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 2000);
+        QTest::mouseMove(scene.window,
+            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 3000);
+        // Neutral corner away from the drawer: the reveal must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
+    }
+
+    // Issue #946 site 3 witness: the add-members picker option fill is driven by
+    // `optionArea` (NativeChannelInfo.qml :837), a MouseArea under the option
+    // name Text. The pointer to the option NAME center (sibling claimant point)
+    // must switch the row fill from transparent to the active surface, and the
+    // fill must revert when the pointer leaves.
+    void addMembersOptionFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QVERIFY(visibleItem("channelInfoAddButton"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        const QString optionId = scene.fixture.daveUser;
+        auto *option = visibleItem(QStringLiteral("addMembersOption-") + optionId);
+        QVERIFY(option);
+        auto *label = visibleItem(QStringLiteral("addMembersOptionName-") + optionId);
+        QVERIFY(label);
+        // The fill rect is the delegate's first child (declared before the
+        // MouseArea and the Texts); unread fill = transparent (alpha 0).
+        auto *fill = option->childItems().value(0);
+        QVERIFY(fill);
+        QVERIFY(fill->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(scene.window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() != 0, 2000);
+        // Leaving the dialog area must revert the fill.
+        QTest::mouseMove(scene.window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
+    // Issue #946 site 5 witness: the logs-modal close button (NativeDiagnosticsPage.qml
+    // logsCloseButton, :1350) paints its fill through `logsCloseMouseArea.containsMouse`
+    // while its Image glyph sits on top. The pointer to the glyph center must
+    // switch the fill in and revert it when the pointer leaves.
+    void logsModalCloseButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowOwnStatusFixture fixture;
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section() == QStringLiteral("diagnostics"), 4000);
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        auto *closeButton = visibleItem("logsCloseButton");
+        QVERIFY(closeButton);
+        QVERIFY(closeButton->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(window,
+            closeButton->mapToScene(QPointF(closeButton->width() / 2.0,
+                closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() != 0, 2000);
+        // Neutral corner: the fill must revert.
+        QTest::mouseMove(window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
+    // Issue #946 site 6 witness: the call-window header ShellIconButton glyph
+    // fill (ShellIconButton.qml `area`, :21) must flip on a pointer over the
+    // glyph center and revert once the pointer leaves the button. The button
+    // color is "transparent" at rest and Qt.alpha(bg, 0.5) on hover.
+    void callWindowShellButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        WindowCallFixture fixture; fixture.meetConfigured = true;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(QStringLiteral("en")); preferences.setMode(QStringLiteral("light"));
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Call window shell teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(fixture.start(controller));
+        window->resize(1280, 800);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.meetHost() == QStringLiteral("https://meet.example.com"), 2000);
+        clickCallCard(window);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.calls()->hasActiveCall(), 2000);
+        controller.callWindow()->apiLoadSucceeded();
+        QQuickWindow *shell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((shell = standaloneCallWindow()) != nullptr, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(shell->isVisible(), 2000);
+        QVERIFY(QTest::qWaitForWindowExposed(shell));
+        auto *closeButton = visibleItem(shell->contentItem(), QStringLiteral("callWindowCloseButton"));
+        QVERIFY(closeButton);
+        QCOMPARE(closeButton->property("color").value<QColor>().alpha(), 0);
+        QTest::mouseMove(shell, closeButton->mapToScene(
+            QPointF(closeButton->width() / 2.0, closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() > 0, 2000);
+        // Header far corner: the fill must revert.
+        QTest::mouseMove(shell, QPoint(20, 20));
+        QTRY_VERIFY_WITH_TIMEOUT(closeButton->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
 };
 
 
