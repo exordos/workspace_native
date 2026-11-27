@@ -39,6 +39,7 @@ public:
     QString state() const { return m_state; }
     QString selectedMessageUuid() const { return m_selectedMessage; }
 
+    void setProject(const QString &project);
     void reset();
     Q_INVOKABLE QVariantList describeAttachments(const QList<QUrl> &urls) const;
     Q_INVOKABLE void refresh();
@@ -61,6 +62,7 @@ private:
     quint64 m_ownerGeneration = 0;
 
     ApiClient *m_api;
+    QString m_project;
     QVariantList m_folders;
     QVariantList m_messages;
     QString m_folderId = QStringLiteral("inbox");

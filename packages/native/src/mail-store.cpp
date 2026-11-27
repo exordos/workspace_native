@@ -129,6 +129,15 @@ MailStore::MailStore(ApiClient *api, QObject *parent)
     });
 }
 
+void MailStore::setProject(const QString &project)
+{
+    if (m_project == project)
+        return;
+    m_project = project;
+    if (m_state != QStringLiteral("idle"))
+        reset();
+}
+
 void MailStore::reset()
 {
     ++m_ownerGeneration;
@@ -207,11 +216,23 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
 
         QVariantList items;
         QString preferred;
+        const auto selectedFolder = std::find_if(self->m_folders.cbegin(), self->m_folders.cend(),
+            [self](const QVariant &row) { return row.toMap().value("id") == self->m_folderId; });
+        const auto selectedAccount = selectedFolder != self->m_folders.cend()
+            ? selectedFolder->toMap().value("account").toString() : QString();
         QSet<QString> seen;
         for (const auto &value : rows) {
             const auto object = value.toObject();
-            const auto id = object.value(QStringLiteral("uuid")).toString();
-            if (id.isEmpty() || seen.contains(id))
+            const auto id = object.value("uuid").toString();
+            const auto externalAccount = object.value("external_account_uuid");
+            const auto account = externalAccount.toString();
+            if (self->m_project.isEmpty() || object.value("project_id").toString() != self->m_project
+                || !isUuid(id) || seen.contains(id))
+                continue;
+            if (!externalAccount.isNull() && !externalAccount.isUndefined() && !isUuid(account))
+                continue;
+            if (!folders && (selectedFolder == self->m_folders.cend()
+                || object.value("folder_uuid").toString() != self->m_folderId || account != selectedAccount))
                 continue;
             seen.insert(id);
             if (folders) {
@@ -220,8 +241,8 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
                 items.append(QVariantMap{{"id", id}, {"title", object.value("name").toString()},
                                          {"unread", object.value("unread_count").toInt()},
                                          {"kind", object.value("kind").toString()},
-                                         {"account", object.value("external_account_uuid").toString()}});
-            } else if (object.value(QStringLiteral("folder_uuid")).toString() == self->m_folderId) {
+                                         {"account", account}});
+            } else {
                 items.append(workspaceMessage(object));
             }
         }
@@ -361,6 +382,9 @@ void MailStore::applyMessageAction(const QString &action, const QString &targetF
 
 void MailStore::selectFolder(const QString &folder)
 {
+    if (m_workspaceMailbox && std::none_of(m_folders.cbegin(), m_folders.cend(),
+        [&folder](const QVariant &row) { return row.toMap().value("id") == folder; }))
+        return;
     m_actionError.clear();
     m_folderId = folder;
     loadMessages();
