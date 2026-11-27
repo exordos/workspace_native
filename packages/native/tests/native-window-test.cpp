@@ -51529,6 +51529,135 @@ private slots:
         QVERIFY(controller.calendarEvents().isEmpty());
     }
 
+    void calendarEditsAndDeletesSampleMeeting_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<QString>("mode");
+        QTest::newRow("en-light") << QStringLiteral("en") << QStringLiteral("light");
+        QTest::newRow("ru-dark") << QStringLiteral("ru") << QStringLiteral("dark");
+    }
+
+    void calendarEditsAndDeletesSampleMeeting()
+    {
+        QFETCH(QString, locale);
+        QFETCH(QString, mode);
+        WindowCalendarRouteFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        preferences.setMode(mode);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view("calendarSampleToggle"));
+        click(window, view("calendarSampleToggle"));
+        QTRY_VERIFY(controller.sampleCalendar());
+        const auto day = QDate::currentDate();
+        const QDateTime start(day, QTime(9, 0));
+        const QDateTime end(day, QTime(10, 0));
+        const QVariantMap original = {{"title", "Planning"}, {"calendar", "work"},
+            {"start", start}, {"end", end}, {"location", "Room 5"},
+            {"participants", QStringList({"Ari", "Noor"})}};
+        QVERIFY(controller.saveSampleMeeting({}, original));
+        const auto uuid = controller.calendarEvents().first().toMap().value("uuid").toString();
+        const auto rowName = "calendarAgendaRow-" + uuid;
+        QTRY_VERIFY(view(rowName));
+        click(window, view(rowName));
+        QTRY_VERIFY(view("calendarDetailEdit"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QStringLiteral("Planning"));
+        QCOMPARE(view("calendarMeetingStartTime")->property("text").toString(), QStringLiteral("09:00"));
+        QCOMPARE(view("calendarMeetingLocation")->property("text").toString(), QStringLiteral("Room 5"));
+        QCOMPARE(view("calendarMeetingParticipants")->property("text").toString(), QStringLiteral("Ari\nNoor"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Disposable draft")));
+        click(window, view("calendarMeetingCancel"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QCOMPARE(view("calendarDetailTitle")->property("text").toString(), QStringLiteral("Planning"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QStringLiteral("Planning"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QString()));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Updated plan")));
+        QVERIFY(view("calendarMeetingStartTime")->setProperty("text", QStringLiteral("09:30")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QVERIFY(!view("calendarEventDetail"));
+        QCOMPARE(controller.calendarEvents().size(), 1);
+        const auto updated = controller.calendarEvents().first().toMap();
+        QCOMPARE(updated.value("uuid").toString(), uuid);
+        QCOMPARE(updated.value("title").toString(), QStringLiteral("Updated plan"));
+        QCOMPARE(QDateTime::fromString(updated.value("startUtc").toString(), Qt::ISODate).toLocalTime(),
+                 QDateTime(day, QTime(9, 30)));
+        click(window, view("viewTabWeek"));
+        const auto chipName = "weekChip-" + uuid;
+        QTRY_VERIFY(view(chipName));
+        QCOMPARE(view(chipName)->property("text").toString(), QStringLiteral("09:30 Updated plan"));
+        click(window, view(chipName));
+        QTRY_VERIFY(view("calendarDetailDelete"));
+        click(window, view("calendarDetailDelete"));
+        QTRY_VERIFY(view("calendarConfirmCancel"));
+        click(window, view("calendarConfirmCancel"));
+        QTRY_VERIFY(!view("calendarConfirmDelete"));
+        QCOMPARE(controller.calendarEvents().size(), 1);
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingDelete"));
+        click(window, view("calendarMeetingDelete"));
+        QTRY_VERIFY(view("calendarConfirmDelete"));
+        click(window, view("calendarConfirmDelete"));
+        QTRY_VERIFY(controller.calendarEvents().isEmpty());
+        QTRY_VERIFY(!view(chipName));
+        QVERIFY(!view("calendarConfirmDelete"));
+        QVERIFY(!view("calendarMeetingSave"));
+        QVERIFY(!view("calendarEventDetail"));
+        QVERIFY(!controller.saveSampleMeeting(uuid, original));
+        QVERIFY(!controller.deleteSampleMeeting(uuid));
+
+        // New York's 01:15 occurs twice on this date. Pin the exact instants
+        // even on runners in another zone, where dropping seconds still fails.
+        const auto first = QDateTime::fromString("2026-11-01T05:15:21Z", Qt::ISODate);
+        const auto second = QDateTime::fromString("2026-11-01T06:15:42Z", Qt::ISODate);
+        auto repeated = original;
+        repeated.insert("start", first);
+        repeated.insert("end", second);
+        QVERIFY(controller.saveSampleMeeting({}, repeated));
+        const auto repeatId = controller.calendarEvents().first().toMap().value("uuid").toString();
+        click(window, view("viewTabDay"));
+        QVERIFY(view("calendarSectionPage")->setProperty("selectedDate", first.toLocalTime()));
+        const auto repeatRow = "calendarAgendaRow-" + repeatId;
+        QTRY_VERIFY(view(repeatRow));
+        click(window, view(repeatRow));
+        QTRY_VERIFY(view("calendarDetailEdit"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Renamed")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        const auto retained = controller.calendarEvents().first().toMap();
+        QCOMPARE(retained.value("title").toString(), QStringLiteral("Renamed"));
+        QCOMPARE(QDateTime::fromString(retained.value("startUtc").toString(), Qt::ISODate), first);
+        QCOMPARE(QDateTime::fromString(retained.value("endUtc").toString(), Qt::ISODate), second);
+
+        click(window, view("calendarSampleToggle"));
+        QVERIFY(!controller.saveSampleMeeting({}, original));
+    }
+
     // Issue #907 (Part of #882): clicking an agenda row opens the event detail
     // card; the stored UTC instants must render converted to the client zone
     // (DST-correct by construction - expectations derive from QDateTime

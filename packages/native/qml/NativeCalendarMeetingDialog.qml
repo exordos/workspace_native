@@ -10,9 +10,14 @@ Dialog {
     required property var colors
     required property var saveMeeting
     signal saved(date start, string calendar)
+    signal deleteRequested(string uuid, string title)
+    property string editingUuid: ""
+    property string originalTitle: ""
+    property string originalStartUtc: ""
+    property string originalEndUtc: ""
     property string errorMessage: ""
 
-    title: qsTr("New meeting")
+    title: editingUuid ? qsTr("Edit meeting") : qsTr("New meeting")
     modal: true
     focus: true
     anchors.centerIn: parent
@@ -26,21 +31,34 @@ Dialog {
         border.color: form.colors["border-subtle"]
     }
 
-    function openForDate(selectedDate) {
-        subject.text = ""
-        people.text = ""
-        calendarBox.currentIndex = 0
-        startDate.text = Qt.formatDate(selectedDate, "yyyy-MM-dd")
-        endDate.text = startDate.text
-        startTime.text = "09:00"
-        endTime.text = "10:00"
-        location.text = ""
+    function openForDate(selectedDate, meeting) {
+        editingUuid = meeting ? meeting.uuid : ""
+        originalTitle = meeting ? meeting.title : ""
+        subject.text = originalTitle
+        people.text = meeting ? meeting.participants.join("\n") : ""
+        calendarBox.currentIndex = meeting && meeting.calendar === "personal" ? 1 : 0
+        originalStartUtc = meeting ? meeting.startUtc : ""
+        originalEndUtc = meeting ? meeting.endUtc : ""
+        const start = meeting ? new Date(originalStartUtc) : selectedDate
+        const end = meeting ? new Date(originalEndUtc) : selectedDate
+        startDate.text = Qt.formatDate(start, "yyyy-MM-dd")
+        endDate.text = Qt.formatDate(end, "yyyy-MM-dd")
+        startTime.text = meeting ? Qt.formatTime(start, "HH:mm") : "09:00"
+        endTime.text = meeting ? Qt.formatTime(end, "HH:mm") : "10:00"
+        location.text = meeting ? meeting.location : ""
         errorMessage = ""
         open()
     }
 
-    function localDateTime(day, clock) {
+    function localDateTime(day, clock, originalUtc) {
         const value = day + " " + clock
+        if (originalUtc) {
+            const original = new Date(originalUtc)
+            // The repeated hour at a DST transition has two valid instants.
+            // A title-only edit must also preserve seconds hidden by the form.
+            if (Qt.formatDateTime(original, "yyyy-MM-dd HH:mm") === value)
+                return original
+        }
         const instant = Date.fromLocaleString(Qt.locale("C"), value, "yyyy-MM-dd HH:mm")
         return !isNaN(instant.getTime()) && Qt.formatDateTime(instant, "yyyy-MM-dd HH:mm") === value
             ? instant : null
@@ -52,15 +70,15 @@ Dialog {
             subject.forceActiveFocus()
             return
         }
-        const start = localDateTime(startDate.text, startTime.text)
-        const end = localDateTime(endDate.text, endTime.text)
+        const start = localDateTime(startDate.text, startTime.text, originalStartUtc)
+        const end = localDateTime(endDate.text, endTime.text, originalEndUtc)
         if (!start || !end || end <= start) {
             errorMessage = qsTr("Enter valid dates and times. The end must be after the start.")
             return
         }
         const calendar = calendarBox.currentIndex === 0 ? "work" : "personal"
         const participants = people.text.split("\n").map(name => name.trim()).filter(name => name.length)
-        if (!saveMeeting({title: subject.text, calendar, start, end,
+        if (!saveMeeting(editingUuid, {title: subject.text, calendar, start, end,
                           location: location.text, participants})) {
             errorMessage = qsTr("The sample calendar is unavailable.")
             return
@@ -178,7 +196,7 @@ Dialog {
             Layout.leftMargin: 20
             Layout.bottomMargin: 16
             highlighted: true
-            text: qsTr("Create meeting")
+            text: form.editingUuid ? qsTr("Save changes") : qsTr("Create meeting")
             onClicked: form.submit()
         }
         Button {
@@ -188,5 +206,14 @@ Dialog {
             onClicked: form.reject()
         }
         Item { Layout.fillWidth: true }
+        Button {
+            objectName: "calendarMeetingDelete"
+            visible: form.editingUuid.length > 0
+            Layout.rightMargin: 20
+            Layout.bottomMargin: 16
+            palette.buttonText: form.colors["danger"]
+            text: qsTr("Delete meeting")
+            onClicked: form.deleteRequested(form.editingUuid, form.originalTitle)
+        }
     }
 }

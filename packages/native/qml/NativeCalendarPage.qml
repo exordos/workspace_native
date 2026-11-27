@@ -19,6 +19,7 @@ FocusScope {
     property var events: []
     required property bool sampleMode
     required property var saveSampleMeeting
+    required property var deleteSampleMeeting
     signal sampleModeRequested(bool enabled)
     onSampleModeChanged: detailEvent = null
     property date selectedDate: new Date()
@@ -463,7 +464,9 @@ FocusScope {
         id: meetingForm
         colors: page.colors
         saveMeeting: page.saveSampleMeeting
+        onDeleteRequested: (uuid, title) => deleteConfirmation.ask(uuid, title)
         onSaved: (start, calendar) => {
+            page.detailEvent = null
             if (page.activeCalendars.indexOf(calendar) < 0)
                 page.activeCalendars = page.activeCalendars.concat([calendar])
             page.selectedDate = start
@@ -483,6 +486,60 @@ FocusScope {
         visible: page.detailEvent !== null
         colors: page.colors
         event: page.detailEvent !== null ? page.detailEvent : ({})
+        editable: page.sampleMode
+        onEditRequested: meetingForm.openForDate(page.selectedDate, page.detailEvent)
+        onDeleteRequested: deleteConfirmation.ask(page.detailEvent.uuid, page.detailEvent.title)
         onClosed: page.detailEvent = null
+    }
+
+    Dialog {
+        id: deleteConfirmation
+        objectName: "calendarDeleteConfirmation"
+        property string meetingUuid: ""
+        property string meetingTitle: ""
+        function ask(uuid, title) {
+            meetingUuid = uuid
+            meetingTitle = title
+            open()
+        }
+        title: qsTr("Delete meeting?")
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(420, page.width - 32)
+        onOpened: keepButton.forceActiveFocus()
+        contentItem: Label {
+            text: qsTr("Delete “%1” from the sample calendar?").arg(deleteConfirmation.meetingTitle)
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            maximumLineCount: 4
+            elide: Text.ElideRight
+        }
+        footer: DialogButtonBox {
+            Button {
+                id: keepButton
+                objectName: "calendarConfirmCancel"
+                text: qsTr("Cancel")
+                onClicked: deleteConfirmation.reject()
+            }
+            Button {
+                objectName: "calendarConfirmDelete"
+                text: qsTr("Delete")
+                palette.buttonText: page.colors["danger"]
+                onClicked: {
+                    if (page.deleteSampleMeeting(deleteConfirmation.meetingUuid)) {
+                        page.detailEvent = null
+                        meetingForm.close()
+                    }
+                    deleteConfirmation.close()
+                }
+            }
+        }
+        Connections {
+            target: page
+            function onVisibleChanged() { if (!page.visible) deleteConfirmation.close() }
+            function onSampleModeChanged() { if (!page.sampleMode) deleteConfirmation.close() }
+        }
     }
 }
