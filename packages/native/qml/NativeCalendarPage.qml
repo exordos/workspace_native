@@ -33,6 +33,13 @@ FocusScope {
         return Qt.locale(uiLocale).toString(d, pattern)
     }
 
+    function selectionDescription(grid) {
+        if (!grid.activeFocus)
+            return "";
+        return grid.effectiveFocusIndex === grid.selectedGridIndex
+            ? qsTr("Selected date") : qsTr("Date not selected");
+    }
+
     signal visibleWindowChanged(string from, string to)
     signal retryRequested()
 
@@ -92,9 +99,29 @@ FocusScope {
             // both onSelectedDateChanged and onGridAnchorChanged) are dropped by
             // the controller-side in-flight / same-loaded-window guards in
             // requestCalendarWindow, exactly as other refresh seams already.
-            const gridStart = weekStart(monthGrid.gridAnchor);
-            visibleWindowChanged(calDate(gridStart),
-                                 calDate(shiftDate(gridStart, 41)));
+            // Round 3: recompute the anchor from the grids' plain state here.
+            // monthGrid.gridAnchor is a binding that only re-evaluates on the
+            // next polish pass, so reading it from onSelectedDateChanged saw a
+            // stale month (diagnosed: adjacent-weeks at(2) window). The
+            // expression below is gridAnchor's own definition, always fresh.
+            const roved = monthGrid.focusDate !== null
+                ? new Date(monthGrid.focusDate.getTime())
+                : new Date(selectedDate.getTime());
+            const monthFirst = monthStart(selectedDate);
+            const anchorIdx = dayDiff(monthFirst, roved) + (monthFirst.getDay() + 6) % 7;
+            const gridStart = weekStart(anchorIdx < 0 || anchorIdx >= 42
+                ? monthStart(roved) : monthFirst);
+            const matrixEnd = shiftDate(gridStart, 41);
+            // #952 round 3 (finding 4722544596): the month agenda reads the
+            // SELECTED date, so when the re-anchored matrix no longer covers
+            // the selection (a rove that pulled the grid away from it), the
+            // window extends across the gap - the union of two contiguous
+            // spans is one span. The same-window controller guard keeps this
+            // from adding requests while the selection is inside the matrix.
+            const sel = new Date(selectedDate.getTime());
+            const winFrom = sel.getTime() < gridStart.getTime() ? sel : gridStart;
+            const winTo = sel.getTime() > matrixEnd.getTime() ? sel : matrixEnd;
+            visibleWindowChanged(calDate(winFrom), calDate(winTo));
         }
     }
     onSelectedDateChanged: refreshWindow()
@@ -257,7 +284,7 @@ FocusScope {
                     // cell, and an arrow move that leaves the 42-cell matrix
                     // re-anchors the displayed month instead of clamping.
                     activeFocusOnTab: true
-                    Accessible.role: Accessible.Grid
+                    Accessible.role: Accessible.Table // no Grid role in QAccessible::Role (round-3 gate red)
                     // Equivalent accessible mechanism for the roving focus
                     // (finding 4722010298): while the grid holds keyboard
                     // focus it announces the active cell's date as its name;
@@ -265,6 +292,7 @@ FocusScope {
                     // activeFocus automatically.
                     Accessible.name: miniGrid.activeFocus
                         ? page.localizedCellDate(miniGrid.rovedDate) : ""
+                    Accessible.description: page.selectionDescription(miniGrid)
                     property var focusDate: null
                     readonly property var rovedDate:
                         miniGrid.focusDate !== null ? miniGrid.focusDate : page.selectedDate
@@ -500,9 +528,10 @@ FocusScope {
                         // selects), including the date-based roving state
                         // with selection re-anchor and month-edge re-anchor.
                         activeFocusOnTab: true
-                        Accessible.role: Accessible.Grid
+                        Accessible.role: Accessible.Table // no Grid role in QAccessible::Role (round-3 gate red)
                         Accessible.name: monthGrid.activeFocus
                             ? page.localizedCellDate(monthGrid.rovedDate) : ""
+                        Accessible.description: page.selectionDescription(monthGrid)
                         property var focusDate: null
                         readonly property var rovedDate:
                             monthGrid.focusDate !== null ? monthGrid.focusDate : page.selectedDate

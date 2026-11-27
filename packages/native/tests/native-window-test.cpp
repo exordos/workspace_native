@@ -39430,6 +39430,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
                                                QStringLiteral("dddd, MMMM d, yyyy"));
         QCOMPARE(jan30Iface->text(QAccessible::Name), expectedName);
         QVERIFY(!jan30Iface->state().selected);
+        QVERIFY(gridIface);
+        QCOMPARE(gridIface->text(QAccessible::Description), QStringLiteral("Date not selected"));
         // Enter runs the same selection action: the date moves and the agenda
         // in the same view updates (the fixture's only event is on Jan 30).
         QTest::keyClick(window, Qt::Key_Return);
@@ -39455,6 +39457,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         auto *selectedIface = QAccessible::queryAccessibleInterface(selectedCell);
         QVERIFY(selectedIface);
         QTRY_VERIFY(selectedIface->state().selected);
+        QVERIFY(gridIface);
+        QCOMPARE(gridIface->text(QAccessible::Description), QStringLiteral("Selected date"));
         // exo-review finding 4722010291: Enter selected an adjacent-month
         // date and the grid re-anchored to its month; the roving focus must
         // re-anchor with the grid. Without the fix the stale matrix index (4)
@@ -39520,10 +39524,12 @@ QTRY_VERIFY(create->property("enabled").toBool());
                                 .arg(gridItem->property("effectiveFocusIndex").toInt());
         if (page->property("selectedDate").toDateTime().date() != QDate(2026, 1, 30))
             witnessLeaks << QStringLiteral("4722010314: roaming arrows moved the selection");
-        // exo-review round 2, finding 4722274186: after the edge re-anchor the
-        // fetched event window must follow the DISPLAYED matrix (December 2025:
-        // 2025-12-01..2026-01-11), not stay on the selected date's month -
-        // otherwise the newly displayed cells render without their events.
+        // exo-review round 2, finding 4722274186 (evolved by round 3,
+        // finding 4722544596): after the edge re-anchor the fetched event
+        // window covers the DISPLAYED matrix (December 2025: 2025-12-01..
+        // 2026-01-11) AND still contains the selected date (Jan 30), so both
+        // the newly displayed cells and the selected-date agenda have their
+        // events - the exact window is now the union, 2025-12-01..2026-01-30.
         if (grid == QLatin1String("month"))
         {
             bool windowFollowed = false;
@@ -39532,12 +39538,12 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 QTest::qWait(50);
                 windowFollowed = !fixture.calendarFrom.isEmpty()
                     && fixture.calendarFrom.last() == QStringLiteral("2025-12-01")
-                    && fixture.calendarTo.last() == QStringLiteral("2026-01-11");
+                    && fixture.calendarTo.last() == QStringLiteral("2026-01-30");
             }
             if (!windowFollowed)
                 witnessLeaks << QStringLiteral(
-                    "4722274186: newest recorded window is %1..%2,"
-                    " must be 2025-12-01..2026-01-11 (the displayed matrix)")
+                    "4722274186+4722544596: newest recorded window is %1..%2,"
+                    " must be 2025-12-01..2026-01-30 (matrix plus selection)")
                                     .arg(fixture.calendarFrom.isEmpty()
                                              ? QString() : fixture.calendarFrom.last(),
                                          fixture.calendarTo.isEmpty()
@@ -39570,6 +39576,99 @@ QTRY_VERIFY(create->property("enabled").toBool());
         for (const QString &leak : std::as_const(witnessLeaks))
             qWarning().noquote() << "#952-witness" << leak;
         QCOMPARE(witnessLeaks, QStringList{});
+    }
+
+    // Issue #952 fix round 3, exo-review finding 4722544596: roaming the
+    // roving focus past the month matrix edge re-anchors the displayed month,
+    // but the month agenda keeps reading the SELECTED date - the fetched
+    // window must keep covering that selected date after the re-anchor, or
+    // its events vanish from the agenda. The window-filtering mock below is
+    // what makes the defect observable: only days inside the requested
+    // window are ever served, exactly like a real calendar backend.
+    void calendarMonthEdgeRoamKeepsSelectedDateEvents()
+    {
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        const auto inner = std::move(fixture.server.handler);
+        fixture.server.handler = [&fixture, inner](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/calendar/events")) {
+                const QUrlQuery query(request.target);
+                fixture.calendarFrom.append(query.queryItemValue("from"));
+                fixture.calendarTo.append(query.queryItemValue("to"));
+                const auto from = query.queryItemValue("from");
+                const auto to = query.queryItemValue("to");
+                QJsonArray rows;
+                const auto add = [&](const QString &day, const QString &uuid,
+                                     const QString &title) {
+                    if (day >= from && day <= to)
+                        rows.append(QJsonObject{{"uuid", uuid}, {"day", day},
+                            {"start", "09:00"}, {"end", "10:00"}, {"title", title},
+                            {"calendar", "work"}, {"color_token", "accent"}});
+                };
+                add(QStringLiteral("2026-01-30"),
+                    QStringLiteral("90000000-0000-4000-8000-000000009521"),
+                    QStringLiteral("Adjacent-month review"));
+                add(QStringLiteral("2026-02-10"),
+                    QStringLiteral("90000000-0000-4000-8000-000000009522"),
+                    QStringLiteral("Selected-day sync"));
+                return {rows};
+            }
+            return inner(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage");
+        click(window, view("viewTabMonth"));
+        QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        // Pin February 2026 (as the other calendar cases do): the month matrix
+        // spans 2026-01-26..2026-03-08, so BOTH served events (Jan 30 and the
+        // selected Feb 10) fall inside the fetched window and the agenda shows
+        // exactly the selected day's row.
+        page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0)));
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.calendarFrom.size() >= 3, 5000);
+        auto *agenda = view("calendarMonthAgenda"); QVERIFY(agenda);
+        QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
+        // Enter the month grid with the keyboard (same one-tab-stop entry the
+        // selection case uses) and rove 16 Lefts: from Feb 10 that pushes the
+        // roved date to Jan 25, out of the matrix, and the grid re-anchors to
+        // the January matrix (2025-12-29..2026-02-08).
+        auto *entry = view("calendarFilterPersonal"); QVERIFY(entry);
+        entry->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
+        auto *gridItem = view("calendarMonthGrid"); QVERIFY(gridItem);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
+        for (int i = 0; i < 16; ++i) QTest::keyClick(window, Qt::Key_Left);
+        QTRY_COMPARE(gridItem->property("effectiveFocusIndex").toInt(), 27);
+        // The newest request must still cover the SELECTED date: the January
+        // matrix extended to its end cannot stop before Feb 10, otherwise the
+        // agenda (finding 4722544596) loses the selection's events.
+        bool covered = false;
+        for (int i = 0; i < 60 && !covered; ++i)
+        {
+            QTest::qWait(50);
+            covered = !fixture.calendarFrom.isEmpty()
+                && fixture.calendarFrom.last() == QStringLiteral("2025-12-29")
+                && fixture.calendarTo.last() == QStringLiteral("2026-02-10");
+        }
+        QVERIFY2(covered, qPrintable(QStringLiteral("newest window %1..%2 must be"
+                                                     " 2025-12-29..2026-02-10 (matrix plus selection)")
+            .arg(fixture.calendarFrom.isEmpty() ? QString() : fixture.calendarFrom.last(),
+                 fixture.calendarTo.isEmpty() ? QString() : fixture.calendarTo.last())));
+        // User-visible: the selected day's event survives the edge roam.
+        QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string
