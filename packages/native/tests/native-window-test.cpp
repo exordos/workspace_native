@@ -47864,9 +47864,11 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        // #866 move-aware rows may recreate the delegate during the readiness
+        // wait; resolve by logical identity only after the wait (#921).
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto first = messageId + '-' + returnedId;
@@ -47895,7 +47897,7 @@ private slots:
         QCOMPARE(firstAccessible->text(QAccessible::Description), downloading);
         // A click while the download is active is ignored (lib.ts:26-34).
         const auto actionsWhileActive = downloadActions;
-        click(window, firstCard);
+        clickIncubatedItem(window, "attachmentCard-" + first);
         QVERIFY(!saveDialog->property("visible").toBool());
         QCOMPARE(downloadActions, actionsWhileActive);
         binary(); binary = {};
@@ -47913,7 +47915,7 @@ private slots:
         LicensesExternalProbe probe;
         QDesktopServices::setUrlHandler(QStringLiteral("file"), &probe, "open");
         auto clearHandler = qScopeGuard([] { QDesktopServices::unsetUrlHandler(QStringLiteral("file")); });
-        click(window, card(first));
+        clickIncubatedItem(window, "attachmentCard-" + first);
         QTRY_COMPARE_WITH_TIMEOUT(probe.urls.size(), 1, 5000);
         QCOMPARE(probe.urls.first(), QUrl::fromLocalFile(destination));
         QVERIFY(!saveDialog->property("visible").toBool());
@@ -47939,7 +47941,7 @@ private slots:
         // Clicking Retry restarts the download and the card returns to the ring state.
         failFile = false;
         const auto actionsBeforeRetry = downloadActions;
-        click(window, card(second));
+        clickIncubatedItem(window, "attachmentCard-" + second);
         QTRY_VERIFY(bool(binary));
         QVERIFY(downloadActions > actionsBeforeRetry);
         QTRY_VERIFY(visibleItem(content, "attachmentCardRing-" + second));
