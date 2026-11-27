@@ -202,7 +202,13 @@ void GuiStallSampler::flush() const
     QFile file(m_path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
     const QVariantMap report = summary();
-    file.write(QJsonDocument(QJsonObject::fromVariantMap(report)).toJson(QJsonDocument::Compact));
+    QByteArray payload = QJsonDocument(QJsonObject::fromVariantMap(report)).toJson(QJsonDocument::Compact);
+    if (m_failFlushBytes >= 0) {
+        payload = payload.left(qMax(0, m_failFlushBytes));
+        m_failFlushBytes = -1;
+        m_flushFaultConsumed = true;
+    }
+    file.write(payload);
 }
 
 QVariantMap GuiStallSampler::summary() const

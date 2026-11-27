@@ -50928,6 +50928,51 @@ private slots:
                  qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
     }
 
+    // PR #898 review: the periodic flush must REPLACE the report atomically.
+    // The old flush truncated the destination and only then wrote the payload,
+    // so a live perf probe polling the file in between could read an empty or
+    // partial JSON document. Reproduction: seed the report path with a
+    // previous complete report, then arm the fault seam so the next flush's
+    // write dies after a few bytes (deterministic stand-in for ENOSPC or a
+    // crash between truncate and write completion). The destination must keep
+    // the previous report verbatim, and a later flush must still land a fresh
+    // complete report (the consumed fault must not wedge the sampler).
+    void guiStallSamplerFlushNeverExposesPartialReport()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString report = dir.filePath("stall.json");
+        const QByteArray previous = QJsonDocument::fromVariant(QVariantMap{
+            {QStringLiteral("samples"), 4242},
+            {QStringLiteral("worst_gap_ms"), 7.5}}).toJson(QJsonDocument::Compact);
+        {
+            QFile seed(report);
+            QVERIFY(seed.open(QIODevice::WriteOnly));
+            QVERIFY(seed.write(previous) == previous.size());
+        }
+        GuiStallSampler sampler(report);
+        sampler.failNextFlushWriteForTest(3);
+        // The flush timer fires every 500 ms: wait for the faulted flush to
+        // actually run rather than assuming a duration.
+        QTRY_VERIFY_WITH_TIMEOUT(sampler.flushFaultConsumedForTest(), 5000);
+        const auto readReport = [&report]() {
+            QFile file(report);
+            if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+            return file.readAll();
+        };
+        // The failed write must not touch the destination at all: an empty
+        // file or a 3-byte partial here is the torn report the probe would
+        // reject as invalid JSON.
+        QCOMPARE(QString::fromUtf8(readReport()), QString::fromUtf8(previous));
+        // The fault applies to one flush only: the next cycle must publish the
+        // sampler's own complete report again.
+        QTRY_VERIFY_WITH_TIMEOUT((readReport() != previous), 5000);
+        const QVariantMap fresh = QJsonDocument::fromJson(readReport()).toVariant().toMap();
+        QVERIFY2(fresh.contains(QStringLiteral("samples")),
+                 qPrintable(QString::fromUtf8(readReport())));
+        QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
+    }
+
 };
 
 

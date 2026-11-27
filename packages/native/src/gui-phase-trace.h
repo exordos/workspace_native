@@ -76,11 +76,21 @@ public:
     static GuiStallSampler *startFromEnvironment(QObject *parent);
     QVariantMap summary() const;
 
+    // Test-only fault seam for the atomic-replacement contract (PR #898
+    // review): the next flush's payload is cut to its first byteCount bytes
+    // and the write is then treated as failed - the deterministic stand-in
+    // for ENOSPC or a crash mid-write. The destination must never expose a
+    // partial or empty report to a live reader.
+    void failNextFlushWriteForTest(int byteCount) { m_failFlushBytes = byteCount; }
+    bool flushFaultConsumedForTest() const { return m_flushFaultConsumed; }
+
 private:
     void beat();
     void flush() const;
 
     QString m_path;
+    mutable int m_failFlushBytes = -1;
+    mutable bool m_flushFaultConsumed = false;
     QTimer m_beat;
     QTimer m_flush;
     QElapsedTimer m_sinceBeat;
