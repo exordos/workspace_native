@@ -207,3 +207,13 @@ After an uncertain create the client checks the exact UUID, calendar and
 payload before showing success. The accepted change reloads the visible
 window from Workspace. An account change closes outstanding dialogs and
 retires their responses. Imported calendars remain read-only in this slice.
+
+## Realtime refresh
+
+Mail and Calendar share the existing Workspace event cursor. A matching event
+from the signed-in user and project invalidates its section. A reconnect
+invalidates both sections so missed changes are picked up. The visible
+section re-reads its canonical collections, and a hidden section waits until
+the next visit. Repeated event UUIDs and bursts of related updates share a
+refresh. Changes arriving during a Calendar read trigger a follow-up read
+after the requested window settles.

@@ -141,10 +141,10 @@ void MailStore::reset()
     emit mailChanged();
 }
 
-void MailStore::refresh()
+void MailStore::refresh(bool keepReader)
 {
     const quint64 token = ++m_requestToken;
-    m_selectedMessage.clear();
+    if (!keepReader) m_selectedMessage.clear();
     m_state = QStringLiteral("loading");
     emit mailChanged();
     if (token == m_requestToken)
@@ -172,6 +172,7 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
             if (self->m_workspaceMailbox || self->m_folderId.isEmpty())
                 self->m_folderId = QStringLiteral("inbox");
             self->m_workspaceMailbox = false;
+            self->m_selectedMessage.clear();
             self->loadPreviewFolders(token);
             return;
         }
@@ -219,6 +220,7 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
         if (folders) {
             self->m_folders = items;
             if (!seen.contains(self->m_folderId)) {
+                self->m_selectedMessage.clear();
                 self->m_folderId = !preferred.isEmpty() ? preferred
                     : items.isEmpty() ? QString() : items.first().toMap().value("id").toString();
             }
@@ -229,6 +231,8 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
             self->m_messages.clear();
         } else {
             self->m_messages = items;
+            if (!seen.contains(self->m_selectedMessage))
+                self->m_selectedMessage.clear();
         }
         self->m_state = QStringLiteral("ready");
         emit self->mailChanged();
@@ -277,6 +281,7 @@ void MailStore::loadPreviewFolders(quint64 token)
 void MailStore::selectFolder(const QString &folder)
 {
     m_folderId = folder;
+    m_selectedMessage.clear();
     loadMessages();
 }
 
@@ -306,7 +311,6 @@ void MailStore::loadMessages()
 {
     const quint64 token = ++m_requestToken;
     m_state = QStringLiteral("loading");
-    m_selectedMessage.clear();
     emit mailChanged();
     if (token != m_requestToken)
         return;

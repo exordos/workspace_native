@@ -147,3 +147,9 @@ consulted; the node id recorded by the issue is Mailbox and folders
   `gen-test-buckets.py` after measuring the new cases solo.
 - Acceptance = every bullet of issue #879 proven by the named tests; screenshot
   pair light + dark attached to the PR.
+
+Mailbox events use the shared Workspace cursor. The open mailbox refreshes
+from the service after a change or reconnect. A hidden mailbox refreshes
+when it is next opened. A surviving message stays selected, and a deleted
+message closes its reader. These collection refreshes leave the local
+compose draft intact.

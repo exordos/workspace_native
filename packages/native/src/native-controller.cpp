@@ -7969,6 +7969,19 @@ void NativeController::recordApiLatency(const QString &label, qint64 elapsedMs)
         m_apiLatencySamples.removeFirst();
 }
 
+void NativeController::refreshInvalidatedSection()
+{
+    if (!authenticated() || !m_groupwareDirty.contains(m_section))
+        return;
+    if (m_section == QLatin1String("mail") && m_mail->state() != QLatin1String("loading")) {
+        m_groupwareDirty.remove(m_section);
+        m_mail->refresh(true);
+    } else if (m_section == QLatin1String("calendar") && !m_calendar.sample
+               && !m_calendar.inflight && !m_calendar.writing) {
+        retryCalendar();
+    }
+}
+
 void NativeController::showSection(const QString &name)
 {
     if (!authenticated())
@@ -7978,12 +7991,14 @@ void NativeController::showSection(const QString &name)
         closeOtherContentPages(ContentPage::Mail);
         m_section = QStringLiteral("mail");
         emit stateChanged();
+        refreshInvalidatedSection();
     }
     else if (name == QLatin1String("calendar"))
     {
         closeOtherContentPages(ContentPage::Calendar);
         m_section = QStringLiteral("calendar");
         emit stateChanged();
+        refreshInvalidatedSection();
     }
     else if (name == QLatin1String("calls"))
     {
@@ -9161,6 +9176,9 @@ void NativeController::finishCalendarWrite(bool accepted, bool retryUnchanged)
     }
     emit calendarChanged();
     emit calendarWriteFinished(accepted, retryUnchanged);
+    if (m_section == QLatin1String("calendar") && m_groupwareDirty.contains(m_section)
+        && !m_groupwareRefreshTimer.isActive())
+        m_groupwareRefreshTimer.start();
     if (!accepted || !authenticated() || m_calendar.sample || creationOwnerKey() != owner)
         return;
     const auto from = m_calendar.hasPending ? m_calendar.pendingFrom : m_calendar.from;
@@ -9195,9 +9213,10 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
     }
     // Re-showing the same loaded window must not re-storm the server; the
     // window only re-fetches after an error or an explicit retry.
-    if (m_calendar.hasLoaded && !m_calendar.error
+    if (m_calendar.hasLoaded && !m_calendar.error && !m_groupwareDirty.contains(QStringLiteral("calendar"))
         && m_calendar.from == from && m_calendar.to == to)
         return;
+    m_groupwareDirty.remove(QStringLiteral("calendar"));
     m_calendar.from = from;
     m_calendar.to = to;
     m_calendar.inflight = true;
@@ -9303,6 +9322,9 @@ void NativeController::finishCalendarWindow(const CalendarWindowRead &read, int 
     emit calendarChanged();
     if (hasPending && read.version == m_calendar.version && read.owner == creationOwnerKey())
         requestCalendarWindow(from, to);
+    if (m_section == QLatin1String("calendar") && m_groupwareDirty.contains(m_section)
+        && !m_groupwareRefreshTimer.isActive())
+        m_groupwareRefreshTimer.start();
 }
 
 void NativeController::retryCalendar()
@@ -10678,6 +10700,23 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     m_externalProviderAdmin = new NativeExternalProviderAdmin(api, session, this);
     // #879: mock mailbox store; fetches only when the Mail page asks (visible).
     m_mail = new MailStore(api, this);
+    m_groupwareRefreshTimer.setSingleShot(true);
+    m_groupwareRefreshTimer.setInterval(100);
+    connect(&m_groupwareRefreshTimer, &QTimer::timeout, this, &NativeController::refreshInvalidatedSection);
+    connect(this, &NativeController::groupwareSectionInvalidated, this, [this](const QString &section) {
+        // A section that has never loaded already fetches on its first entry.
+        if ((section == QLatin1String("mail") && m_mail->state() == QLatin1String("idle"))
+            || (section == QLatin1String("calendar") && m_calendar.from.isEmpty()))
+            return;
+        m_groupwareDirty.insert(section);
+        if (m_section == section && !m_groupwareRefreshTimer.isActive())
+            m_groupwareRefreshTimer.start();
+    });
+    connect(m_mail, &MailStore::mailChanged, this, [this] {
+        if (m_section == QLatin1String("mail") && m_groupwareDirty.contains(m_section)
+            && m_mail->state() != QLatin1String("loading") && !m_groupwareRefreshTimer.isActive())
+            m_groupwareRefreshTimer.start();
+    });
     m_mediaViewer = new MediaViewerModel(this, this);
     // Issue #51: the log viewer modal subscribes to the ring buffer like the
     // reference subscribeLogHistory (logger.ts), so forward every change.
@@ -12414,6 +12453,15 @@ void NativeController::useRealtime(RealtimeClient *client)
 
 void NativeController::publishRealtimeState(const QString &state)
 {
+    // Catch-up can return to "live" on the same socket for normal traffic.
+    // Only a new socket handshake needs a fresh snapshot of open sections.
+    if (state == QLatin1String("connecting")) {
+        m_groupwareConnecting = true;
+    } else if (state == QLatin1String("live") && m_groupwareConnecting && authenticated()) {
+        m_groupwareConnecting = false;
+        emit groupwareSectionInvalidated(QStringLiteral("mail"));
+        emit groupwareSectionInvalidated(QStringLiteral("calendar"));
+    }
     // Issue #50: each backoff retry is one reconnect attempt for the
     // diagnostics Connection card (connection.reconnectAttempt).
     if (state == QLatin1String("retrying"))
@@ -13271,6 +13319,10 @@ void NativeController::logout()
 
 void NativeController::reset()
 {
+    m_groupwareRefreshTimer.stop();
+    m_groupwareDirty.clear();
+    m_recentGroupwareEvents.clear();
+    m_groupwareConnecting = false;
     m_channelInfoNotificationInFlight.clear();
     m_pollSendAttempts.clear();
     m_channelTopicRequests.clear();
@@ -13492,6 +13544,19 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
     auto payload = envelope.value("payload").toObject();
     const auto kind = payload.take("kind").toString();
     const auto id = payload.value("uuid").toString();
+    if (kind.startsWith(QLatin1String("calendar.")) || kind.startsWith(QLatin1String("mail."))) {
+        // Resource payloads can be partial or redacted, particularly on delete.
+        // Treat these owner-validated envelopes as invalidations and read the
+        // canonical collections under the same account and project.
+        const auto eventUuid = envelope.value("uuid").toString();
+        if (!m_recentGroupwareEvents.contains(eventUuid)) {
+            m_recentGroupwareEvents.enqueue(eventUuid);
+            if (m_recentGroupwareEvents.size() > 256)
+                m_recentGroupwareEvents.dequeue();
+            emit groupwareSectionInvalidated(kind.section(QLatin1Char('.'), 0, 0));
+        }
+        return true;
+    }
     if (kind == "message.created" || kind == "message.updated" || kind == "message.read") {
         auto message = parseMessage(payload, m_session->project());
         if (!message) return false;

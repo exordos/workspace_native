@@ -1,4 +1,6 @@
+#include "mail-store.h"
 #include "support/native-test-harness.h"
+#include "support/controller-realtime-fixtures.h"
 #include "support/controller-identity-fixtures.h"
 #include "support/controller-mention-fixtures.h"
 #include "support/controller-folder-fixtures.h"
@@ -1841,6 +1843,122 @@ private slots:
         QVERIFY(finished.isEmpty());
         QVERIFY(controller.calendarEvents().isEmpty());
         QVERIFY(controller.calendarCatalog().isEmpty());
+    }
+
+    void groupwareCursorRefreshesVisibleCalendarAndDefersMailUntilEntry()
+    {
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        QVector<QJsonObject> envelopes;
+        fixture.realtime = [&](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            QJsonArray rows;
+            const auto after = QUrlQuery(request.target).queryItemValue("epoch_version>").toInt();
+            for (const auto &event : envelopes)
+                if (event.value("epoch_version").toInt() > after) rows.append(event);
+            return Response{rows};
+        };
+        int calendarReads = 0, mailReads = 0;
+        bool messageExists = true;
+        const QString eventId = "a2000000-0000-4000-8000-000000000001";
+        fixture.calendar = [&](const Request &) {
+            ++calendarReads;
+            return Response{QJsonArray{calendarEvent(eventId, "2026-11-01", "11:00", "12:00",
+                QString::number(calendarReads))}};
+        };
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/mail/folders/")
+                return {QJsonArray{QJsonObject{{"uuid", topicId}, {"kind", "inbox"}, {"name", "Inbox"},
+                                              {"project_id", projectId}}}};
+            if (path == "/api/workspace/v1/mail/messages/") {
+                ++mailReads;
+                const QJsonObject row{{"uuid", messageId}, {"project_id", projectId}, {"folder_uuid", topicId},
+                                      {"subject", QString::number(mailReads)}};
+                return {messageExists ? QJsonArray{row} : QJsonArray{}};
+            }
+            return fallback(request);
+        };
+        QVERIFY(fixture.start(gateway.origin()));
+        auto &controller = fixture.controller;
+        RealtimeClient realtime(&fixture.api, &fixture.session);
+        controller.useRealtime(&realtime);
+        QTRY_COMPARE(controller.syncState(), "live");
+        QTRY_COMPARE(gateway.sockets.size(), 1);
+        auto *mail = controller.mail();
+        controller.showSection("mail");
+        mail->refresh();
+        QTRY_COMPARE(mail->messages().size(), 1);
+        mail->selectMessage(messageId);
+        QSignalSpy ownerRetired(mail, &MailStore::ownerRetired);
+        controller.showSection("calendar");
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_COMPARE(controller.calendarEvents().size(), 1);
+        const auto send = [&](QJsonObject event) {
+            envelopes.append(event);
+            gateway.sockets.last()->sendTextMessage(QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)));
+        };
+        auto calendar = controllerEvent("calendar.event.updated", QJsonObject{{"uuid", eventId}}, 11);
+        auto foreign = calendar;
+        foreign["user_uuid"] = streamId;
+        QVERIFY(!controller.applyRealtimeEvent(foreign));
+        send(calendar);
+        QTRY_COMPARE(calendarReads, 2);
+        QTRY_COMPARE(controller.calendarEvents().first().toMap().value("title").toString(), QStringLiteral("2"));
+        // A duplicate envelope UUID at a newer epoch is acknowledged without
+        // repeating the HTTP read or blocking the shared cursor.
+        calendar["epoch_version"] = 12;
+        send(calendar);
+        send(controllerEvent("mail.message.updated", QJsonObject{{"uuid", messageId}}, 13));
+        QTRY_COMPARE(realtime.acknowledgedEpoch(), quint64(13));
+        QTest::qWait(200);
+        QCOMPARE(calendarReads, 2);
+        QCOMPARE(mailReads, 1);
+        controller.showSection("mail");
+        QTRY_COMPARE(mailReads, 2);
+        QTRY_COMPARE(mail->state(), QStringLiteral("ready"));
+        QCOMPARE(mail->selectedMessageUuid(), messageId);
+        QVERIFY(ownerRetired.isEmpty());
+        // The second live handshake must pick up a missed deletion. It also
+        // marks Calendar stale without fetching that hidden section.
+        messageExists = false;
+        gateway.sockets.last()->close();
+        QTRY_VERIFY_WITH_TIMEOUT(gateway.sockets.size() >= 2, 10000);
+        QTRY_COMPARE_WITH_TIMEOUT(mailReads, 3, 5000);
+        QTRY_VERIFY(mail->messages().isEmpty());
+        QVERIFY(mail->selectedMessageUuid().isEmpty());
+        QVERIFY(ownerRetired.isEmpty());
+        QCOMPARE(calendarReads, 2);
+        controller.showSection("calendar");
+        QTRY_COMPARE(calendarReads, 3);
+    }
+
+    void groupwareEventDuringCalendarReadRefreshesAfterTheCurrentPage()
+    {
+        Fixture fixture;
+        int reads = 0;
+        std::function<void()> release;
+        fixture.calendar = [&](const Request &) {
+            ++reads;
+            Response response{QJsonArray{}};
+            if (reads == 1)
+                response.defer = [&](auto send) { release = std::move(send); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        auto &controller = fixture.controller;
+        controller.showSection("calendar");
+        controller.requestCalendarWindow("2026-11-01", "2026-11-01");
+        QTRY_VERIFY(release);
+        QVERIFY(controller.applyRealtimeEvent(controllerEvent("calendar.calendar.updated", {{"uuid", workCalendarId}}, 42)));
+        QTest::qWait(150);
+        QCOMPARE(reads, 1);
+        release();
+        QTRY_COMPARE_WITH_TIMEOUT(reads, 2, 4000);
+        QTRY_VERIFY(!controller.calendarLoading());
     }
 
     void calendarReadsOwnedPagedCollectionsWithLocalOverlap()

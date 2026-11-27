@@ -1256,6 +1256,7 @@ signals:
     void calendarChanged();
     void calendarWriteFinished(bool accepted, bool retryUnchanged);
     void calendarSessionReset();
+    void groupwareSectionInvalidated(const QString &section);
     void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
@@ -2930,6 +2931,11 @@ private:
     int m_realtimeEventsReceived = 0;
     QString m_realtimeLastEventType;
     qint64 m_realtimeLastEventAtMs = 0;
+    void refreshInvalidatedSection();
+    QTimer m_groupwareRefreshTimer;
+    QSet<QString> m_groupwareDirty;
+    QQueue<QString> m_recentGroupwareEvents;
+    bool m_groupwareConnecting = false;
     int m_realtimeReconnectAttempts = 0;
     // Issue #717: backoff retries seen since the last live link. The
     // reconnecting banner stays quiet while a drop is self-recovering and

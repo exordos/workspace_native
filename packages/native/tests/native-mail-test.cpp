@@ -566,6 +566,10 @@ private slots:
         body = item(overlay, "mailComposeBody");
         QVERIFY(body);
         body->setProperty("text", "Account-local draft");
+        store->refresh(true);
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QVERIFY(dialog && dialog->property("opened").toBool());
+        QCOMPARE(textOf(overlay, "mailComposeBody"), QStringLiteral("Account-local draft"));
         api.clearSession();
         QTRY_VERIFY(dialog.isNull());
         QVERIFY(!visible(overlay, "mailComposeBody"));
