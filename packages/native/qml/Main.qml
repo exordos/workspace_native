@@ -13822,6 +13822,7 @@ component NativeMentionChip: Item {
         NativeCalendarPage {
             objectName: "calendarSectionPage"
             colors: root.colors
+            uiLocale: root.preferences.locale
             events: root.controller.calendarEvents
             loading: root.controller.calendarLoading
             error: root.controller.calendarError
