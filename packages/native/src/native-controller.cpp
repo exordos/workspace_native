@@ -8964,9 +8964,54 @@ void NativeController::resetFeed()
 // instants (display is converted to the client zone; stored instants stay UTC)
 // and participants (list of display names).
 
+void NativeController::setSampleCalendar(bool enabled)
+{
+    if (!authenticated() || m_calendar.sample == enabled)
+        return;
+    m_calendar.sample = enabled;
+    emit calendarChanged();
+}
+
+bool NativeController::saveSampleMeeting(const QString &uuid, const QVariantMap &draft)
+{
+    if (!authenticated() || !m_calendar.sample
+        || (!uuid.isEmpty() && !m_calendar.sampleEvents.contains(uuid)))
+        return false;
+
+    const auto title = draft.value("title").toString().trimmed();
+    const auto start = draft.value("start").toDateTime().toLocalTime();
+    const auto end = draft.value("end").toDateTime().toLocalTime();
+    const auto calendar = draft.value("calendar").toString();
+    if (title.isEmpty() || !start.isValid() || !end.isValid() || end <= start
+        || (calendar != QStringLiteral("work") && calendar != QStringLiteral("personal")))
+        return false;
+
+    const QString id = uuid.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : uuid;
+    m_calendar.sampleEvents.insert(id, QVariantMap{
+        {"uuid", id},
+        {"title", title}, {"calendar", calendar}, {"colorToken", QStringLiteral("accent")},
+        {"day", start.date().toString(Qt::ISODate)},
+        {"lastDay", end.addMSecs(-1).date().toString(Qt::ISODate)},
+        {"start", start.time().toString("HH:mm")}, {"end", end.time().toString("HH:mm")},
+        {"startUtc", start.toUTC().toString(Qt::ISODate)}, {"endUtc", end.toUTC().toString(Qt::ISODate)},
+        {"allDay", false}, {"location", draft.value("location").toString().trimmed()},
+        {"participants", draft.value("participants").toStringList()},
+    });
+    emit calendarChanged();
+    return true;
+}
+
+bool NativeController::deleteSampleMeeting(const QString &uuid)
+{
+    if (!authenticated() || !m_calendar.sample || !m_calendar.sampleEvents.remove(uuid))
+        return false;
+    emit calendarChanged();
+    return true;
+}
+
 void NativeController::requestCalendarWindow(const QString &from, const QString &to)
 {
-    if (!authenticated())
+    if (!authenticated() || m_calendar.sample)
         return;
     if (m_calendar.inflight) {
         // Issue #910: a navigation that lands while a window fetch is in
@@ -9065,8 +9110,11 @@ void NativeController::resetCalendar()
 {
     // Same monotonic identity discipline as resetFeed (issue #356).
     const auto version = m_calendar.version + 1;
+    const bool hadSample = m_calendar.sample || !m_calendar.sampleEvents.isEmpty();
     m_calendar = CalendarState{};
     m_calendar.version = version;
+    if (hadSample)
+        emit calendarChanged();
 }
 
 // Issue #356: replacing the access token bumps the API generation, the shared

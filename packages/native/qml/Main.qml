@@ -13824,6 +13824,10 @@ component NativeMentionChip: Item {
             colors: root.colors
             uiLocale: root.preferences.locale
             events: root.controller.calendarEvents
+            sampleMode: root.controller.sampleCalendar
+            onSampleModeRequested: enabled => root.controller.sampleCalendar = enabled
+            saveSampleMeeting: (uuid, draft) => root.controller.saveSampleMeeting(uuid, draft)
+            deleteSampleMeeting: uuid => root.controller.deleteSampleMeeting(uuid)
             loading: root.controller.calendarLoading
             error: root.controller.calendarError
             visible: root.controller.section === "calendar"

@@ -146,3 +146,45 @@ only; five participants render three rows + `+2 more`; the DST fixture
 instant renders the locally derived day/time; `calendarDetailClose` hides
 the card. New `qsTr` strings ship in `workspace_ru.ts` (context
 `NativeCalendarEventDetail`) in the same PR.
+
+## Create a sample meeting
+
+Switch on **Sample calendar** in the left rail and choose **Create meeting**.
+The sample calendar starts empty and stores meetings in memory for the current
+signed-in session. Leaving the section or changing the displayed date retains
+the meetings. Switching off the sample calendar returns to the server feed.
+Signing out or switching account/project clears the sample data. Submitting
+the form sends no network request, email or invitation.
+
+The create frame `18693:33117` shows a centered dialog approximately
+768 px wide (445 screenshot pixels at 58% zoom), with a 20 px inset, 40 px
+fields and primary action before Cancel. The form uses the native dialog and
+window palette, caps the width and height to the available window, and scrolls
+the inputs at shorter heights. It includes the meeting title, participants,
+calendar, local start and end, and location. Participant names can be entered
+without a directory lookup. Reminder, recurrence and link provisioning belong
+to the future service integration. The mock uses explicit local date/time
+fields instead of the frame's single combined picker.
+
+Submitting requires a nonblank title and a valid increasing time range.
+The sample adapter assigns a UUID, retains UTC instants and projects local
+dates into the existing agenda and grids. A meeting ending exactly at midnight
+occupies only the preceding day. Cancel discards the draft.
+
+## Edit and delete sample meetings
+
+Open a sample meeting from the agenda or week grid and choose **Edit meeting**.
+The form opens with the selected meeting's local start and end, title, calendar,
+location and participants. Saving updates the same UUID in the sample calendar.
+Cancel returns to the original meeting. The edit frame `18693:33682` measures
+about 768 px wide (674 screenshot pixels at 88% zoom), with the primary action
+and cancel at the left and the destructive action at the right. The native form
+reuses the creation geometry, field validation, scrolling and theme palette.
+The fixture has single meetings, so the recurrence-scope selector in the frame
+is omitted.
+
+**Delete meeting** is available on both the detail and edit surfaces. A modal
+confirmation names the selected meeting and initially focuses Cancel. Cancel
+keeps the meeting and restores the previous surface. Confirming removes the
+UUID from all sample views. An event from the server feed has read-only detail
+and no sample edit or delete action.

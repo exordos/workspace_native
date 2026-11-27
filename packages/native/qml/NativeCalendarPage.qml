@@ -17,6 +17,11 @@ FocusScope {
 
     required property var colors
     property var events: []
+    required property bool sampleMode
+    required property var saveSampleMeeting
+    required property var deleteSampleMeeting
+    signal sampleModeRequested(bool enabled)
+    onSampleModeChanged: detailEvent = null
     property date selectedDate: new Date()
     property string viewMode: "day"
     property bool loading: false
@@ -68,7 +73,7 @@ FocusScope {
         for (const ev of events) {
             if (activeCalendars.indexOf(String(ev.calendar)) < 0)
                 continue;
-            if (String(ev.day) >= fromDate && String(ev.day) <= toDate)
+            if (String(ev.lastDay || ev.day) >= fromDate && String(ev.day) <= toDate)
                 out.push(ev);
         }
         out.sort((a, b) => String(a.start).localeCompare(String(b.start)));
@@ -259,6 +264,24 @@ FocusScope {
                 Layout.margins: 12
                 spacing: 8
 
+                CheckBox {
+                    objectName: "calendarSampleToggle"
+                    text: qsTr("Sample calendar")
+                    checked: page.sampleMode
+                    onToggled: {
+                        page.sampleModeRequested(checked)
+                        if (!checked)
+                            page.refreshWindow()
+                    }
+                }
+                Button {
+                    objectName: "calendarCreateMeeting"
+                    visible: page.sampleMode
+                    Layout.fillWidth: true
+                    highlighted: true
+                    text: qsTr("Create meeting")
+                    onClicked: meetingForm.openForDate(page.selectedDate)
+                }
                 Label {
                     objectName: "miniCalendarTitle"
                     color: page.colors["text-primary"]
@@ -475,6 +498,7 @@ FocusScope {
                             }
                             Label {
                                 text: modelData.title
+                                textFormat: Text.PlainText
                                 color: page.colors["text-primary"]
                             }
                         }
@@ -522,6 +546,7 @@ FocusScope {
                                     width: weekColumn.width
                                     elide: Text.ElideRight
                                     text: modelData.start + " " + modelData.title
+                                    textFormat: Text.PlainText
                                     color: page.colors["text-primary"]
                                     MouseArea {
                                         anchors.fill: parent
@@ -717,6 +742,24 @@ FocusScope {
         }
     }
 
+    NativeCalendarMeetingDialog {
+        id: meetingForm
+        colors: page.colors
+        saveMeeting: page.saveSampleMeeting
+        onDeleteRequested: (uuid, title) => deleteConfirmation.ask(uuid, title)
+        onSaved: (start, calendar) => {
+            page.detailEvent = null
+            if (page.activeCalendars.indexOf(calendar) < 0)
+                page.activeCalendars = page.activeCalendars.concat([calendar])
+            page.selectedDate = start
+        }
+        Connections {
+            target: page
+            function onVisibleChanged() { if (!page.visible) meetingForm.close() }
+            function onSampleModeChanged() { if (!page.sampleMode) meetingForm.close() }
+        }
+    }
+
     // Event detail overlay (#907): a later sibling of the layout so it
     // renders above the active view; shown only while an event is selected.
     NativeCalendarEventDetail {
@@ -725,6 +768,60 @@ FocusScope {
         visible: page.detailEvent !== null
         colors: page.colors
         event: page.detailEvent !== null ? page.detailEvent : ({})
+        editable: page.sampleMode
+        onEditRequested: meetingForm.openForDate(page.selectedDate, page.detailEvent)
+        onDeleteRequested: deleteConfirmation.ask(page.detailEvent.uuid, page.detailEvent.title)
         onClosed: page.detailEvent = null
+    }
+
+    Dialog {
+        id: deleteConfirmation
+        objectName: "calendarDeleteConfirmation"
+        property string meetingUuid: ""
+        property string meetingTitle: ""
+        function ask(uuid, title) {
+            meetingUuid = uuid
+            meetingTitle = title
+            open()
+        }
+        title: qsTr("Delete meeting?")
+        modal: true
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        width: Math.min(420, page.width - 32)
+        onOpened: keepButton.forceActiveFocus()
+        contentItem: Label {
+            text: qsTr("Delete “%1” from the sample calendar?").arg(deleteConfirmation.meetingTitle)
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            maximumLineCount: 4
+            elide: Text.ElideRight
+        }
+        footer: DialogButtonBox {
+            Button {
+                id: keepButton
+                objectName: "calendarConfirmCancel"
+                text: qsTr("Cancel")
+                onClicked: deleteConfirmation.reject()
+            }
+            Button {
+                objectName: "calendarConfirmDelete"
+                text: qsTr("Delete")
+                palette.buttonText: page.colors["danger"]
+                onClicked: {
+                    if (page.deleteSampleMeeting(deleteConfirmation.meetingUuid)) {
+                        page.detailEvent = null
+                        meetingForm.close()
+                    }
+                    deleteConfirmation.close()
+                }
+            }
+        }
+        Connections {
+            target: page
+            function onVisibleChanged() { if (!page.visible) deleteConfirmation.close() }
+            function onSampleModeChanged() { if (!page.sampleMode) deleteConfirmation.close() }
+        }
     }
 }

@@ -330,6 +330,7 @@ class NativeController final : public QObject {
     // - Qt raised "Binding loop detected for property visible" and the warning
     // poisoned every window case in the shard. Notify only what calendar changed.
     Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY calendarChanged)
+    Q_PROPERTY(bool sampleCalendar READ sampleCalendar WRITE setSampleCalendar NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarError READ calendarError NOTIFY calendarChanged)
     // Activity panel (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md): open/closed
@@ -760,9 +761,13 @@ public:
     QVariantMap feedPage() const;
     // Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md): UI-phase
     // events for the last fetched window; the live adapter is #852.
-    QVariantList calendarEvents() const { return m_calendar.events; }
-    bool calendarLoading() const { return m_calendar.loading; }
-    bool calendarError() const { return m_calendar.error; }
+    bool sampleCalendar() const { return m_calendar.sample; }
+    void setSampleCalendar(bool enabled);
+    Q_INVOKABLE bool saveSampleMeeting(const QString &uuid, const QVariantMap &draft);
+    Q_INVOKABLE bool deleteSampleMeeting(const QString &uuid);
+    QVariantList calendarEvents() const { return sampleCalendar() ? m_calendar.sampleEvents.values() : m_calendar.events; }
+    bool calendarLoading() const { return !sampleCalendar() && m_calendar.loading; }
+    bool calendarError() const { return !sampleCalendar() && m_calendar.error; }
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     bool starredVisible() const { return m_starredVisible; }
     QVariantMap starredPage() const;
@@ -2760,6 +2765,8 @@ private:
     // loaded window is not re-fetched, so section re-entry is traffic-free.
     struct CalendarState {
         QVariantList events;
+        QVariantMap sampleEvents; // UUID -> session-local meeting
+        bool sample = false;
         QString from, to;
         bool loading = false, error = false, inflight = false, hasLoaded = false;
         quint64 version = 0;
