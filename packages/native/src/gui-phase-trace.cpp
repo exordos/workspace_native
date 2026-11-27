@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFile>
+#include <QSaveFile>
 #include <cstdlib>
 #include <QHash>
 #include <QMutex>
@@ -199,16 +200,30 @@ void GuiStallSampler::beat()
 
 void GuiStallSampler::flush() const
 {
-    QFile file(m_path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
     const QVariantMap report = summary();
     QByteArray payload = QJsonDocument(QJsonObject::fromVariantMap(report)).toJson(QJsonDocument::Compact);
-    if (m_failFlushBytes >= 0) {
+    const bool faulted = m_failFlushBytes >= 0;
+    if (faulted) {
         payload = payload.left(qMax(0, m_failFlushBytes));
         m_failFlushBytes = -1;
         m_flushFaultConsumed = true;
     }
-    file.write(payload);
+    // PR #898 review: a live reader (the perf probe polls the report from
+    // another process) must never observe an empty or partially written file.
+    // The previous flush opened the destination with Truncate and only then
+    // wrote the payload, so a read between the two saw a torn document.
+    // QSaveFile lands the payload in a sibling temp file and replaces the
+    // destination with an atomic rename only on commit(), so every observed
+    // file is a complete report: either the previous one or the new one.
+    QSaveFile file(m_path);
+    if (!file.open(QIODevice::WriteOnly)) return;
+    if (file.write(payload) != payload.size() || faulted) {
+        // Failed/faulted write: cancel drops the temp file, leaving the
+        // destination exactly as a live reader last saw it.
+        file.cancelWriting();
+        return;
+    }
+    file.commit();
 }
 
 QVariantMap GuiStallSampler::summary() const
