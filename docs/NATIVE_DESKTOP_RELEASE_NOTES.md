@@ -1,3 +1,14 @@
+# Workspace Native 0.51.1 - Linux development preview
+
+- Fixed: a calendar data fetch that races a same-account token renewal now settles correctly, so the calendar page no longer waits on a retired fetch (issue #926, PR #931).
+- Fixed: GUI stall diagnostics - stall reports are replaced atomically so readers never see a torn file, phase span ids stay unique across resets, and per-record thread ids are reported (PR #893).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.51.0 to 0.51.1](https://github.com/exordos/workspace_native/compare/0.51.0...0.51.1)
+
+---
+
 # Workspace Native 0.51.0 - Linux development preview
 
 - New: the Calendar section page shell is in place - opening Calendar shows the month grid scaffold with the section header, the first slice of the calendar rollout (issue #881, PR #904).
