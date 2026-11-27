@@ -16863,9 +16863,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        // Same #917 root cause as the anchor-jump cases above: the sidebar row
+        // delegate materializes a view pass after the controller reports it, so
+        // a one-shot click can miss (topics().size() stays 0). Click through the
+        // incubation-safe helper.
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 5);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
