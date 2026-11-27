@@ -971,6 +971,14 @@ Popup {
         // percentage label with it (exordy finding #920).
         color: Qt.alpha(viewerRoot.colors["bg-elevated"], 0.8)
         Accessible.ignored: true
+        // The pill overlaps the bottom thumbnail strip: consume clicks on its
+        // padding and the row's gaps so they cannot fall through and re-select
+        // a slot underneath (exordy finding on #920). The buttons are declared
+        // above this area in the item stack and keep their own clicks.
+        MouseArea {
+            anchors.fill: parent
+            onClicked: mouse.accepted = true
+        }
         Row {
             id: zoomRow
             anchors.centerIn: parent

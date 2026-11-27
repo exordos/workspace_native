@@ -424,6 +424,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_17
     integrationSettingsEntryDimsBackgroundWhilePressed
     loginProjectStepDropdownMatchesTheReference
     loginProjectStepLinkedProjectIsPreselectedAndEnforced
+    mediaViewerZoomPillSwallowsStripClicksBeneathIt
     messageTimeViewerPutsAccessibleFocusOnDialog
     ownStatusActualMainApiGenerationClosesAndClearsThePendingEditor
     pollVoterPreviewBudgetSurvivesEviction
