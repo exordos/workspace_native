@@ -10371,6 +10371,9 @@ void NativeController::refreshReactions(const QString &id)
 NativeController::NativeController(ApiClient *api, Session *session, QObject *parent)
     : QObject(parent), m_api(api), m_session(session)
 {
+    connect(this, &NativeController::topicsChanged, this, &NativeController::selectedTopicNameChanged);
+    connect(this, &NativeController::stateChanged, this, &NativeController::selectedTopicNameChanged);
+
     m_externalAccounts = new NativeExternalAccounts(api, session, this);
     m_externalProviderAdmin = new NativeExternalProviderAdmin(api, session, this);
     m_mediaViewer = new MediaViewerModel(this, this);
@@ -15550,7 +15553,7 @@ void NativeController::ensureSidebarStreamExpanded(const QString &stream)
     if (m_statusPreferences) m_statusPreferences->recordExpandedStreams(m_sidebarExpansionOwner, next);
 }
 
-QVariantMap NativeController::sidebarTopicState(const QString &id, bool includeRows) const
+QVariantMap NativeController::sidebarTopicState(const QString &id, bool includeRows, int limit) const
 {
     const auto stream = std::find_if(m_streams.cbegin(), m_streams.cend(),
         [&id](const Stream &entry) { return entry.uuid == id && !entry.archived; });
@@ -15558,8 +15561,10 @@ QVariantMap NativeController::sidebarTopicState(const QString &id, bool includeR
     const bool current = id == m_stream && m_topicsVerified;
     const bool known = current || m_inboxTopics.contains(id);
     const auto &topics = current ? m_topics : m_inboxTopics.value(id);
-    return {{"known", known}, {"count", topics.size()},
-        {"rows", includeRows ? topicRows(topics, &*stream) : QVariantList{}}};
+    const auto unfinished = includeRows ? std::count_if(topics.cbegin(), topics.cend(),
+        [](const Topic &topic) { return !topic.done; }) : 0;
+    return {{"known", known}, {"count", topics.size()}, {"unfinished", unfinished},
+        {"rows", includeRows ? topicRows(topics, &*stream, limit) : QVariantList{}}};
 }
 
 // Issue #866 (finding 2): the sidebar model. Row identity is the stream id;
@@ -15929,6 +15934,29 @@ QVariantList NativeController::topics() const
     return topicRows(m_topics, currentStream());
 }
 
+QString NativeController::selectedTopicName() const
+{
+    if (!m_topic.isEmpty()) {
+        for (const auto &topic : m_topics)
+            if (topic.uuid == m_topic) return topic.name.trimmed();
+    }
+    return {};
+}
+
+QVariantList NativeController::topicShortcuts() const
+{
+    GuiPhaseSpan phase("chat.topic-shortcuts");
+    QVariantList rows;
+    rows.reserve(m_topics.size());
+    for (const auto *topic : orderedTopicPointers(m_topics, currentStream())) {
+        const auto name = topic->name.trimmed();
+        if (!name.isEmpty())
+            rows.append(QVariantMap{{"id", topic->uuid}, {"name", name},
+                {"unread", topic->unread}, {"done", topic->done}});
+    }
+    return rows;
+}
+
 // #861: shared mute/notification rank for topic ordering and the
 // effectivelyMuted indicator row (was a lambda local to topicRows before the
 // orderedTopicPointers refactor needed the same predicate).
@@ -15960,13 +15988,17 @@ QVector<const Topic *> NativeController::orderedTopicPointers(
     return sorted;
 }
 
-QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Stream *stream) const
+QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Stream *stream, int limit) const
 {
+    GuiPhaseSpan phase("chat.topic-rows");
     // Issue #718: sort keys come from rowActivityMicros (observed-stamp cache
     // with window/catalog fallbacks), not from the active window alone.
     const auto sorted = orderedTopicPointers(topics, stream);
+    const auto count = limit < 0 ? sorted.size() : qMin(qsizetype(limit), sorted.size());
     QVariantList result;
-    for (const auto *topic : sorted) {
+    result.reserve(count);
+    for (qsizetype i = 0; i < count; ++i) {
+        const auto *topic = sorted[i];
         auto row = QVariantMap{{"id", topic->uuid}, {"name", topic->name.trimmed()},
             {"unread", topic->unread}, {"activeUnread", topic->activeUnread}, {"passiveUnread", topic->passiveUnread},
             {"lastMessage", topic->lastMessage}, {"done", topic->done},

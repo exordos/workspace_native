@@ -254,6 +254,8 @@ class NativeController final : public QObject {
     // the ownStatus update above.
     Q_PROPERTY(QVariantMap folderMutation READ folderMutation NOTIFY folderMutationChanged)
     Q_PROPERTY(QVariantList topics READ topics NOTIFY topicsChanged)
+    Q_PROPERTY(QVariantList topicShortcuts READ topicShortcuts NOTIFY topicsChanged)
+    Q_PROPERTY(QString selectedTopicName READ selectedTopicName NOTIFY selectedTopicNameChanged)
     Q_PROPERTY(bool topicResolving READ topicResolving NOTIFY stateChanged)
     Q_PROPERTY(bool topicsComplete READ topicsComplete NOTIFY stateChanged)
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
@@ -655,7 +657,7 @@ public:
     NativeSidebarStreamListModel *sidebarStreamListModel();
     QVariantMap sidebarCatalogState() const;
     QStringList expandedSidebarStreams() const { return m_expandedSidebarStreams; }
-    Q_INVOKABLE QVariantMap sidebarTopicState(const QString &stream, bool includeRows) const;
+    Q_INVOKABLE QVariantMap sidebarTopicState(const QString &stream, bool includeRows, int limit = -1) const;
     Q_INVOKABLE void requestSidebarTopics(const QString &stream);
     Q_INVOKABLE void toggleSidebarStream(const QString &stream);
 
@@ -684,6 +686,8 @@ public:
     Q_INVOKABLE void setSidebarSearchQuery(const QString &query);
     QString selectedFolder() const;
     QVariantList topics() const;
+    QVariantList topicShortcuts() const;
+    QString selectedTopicName() const;
     bool topicResolving() const { return m_topicOpening.active; }
     bool topicsComplete() const { return m_topicsVerified; }
     QVariantList messages() const;
@@ -1267,6 +1271,7 @@ signals:
     void folderMutationChanged();
     void callCryptoStateChanged();
     void topicsChanged();
+    void selectedTopicNameChanged();
     void messagesChanged();
     void topicCreated(QString stream, QString topic);
     void channelCreated(QString stream, QString defaultTopic);
@@ -2707,7 +2712,7 @@ private:
     void pumpSidebarTopicHydration();
 
     void hydrateSidebarSearchTopics();
-    QVariantList topicRows(const QVector<Topic> &topics, const Stream *stream) const;
+    QVariantList topicRows(const QVector<Topic> &topics, const Stream *stream, int limit = -1) const;
     bool m_inboxVisible = false;
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
     bool m_starredVisible = false;
