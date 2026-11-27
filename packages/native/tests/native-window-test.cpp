@@ -52616,6 +52616,32 @@ private slots:
         QVERIFY(!view("calendarEventDetail"));
         QVERIFY(!controller.saveSampleMeeting(uuid, original));
         QVERIFY(!controller.deleteSampleMeeting(uuid));
+
+        // New York's 01:15 occurs twice on this date. Pin the exact instants
+        // even on runners in another zone, where dropping seconds still fails.
+        const auto first = QDateTime::fromString("2026-11-01T05:15:21Z", Qt::ISODate);
+        const auto second = QDateTime::fromString("2026-11-01T06:15:42Z", Qt::ISODate);
+        auto repeated = original;
+        repeated.insert("start", first);
+        repeated.insert("end", second);
+        QVERIFY(controller.saveSampleMeeting({}, repeated));
+        const auto repeatId = controller.calendarEvents().first().toMap().value("uuid").toString();
+        click(window, view("viewTabDay"));
+        QVERIFY(view("calendarSectionPage")->setProperty("selectedDate", first.toLocalTime()));
+        const auto repeatRow = "calendarAgendaRow-" + repeatId;
+        QTRY_VERIFY(view(repeatRow));
+        click(window, view(repeatRow));
+        QTRY_VERIFY(view("calendarDetailEdit"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Renamed")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        const auto retained = controller.calendarEvents().first().toMap();
+        QCOMPARE(retained.value("title").toString(), QStringLiteral("Renamed"));
+        QCOMPARE(QDateTime::fromString(retained.value("startUtc").toString(), Qt::ISODate), first);
+        QCOMPARE(QDateTime::fromString(retained.value("endUtc").toString(), Qt::ISODate), second);
+
         click(window, view("calendarSampleToggle"));
         QVERIFY(!controller.saveSampleMeeting({}, original));
     }
