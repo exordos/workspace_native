@@ -9699,6 +9699,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 4);
         QTRY_VERIFY(controller.canCreateTopicIn(target));
+        if (kind == "ordinary") {
+            const int projections = controller.streamsProjectionCountForTest();
+            emit controller.streamsChanged();
+            QVERIFY(window->property("globalTopicStreams").toList().isEmpty());
+            QCOMPARE(controller.streamsProjectionCountForTest(), projections);
+        }
         if (kind == "shared-sidebar") {
             openStreamTopicForm(window, target);
             visibleItem("topicNameInput")->setProperty("text", "Native metadata topic");

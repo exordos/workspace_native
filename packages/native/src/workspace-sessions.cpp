@@ -2,6 +2,7 @@
 
 #include "api-client.h"
 #include "native-controller.h"
+#include "native-preferences.h"
 #include "realtime-client.h"
 #include "session.h"
 
@@ -77,6 +78,17 @@ WorkspaceSessions::~WorkspaceSessions()
 
 void WorkspaceSessions::start()
 {
+    if (auto *preferences = m_window.m_preferences.data()) {
+        connect(preferences, &NativePreferences::sidebarSortModeChanged, this, [this] {
+            for (auto *runtime : std::as_const(m_runtimes))
+                refreshSidebarOrder(*runtime, isPresented(*runtime));
+        });
+        connect(preferences, &NativePreferences::localeChanged, this, [this] {
+            if (auto *runtime = m_runtimes.value(m_windowSession.currentSavedAccountId());
+                runtime && isPresented(*runtime))
+                refreshSidebarOrder(*runtime, true);
+        });
+    }
     m_windowSession.resumeCurrentAccount();
     reconcile();
 }
@@ -119,6 +131,8 @@ WorkspaceSessions::Runtime *WorkspaceSessions::ensure(const SavedAccount &accoun
     runtime->session.setVault(&m_vault);
     runtime->session.m_selectRememberedAccount = false;
     runtime->controller.m_backgroundWorkspace = true;
+    refreshSidebarOrder(*runtime, true);
+    runtime->controller.sidebarStreamListModel();
     runtime->controller.m_notificationViewport = &m_window;
     runtime->controller.setWindowVisible(false);
     runtime->controller.setWindowFocused(false);
@@ -257,9 +271,17 @@ void WorkspaceSessions::takeOver(Runtime &runtime)
 void WorkspaceSessions::present(Runtime &runtime)
 {
     const bool switching = !isPresented(runtime);
+    if (switching) {
+        if (auto *previous = m_runtimes.value(m_windowSession.currentSavedAccountId());
+            previous && isPresented(*previous))
+            rememberSidebar(*previous);
+    }
     const auto selected = m_selected;
     const auto destination = m_destination;
+    const bool keepShell = switching && m_windowSession.ready();
+    m_window.m_workspaceChanging = keepShell;
     m_windowSession.present(runtime.session);
+    m_window.m_workspaceChanging = false;
     m_selected = selected;
     m_destination = destination;
     m_window.m_realtime = &runtime.realtime;
@@ -267,6 +289,8 @@ void WorkspaceSessions::present(Runtime &runtime)
     m_window.publishWorkspaceCatalog(runtime.controller);
     if (!runtime.controller.m_syncState.isEmpty())
         m_window.publishRealtimeState(runtime.controller.m_syncState);
+    else if (keepShell)
+        emit m_window.stateChanged();
     if (switching) {
         const auto id = runtime.id;
         QTimer::singleShot(0, this, [this, id] {
@@ -275,6 +299,35 @@ void WorkspaceSessions::present(Runtime &runtime)
         });
     }
     openDestination();
+}
+
+void WorkspaceSessions::rememberSidebar(Runtime &runtime)
+{
+    auto &sidebar = runtime.controller;
+    // The projection belongs to the session being hidden. Retain its selected
+    // folder and already loaded topic branches under the same account.
+    sidebar.m_selectedFolder = m_window.m_selectedFolder;
+    for (auto it = m_window.m_inboxTopics.cbegin(); it != m_window.m_inboxTopics.cend(); ++it) {
+        sidebar.m_inboxTopics.insert(it.key(), it.value());
+        if (m_window.m_inboxStaleTopics.contains(it.key())) sidebar.m_inboxStaleTopics.insert(it.key());
+        else sidebar.m_inboxStaleTopics.remove(it.key());
+    }
+    if (m_window.m_topicsVerified && !m_window.m_stream.isEmpty()) {
+        sidebar.m_inboxTopics.insert(m_window.m_stream, m_window.m_topics);
+        sidebar.m_inboxStaleTopics.remove(m_window.m_stream);
+    }
+    emit sidebar.sidebarStreamsChanged();
+}
+
+void WorkspaceSessions::refreshSidebarOrder(Runtime &runtime, bool updateLocale)
+{
+    auto &sidebar = runtime.controller;
+    const auto mode = m_window.sidebarSortMode();
+    const auto locale = updateLocale ? m_window.sidebarSortLocale() : sidebar.m_backgroundSidebarLocale;
+    if (mode == sidebar.m_backgroundSidebarSortMode && locale == sidebar.m_backgroundSidebarLocale) return;
+    sidebar.m_backgroundSidebarSortMode = mode;
+    sidebar.m_backgroundSidebarLocale = locale;
+    emit sidebar.sidebarStreamsChanged();
 }
 
 void WorkspaceSessions::updateUnread(const Runtime &runtime)

@@ -48,6 +48,7 @@
 #include <QFutureWatcher>
 #include "heif-preview.h"
 #include <QScopeGuard>
+#include <QScopedValueRollback>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QPointer>
@@ -14680,6 +14681,32 @@ QVariantMap NativeController::streamById(const QString &id) const
     return {};
 }
 
+QVariantList NativeController::streamPickerRows(bool forwarding) const
+{
+    const auto ordered = orderedStreamPointers();
+    QVariantList choices;
+    choices.reserve(ordered.size());
+    for (const auto *stream : ordered) {
+        if (forwarding && stream->encrypted) continue;
+        const auto peer = forwarding && stream->privateStream && isUuid(stream->directUser)
+            ? peerDisplayName(stream->directUser) : QString{};
+        choices.append(QVariantMap{{QStringLiteral("id"), stream->uuid},
+            {QStringLiteral("name"), peer.isEmpty() ? stream->name : peer}});
+    }
+    return choices;
+}
+
+qint64 NativeController::desktopUnreadCount() const
+{
+    if (!authenticated()) return 0;
+    qint64 count = 0;
+    for (const auto &stream : std::as_const(m_streams)) {
+        if (!stream.archived)
+            count += qMin<qint64>(qMax(0, stream.unread), std::numeric_limits<qint64>::max() - count);
+    }
+    return count;
+}
+
 QVector<const Stream *> NativeController::orderedStreamPointers() const
 {
     // exordy finding on PR #866: the projected sidebar order, factored out of streams()
@@ -14697,10 +14724,10 @@ QVector<const Stream *> NativeController::orderedStreamPointers() const
     QHash<QString, qint64> activity;
     for (const auto *stream : ordered)
         activity.insert(stream->uuid, rowActivityMicros(stream->lastMessage, stream->updatedMicros));
-    const auto sortMode = m_preferences ? m_preferences->sidebarSortMode() : QString{};
+    const auto sortMode = sidebarSortMode();
     std::optional<QCollator> names;
     if (sortMode == "alphabetical") {
-        names.emplace(QLocale(m_preferences->locale()));
+        names.emplace(QLocale(sidebarSortLocale()));
         names->setCaseSensitivity(Qt::CaseInsensitive);
         names->setNumericMode(true);
     }
@@ -14720,6 +14747,16 @@ QVector<const Stream *> NativeController::orderedStreamPointers() const
         return activity.value(a->uuid) > activity.value(b->uuid);
     });
     return ordered;
+}
+
+QString NativeController::sidebarSortMode() const
+{
+    return m_preferences ? m_preferences->sidebarSortMode() : m_backgroundSidebarSortMode;
+}
+
+QString NativeController::sidebarSortLocale() const
+{
+    return m_preferences ? m_preferences->locale() : m_backgroundSidebarLocale;
 }
 
 bool NativeController::applyHydratedRowActivity(const Message &message)
@@ -15577,6 +15614,13 @@ QString NativeSidebarStreamListModel::keyForRow(const QVariant &value, int fallb
 
 void NativeSidebarStreamListModel::sync()
 {
+    if (const auto *prepared = m_controller->m_preparedSidebar) {
+        if (m_rows.constData() == prepared->m_rows.constData()) return;
+        beginResetModel();
+        m_rows = prepared->m_rows;
+        endResetModel();
+        return;
+    }
     const QVariantList projection = m_controller->sidebarStreams();
     QVector<Row> next;
     next.reserve(projection.size());
@@ -15672,6 +15716,16 @@ void NativeSidebarStreamListModel::sync()
     }
 }
 
+void NativeSidebarStreamListModel::scheduleSync()
+{
+    if (m_syncScheduled) return;
+    m_syncScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        m_syncScheduled = false;
+        sync();
+    });
+}
+
 NativeSidebarStreamListModel *NativeController::sidebarStreamListModel()
 {
     if (!m_sidebarStreamModel) {
@@ -15679,12 +15733,11 @@ NativeSidebarStreamListModel *NativeController::sidebarStreamListModel()
         // Every notify that can move the sidebar projection, i.e. exactly the
         // signals the QVariantList binding re-evaluated on. sync() is a
         // no-op diff on a settled projection (no traffic, no churn).
-        connect(this, &NativeController::streamsChanged,
-            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
-        connect(this, &NativeController::sidebarStreamsChanged,
-            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
-        connect(this, &NativeController::foldersChanged,
-            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
+        const auto update = m_backgroundWorkspace
+            ? &NativeSidebarStreamListModel::scheduleSync : &NativeSidebarStreamListModel::sync;
+        connect(this, &NativeController::streamsChanged, m_sidebarStreamModel, update);
+        connect(this, &NativeController::sidebarStreamsChanged, m_sidebarStreamModel, update);
+        connect(this, &NativeController::foldersChanged, m_sidebarStreamModel, update);
         m_sidebarStreamModel->sync();
     }
     return m_sidebarStreamModel;
@@ -15801,12 +15854,27 @@ QVariantMap NativeController::sidebarCatalogState() const
     QVariantMap state;
     if (!authenticated())
         return state;
-    const auto shown = sidebarStreams();
     const bool queryActive = !m_sidebarSearchQuery.isEmpty();
     const bool hasError = !m_sidebarError.isEmpty();
     const bool loading = !m_catalogVerified && !hasError;
     const bool hasSpecificEmptyContext = queryActive || !m_streams.isEmpty();
-    const bool shownEmpty = shown.isEmpty();
+    bool shownEmpty;
+    if (queryActive) {
+        shownEmpty = sidebarStreams().isEmpty();
+    } else if (m_preparedSidebar) {
+        shownEmpty = m_preparedSidebar->rowCount() == 0;
+    } else {
+        const auto selected = selectedFolder();
+        const auto scope = std::find_if(m_folders.cbegin(), m_folders.cend(), [&](const FolderRow &folder) {
+            return folder.uuid == selected && !folder.synthesized && folder.systemType != QLatin1String("all");
+        });
+        const auto user = m_session->user();
+        const bool validUser = isUuid(user);
+        shownEmpty = std::none_of(m_streams.cbegin(), m_streams.cend(), [&](const Stream &stream) {
+            return !stream.archived && !(validUser && stream.privateStream && stream.directUser == user)
+                && (scope == m_folders.cend() || scope->streamIds.contains(stream.uuid));
+        });
+    }
     state.insert(QStringLiteral("showLoading"), loading && shownEmpty);
     state.insert(QStringLiteral("showBlockingError"),
         hasError && shownEmpty && !hasSpecificEmptyContext);
@@ -16566,10 +16634,22 @@ void NativeController::publishWorkspaceCatalog(const NativeController &source)
     m_streams = source.m_streams;
     ++m_streamsMutation;
     m_folders = source.m_folders;
+    m_selectedFolder = source.m_selectedFolder;
+    m_inboxTopics = source.m_inboxTopics;
+    m_inboxStaleTopics = source.m_inboxStaleTopics;
     m_names = source.m_names;
     m_viewerDirectoryOwner = source.m_viewerDirectoryOwner;
     m_channelDirectoryOwner = source.m_channelDirectoryOwner;
+    m_unreadMentions = source.m_unreadMentions;
+    m_activityTimestamps = source.m_activityTimestamps;
     m_cacheHydrated = !m_streams.isEmpty();
+    const auto *prepared = source.m_sidebarStreamModel;
+    const auto mode = sidebarSortMode();
+    if (!prepared || prepared->m_syncScheduled || !m_sidebarSearchQuery.isEmpty()
+        || mode != source.sidebarSortMode()
+        || (mode == QLatin1String("alphabetical") && sidebarSortLocale() != source.sidebarSortLocale()))
+        prepared = nullptr;
+    const QScopedValueRollback<const NativeSidebarStreamListModel *> usePrepared(m_preparedSidebar, prepared);
     emit streamsChanged();
     emit foldersChanged();
 }

@@ -81,6 +81,8 @@ public slots:
     void sync();
 
 private:
+    friend class NativeController;
+    void scheduleSync();
     struct Row {
         QString key;
         QVariantMap map;
@@ -89,6 +91,7 @@ private:
 
     NativeController *m_controller;
     QVector<Row> m_rows;
+    bool m_syncScheduled = false;
 };
 
 class NativeController final : public QObject {
@@ -99,6 +102,7 @@ class NativeController final : public QObject {
     // flight. Leaving it flips back to the authenticated projection or to the
     // sign-in screen; cached rows are never blanked by the handover.
     Q_PROPERTY(bool startupCacheMode READ startupCacheMode NOTIFY stateChanged)
+    Q_PROPERTY(bool workspaceChanging READ workspaceChanging NOTIFY stateChanged)
     Q_PROPERTY(bool sessionRenewalUnavailable READ sessionRenewalUnavailable NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
@@ -518,6 +522,7 @@ public:
     bool applyRealtimeEvent(const QJsonObject &envelope);
     bool authenticated() const { return m_session->ready(); }
     bool startupCacheMode() const { return m_startupCacheMode; }
+    bool workspaceChanging() const { return m_workspaceChanging; }
     // Issue #836: forwards the session's degraded-renewal flag (transient
     // failure while resuming a saved account) so the cache shell can show a
     // recovery status and gate the manual retry.
@@ -628,6 +633,8 @@ public:
     // Returns an empty map for an unknown or archived id; the caller early-
     // returns on an empty target.
     Q_INVOKABLE QVariantMap streamById(const QString &id) const;
+    Q_INVOKABLE QVariantList streamPickerRows(bool forwarding) const;
+    qint64 desktopUnreadCount() const;
     // Issue #867 test-only oracle: how many full streams() projections ran.
     // Intentionally has no NOTIFY - nothing in QML may bind to it.
     int streamsProjectionCountForTest() const { return m_streamsProjectionCount; }
@@ -1300,8 +1307,11 @@ signals:
 
 private:
     friend class WorkspaceSessions;
+    friend class NativeSidebarStreamListModel;
     void publishRealtimeState(const QString &state);
     void publishWorkspaceCatalog(const NativeController &source);
+    QString sidebarSortMode() const;
+    QString sidebarSortLocale() const;
     void closeMessageNotifications(const QList<QString> &messages);
     void applyDeepLink(const QString &url);
     void openProfileShareLink(const QString &user);
@@ -2102,6 +2112,7 @@ private:
     QPointer<NativeController> m_notificationViewport;
     QPointer<NotificationService> m_workspaceNotifications;
     bool m_backgroundWorkspace = false;
+    bool m_workspaceChanging = false;
     QPointer<PowerWatcher> m_powerWatcher;
     // Clock for the resume-reconnect floor (fix-round-1 finding 4): restarted
     // on every resume-triggered reconnectNow, resumes inside the floor ignored.
@@ -2384,6 +2395,9 @@ private:
     bool m_topicsReorderQueued = false;
     // Issue #866 (finding 2): lazily created sidebar row model (parented here).
     NativeSidebarStreamListModel *m_sidebarStreamModel = nullptr;
+    const NativeSidebarStreamListModel *m_preparedSidebar = nullptr;
+    QString m_backgroundSidebarSortMode = QStringLiteral("last_message");
+    QString m_backgroundSidebarLocale;
     // #860: a disk miss is not an authoritative negative - the reference falls through to the
     // project-scoped messages lookup during bootstrap (messenger-last-messages-loader.lib.ts
     // L96-129). The network stage is bounded per tick like the disk pump, retries transient

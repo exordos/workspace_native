@@ -902,6 +902,7 @@ private slots:
         Session session(&api);
         session.setVault(&vault);
         NativeController controller(&api, &session);
+        auto *sidebarModel = controller.sidebarStreamListModel();
         RealtimeCursorStore cursors(directory.filePath("cursors"));
         RecordingNotifications notifications;
         WorkspaceSessions workspaces(session, controller, vault, cursors);
@@ -925,12 +926,18 @@ private slots:
         QTRY_COMPARE(notifications.shows.size(), 1);
         QCOMPARE(session.currentSavedAccountId(), accountA);
         const auto tagB = notifications.lastTag();
+        QSignalSpy adoptedTree(sidebarModel, &QAbstractItemModel::modelReset);
         workspaces.clickNotification(tagB);
         QCOMPARE(activated.size(), 1);
         QCOMPARE(session.currentSavedAccountId(), accountB);
+        QCOMPARE(adoptedTree.size(), 1);
+        QCOMPARE(sidebarModel->rowCount(), 1);
+        QCOMPARE(sidebarModel->index(0).data(Qt::UserRole).toMap().value("name").toString(),
+                 QString("Organization B"));
         QCOMPARE(controller.sidebarStreams().first().toMap().value("name").toString(),
                  QString("Organization B"));
         QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), id, 5000);
+        QTRY_VERIFY(controller.sidebarTopicState(streamId, true).value("known").toBool());
         QVERIFY(socketA && socketB);
 
         // Same project, user and message UUID in another origin still produces
@@ -943,6 +950,7 @@ private slots:
         QCOMPARE(session.currentSavedAccountId(), accountA);
         controller.selectWorkspaceSession(accountB);
         QCOMPARE(session.currentSavedAccountId(), accountB);
+        QVERIFY(controller.sidebarTopicState(streamId, true).value("known").toBool());
         QCOMPARE(gatewayA.sockets.size(), 1);
         QCOMPARE(gatewayB.sockets.size(), 1);
         QVERIFY(socketA && socketB);
@@ -969,6 +977,9 @@ private slots:
         QCOMPARE(activated.size(), 2);
         QCOMPARE(session.currentSavedAccountId(), accountA);
         QVERIFY(socketA);
+        QTRY_VERIFY(!controller.busy());
+        controller.logoutWorkspaceSession(accountA);
+        QTRY_VERIFY(!controller.authenticated() && !socketA);
     }
 
     void sessionTransitionsRetireNotificationOwner_data()

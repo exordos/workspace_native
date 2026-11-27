@@ -17,11 +17,17 @@ visible controller and one set of media, drafts, cache and chat-key services.
 The visible session uses the selected runtime's verified access credential.
 The owning runtime schedules renewal and persists rotated credentials.
 
-Window selection publishes the selected runtime's known sidebar catalog and
-lets the visible controller reconcile it with the server. Background runtimes
-use the existing C++ projection and skip the sidebar preview sweep and presence
-heartbeat. Catch-up and reconnect use the existing realtime cursor contract
-for each account.
+Each runtime retains its folder catalog, prepared stream rows and loaded topic
+branches in memory. The background list model coalesces catalog changes.
+Window selection adopts the selected runtime's prepared rows as a shared value
+and restores its selected folder and known topic branches. Qt Quick renders
+the active list and its expanded branches. A dirty projection, changed sort
+configuration or active search uses the current controller projection.
+The visible controller then reconciles its catalog with the server.
+
+Background runtimes skip the sidebar preview sweep and presence heartbeat.
+Catch-up and reconnect use the existing realtime cursor contract for each
+account.
 
 Notification policy uses the message and its owning catalog. Selecting another
 account leaves the notification route live. An activation selects the producing

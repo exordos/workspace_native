@@ -111,9 +111,11 @@ text, everything else mirrors the reference.
 
 The desktop application binds the switcher to
 [`WorkspaceSessions`](decisions/0012-workspace-session-lifetime.md). Selecting
-a verified account attaches the window to its running session and publishes its
-available catalog before the window's network reconciliation. Saved accounts
-that are still opening keep their own authentication attempts.
+a verified account attaches the window to its running session and adopts its
+in-memory sidebar tree before the window's network reconciliation. Every
+verified account retains prepared stream rows, folders and previously loaded
+topic branches. Updates coalesce in each background model. Saved accounts that
+are still opening keep their own authentication attempts.
 
 New `qml/SessionSwitcher.qml` replaces the left-slot Row of `qml/Main.qml`
 (the old single organization button). It renders quick buttons, the overflow

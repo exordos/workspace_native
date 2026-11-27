@@ -40,7 +40,6 @@
 #include <QTimer>
 #include <QWindow>
 #include <openssl/ssl.h>
-#include <limits>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #include <shobjidl.h>
@@ -305,14 +304,7 @@ int main(int argc, char **argv)
     QString badgeOwner;
     const auto updateUnread = [&controller, &desktop, &badgeOwner] {
         badgeOwner = controller.ownerKey();
-        qint64 count = 0;
-        if (controller.authenticated()) {
-            for (const auto &value : controller.streams()) {
-                const auto unread = qMax<qint64>(0, value.toMap().value("unread").toLongLong());
-                count += qMin(unread, (std::numeric_limits<qint64>::max)() - count);
-            }
-        }
-        desktop.setUnreadCount(count);
+        desktop.setUnreadCount(controller.desktopUnreadCount());
     };
     QObject::connect(&controller, &workspace::NativeController::streamsChanged, &desktop, updateUnread);
     QObject::connect(&controller, &workspace::NativeController::stateChanged, &desktop,

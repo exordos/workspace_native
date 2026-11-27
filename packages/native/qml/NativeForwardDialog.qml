@@ -51,6 +51,7 @@ Popup {
     property var topicRows: []
     property bool submitAttempted: false
     property bool wasBusy: false
+    property int catalogRevision: 0
     // Review round 1 (cid 4586012848): success must settle exactly the batch
     // it was submitted with. The snapshot is taken at submit time so a Check
     // that lands after the modal went away can recognise its own selection
@@ -65,11 +66,8 @@ Popup {
     // and this native route posts plaintext markdown with no crypto path, so
     // the picker drops encrypted destinations outright (the controller
     // refuses them as a second line).
-    property var streamRows: (root.controller ? root.controller.streams : []).filter(function (stream) {
-        return !stream.encrypted
-    }).map(function (stream) {
-        return { id: stream.id, name: stream.isDirect && stream.displayName ? stream.displayName : stream.name }
-    })
+    property var streamRows: root.visible && root.controller && root.catalogRevision >= 0
+        ? root.controller.streamPickerRows(true) : []
     readonly property var streamOptions: [{ id: "", name: qsTr("Select channel") }].concat(root.streamRows)
     readonly property var topicOptions: [{ id: "", name: qsTr("Select a topic to send messages to the channel") }].concat(root.topicRows)
 
@@ -88,6 +86,7 @@ Popup {
 
     Connections {
         target: root.controller
+        function onStreamsChanged() { ++root.catalogRevision }
         // Success closes the modal and clears the chat selection (reference
         // onSuccess -> setSelectedMessageUuids(new Set())); failures leave the
         // dialog open with the alert visible (reference keeps the modal open).

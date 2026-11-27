@@ -46,6 +46,8 @@ private:
     void takeOver(Runtime &runtime);
     void authenticated(Runtime &runtime);
     void present(Runtime &runtime);
+    void rememberSidebar(Runtime &runtime);
+    void refreshSidebarOrder(Runtime &runtime, bool updateLocale);
     void updateUnread(const Runtime &runtime);
     void openDestination();
     bool isPresented(const Runtime &runtime) const;
