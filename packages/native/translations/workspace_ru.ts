@@ -5964,6 +5964,53 @@
         </message>
     </context>
     <context>
+        <name>NativeMailReader</name>
+        <message>
+            <source>Select a message</source>
+            <translation>Выберите сообщение</translation>
+        </message>
+        <message>
+            <source>From: %1</source>
+            <translation>От: %1</translation>
+        </message>
+        <message>
+            <source>To: %1</source>
+            <translation>Кому: %1</translation>
+        </message>
+        <message>
+            <source>Date: %1</source>
+            <translation>Дата: %1</translation>
+        </message>
+        <message>
+            <source>Message body unavailable</source>
+            <translation>Текст письма недоступен</translation>
+        </message>
+        <message>
+            <source>Reply</source>
+            <translation>Ответить</translation>
+        </message>
+        <message>
+            <source>Forward</source>
+            <translation>Переслать</translation>
+        </message>
+        <message>
+            <source>Mark as read</source>
+            <translation>Пометить прочитанным</translation>
+        </message>
+        <message>
+            <source>Mark as unread</source>
+            <translation>Пометить непрочитанным</translation>
+        </message>
+        <message>
+            <source>Delete</source>
+            <translation>Удалить</translation>
+        </message>
+        <message>
+            <source>Mail actions are unavailable in this preview.</source>
+            <translation>Действия с письмами недоступны в режиме предпросмотра.</translation>
+        </message>
+    </context>
+    <context>
         <name>NativeMailPage</name>
         <message>
             <source>Mail</source>
@@ -5984,18 +6031,6 @@
         <message>
             <source>Retry</source>
             <translation>Повторить</translation>
-        </message>
-        <message>
-            <source>Preview</source>
-            <translation>Предпросмотр</translation>
-        </message>
-        <message>
-            <source>Select a message</source>
-            <translation>Выберите сообщение</translation>
-        </message>
-        <message>
-            <source>Message bodies arrive with the mail server integration.</source>
-            <translation>Тексты писем появятся с интеграцией почтового сервера.</translation>
         </message>
     </context>
 </TS>

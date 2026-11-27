@@ -36,13 +36,15 @@ QVariantList sampleFolders()
 }
 
 QVariantMap sampleMessage(const char *uuid, const char *sender, const char *subject,
-                          const char *snippet, const char *time, bool unread)
+                          const char *snippet, const char *time, bool unread, const char *body)
 {
     return {{QStringLiteral("uuid"), QString::fromUtf8(uuid)},
             {QStringLiteral("sender"), QString::fromUtf8(sender)},
             {QStringLiteral("subject"), QString::fromUtf8(subject)},
             {QStringLiteral("snippet"), QString::fromUtf8(snippet)},
             {QStringLiteral("time"), QString::fromUtf8(time)},
+            {QStringLiteral("recipients"), QStringList{QStringLiteral("team@example.test")}},
+            {QStringLiteral("body"), QString::fromUtf8(body)},
             {QStringLiteral("unread"), unread}};
 }
 
@@ -52,18 +54,18 @@ QVariantList sampleMessages(const QString &folder)
         return {sampleMessage("mail-inbox-1", "Build Bot",
                               "Release 0.5.0 checks passed",
                               "All pipelines are green and artifacts are ready.",
-                              "10:24", true),
+                              "10:24", true, "Hello team,\n\nCI has completed successfully for all targets."),
                 sampleMessage("mail-inbox-2", "Product Team",
                               "Demo agenda for Friday",
                               "Please review talking points before 15:00.",
-                              "09:02", true),
+                              "09:02", true, "Please review the talking points before our Friday demo."),
                 sampleMessage("mail-inbox-3", "Design",
                               "Light theme polish proposal",
                               "Attached updated spacing and color recommendations.",
-                              "Mon", true)};
+                              "Mon", true, "Here are the proposed spacing and color updates for the light theme.")};
     if (folder == QStringLiteral("sent"))
         return {sampleMessage("mail-sent-1", "me", "Re: demo slot",
-                              "Works for me.", "Tue", false)};
+                              "Works for me.", "Tue", false, "The proposed demo slot works for me.")};
     return {};
 }
 
@@ -182,10 +184,19 @@ void MailStore::loadMessages()
         const auto array = result.data.toObject().value(QStringLiteral("messages")).toArray();
         for (const auto &value : array) {
             const auto object = value.toObject();
+            QStringList recipients;
+            const auto addresses = object.value(QStringLiteral("recipients")).toArray();
+            for (const auto &address : addresses) {
+                if (address.isString())
+                    recipients.append(address.toString());
+            }
             messages.append(QVariantMap{
                 {QStringLiteral("uuid"), object.value(QStringLiteral("uuid")).toString()},
                 {QStringLiteral("sender"), object.value(QStringLiteral("sender")).toString()},
                 {QStringLiteral("subject"), object.value(QStringLiteral("subject")).toString()},
+                {QStringLiteral("recipients"), recipients},
+                {QStringLiteral("date"), object.value(QStringLiteral("date")).toString()},
+                {QStringLiteral("body"), object.value(QStringLiteral("body")).toString()},
                 {QStringLiteral("snippet"), object.value(QStringLiteral("snippet")).toString()},
                 {QStringLiteral("time"), object.value(QStringLiteral("time")).toString()},
                 {QStringLiteral("unread"), object.value(QStringLiteral("unread")).toBool()}});
