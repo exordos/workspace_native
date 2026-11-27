@@ -19726,13 +19726,22 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1); controller.selectStream(streamId);
         QTRY_COMPARE(controller.topics().size(), 1); controller.selectTopic(topicId);
-        QTRY_VERIFY(controller.canAttach()); controller.setDraft("Preserved draft");
-        controller.attachFiles({QUrl::fromLocalFile(path)});
-        QTRY_VERIFY(!controller.fileBusy());
-        QCOMPARE(uploads, 0);
+        QTRY_VERIFY(controller.canAttach());
+        // #936: catalog-readiness oracle. The banner composition embeds the
+        // FileClient detail exactly as that class translated it at validation
+        // time while the header is translated here at composition time; if the
+        // row's locale catalog is not observably installed yet, the two halves
+        // can freeze in different languages (the mixed-language CI banner).
+        // Wait until FileClient::tr resolves in the fixture's locale before
+        // any localized error may be composed.
         const auto detail = locale == "ru"
             ? QString::fromUtf8("Тип файла изображения не соответствует его содержимому.")
             : QString("The image file type does not match its contents.");
+        QTRY_VERIFY(FileClient::tr("The image file type does not match its contents.") == detail);
+        controller.setDraft("Preserved draft");
+        controller.attachFiles({QUrl::fromLocalFile(path)});
+        QTRY_VERIFY(!controller.fileBusy());
+        QCOMPARE(uploads, 0);
         QVERIFY2(controller.error().contains(detail), qPrintable(controller.error()));
         QTRY_VERIFY(hasVisibleText(window->contentItem(), controller.error()));
         QCOMPARE(controller.draft(), QString("Preserved draft")); QVERIFY(!controller.canSend());
