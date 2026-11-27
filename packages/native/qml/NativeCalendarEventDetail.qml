@@ -40,6 +40,9 @@ Rectangle {
     property var event: ({})
     property bool editable: false
     signal closed()
+    property bool showParticipants: true
+    property bool movable: false
+    signal moveRequested()
     signal editRequested()
     signal deleteRequested()
 
@@ -148,6 +151,7 @@ Rectangle {
 
         // Participants: first three names, the rest collapse to "+N more".
         ColumnLayout {
+            visible: detail.showParticipants
             Layout.fillWidth: true
             spacing: 2
             Label {
@@ -181,13 +185,22 @@ Rectangle {
                 color: detail.colors["text-muted"]
             }
         }
-        RowLayout {
+        Flow {
             visible: detail.editable
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: 0
+            spacing: 6
             Button {
                 objectName: "calendarDetailEdit"
                 text: qsTr("Edit meeting")
                 onClicked: detail.editRequested()
+            }
+            Button {
+                objectName: "calendarDetailMove"
+                visible: detail.movable
+                text: qsTr("Move meeting")
+                onClicked: detail.moveRequested()
             }
             Button {
                 objectName: "calendarDetailDelete"

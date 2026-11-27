@@ -13852,6 +13852,7 @@ component NativeMentionChip: Item {
             objectName: "calendarSectionPage"
             colors: root.colors
             uiLocale: root.preferences.locale
+            calendarActions: root.controller
             calendars: root.controller.calendarCatalog
             events: root.controller.calendarEvents
             sampleMode: root.controller.sampleCalendar

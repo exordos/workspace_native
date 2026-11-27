@@ -17,6 +17,10 @@ FocusScope {
 
     required property var colors
     property var events: []
+    required property var calendarActions
+    readonly property var personalCalendars: calendars.filter(row => row.personalWritable)
+    readonly property var formCalendars: sampleMode
+        ? [{ key: "work", label: qsTr("Work") }, { key: "personal", label: qsTr("Personal") }] : personalCalendars
     required property var calendars
     required property bool sampleMode
     required property var saveSampleMeeting
@@ -281,6 +285,7 @@ FocusScope {
                 CheckBox {
                     objectName: "calendarSampleToggle"
                     text: qsTr("Sample calendar")
+                    enabled: !page.calendarActions.calendarWriting
                     checked: page.sampleMode
                     onToggled: {
                         page.sampleModeRequested(checked)
@@ -290,7 +295,8 @@ FocusScope {
                 }
                 Button {
                     objectName: "calendarCreateMeeting"
-                    visible: page.sampleMode
+                    visible: page.sampleMode || page.personalCalendars.length > 0
+                    enabled: page.sampleMode || (!page.loading && !page.calendarActions.calendarWriting)
                     Layout.fillWidth: true
                     highlighted: true
                     text: qsTr("Create meeting")
@@ -774,6 +780,9 @@ FocusScope {
         id: meetingForm
         colors: page.colors
         saveMeeting: page.saveSampleMeeting
+        sample: page.sampleMode
+        serverActions: page.calendarActions
+        calendars: page.formCalendars
         onDeleteRequested: (uuid, title) => deleteConfirmation.ask(uuid, title)
         onSaved: (start, calendar) => {
             page.detailEvent = null
@@ -783,7 +792,7 @@ FocusScope {
         Connections {
             target: page
             function onVisibleChanged() { if (!page.visible) meetingForm.close() }
-            function onSampleModeChanged() { if (!page.sampleMode) meetingForm.close() }
+            function onSampleModeChanged() { meetingForm.close() }
         }
     }
 
@@ -795,7 +804,11 @@ FocusScope {
         visible: page.detailEvent !== null
         colors: page.colors
         event: page.detailEvent !== null ? page.detailEvent : ({})
-        editable: page.sampleMode
+        editable: page.sampleMode || (!!page.detailEvent && !page.loading && !page.calendarActions.calendarWriting
+                  && page.personalCalendars.some(row => row.key === page.detailEvent.calendar))
+        showParticipants: page.sampleMode
+        movable: !page.sampleMode && page.personalCalendars.length > 1
+        onMoveRequested: meetingForm.openForDate(page.selectedDate, page.detailEvent, true)
         onEditRequested: meetingForm.openForDate(page.selectedDate, page.detailEvent)
         onDeleteRequested: deleteConfirmation.ask(page.detailEvent.uuid, page.detailEvent.title)
         onClosed: page.detailEvent = null
@@ -806,7 +819,10 @@ FocusScope {
         objectName: "calendarDeleteConfirmation"
         property string meetingUuid: ""
         property string meetingTitle: ""
+        property bool waiting: false
+        property bool failed: false
         function ask(uuid, title) {
+            waiting = failed = false
             meetingUuid = uuid
             meetingTitle = title
             open()
@@ -814,12 +830,14 @@ FocusScope {
         title: qsTr("Delete meeting?")
         modal: true
         focus: true
-        closePolicy: Popup.CloseOnEscape
+        closePolicy: waiting ? Popup.NoAutoClose : Popup.CloseOnEscape
         anchors.centerIn: parent
         width: Math.min(420, page.width - 32)
         onOpened: keepButton.forceActiveFocus()
         contentItem: Label {
-            text: qsTr("Delete “%1” from the sample calendar?").arg(deleteConfirmation.meetingTitle)
+            text: deleteConfirmation.failed ? qsTr("Could not confirm the change. Try again.")
+                : (page.sampleMode ? qsTr("Delete “%1” from the sample calendar?")
+                                   : qsTr("Delete “%1” from your calendar?")).arg(deleteConfirmation.meetingTitle)
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             maximumLineCount: 4
@@ -828,15 +846,23 @@ FocusScope {
         footer: DialogButtonBox {
             Button {
                 id: keepButton
+                enabled: !deleteConfirmation.waiting
                 objectName: "calendarConfirmCancel"
                 text: qsTr("Cancel")
                 onClicked: deleteConfirmation.reject()
             }
             Button {
                 objectName: "calendarConfirmDelete"
+                enabled: !deleteConfirmation.waiting
                 text: qsTr("Delete")
                 palette.buttonText: page.colors["danger"]
                 onClicked: {
+                    if (!page.sampleMode) {
+                        deleteConfirmation.waiting = page.calendarActions.writeCalendarMeeting(
+                            "delete", deleteConfirmation.meetingUuid, {})
+                        deleteConfirmation.failed = !deleteConfirmation.waiting
+                        return
+                    }
                     if (page.deleteSampleMeeting(deleteConfirmation.meetingUuid)) {
                         page.detailEvent = null
                         meetingForm.close()
@@ -848,7 +874,29 @@ FocusScope {
         Connections {
             target: page
             function onVisibleChanged() { if (!page.visible) deleteConfirmation.close() }
-            function onSampleModeChanged() { if (!page.sampleMode) deleteConfirmation.close() }
+            function onSampleModeChanged() { deleteConfirmation.close() }
         }
     }
+    Connections {
+        target: page.calendarActions
+        function onCalendarSessionReset() {
+            meetingForm.close()
+            deleteConfirmation.close()
+            page.detailEvent = null
+        }
+        function onCalendarWriteFinished(accepted, retryUnchanged) {
+            if (deleteConfirmation.waiting) {
+                deleteConfirmation.waiting = false
+                deleteConfirmation.failed = !accepted
+                if (accepted) {
+                    deleteConfirmation.close()
+                    meetingForm.close()
+                    page.detailEvent = null
+                }
+            } else {
+                meetingForm.completed(accepted, retryUnchanged)
+            }
+        }
+    }
+
 }

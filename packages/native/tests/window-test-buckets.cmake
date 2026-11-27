@@ -504,6 +504,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_19
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     aboutUpdateAutomaticallyDownloadsAndRequiresExplicitInstall
     attachmentCardConfirmationExpiresAcrossUnrelatedDownloadUpdates
+    calendarCreatesEditsMovesAndDeletesServerMeeting
     canonicalUsersHttpNameAppearsInTheActualMainAuthorLabel
     channelTopicSummaryDialogRebasedDraftDoesNotResendSubmittedApiKey
     chatHeaderCountersAppearWhenHeaderShowsAfterHiddenSelection
