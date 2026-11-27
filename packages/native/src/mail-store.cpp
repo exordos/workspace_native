@@ -1,6 +1,9 @@
 #include "mail-store.h"
 
+#include "domain.h"
 #include "workspace-reference.h"
+
+#include <algorithm>
 
 #include <QDateTime>
 #include <QFileInfo>
@@ -110,7 +113,9 @@ QVariantMap workspaceMessage(const QJsonObject &object)
             {"recipients", object.value("to_addresses").toVariant().toStringList()},
             {"subject", object.value("subject").toString()},
             {"date", date}, {"time", date}, {"body", body}, {"snippet", body.left(250).simplified()},
-            {"attachments", attachments}, {"unread", !object.value("read").toBool()}};
+            {"attachments", attachments}, {"unread", !object.value("read").toBool()},
+            {"starred", object.value("starred").toBool()}, {"account", object.value("external_account_uuid").toString()},
+            {"queued", object.value("delivery_status").toString() == QStringLiteral("queued")}};
 }
 
 } // namespace
@@ -126,6 +131,9 @@ MailStore::MailStore(ApiClient *api, QObject *parent)
 
 void MailStore::reset()
 {
+    ++m_ownerGeneration;
+    m_actionBusy = false;
+    m_actionError.clear();
     emit ownerRetired();
     if (m_state == QStringLiteral("idle"))
         return;
@@ -141,10 +149,11 @@ void MailStore::reset()
     emit mailChanged();
 }
 
-void MailStore::refresh(bool keepReader)
+void MailStore::refresh()
 {
     const quint64 token = ++m_requestToken;
-    if (!keepReader) m_selectedMessage.clear();
+    if (!m_workspaceMailbox)
+        m_selectedMessage.clear();
     m_state = QStringLiteral("loading");
     emit mailChanged();
     if (token == m_requestToken)
@@ -209,7 +218,9 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
                 if (object.value(QStringLiteral("kind")).toString() == QStringLiteral("inbox") && preferred.isEmpty())
                     preferred = id;
                 items.append(QVariantMap{{"id", id}, {"title", object.value("name").toString()},
-                                         {"unread", object.value("unread_count").toInt()}});
+                                         {"unread", object.value("unread_count").toInt()},
+                                         {"kind", object.value("kind").toString()},
+                                         {"account", object.value("external_account_uuid").toString()}});
             } else if (object.value(QStringLiteral("folder_uuid")).toString() == self->m_folderId) {
                 items.append(workspaceMessage(object));
             }
@@ -219,19 +230,20 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
         self->m_sampleMessages = false;
         if (folders) {
             self->m_folders = items;
-            if (!seen.contains(self->m_folderId)) {
+            const bool sameFolder = seen.contains(self->m_folderId);
+            if (!sameFolder) {
                 self->m_selectedMessage.clear();
                 self->m_folderId = !preferred.isEmpty() ? preferred
                     : items.isEmpty() ? QString() : items.first().toMap().value("id").toString();
             }
             if (!self->m_folderId.isEmpty()) {
-                self->loadMessages();
+                self->loadMessages(sameFolder);
                 return;
             }
             self->m_messages.clear();
         } else {
             self->m_messages = items;
-            if (!seen.contains(self->m_selectedMessage))
+            if (self->selectedWorkspaceMessage().isEmpty())
                 self->m_selectedMessage.clear();
         }
         self->m_state = QStringLiteral("ready");
@@ -278,10 +290,79 @@ void MailStore::loadPreviewFolders(quint64 token)
     });
 }
 
+QVariantList MailStore::moveTargets() const
+{
+    QVariantList targets;
+    const auto message = selectedWorkspaceMessage();
+    if (message.isEmpty())
+        return targets;
+    for (const auto &folder : m_folders) {
+        const auto row = folder.toMap();
+        if (row.value("id") != m_folderId && row.value("account") == message.value("account")
+            && (row.value("kind") != QStringLiteral("trash") || !message.value("queued").toBool())) {
+            targets.append(QVariantMap{{"id", row.value("id")}, {"displayLabel", row.value("title")}});
+        }
+    }
+    return targets;
+}
+
+QVariantMap MailStore::selectedWorkspaceMessage() const
+{
+    if (m_workspaceMailbox && isUuid(m_selectedMessage)) {
+        for (const auto &entry : m_messages) {
+            const auto row = entry.toMap();
+            if (row.value("uuid") == m_selectedMessage)
+                return row;
+        }
+    }
+    return {};
+}
+
+void MailStore::applyMessageAction(const QString &action, const QString &targetFolder)
+{
+    const auto selected = selectedWorkspaceMessage();
+    if (m_actionBusy || m_state != QStringLiteral("ready") || selected.isEmpty())
+        return;
+    QJsonObject body;
+    if (action == QStringLiteral("move")) {
+        const auto targets = moveTargets();
+        if (!isUuid(targetFolder) || std::none_of(targets.cbegin(), targets.cend(),
+            [&](const QVariant &item) { return item.toMap().value("id") == targetFolder; }))
+            return;
+        body.insert("folder_uuid", targetFolder);
+    } else {
+        static const QSet<QString> actions{"read", "unread", "star", "unstar", "trash", "restore"};
+        if (!actions.contains(action) || !targetFolder.isEmpty()
+            || (action == QStringLiteral("trash") && selected.value("queued").toBool()))
+            return;
+    }
+    const auto owner = m_ownerGeneration;
+    const auto id = m_selectedMessage;
+    const QString path = QStringLiteral("/api/workspace/v1/mail/messages/%1/actions/%2/invoke").arg(id, action);
+    m_actionBusy = true;
+    m_actionError.clear();
+    emit mailChanged();
+    if (owner != m_ownerGeneration)
+        return;
+    QPointer<MailStore> self(this);
+    m_api->request("POST", path, body, {}, [self, owner, id](const ApiResult &reply) {
+        if (!self || owner != self->m_ownerGeneration)
+            return;
+        self->m_actionBusy = false;
+        if (!reply.ok()) {
+            if (self->m_selectedMessage == id)
+                self->m_actionError = reply.error;
+            emit self->mailChanged();
+            return;
+        }
+        self->refresh();
+    });
+}
+
 void MailStore::selectFolder(const QString &folder)
 {
+    m_actionError.clear();
     m_folderId = folder;
-    m_selectedMessage.clear();
     loadMessages();
 }
 
@@ -303,14 +384,17 @@ void MailStore::selectMessage(const QString &uuid)
 {
     if (m_selectedMessage == uuid)
         return;
+    m_actionError.clear();
     m_selectedMessage = uuid;
     emit mailChanged();
 }
 
-void MailStore::loadMessages()
+void MailStore::loadMessages(bool preserveSelection)
 {
     const quint64 token = ++m_requestToken;
     m_state = QStringLiteral("loading");
+    if (!preserveSelection)
+        m_selectedMessage.clear();
     emit mailChanged();
     if (token != m_requestToken)
         return;

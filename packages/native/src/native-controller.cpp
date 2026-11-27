@@ -7975,7 +7975,7 @@ void NativeController::refreshInvalidatedSection()
         return;
     if (m_section == QLatin1String("mail") && m_mail->state() != QLatin1String("loading")) {
         m_groupwareDirty.remove(m_section);
-        m_mail->refresh(true);
+        m_mail->refresh();
     } else if (m_section == QLatin1String("calendar") && !m_calendar.sample
                && !m_calendar.inflight && !m_calendar.writing) {
         retryCalendar();

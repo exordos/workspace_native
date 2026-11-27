@@ -74,7 +74,7 @@ QVariantMap lightColors()
 {
     return {{"dark", false}, {"bg", "#f4f7fc"}, {"bg-elevated", "#ffffff"},
             {"border-subtle", "#d9e2f0"}, {"text-primary", "#162033"}, {"text-muted", "#64738d"},
-            {"accent", "#4a73ff"}, {"accent-soft", "#eaf0ff"}, {"card-bg-active", "#f4f7ff"},
+            {"accent", "#4a73ff"}, {"accent-soft", "#eaf0ff"}, {"card-bg-active", "#f4f7ff"}, {"text-field-bg", "#ffffff"},
             {"on-accent", "#ffffff"}, {"card-bg", "#ffffff"}};
 }
 
@@ -213,6 +213,105 @@ private slots:
         QTRY_COMPARE(store->state(), QStringLiteral("ready"));
         QCOMPARE(store->folderId(), archive);
         QVERIFY(store->messages().isEmpty());
+    }
+
+    void workspaceReaderAppliesOnlyValidActions()
+    {
+        const QString inbox = "87654321-2222-4444-8888-000000000001";
+        const QString archive = "87654321-2222-4444-8888-000000000002";
+        const QString trash = "87654321-2222-4444-8888-000000000003";
+        const QString foreign = "87654321-2222-4444-8888-000000000004";
+        const QString uuid = "87654321-2222-4444-8888-000000000005";
+        QString location = inbox;
+        bool read = false, starred = false, forbidden = false;
+        QStringList actions;
+        const auto folder = [](const QString &id, const QString &kind, const QString &account = {}) {
+            return QJsonObject{{"uuid", id}, {"name", kind}, {"kind", kind}, {"external_account_uuid", account}};
+        };
+        server.handler = [&](const Request &req) -> Response {
+            const auto path = req.target.path();
+            if (path == "/api/workspace/v1/mail/folders/") {
+                return Response{QJsonArray{folder(inbox, "inbox"), folder(archive, "archive"),
+                    folder(trash, "trash"), folder(foreign, "archive", "other-account")}};
+            }
+            const auto message = [&] {
+                return QJsonObject{{"uuid", uuid}, {"folder_uuid", location}, {"read", read},
+                    {"starred", starred}, {"subject", "Test message"}, {"from_address", "team@example.test"}};
+            };
+            if (path == "/api/workspace/v1/mail/messages/") {
+                return Response{QUrlQuery(req.target).queryItemValue("folder_uuid") == location
+                    ? QJsonArray{message()} : QJsonArray{}};
+            }
+            const QString prefix = "/api/workspace/v1/mail/messages/" + uuid + "/actions/";
+            if (req.method != "POST" || !path.startsWith(prefix) || !path.endsWith("/invoke"))
+                return Response{QJsonObject{}, 404};
+            const auto action = path.mid(prefix.size()).section('/', 0, 0);
+            actions.append(action);
+            if (forbidden) return Response{QJsonObject{}, 403};
+            if (action == "read" || action == "unread") read = (action == "read");
+            if (action == "star" || action == "unstar") starred = (action == "star");
+            if (action == "trash") location = trash;
+            if (action == "restore") location = inbox;
+            if (action == "move") location = req.body.value("folder_uuid").toString();
+            return Response{message(), 200, 50};
+        };
+        QQmlEngine engine;
+        QQuickWindow window;
+        window.resize(1000, 720);
+        auto *page = showMailWindow(engine, window, false);
+        QVERIFY(page);
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        store->selectMessage(uuid);
+        QCOMPARE(store->moveTargets().size(), 2);
+        store->applyMessageAction("move", foreign);
+        store->applyMessageAction("unsupported");
+        QVERIFY(!store->actionBusy() && actions.isEmpty());
+        const auto press = [&](const QString &key, const QString &action) {
+            auto *button = item(page, "mailReaderAction-" + key);
+            QVERIFY(button && button->isEnabled());
+            QSignalSpy frame(&window, &QQuickWindow::frameSwapped);
+            window.update();
+            QTRY_VERIFY(!frame.isEmpty());
+            const int before = actions.size();
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                              button->mapToScene(button->boundingRect().center()).toPoint());
+            QVERIFY(store->actionBusy());
+            store->applyMessageAction(action);
+            QTRY_VERIFY(!store->actionBusy() && store->state() == "ready");
+            QCOMPARE(actions.size(), before + 1);
+            QCOMPARE(actions.last(), action);
+        };
+        press("mark", "read");
+        QVERIFY(read && !store->messages().first().toMap().value("unread").toBool());
+        QCOMPARE(store->selectedMessageUuid(), uuid);
+        press("mark", "unread");
+        press("star", "star");
+        QVERIFY(starred);
+        press("star", "unstar");
+        forbidden = true;
+        press("star", "star");
+        QVERIFY(!store->actionError().isEmpty() && !starred);
+        forbidden = false;
+        auto *move = item(page, "mailMoveFolder");
+        QVERIFY(move && move->isEnabled());
+        move->forceActiveFocus();
+        QTest::keyClick(&window, Qt::Key_Space);
+        QTest::keyClick(&window, Qt::Key_Home);
+        QTest::keyClick(&window, Qt::Key_Return);
+        QTRY_COMPARE(location, archive);
+        QTRY_VERIFY(store->state() == "ready" && store->messages().isEmpty());
+        store->selectFolder(archive);
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        store->selectMessage(uuid);
+        press("delete", "trash");
+        QCOMPARE(location, trash);
+        store->selectFolder(trash);
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        store->selectMessage(uuid);
+        press("delete", "restore");
+        QCOMPARE(location, inbox);
     }
 
     void emptyWorkspaceMailboxStaysEmpty()
@@ -566,7 +665,7 @@ private slots:
         body = item(overlay, "mailComposeBody");
         QVERIFY(body);
         body->setProperty("text", "Account-local draft");
-        store->refresh(true);
+        store->refresh();
         QTRY_COMPARE(store->state(), QStringLiteral("ready"));
         QVERIFY(dialog && dialog->property("opened").toBool());
         QCOMPARE(textOf(overlay, "mailComposeBody"), QStringLiteral("Account-local draft"));

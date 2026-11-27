@@ -348,6 +348,7 @@ Item {
                 Layout.minimumWidth: 0
                 Layout.fillHeight: true
                 NativeMailReader {
+                    mail: page.mail
                     anchors.fill: parent
                     anchors.margins: 16
                     colors: page.colors

@@ -14,6 +14,10 @@ class MailStore final : public QObject {
     Q_PROPERTY(QVariantList folders READ folders NOTIFY mailChanged)
     Q_PROPERTY(QString folderId READ folderId NOTIFY mailChanged)
     Q_PROPERTY(QVariantList messages READ messages NOTIFY mailChanged)
+    Q_PROPERTY(bool live READ live NOTIFY mailChanged)
+    Q_PROPERTY(bool actionBusy READ actionBusy NOTIFY mailChanged)
+    Q_PROPERTY(QString actionError READ actionError NOTIFY mailChanged)
+    Q_PROPERTY(QVariantList moveTargets READ moveTargets NOTIFY mailChanged)
     Q_PROPERTY(bool sampleFolders READ hasSampleFolders NOTIFY mailChanged)
     Q_PROPERTY(bool sampleMessages READ hasSampleMessages NOTIFY mailChanged)
     Q_PROPERTY(QString state READ state NOTIFY mailChanged)
@@ -25,6 +29,11 @@ public:
     QVariantList folders() const { return m_folders; }
     QString folderId() const { return m_folderId; }
     QVariantList messages() const { return m_messages; }
+    bool live() const { return m_workspaceMailbox; }
+    bool actionBusy() const { return m_actionBusy; }
+    QString actionError() const { return m_actionError; }
+    QVariantList moveTargets() const;
+    Q_INVOKABLE void applyMessageAction(const QString &action, const QString &targetFolder = {});
     bool hasSampleFolders() const { return m_sampleMode; }
     bool hasSampleMessages() const { return m_sampleMessages; }
     QString state() const { return m_state; }
@@ -32,7 +41,7 @@ public:
 
     void reset();
     Q_INVOKABLE QVariantList describeAttachments(const QList<QUrl> &urls) const;
-    Q_INVOKABLE void refresh(bool keepReader = false);
+    Q_INVOKABLE void refresh();
     Q_INVOKABLE void selectFolder(const QString &folder);
     Q_INVOKABLE void selectMessage(const QString &uuid);
 
@@ -41,11 +50,15 @@ signals:
     void ownerRetired();
 
 private:
-    void loadMessages();
+    QVariantMap selectedWorkspaceMessage() const;
+    void loadMessages(bool preserveSelection = false);
     void loadPreviewFolders(quint64 token);
     void loadWorkspacePage(bool folders, quint64 token, QJsonArray rows = {},
                            QSet<QByteArray> markers = {}, const QByteArray &marker = {});
     bool m_workspaceMailbox = false;
+    bool m_actionBusy = false;
+    QString m_actionError;
+    quint64 m_ownerGeneration = 0;
 
     ApiClient *m_api;
     QVariantList m_folders;

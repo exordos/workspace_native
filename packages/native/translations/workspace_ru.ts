@@ -6207,6 +6207,30 @@
     <context>
         <name>NativeMailReader</name>
         <message>
+            <source>Restore</source>
+            <translation>Восстановить</translation>
+        </message>
+        <message>
+            <source>Move to trash</source>
+            <translation>В корзину</translation>
+        </message>
+        <message>
+            <source>Star</source>
+            <translation>Отметить звездой</translation>
+        </message>
+        <message>
+            <source>Unstar</source>
+            <translation>Снять звезду</translation>
+        </message>
+        <message>
+            <source>Move to folder</source>
+            <translation>Переместить в папку</translation>
+        </message>
+        <message>
+            <source>Reply and forward are unavailable.</source>
+            <translation>Ответ и пересылка недоступны.</translation>
+        </message>
+        <message>
             <source>Attachment: %1</source>
             <translation>Вложение: %1</translation>
         </message>

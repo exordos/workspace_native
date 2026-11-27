@@ -15,7 +15,12 @@ folders endpoint keeps all message requests on the Workspace API.
 
 The reader prefers text body parts. For HTML-only messages it converts the body
 to plain text locally with resource loading disabled. File URNs are shown as
-plain-text references. Draft and delivery actions are tracked in #852.
+plain-text references. In a live mailbox, the reader can mark messages read or
+unread, change their star, move them to another folder of the same external
+account, and move them to or restore them from Trash. The controls wait for
+the server response and refresh the mailbox. A rejected operation leaves the
+message in place and displays its error. The preview keeps the actions disabled.
+Draft persistence and queued delivery are tracked in #852.
 
 ## Reference contract (workspace_ui e0194ff)
 
