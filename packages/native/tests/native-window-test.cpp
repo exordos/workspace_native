@@ -39380,6 +39380,10 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(gridItem->property("selectedGridIndex").toInt(), 15);
         QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(), 15);
 
+        // exo-review #952 fix round: the four findings below are witnessed
+        // COLLECTIVELY (a hard-failing assert would abort the case before
+        // the later witnesses run, hiding their verdicts in a single pass).
+        QStringList witnessLeaks;
         // Arrow roaming: Right steps one date and moves the visible ring.
         QTest::keyClick(window, Qt::Key_Right);
         QTRY_COMPARE(gridItem->property("focusIndex").toInt(), 16);
@@ -39387,6 +39391,25 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY(stepped->property("keyboardFocused").toBool());
         auto *oldFocus = delegateAt(15); QVERIFY(oldFocus);
         QVERIFY(!oldFocus->property("keyboardFocused").toBool());
+        // exo-review finding 4722010298: the roving focus never lands on a
+        // cell as a focus item, so the grid itself must expose the active
+        // cell to assistive technology - its accessible name announces the
+        // date the arrows roved to, and it carries the focus state.
+        QAccessible::setActive(true);
+        auto *gridIface = QAccessible::queryAccessibleInterface(gridItem);
+        const QString febEleven =
+            QLocale(QLocale::English).toString(QDate(2026, 2, 11),
+                                               QStringLiteral("dddd, MMMM d, yyyy"));
+        if (!gridIface)
+            witnessLeaks << QStringLiteral("4722010298: grid has no accessible interface");
+        else
+        {
+            if (gridIface->text(QAccessible::Name) != febEleven)
+                witnessLeaks << QStringLiteral("4722010298: grid name is '%1', must announce %2")
+                                    .arg(gridIface->text(QAccessible::Name), febEleven);
+            if (!gridIface->state().focused)
+                witnessLeaks << QStringLiteral("4722010298: focused grid lacks the focus state");
+        }
         // Up + 5x Left walk back to the adjacent-month cell: Feb 11 ->
         // Feb 4 (Up), then five day-steps Left land on Jan 30 (index 4).
         QTest::keyClick(window, Qt::Key_Up);
@@ -39432,13 +39455,76 @@ QTRY_VERIFY(create->property("enabled").toBool());
         auto *selectedIface = QAccessible::queryAccessibleInterface(selectedCell);
         QVERIFY(selectedIface);
         QTRY_VERIFY(selectedIface->state().selected);
+        // exo-review finding 4722010291: Enter selected an adjacent-month
+        // date and the grid re-anchored to its month; the roving focus must
+        // re-anchor with the grid. Without the fix the stale matrix index (4)
+        // survives the re-anchor and this immediate second Enter lands on
+        // Jan 2, silently moving the selection.
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(250);
+        if (page->property("selectedDate").toDateTime().date() != QDate(2026, 1, 30))
+            witnessLeaks << QStringLiteral("4722010291: second Enter moved selection to %1")
+                                .arg(page->property("selectedDate").toDateTime()
+                                         .date().toString(Qt::ISODate));
         // Tab leaves the grid; Shift+Tab re-enters it on the selected cell.
+        // (In RED the second Enter above moved the selection, so this oracle
+        // joins the leak collection instead of hard-aborting the witness.)
         QTest::keyClick(window, Qt::Key_Tab);
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() != gridItem, 2000);
         QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
-        QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(),
-                 selectedCell->property("modelData").toInt());
+        if (gridItem->property("effectiveFocusIndex").toInt()
+                != selectedCell->property("modelData").toInt())
+            witnessLeaks << QStringLiteral("re-entry landed on index %1, selected cell is %2")
+                                .arg(gridItem->property("effectiveFocusIndex").toInt())
+                                .arg(selectedCell->property("modelData").toInt());
+        // exo-review finding 4722010307: while the selected cell also holds
+        // the roving focus, the focus ring must stay visible - it paints
+        // AFTER the opaque selection fill among the delegate's siblings,
+        // never underneath it.
+        auto *ringOnSelected = selectedCell->findChild<QQuickItem*>(ringName);
+        if (!ringOnSelected || !ringOnSelected->isVisible())
+            witnessLeaks << QStringLiteral("4722010307: no visible focus ring on the selected cell");
+        if (grid == QLatin1String("mini"))
+        {
+            auto *fill = selectedCell->findChild<QQuickItem*>(
+                QStringLiteral("miniSelectionFill"));
+            if (!fill)
+                witnessLeaks << QStringLiteral("4722010307: selection fill not stackable-provable");
+            else if (ringOnSelected
+                     && selectedCell->childItems().indexOf(ringOnSelected)
+                            <= selectedCell->childItems().indexOf(fill))
+                witnessLeaks << QStringLiteral("4722010307: focus ring does not paint above the selection fill");
+        }
+        // exo-review finding 4722010314: an arrow move past the matrix edge
+        // re-anchors the displayed month instead of clamping. The selected
+        // Jan 30 sits at index 32 of the January matrix, so 33 Lefts try to
+        // step past index 0: the grid must pull into December 2025 and land
+        // on Dec 28 (index 27 of the December matrix) while the selection
+        // itself stays put - arrows roam the view, Enter moves the date.
+        for (int i = 0; i < 33; ++i) QTest::keyClick(window, Qt::Key_Left);
+        QQuickItem *edgeCell = nullptr;
+        for (int i = 0; i < 100 && edgeCell == nullptr; ++i)
+        {
+            QTest::qWait(50);
+            edgeCell = delegateWithDate(QDate(2025, 12, 28));
+            if (edgeCell && !edgeCell->property("keyboardFocused").toBool())
+                edgeCell = nullptr;
+        }
+        if (!edgeCell)
+            witnessLeaks << QStringLiteral("4722010314: arrow past the matrix edge did not"
+                                           " re-anchor the month (focus index %1)")
+                                .arg(gridItem->property("effectiveFocusIndex").toInt());
+        else if (gridItem->property("effectiveFocusIndex").toInt() != 27)
+            witnessLeaks << QStringLiteral("4722010314: re-anchored focus index %1, expected 27")
+                                .arg(gridItem->property("effectiveFocusIndex").toInt());
+        if (page->property("selectedDate").toDateTime().date() != QDate(2026, 1, 30))
+            witnessLeaks << QStringLiteral("4722010314: roaming arrows moved the selection");
+        // One RED pass must print every verdict: qWarning each leak, then
+        // fail exactly once (a hard-failing assert would abort the case).
+        for (const QString &leak : std::as_const(witnessLeaks))
+            qWarning().noquote() << "#952-witness" << leak;
+        QCOMPARE(witnessLeaks, QStringList{});
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string
