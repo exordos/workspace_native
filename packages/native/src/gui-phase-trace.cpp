@@ -79,7 +79,10 @@ void GuiPhaseTrace::reset()
         QMutexLocker lock(&g_traceMutex);
         g_aggregates.clear();
         g_finished.clear();
-        g_nextSpanId = 0;
+        // The id counter is deliberately NOT restarted: a span that was open
+        // at reset time (on this or another thread) still holds its id, and
+        // its late endSpan must never match a freshly begun span (PR #898
+        // review finding 3).
         g_guiThreadId = 0;
     }
     g_threadStack.clear();
@@ -129,6 +132,14 @@ void GuiPhaseTrace::endSpan(qint64 id)
 {
     if (!m_enabled || id == 0) return;
     if (g_threadStack.empty()) return;
+    // An end for an id this stack never handed out (e.g. a span that was open
+    // when reset() cleared the stack) must be ignored: without this check the
+    // defensive unwind below would close every open span instead (PR #898
+    // review finding 3).
+    bool owns = false;
+    for (const auto &open : g_threadStack)
+        if (open.id == id) { owns = true; break; }
+    if (!owns) return;
     // Defensive: close inner spans down to the requested id if a caller
     // unwound out of order (early returns inside instrumented scopes).
     for (int i = int(g_threadStack.size()) - 1; i >= 0; --i)
