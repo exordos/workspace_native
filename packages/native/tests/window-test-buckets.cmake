@@ -557,6 +557,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     activityReactionsDeeplinkRendersUnsupportedState
     activityStarredChipOpensPageAndCloseFlow
+    calendarEventDetailOpensFromAgendaWithLocalTimeRendering
     codeCopyButtonIsKeyboardOperableAndAccessible
     confirmedSlowClipboardCopyRemainsVisibleAndCancellable
     diagnosticsLogViewerModalFiltersClearAndExports
@@ -641,6 +642,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_26
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     activityPanelExpandedListTogglesRoutesAndDisabledFavorites
+    calendarDetailAllDayShowsDateOnlyWithLocationFallback
     channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
     channelTopicSummaryEndpointFailedSaveKeepsMarkerUnderUnrelatedBusy
     channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity
