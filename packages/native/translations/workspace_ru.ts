@@ -5935,6 +5935,14 @@
     <context>
         <name>NativeCalendarPage</name>
         <message>
+            <source>Could not confirm the change. Try again.</source>
+            <translation>Не удалось подтвердить изменение. Попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>Delete “%1” from your calendar?</source>
+            <translation>Удалить «%1» из вашего календаря?</translation>
+        </message>
+        <message>
             <source>Selected date</source>
             <translation>Дата выбрана</translation>
         </message>
@@ -6010,6 +6018,10 @@
     <context>
         <name>NativeCalendarEventDetail</name>
         <message>
+            <source>Move meeting</source>
+            <translation>Перенести встречу</translation>
+        </message>
+        <message>
             <source>Edit meeting</source>
             <translation>Редактировать встречу</translation>
         </message>
@@ -6040,6 +6052,22 @@
     </context>
     <context>
         <name>NativeCalendarMeetingDialog</name>
+        <message>
+            <source>Could not confirm the new meeting. Retry it unchanged or cancel and check your calendar.</source>
+            <translation>Не удалось подтвердить создание встречи. Повторите без изменений или отмените и проверьте календарь.</translation>
+        </message>
+        <message>
+            <source>Could not confirm the change. Try again.</source>
+            <translation>Не удалось подтвердить изменение. Попробуйте ещё раз.</translation>
+        </message>
+        <message>
+            <source>This calendar operation is unavailable.</source>
+            <translation>Действие с календарём недоступно.</translation>
+        </message>
+        <message>
+            <source>Move meeting</source>
+            <translation>Перенести встречу</translation>
+        </message>
         <message>
             <source>Edit meeting</source>
             <translation>Редактировать встречу</translation>

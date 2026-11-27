@@ -337,6 +337,7 @@ class NativeController final : public QObject {
     Q_PROPERTY(QVariantList calendarCatalog READ calendarCatalog NOTIFY calendarChanged)
     Q_PROPERTY(QVariantList calendarEvents READ calendarEvents NOTIFY calendarChanged)
     Q_PROPERTY(bool sampleCalendar READ sampleCalendar WRITE setSampleCalendar NOTIFY calendarChanged)
+    Q_PROPERTY(bool calendarWriting READ calendarWriting NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarLoading READ calendarLoading NOTIFY calendarChanged)
     Q_PROPERTY(bool calendarError READ calendarError NOTIFY calendarChanged)
     // Activity panel (#101, docs/NATIVE_DESKTOP_ACTIVITY_PANEL.md): open/closed
@@ -770,6 +771,9 @@ public:
     QVariantList calendarCatalog() const { return m_calendar.calendars; }
     bool sampleCalendar() const { return m_calendar.sample; }
     void setSampleCalendar(bool enabled);
+    bool calendarWriting() const { return m_calendar.writing; }
+    Q_INVOKABLE QString newCalendarMeetingUuid() const;
+    Q_INVOKABLE bool writeCalendarMeeting(const QString &operation, const QString &uuid, const QVariantMap &draft);
     Q_INVOKABLE bool saveSampleMeeting(const QString &uuid, const QVariantMap &draft);
     Q_INVOKABLE bool deleteSampleMeeting(const QString &uuid);
     QVariantList calendarEvents() const { return sampleCalendar() ? m_calendar.sampleEvents.values() : m_calendar.events; }
@@ -1250,6 +1254,8 @@ signals:
     void supportScopeChanged();
     void stateChanged();
     void calendarChanged();
+    void calendarWriteFinished(bool accepted, bool retryUnchanged);
+    void calendarSessionReset();
     void secretKeysChanged();
     void mentionMembershipChanged();
     void channelInfoAddSettledChanged();
@@ -2786,6 +2792,9 @@ private:
     struct CalendarState {
         QVariantList calendars, events;
         QVariantMap sampleEvents; // UUID -> session-local meeting
+        bool writing = false;
+        QString uncertainCreate;
+        QJsonObject createBody;
         bool sample = false;
         QString from, to;
         bool loading = false, error = false, inflight = false, hasLoaded = false;
@@ -2796,6 +2805,8 @@ private:
         bool hasPending = false;
     };
     CalendarState m_calendar;
+    quint64 m_calendarWriteVersion = 0;
+    void finishCalendarWrite(bool accepted, bool retryUnchanged = false);
     void resetCalendar();
     void loadFeedPage(bool append);
     void interruptFeedRequest();

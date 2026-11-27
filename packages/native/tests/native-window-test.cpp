@@ -40022,6 +40022,160 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(chip->width() <= chip->parentItem()->width());
     }
 
+    void calendarCreatesEditsMovesAndDeletesServerMeeting()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        QJsonObject persisted;
+        QStringList writes;
+        int lookups = 0;
+        bool firstCreate = true, denyEdit = true;
+        const auto route = QStringLiteral("/api/workspace/v1/calendar/events/");
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/calendar/calendars/") {
+                QJsonArray rows;
+                for (const auto &value : calendarList()) {
+                    auto row = value.toObject();
+                    row["read_only"] = false;
+                    row["external_account_uuid"] = QJsonValue::Null;
+                    rows.append(row);
+                }
+                return {rows};
+            }
+            if (!path.startsWith(route))
+                return fallback(request);
+            if (request.method == "GET" && path == route)
+                return {persisted.isEmpty() ? QJsonArray{} : QJsonArray{persisted}};
+            if (request.method == "POST" && path == route) {
+                writes.append("create");
+                persisted = request.body;
+                persisted["project_id"] = projectId;
+                if (firstCreate) {
+                    firstCreate = false;
+                    return {QJsonObject{}, 503}; // server committed but the response was lost
+                }
+            } else if (path == route + persisted.value("uuid").toString()) {
+                if (request.method == "GET") ++lookups;
+                if (request.method == "PUT") {
+                    writes.append("edit");
+                    if (denyEdit) {
+                        denyEdit = false;
+                        return {QJsonObject{}, 403};
+                    }
+                    persisted["payload"] = request.body.value("payload");
+                }
+                if (request.method == "DELETE") {
+                    writes.append("delete");
+                    persisted = {};
+                    return {QJsonObject{}, 204};
+                }
+            } else if (path == route + persisted.value("uuid").toString() + "/actions/move/invoke") {
+                writes.append("move");
+                persisted["calendar_uuid"] = request.body.value("calendar_uuid");
+            } else {
+                return {QJsonObject{}, 404};
+            }
+            return {persisted};
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarCreateMeeting"), 4000);
+        click(window, view("calendarCreateMeeting"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QVERIFY(!view("calendarMeetingParticipants"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Planning")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        QCOMPARE(writes, QStringList{"create"});
+        QCOMPARE(lookups, 1);
+        const auto uuid = persisted.value("uuid").toString();
+        QVERIFY(!QUuid(uuid).isNull());
+        const auto row = "calendarAgendaRow-" + uuid;
+        QTRY_VERIFY(view(row));
+        QCOMPARE(persisted.value("calendar_uuid").toString(), workCalendarId);
+        auto payload = persisted.value("payload").toObject();
+        QCOMPARE(payload.value("kind").toString(), QStringLiteral("event"));
+        QVERIFY(payload.value("starts_at").toString().endsWith('Z'));
+        QVERIFY(!payload.contains("participants"));
+        QVERIFY(!payload.contains("all_day"));
+        // A second session reads the canonical event, including fields the editor
+        // cannot change and precision beyond the local minute controls.
+        payload["description"] = "Server note";
+        const auto startUtc = payload.value("starts_at").toString().left(19) + ".123456Z";
+        payload["starts_at"] = startUtc;
+        persisted["payload"] = payload;
+        controller.logout();
+        QTRY_VERIFY(!controller.authenticated());
+        ApiClient secondApi(nullptr, true);
+        Session secondSession(&secondApi);
+        NativeController secondController(&secondApi, &secondSession);
+        QQmlApplicationEngine secondEngine;
+        loadNativeUi(secondEngine, &secondController, &preferences);
+        window = qobject_cast<QQuickWindow *>(secondEngine.rootObjects().value(0)); QVERIFY(window);
+        auto closeSecond = qScopeGuard([&secondEngine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(secondEngine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, secondController, secondSession));
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY(view(row));
+        click(window, view(row));
+        QTRY_VERIFY(view("calendarDetailEdit"));
+        QVERIFY(!view("calendarDetailParticipantsHeader"));
+        click(window, view("calendarDetailEdit"));
+        QTRY_VERIFY(view("calendarMeetingTitle"));
+        QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Approved")));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(view("calendarMeetingError"));
+        QCOMPARE(persisted.value("payload").toObject().value("title").toString(), QStringLiteral("Planning"));
+        QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QStringLiteral("Approved"));
+        click(window, view("calendarMeetingSave"));
+        QTRY_VERIFY(!view("calendarMeetingSave"));
+        payload = persisted.value("payload").toObject();
+        QCOMPARE(payload.value("description").toString(), QStringLiteral("Server note"));
+        QCOMPARE(payload.value("starts_at").toString(), startUtc);
+        QCOMPARE(payload.value("title").toString(), QStringLiteral("Approved"));
+        QTRY_VERIFY(!secondController.calendarLoading());
+        QTRY_VERIFY(view(row));
+        click(window, view(row));
+        QTRY_VERIFY(view("calendarDetailMove"));
+        click(window, view("calendarDetailMove"));
+        QTRY_VERIFY(view("calendarMeetingSave"));
+        QVERIFY(!view("calendarMeetingTitle"));
+        QCOMPARE(view("calendarMeetingCalendar")->property("currentValue").toString(), personalCalendarId);
+        click(window, view("calendarMeetingSave"));
+        QTRY_COMPARE(persisted.value("calendar_uuid").toString(), personalCalendarId);
+        QCOMPARE(persisted.value("uuid").toString(), uuid);
+        QCOMPARE(persisted.value("payload").toObject(), payload);
+        QTRY_VERIFY(!view("calendarMeetingSave") && !secondController.calendarLoading());
+        QTRY_VERIFY(view(row));
+        click(window, view(row));
+        QTRY_VERIFY(view("calendarDetailDelete"));
+        click(window, view("calendarDetailDelete"));
+        QTRY_VERIFY(view("calendarConfirmCancel"));
+        click(window, view("calendarConfirmCancel"));
+        QVERIFY(!persisted.isEmpty());
+        click(window, view("calendarDetailDelete"));
+        QTRY_VERIFY(view("calendarConfirmDelete"));
+        click(window, view("calendarConfirmDelete"));
+        QTRY_VERIFY(persisted.isEmpty());
+        QTRY_VERIFY(!view(row));
+        QCOMPARE(writes, QStringList({"create", "edit", "edit", "move", "delete"}));
+    }
+
     void calendarLiveFiltersUseOwnedServerIdsAcrossViews()
     {
         WindowCalendarPolishFixture fixture;
