@@ -41898,8 +41898,8 @@ private slots:
     void windowSidebarDirectRowKeepsPlainAvatarBackground()
     {
         WindowStreamColorScene scene;
-        auto *probe = scene.circle(scene.fixture.directStream);
-        QVERIFY(probe);
+        QQuickItem *probe = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((probe = scene.circle(scene.fixture.directStream)), 4000);
         QCOMPARE(probe->size(), QSizeF(40, 40));
         // The DTO carries 0xff0000; a direct row must ignore it (reference
         // WorkspaceAvatar path) and keep the letter/photo fallback surface.
@@ -47919,7 +47919,8 @@ private slots:
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
         const auto openMenu = [&](const QString &rowName) {
-            auto *row = visibleItem(rowName); QVERIFY(row);
+            QQuickItem *row = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT((row = visibleItem(rowName)), 4000);
             QTest::mouseClick(window, Qt::RightButton, {},
                 row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
             auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);

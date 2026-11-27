@@ -11104,6 +11104,13 @@ private slots:
         });
         scene.openChatInfo();
         QTRY_VERIFY(scene.item("encryptedChatInfoLayer"));
+        // The member page and directory can finish on different event turns.
+        // Aim at the name after the roster's Column has presented that layout.
+        QTRY_COMPARE(scene.f.controller.channelInfoMemberCount(), 2);
+        QTRY_COMPARE(scene.f.controller.channelInfoOnlineCount(), 1);
+        QSignalSpy membersFrame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!membersFrame.isEmpty());
         const QString rowName = QStringLiteral("protectedChatMember-") + scene.memberBindingUuid;
         QQuickItem *row = nullptr;
         QTRY_VERIFY_WITH_TIMEOUT((row = scene.item(rowName)) != nullptr, 4000);
