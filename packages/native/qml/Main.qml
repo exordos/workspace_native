@@ -931,7 +931,9 @@ ApplicationWindow {
     property string dismissedEncryptionKeyNotice: ""
     readonly property bool encryptedKeyNoticeVisible: root.encryptedSendingKeyOutdated && root.dismissedEncryptionKeyNotice !== root.encryptionKeyNoticeId
     readonly property bool aggregateConversation: root.controller.conversationKind === "stream"
-    readonly property var aggregateTopics: root.controller.topics.filter(topic => String(topic.name || "").trim().length > 0)
+    // The rail only consumes the four shortcut fields and is absent inside a topic.
+    readonly property var aggregateTopics: root.aggregateConversation && !root.encryptedConversation
+        ? root.controller.topicShortcuts : []
     property string sidebarQuery: ""
     readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
     onNormalizedSidebarQueryChanged: {
@@ -6426,7 +6428,10 @@ component NativeMentionChip: Item {
                     readonly property bool expanded: root.controller.expandedSidebarStreams.indexOf(modelData.id) >= 0
                     readonly property var allTopics: sidebarTopicState.rows || []
                     function refreshTopics() {
-                        sidebarTopicState = root.controller.sidebarTopicState(modelData.id, expanded);
+                        // An expanded stream initially displays three topics. Request all
+                        // sorted rows when the user reveals the rest.
+                        sidebarTopicState = root.controller.sidebarTopicState(modelData.id, expanded,
+                            reveal === "collapsed" ? 3 : -1);
                     }
                     onExpandedChanged: {
                         if (!expanded && root.sidebarTopicRevealLevels[modelData.id] && root.sidebarTopicRevealLevels[modelData.id] !== "collapsed")
@@ -6434,6 +6439,7 @@ component NativeMentionChip: Item {
                         refreshTopics();
                     }
                     onModelDataChanged: refreshTopics()
+                    onRevealChanged: refreshTopics()
                     Component.onCompleted: refreshTopics()
                     // #866 companion: plain-JS liveGuard (the #708 rule) - the focus
                     // carry holds this object, never a QML wrapper, so a destroyed
@@ -6465,12 +6471,13 @@ component NativeMentionChip: Item {
                         }
                     }
                     readonly property string reveal: root.sidebarTopicRevealLevels[modelData.id] || "collapsed"
-                    readonly property int unfinishedCount: allTopics.filter(topic => !Boolean(topic.done)).length
-                    readonly property int collapsedCount: Math.min(3, allTopics.length)
-                    readonly property int visibleCount: reveal === "all" ? allTopics.length
+                    readonly property int unfinishedCount: Number(sidebarTopicState.unfinished || 0)
+                    readonly property int totalTopicCount: Number(sidebarTopicState.count || 0)
+                    readonly property int collapsedCount: Math.min(3, totalTopicCount)
+                    readonly property int visibleCount: reveal === "all" ? totalTopicCount
                         : reveal === "unfinished" ? Math.max(collapsedCount, unfinishedCount) : collapsedCount
                     readonly property int hiddenUnfinished: Math.max(0, unfinishedCount - visibleCount)
-                    readonly property int hiddenCompleted: Math.max(0, allTopics.length - Math.max(unfinishedCount, visibleCount))
+                    readonly property int hiddenCompleted: Math.max(0, totalTopicCount - Math.max(unfinishedCount, visibleCount))
                     readonly property string nextAction: hiddenUnfinished > 0 ? "more"
                         : hiddenCompleted > 0 ? "completed" : visibleCount > collapsedCount ? "collapse" : ""
                     readonly property int hiddenCount: nextAction === "more" ? hiddenUnfinished : hiddenCompleted
@@ -7450,7 +7457,7 @@ component NativeMentionChip: Item {
                     spacing: 0
                     Text {
                         Layout.maximumWidth: streamTitle.visible ? parent.width * 0.65 : parent.width
-                        text: root.selectedName(root.controller.topics, root.controller.selectedTopic) || root.selectedCatalogStreamName || qsTr("Choose a conversation")
+                        text: root.controller.selectedTopicName || root.selectedCatalogStreamName || qsTr("Choose a conversation")
                         textFormat: Text.PlainText
                         color: root.colors["text-primary"]
                         font.pixelSize: 14
@@ -7535,7 +7542,7 @@ component NativeMentionChip: Item {
                             width: parent.width; height: 20; spacing: 20
                             Item {
                                 id: encryptedTitleGroup
-                                readonly property bool topicShown: root.controller.selectedTopic.length > 0
+                                readonly property bool topicShown: root.encryptedConversation && root.controller.selectedTopic.length > 0
                                 readonly property real naturalWidth: encryptedTitle.implicitWidth + (topicShown ? 8 + encryptedStreamTitle.implicitWidth : 0)
                                 width: Math.max(0, Math.min(naturalWidth, encryptedTitleLine.width - protectedChatInfo.implicitWidth - encryptedTitleLine.spacing))
                                 height: 20
@@ -7545,7 +7552,7 @@ component NativeMentionChip: Item {
                                     objectName: "encryptedConversationTitle"
                                     width: Math.min(implicitWidth, parent.width)
                                     height: 20
-                                    text: root.selectedName(root.controller.topics, root.controller.selectedTopic) || root.encryptedStreamName
+                                    text: root.encryptedConversation ? root.controller.selectedTopicName || root.encryptedStreamName : ""
                                     textFormat: Text.PlainText
                                     color: root.colors["text-primary"]
                                     font.pixelSize: 16; font.weight: Font.Medium
@@ -8928,15 +8935,19 @@ component NativeMentionChip: Item {
                         return;
                     }
                     const snapshot = pendingViewport;
+                    // A tail restoration immediately jumps to the newest row. Measuring
+                    // the old viewport here instantiates and shapes rows we just left.
                     if (!snapshot.followTail)
                         forceMeasuredLayout();
                     // Issue #874: set when the schedule carried a pending saved
                     // anchor whose row has not been rendered yet.
                     let savedAnchorMissing = false;
+                    let measuredTailY;
                     if (snapshot.followTail) {
                         tailFollow = true;
                         positionViewAtEnd();
                         forceMeasuredLayout();
+                        measuredTailY = contentY;
                         const tail = itemAtIndex(count - 1);
                         if (tail)
                             contentY = Math.max(originY - topMargin, contentY + tail.mapToItem(messageList, 0, tail.height).y + bottomMargin - height);
@@ -8977,7 +8988,8 @@ component NativeMentionChip: Item {
                         warmRestoreLayout.restart();
                         return;
                     }
-                    forceMeasuredLayout();
+                    if (!snapshot.followTail || contentY !== measuredTailY)
+                        forceMeasuredLayout();
                     if (!finalPass) {
                         Qt.callLater(() => restoreViewport(ticket, true));
                         return;

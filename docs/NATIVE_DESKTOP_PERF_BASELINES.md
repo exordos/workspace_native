@@ -139,3 +139,27 @@ Shared software-rendered CI uses a 3 s upper guard and also checks the
 visible route, viewport buffer and on-demand controls. For comparisons,
 warm the Qt disk cache once per executable, then alternate baseline and
 candidate runs on the same display, build configuration and CPU allocation.
+
+### Large-channel navigation
+
+`largeTopicNavigationStallBudget` opens a 512-topic channel from a one-message
+channel. It exercises both the aggregate and individual topic routes with an
+empty cache and with their first pages saved to an independent SQLite cache. Each page contains 50 Markdown messages. The
+test waits for the rendered list, viewport restoration, a frame swap and the
+next event-loop heartbeat before ending each measurement. It also checks the
+visible header and shortcut rail, the absence of redundant full topic
+projections, and the presence of both 50-row pages in SQLite on the warm
+pass. Background topic preloading is disabled to keep the first visit cold.
+The report records any foreground revalidation requests.
+
+Run the reference timing gate with a display and a window manager. The report
+contains the 10 ms GUI timer statistics and phase spans for each transition.
+With the report enabled, any single gap of 300 ms or longer fails the case.
+The normal window bucket checks the same routes and deterministic assertions
+on shared CI workers.
+
+```sh
+WORKSPACE_NATIVE_TOPIC_PRELOAD=0 \
+WORKSPACE_NATIVE_NAVIGATION_STALL_REPORT="$PWD/navigation-stalls.json" \
+  <build-dir>/native-window-test largeTopicNavigationStallBudget
+```
