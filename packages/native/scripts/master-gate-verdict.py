@@ -1,152 +1,109 @@
 #!/usr/bin/env python3
-"""Decide whether a tag publish may reuse the master-push gate verdict.
-
-Reads the commits/{sha}/check-runs payload and applies the reuse contract:
-the master push of the tagged sha must have produced a successful verdict for
-EACH distinct required check name, every matching run must be completed, and
-no matching run may carry a non-success verdict.
-
-Input : one or more JSON payloads of
-        GET /repos/{owner}/{repo}/commits/{sha}/check-runs pages. The listing
-        is paginated, so the caller passes EVERY page file (exordy findings
-        4712353365/369); the check_runs lists are merged before deciding.
-Output: one verdict on stdout, one exit code:
-        reuse -> 0  (publish reuses the master-push gate)
-        wait  -> 1  (keep polling; the caller decides the fallback deadline)
-        block -> 2  (a matching check completed non-success: never publish)
-"""
+"""Resolve the tag's master-push gate using Actions runs and their check suites."""
+import argparse
 import json
+import subprocess
 import sys
+import time
+import urllib.parse
 
-REQUIRED_NAMES = ("package-linux", "full-gate-linux")
+
+REQUIRED_NAMES = {"package-linux", "full-gate-linux"}
+WORKFLOW = ".github/workflows/linux-release.yml"
 
 
-def matching_runs(payload):
-    """Only master-push gate runs; the tag's own runs must never match."""
-    runs = []
-    for run in payload.get("check_runs", []):
-        suite = run.get("check_suite") or {}
-        if run.get("name") not in REQUIRED_NAMES:
+def fetch_listing(repo, endpoint, params, key, gh_bin="gh", per_page=100,
+                  max_pages=50, deadline=None):
+    """Return every observed item, plus whether the listing was exhausted."""
+    items = []
+    for page in range(1, max_pages + 1):
+        query = urllib.parse.urlencode(dict(params, per_page=per_page, page=page))
+        url = f"repos/{repo}/{endpoint}?{query}"
+        timeout = 45 if deadline is None else min(45, deadline - time.monotonic())
+        if timeout <= 0:
+            return items, False
+        try:
+            result = subprocess.run([gh_bin, "api", url], capture_output=True,
+                                    check=True, timeout=timeout)
+            payload = json.loads(result.stdout)
+            batch = payload[key]
+            if not isinstance(batch, list) or not all(isinstance(item, dict)
+                                                      for item in batch):
+                return items, False
+            items.extend(batch)
+            if len(batch) < per_page:
+                # Filtered Actions searches can cap the returned records.
+                return items, len(items) >= payload["total_count"]
+        except (OSError, subprocess.SubprocessError, KeyError, ValueError, TypeError):
+            return items, False
+    return items, False
+
+
+def decide(sha, workflows, checks, complete):
+    suites = {run["check_suite_id"]: run for run in workflows
+              if run.get("head_sha") == sha and run.get("event") == "push"
+              and run.get("head_branch") == "master" and run.get("path") == WORKFLOW
+              and isinstance(run.get("check_suite_id"), int)}
+    green = {suite: set() for suite in suites}
+    for check in checks:
+        suite = (check.get("check_suite") or {}).get("id")
+        name = check.get("name")
+        if suite not in suites or name not in REQUIRED_NAMES:
             continue
-        if suite.get("event") != "push":
-            continue
-        if suite.get("head_branch") != "master":
-            continue
-        runs.append(run)
-    return runs
-
-
-def decide(payload):
-    runs = matching_runs(payload)
-    if any(run.get("status") == "completed"
-           and run.get("conclusion") != "success" for run in runs):
-        return "block"
-    green_names = {run.get("name") for run in runs
-                   if run.get("status") == "completed"
-                   and run.get("conclusion") == "success"}
-    # Reuse is accepted only once EVERY matching run has completed: an older
-    # green pair must never authorize publication while a newer matching run
-    # (re-check, rerun, or a second master push of the same sha) is still
-    # queued or in progress and may yet return a blocking verdict.
-    if any(run.get("status") != "completed" for run in runs):
-        return "wait"
-    if all(name in green_names for name in REQUIRED_NAMES):
+        if check.get("status") != "completed":
+            complete = False
+        elif check.get("conclusion") != "success":
+            return "block"
+        else:
+            green[suite].add(name)
+    if complete and suites and all(run.get("status") == "completed"
+                                   and green[suite] == REQUIRED_NAMES
+                                   for suite, run in suites.items()):
         return "reuse"
     return "wait"
 
 
-def load_pages(paths):
-    if len(paths) == 1:
-        with open(paths[0], encoding="utf-8") as handle:
-            return json.load(handle)
-    merged = {"check_runs": []}
-    for path in paths:
-        with open(path, encoding="utf-8") as handle:
-            merged["check_runs"].extend(json.load(handle).get("check_runs", []))
-    return merged
+def resolve_verdict(repo, sha, budget_seconds=3000):
+    deadline = time.monotonic() + budget_seconds
+    filters = {"head_sha": sha, "event": "push", "branch": "master"}
+    workflows, runs_complete = fetch_listing(repo, "actions/runs", filters, "workflow_runs", deadline=deadline)
+    checks, checks_complete = fetch_listing(
+        repo, f"commits/{sha}/check-runs", {"filter": "latest"}, "check_runs", deadline=deadline)
+    unresolved_red = False
+    if not runs_complete:
+        # A missing page can hide the master run that owns a visible red.
+        # A suite-specific lookup distinguishes this from the tag's own skips.
+        known = {run.get("check_suite_id") for run in workflows}
+        failed_suites = {check["check_suite"]["id"] for check in checks
+                         if check.get("name") in REQUIRED_NAMES
+                         and check.get("status") == "completed"
+                         and check.get("conclusion") != "success"
+                         and isinstance((check.get("check_suite") or {}).get("id"), int)}
+        for suite_id in failed_suites - known:
+            matches, complete = fetch_listing(repo, "actions/runs",
+                                              dict(filters, check_suite_id=suite_id),
+                                              "workflow_runs", deadline=deadline)
+            workflows.extend(matches)
+            if not complete:
+                unresolved_red = True
+    verdict = decide(sha, workflows, checks, runs_complete and checks_complete)
+    if verdict == "wait" and unresolved_red:
+        return "unknown-red"
+    if verdict == "wait" and not (runs_complete and checks_complete):
+        return "incomplete"
+    return verdict
 
 
-def fetch_pages(sha, out_prefix, repo, gh_bin="gh", per_page=100,
-                max_pages=50):
-    """Page through GET commits/{sha}/check-runs via gh, writing
-    out_prefix<N>.json for every page. Returns (paths, status):
-    complete  - a short page ended the listing; every run was fetched;
-    truncated - max_pages budget exhausted on a FULL page: runs beyond the
-                budget were never examined, so the caller must NOT decide
-                reuse from these pages (exordy findings 4712353365/369);
-    error     - gh or JSON failure.
-    """
-    import subprocess
-    paths = []
-    page = 1
-    while True:
-        dest = "%s%d.json" % (out_prefix, page)
-        url = ("repos/%s/commits/%s/check-runs?per_page=%d&page=%d"
-               % (repo, sha, per_page, page))
-        try:
-            with open(dest, "w", encoding="utf-8") as handle:
-                proc = subprocess.run([gh_bin, "api", url],
-                                      stdout=handle,
-                                      stderr=subprocess.DEVNULL)
-            if proc.returncode != 0:
-                return paths, "error"
-            with open(dest, encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except (OSError, ValueError):
-            return paths, "error"
-        paths.append(dest)
-        if len(payload.get("check_runs", [])) < per_page:
-            return paths, "complete"
-        if page >= max_pages:
-            return paths, "truncated"
-        page += 1
-
-
-def main(argv):
-    args = argv[1:]
-    if args and args[0] == "--fetch":
-        rest = args[1:]
-        opts = {}
-        sha = rest[0] if rest else ""
-        idx = 1
-        while idx < len(rest):
-            opts[rest[idx].lstrip("-")] = rest[idx + 1]
-            idx += 2
-        if not sha or "repo" not in opts or "out-prefix" not in opts:
-            print("usage: master-gate-verdict.py --fetch SHA --repo R "
-                  "--out-prefix P [--gh GH] [--per-page N] [--max-pages N]",
-                  file=sys.stderr)
-            return 1
-        paths, status = fetch_pages(
-            sha, opts["out-prefix"], opts["repo"],
-            gh_bin=opts.get("gh", "gh"),
-            per_page=int(opts.get("per-page", 100)),
-            max_pages=int(opts.get("max-pages", 50)))
-        # exordy finding 4714995326: completeness is required only to ACCEPT
-        # reuse, never to honour a visible block. A completed non-success
-        # among the runs we did fetch must block the publish even when the
-        # listing came back truncated or the gh call later failed - the
-        # in-job fallback gate must never outrace an observed red.
-        if paths:
-            merged = {"check_runs": []}
-            for path in paths:
-                with open(path, encoding="utf-8") as handle:
-                    merged["check_runs"].extend(
-                        json.load(handle).get("check_runs", []))
-            if decide(merged) == "block":
-                print("block (%d pages)" % len(paths))
-                return 2
-        print("%s (%d pages)" % (status, len(paths)))
-        return {"complete": 0, "truncated": 3, "error": 4}[status]
-    if len(argv) < 2:
-        print("usage: master-gate-verdict.py CHECK_RUNS_JSON [PAGE_JSON...]",
-              file=sys.stderr)
-        return 1
-    payload = load_pages(argv[1:])
-    verdict = decide(payload)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--fetch", required=True, metavar="SHA")
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--budget-seconds", type=int, default=3000)
+    args = parser.parse_args()
+    verdict = resolve_verdict(args.repo, args.fetch, args.budget_seconds)
     print(verdict)
-    return {"reuse": 0, "wait": 1, "block": 2}[verdict]
+    return {"reuse": 0, "wait": 1, "block": 2, "unknown-red": 3, "incomplete": 4}[verdict]
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())
