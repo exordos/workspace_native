@@ -313,6 +313,7 @@ FocusScope {
             }
             Item {
                 id: actionsZone
+                objectName: "starredActions-" + card.modelData.id
                 anchors.top: parent.top
                 anchors.topMargin: 12
                 anchors.right: parent.right
