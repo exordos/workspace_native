@@ -169,5 +169,70 @@ class CliTests(unittest.TestCase):
         self.assertEqual(late_red, (2, "block"))
 
 
+STUB_GH = """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+url = sys.argv[-1]
+page = int(url.split("page=")[-1])
+spec = json.loads(os.environ["STUB_SPEC"])
+if spec.get("fail_at") == page:
+    sys.exit(1)
+count = spec["pages"].get(str(page), 0)
+runs = [{"name": "pad-%d-%d" % (page, i),
+         "status": "completed", "conclusion": "success",
+         "check_suite": {"event": "push", "head_branch": "master"}}
+        for i in range(count)]
+print(json.dumps({"check_runs": runs}))
+"""
+
+
+class FetchModeTests(unittest.TestCase):
+    """exordy findings 4712353365/369 round 2: a truncated listing must
+    never be treated as complete. In --fetch mode the script paginates gh
+    itself; running out of page budget while the last page was still full
+    reports INCOMPLETE (rc 3) so the caller can never decide reuse from
+    pages that stopped before the listing ended. A gh failure is rc 4."""
+
+    def invoke_fetch(self, spec, max_pages):
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = os.path.join(tmp, "gh")
+            with open(stub, "w", encoding="utf-8") as handle:
+                handle.write(STUB_GH)
+            os.chmod(stub, 0o755)
+            env = dict(os.environ, STUB_SPEC=json.dumps(spec))
+            prefix = os.path.join(tmp, "check-runs-page-")
+            proc = subprocess.run(
+                [sys.executable, SCRIPT, "--fetch", "deadbeef",
+                 "--repo", "o/r", "--gh", stub, "--out-prefix", prefix,
+                 "--max-pages", str(max_pages)],
+                capture_output=True, text=True, env=env)
+            written = sorted(os.path.basename(p)
+                             for p in os.listdir(tmp)
+                             if p.startswith("check-runs-page-"))
+            return proc.returncode, proc.stdout.strip(), written
+
+    def test_fetch_paginates_until_short_page(self):
+        rc, out, written = self.invoke_fetch(
+            {"pages": {"1": 100, "2": 100, "3": 3}}, max_pages=50)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(written, ["check-runs-page-1.json",
+                                   "check-runs-page-2.json",
+                                   "check-runs-page-3.json"])
+
+    def test_fetch_full_page_at_budget_is_incomplete(self):
+        # Both fetched pages hold a green required pair, yet the fetch must
+        # report INCOMPLETE: runs beyond the budget were never examined.
+        pages = {"1": 100, "2": 100}
+        rc, out, _written = self.invoke_fetch({"pages": pages}, max_pages=2)
+        self.assertEqual(rc, 3, out)
+
+    def test_fetch_gh_failure_is_incomplete(self):
+        rc, _out, _written = self.invoke_fetch(
+            {"pages": {"1": 100}, "fail_at": 2}, max_pages=50)
+        self.assertEqual(rc, 4)
+
+
 if __name__ == "__main__":
     unittest.main()

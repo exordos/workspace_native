@@ -66,7 +66,64 @@ def load_pages(paths):
     return merged
 
 
+def fetch_pages(sha, out_prefix, repo, gh_bin="gh", per_page=100,
+                max_pages=50):
+    """Page through GET commits/{sha}/check-runs via gh, writing
+    out_prefix<N>.json for every page. Returns (paths, status):
+    complete  - a short page ended the listing; every run was fetched;
+    truncated - max_pages budget exhausted on a FULL page: runs beyond the
+                budget were never examined, so the caller must NOT decide
+                reuse from these pages (exordy findings 4712353365/369);
+    error     - gh or JSON failure.
+    """
+    import subprocess
+    paths = []
+    page = 1
+    while True:
+        dest = "%s%d.json" % (out_prefix, page)
+        url = ("repos/%s/commits/%s/check-runs?per_page=%d&page=%d"
+               % (repo, sha, per_page, page))
+        try:
+            with open(dest, "w", encoding="utf-8") as handle:
+                proc = subprocess.run([gh_bin, "api", url],
+                                      stdout=handle,
+                                      stderr=subprocess.DEVNULL)
+            if proc.returncode != 0:
+                return paths, "error"
+            with open(dest, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            return paths, "error"
+        paths.append(dest)
+        if len(payload.get("check_runs", [])) < per_page:
+            return paths, "complete"
+        if page >= max_pages:
+            return paths, "truncated"
+        page += 1
+
+
 def main(argv):
+    args = argv[1:]
+    if args and args[0] == "--fetch":
+        rest = args[1:]
+        opts = {}
+        sha = rest[0] if rest else ""
+        idx = 1
+        while idx < len(rest):
+            opts[rest[idx].lstrip("-")] = rest[idx + 1]
+            idx += 2
+        if not sha or "repo" not in opts or "out-prefix" not in opts:
+            print("usage: master-gate-verdict.py --fetch SHA --repo R "
+                  "--out-prefix P [--gh GH] [--per-page N] [--max-pages N]",
+                  file=sys.stderr)
+            return 1
+        paths, status = fetch_pages(
+            sha, opts["out-prefix"], opts["repo"],
+            gh_bin=opts.get("gh", "gh"),
+            per_page=int(opts.get("per-page", 100)),
+            max_pages=int(opts.get("max-pages", 50)))
+        print("%s (%d pages)" % (status, len(paths)))
+        return {"complete": 0, "truncated": 3, "error": 4}[status]
     if len(argv) < 2:
         print("usage: master-gate-verdict.py CHECK_RUNS_JSON [PAGE_JSON...]",
               file=sys.stderr)
