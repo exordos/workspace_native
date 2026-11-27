@@ -42147,15 +42147,14 @@ private slots:
         QTRY_VERIFY(controller.activityOpen());
         auto *row = view("activityRow-inbox"); QVERIFY(row);
         auto *label = view("activityRowLabel-inbox"); QVERIFY(label);
-        const QColor base = row->property("color").value<QColor>();
-        QVERIFY2(base.isValid(), "activity row lost its base fill");
-        const QPointF claimant = label->mapToScene(
-            QPointF(label->width() / 2.0, label->height() / 2.0));
-        QTest::mouseMove(window, claimant.toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != base, 2000);
-        // Neutral corner away from every row: the fill must revert.
-        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == base, 2000);
+        QSignalSpy frame(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        const auto palette = window->property("colors").toMap();
+        const auto point = label->mapToScene(QPointF(
+            qMin(label->property("contentWidth").toReal(), label->width()) / 2, label->height() / 2));
+        checkControlHover(window, row, point.toPoint(), QPoint(3, 3), "color",
+                          QColor(palette.value("card-bg").toString()), QColor(palette.value("card-bg-active").toString()));
     }
 
     // Issue #942 subtask B witness: the horizontal rail chip has no internal
@@ -42275,18 +42274,26 @@ private slots:
         controller.cancelEditMessage();
     }
 
-    // Issue #942 subtask B witness: the single-reply Cancel strip mirrors the
-    // edit notice shape (plain label + trailing sibling MouseArea).
+    void cancelReplyNoticeLabelCenterHoverFillsStrip_data()
+    {
+        QTest::addColumn<bool>("multiple");
+        QTest::newRow("single-reply") << false;
+        QTest::newRow("reply-tabs") << true;
+    }
+
     void cancelReplyNoticeLabelCenterHoverFillsStrip()
     {
+        QFETCH(bool, multiple);
         QTest::failOnWarning();
         WindowChannelFixture fixture;
         const auto fallback = fixture.server.handler;
         auto origin = message(QStringLiteral("Peer origin for the hover witness"), messageId);
         origin["is_own"] = false;
+        const QString secondMessageId = QStringLiteral("81000000-0000-4000-8000-000000000002");
+        const auto other = message(QStringLiteral("Another reply target"), secondMessageId);
         fixture.server.handler = [&, fallback](const Request &request) -> Response {
             if (request.method == "GET" && request.target.path().endsWith("/messages/"))
-                return {QJsonArray{origin}};
+                return {QJsonArray{origin, other}};
             return fallback(request);
         };
         QTemporaryDir directory;
@@ -42305,17 +42312,36 @@ private slots:
         controller.selectStream(streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
-        QTRY_COMPARE(controller.messages().size(), 1);
+        QTRY_COMPARE(controller.messages().size(), 2);
         QVERIFY(controller.beginReply(messageId));
+        if (multiple) QVERIFY(controller.addReplyTab(secondMessageId));
         auto *content = window->contentItem();
-        auto *notice = item(content, "replyNotice"); QVERIFY(notice);
-        QTRY_VERIFY(notice->isVisible());
-        auto *label = item(content, "cancelReplyButton"); QVERIFY(label);
-        auto *strip = label->parentItem(); QVERIFY(strip);
+        auto *tabs = item(content, "replyTabStrip");
+        QVERIFY(tabs);
+        QTRY_COMPARE(tabs->height() > 0, multiple);
+        QQuickItem *target = nullptr;
+        QTRY_VERIFY((target = visibleItem(content, "cancelReplyButton")));
+        // In the single-reply notice the named item is the label. In the tab
+        // strip it is the button, whose centered child paints that label.
+        auto *strip = multiple ? target : target->parentItem();
+        auto *label = multiple ? nullptr : target;
+        if (multiple) {
+            for (auto *child : strip->childItems()) {
+                if (child->property("text").toString() == QStringLiteral("Cancel")) label = child;
+            }
+        }
+        QVERIFY(label && strip);
+        QSignalSpy painted(window, &QQuickWindow::frameSwapped);
+        window->update();
+        QTRY_VERIFY(!painted.isEmpty());
+        QVERIFY(strip->boundingRect().contains(label->mapToItem(strip, label->boundingRect().center())));
+        const auto point = label->mapToScene(label->boundingRect().center()).toPoint();
+        QVERIFY(window->contentItem()->boundingRect().contains(point));
+        if (multiple) QVERIFY(tabs->contains(tabs->mapFromScene(point)));
+        QTest::mouseMove(window, QPoint(3, 3));
         const auto alpha = [&]() { return strip->property("color").value<QColor>().alpha(); };
         QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
-        QTest::mouseMove(window,
-            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTest::mouseMove(window, point);
         QTRY_VERIFY_WITH_TIMEOUT(alpha() > 0, 2000);
         QTest::mouseMove(window, QPoint(window->width() - 40, 8));
         QTRY_VERIFY_WITH_TIMEOUT(alpha() == 0, 2000);
@@ -46782,15 +46808,12 @@ private:
 
         // The fenced block grows the mounted copy button (reference
         // workspace-message-body-interactions.hook.ts:137-214).
-        QTRY_VERIFY(item(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
-        auto *button = visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0");
+        QTRY_VERIFY(visibleItem("codeCopyButton-" + fixture.codeMessageId + "-0"));
         auto *label = item(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
         QCOMPARE(label->property("text").toString(), QStringLiteral("Copy"));
 
-        // Pointer activation of the mounted button; the delegate exports one
-        // performCopy() code path shared by the MouseArea and this invoke
-        // (pointer routing itself is covered by the right-click Copy link case).
-        QMetaObject::invokeMethod(button, "performCopy");
+        // Activate at the painted text so competing bubble handlers participate.
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("echo copy-me"), 3000);
         // Success feedback lasts CODE_COPY_RESET_MS = 1200 ms before the idle
         // label returns (hook.ts:25,140-162).
@@ -47062,7 +47085,7 @@ private:
 
         auto *clipboard = QGuiApplication::clipboard(); QVERIFY(clipboard);
         clipboard->setText(QStringLiteral("media-copy-sentinel"));
-        QMetaObject::invokeMethod(button, "performCopy");
+        click(window, label);
         QTRY_VERIFY_WITH_TIMEOUT(clipboard->text() == QStringLiteral("sed -i copy-media"), 3000);
         QTRY_VERIFY_WITH_TIMEOUT(label->property("text").toString() == QStringLiteral("Copied"), 600);
         clipboard->setText(QStringLiteral("media-copy-sentinel-after"));
@@ -52040,19 +52063,24 @@ private slots:
     {
         ChannelInfoWindowScene scene;
         scene.openChannelInfo();
-        const QString prefix = QStringLiteral("channelInfoMember-");
-        QQuickItem *row = nullptr;
-        QTRY_VERIFY_WITH_TIMEOUT(
-            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
-        const QString suffix = row->objectName().mid(prefix.size());
-        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
-        QVERIFY(name);
-        auto *remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
-        QVERIFY(remove);
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 2000);
-        QTest::mouseMove(scene.window,
-            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 3000);
+        // Alice is a removable member in this owner fixture. Wait for her row
+        // and the drawer layout before computing the pointer location.
+        const QString binding = scene.fixture.bindingId(2);
+        QQuickItem *name = nullptr;
+        QTRY_VERIFY((name = visibleItem("channelInfoMemberName-" + binding)));
+        QQuickItem *remove = nullptr;
+        QTRY_VERIFY((remove = visibleItem("channelInfoRemove-" + binding)));
+        QSignalSpy frame(scene.window, &QQuickWindow::frameSwapped);
+        scene.window->update();
+        QTRY_VERIFY(!frame.isEmpty());
+        QTest::mouseMove(scene.window, QPoint(3, 3));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->opacity(), 0.0, 2000);
+        const auto point = name->mapToScene(QPointF(
+            qMin(name->property("contentWidth").toReal(), name->width()) / 2, name->height() / 2));
+        auto *scroll = visibleItem("channelInfoScroll");
+        QVERIFY(scroll && scroll->contains(scroll->mapFromScene(point)));
+        QTest::mouseMove(scene.window, point.toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(remove->opacity(), 1.0, 3000);
         // Neutral corner away from the drawer: the reveal must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
         QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
