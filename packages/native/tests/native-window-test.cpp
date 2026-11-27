@@ -51571,6 +51571,71 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
     }
 
+    // Review round 2 on #907: WordWrap cannot break an unbreakable token
+    // (a URL-like run with no spaces): the single oversized word lays out on
+    // one line, overflows the scroller viewport, and the horizontal scrollbar
+    // is off - the text is clipped and unreadable. The location must wrap the
+    // token within the available width (Text.Wrap).
+    void calendarDetailUnbreakableLocationTokenWrapsWithinCard()
+    {
+        WindowChannelFixture fixture; fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString day = QDate::currentDate().toString(Qt::ISODate);
+        QString token = QStringLiteral("https://exordos.com/meet/x?ref=");
+        while (token.length() < 2000)
+            token += QStringLiteral("9kQ3tL7wZ2pR8mN5vB1xC");
+        const QJsonObject event{
+            {"uuid", "5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34"},
+            {"day", day}, {"start", "11:00"}, {"end", "12:00"},
+            {"title", "Token stress"}, {"calendar", "work"},
+            {"color_token", "accent"}, {"location", token},
+            {"all_day", false}, {"start_utc", day + "T11:00:00Z"},
+            {"end_utc", day + "T12:00:00Z"}};
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+                return Response{QJsonArray{event}};
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        const QString rowName =
+            QStringLiteral("calendarAgendaRow-5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34");
+        QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
+        click(window, view(rowName));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
+        auto *location = view("calendarDetailLocation"); QVERIFY(location);
+        auto *timeRow = view("calendarDetailTime"); QVERIFY(timeRow);
+        // WordWrap lays the 2k-char token out on ONE overflowing line (height
+        // ~= one line); a wrapped label covers it in many lines. Compare the
+        // location height against the same-font sibling instead of hardcoded
+        // font metrics (host-metric oracles are the documented trap).
+        QTRY_VERIFY_WITH_TIMEOUT(location->height() > 5.0 * timeRow->height(), 2000);
+        // The wrapped lines stay inside the card: the card itself is capped
+        // to the window and the close button remains on screen.
+        auto *card = view("calendarEventDetail"); QVERIFY(card);
+        QVERIFY(card->height() <= window->contentItem()->height());
+        auto *closeButton = view("calendarDetailClose"); QVERIFY(closeButton);
+        const QPointF closePos = closeButton->mapToScene(QPointF(0, 0));
+        QVERIFY2(closePos.y() >= 0.0
+                 && closePos.y() + closeButton->height() <= window->contentItem()->height(),
+                 qPrintable(QStringLiteral("close button scene y=%1, window h=%2, card h=%3")
+                     .arg(closePos.y()).arg(window->contentItem()->height()).arg(card->height())));
+        click(window, closeButton);
+        QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
+    }
+
     // Issue #907: an all-day event shows the date only (no times), and an
     // event without a location renders the graceful fallback text instead of
     // a blank row.

@@ -134,7 +134,11 @@ Rectangle {
                 textFormat: Text.PlainText
                 color: String(detail.event.location || "").length > 0
                        ? detail.colors["text-primary"] : detail.colors["text-muted"]
-                wrapMode: Text.WordWrap
+                // Text.Wrap, not WordWrap: a URL-like unbreakable token must
+                // break within the available width - the scroller keeps
+                // horizontal scrolling off, so WordWrap would clip it
+                // unreadable (#907 review round 2).
+                wrapMode: Text.Wrap
             }
         }
 

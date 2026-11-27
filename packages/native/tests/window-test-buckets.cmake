@@ -383,6 +383,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     archiveCatalogStatesKeepRowsAndDistinguishLoadingFromFailure
     bottomReadAnchorRepairsServerCounter
+    calendarDetailUnbreakableLocationTokenWrapsWithinCard
     captionAndPickedImageSendThenPaintOwnInlinePixels
     channelTopicSummaryDialogFailedGatesLoadKeepsSwitchesLocked
     channelTopicSummaryEndpointNumericFieldsKeepVisibleLabels
