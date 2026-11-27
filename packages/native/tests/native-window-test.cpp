@@ -41330,6 +41330,44 @@ private slots:
         QCOMPARE(chatList->y(), closedTop);
     }
 
+    // Issue #944: Qt 6.10 delivers hover only to the claimant under the
+    // pointer and its ancestors, so the old sibling MouseArea stayed dead
+    // while the row label claimed the exact hover point. The row root now
+    // owns a HoverHandler; the witness moves the pointer to the LABEL
+    // CENTER (the claimant point) and asserts the fill change, then pins
+    // the revert after the pointer leaves the row.
+    void activityPanelRowsHighlightOnLabelCenterHover()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("activity-hover-944.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Activity row hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        QTRY_VERIFY(view("activity-drafts"));
+        click(window, view("activityExpandButton"));
+        QTRY_VERIFY(controller.activityOpen());
+        auto *row = view("activityRow-inbox"); QVERIFY(row);
+        auto *label = view("activityRowLabel-inbox"); QVERIFY(label);
+        const QColor base = row->property("color").value<QColor>();
+        QVERIFY2(base.isValid(), "activity row lost its base fill");
+        const QPointF claimant = label->mapToScene(
+            QPointF(label->width() / 2.0, label->height() / 2.0));
+        QTest::mouseMove(window, claimant.toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != base, 2000);
+        // Neutral corner away from every row: the fill must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == base, 2000);
+    }
+
     // Issue #101: open/closed state persists per workspace session
     // (sidebar-config.model.ts activityOpen): the same preferences scope
     // restores the expanded list without another click.
