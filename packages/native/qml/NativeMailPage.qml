@@ -23,6 +23,24 @@ Item {
     readonly property color textColor: colors["text-primary"]
     readonly property color mutedColor: colors["text-muted"]
 
+    Loader {
+        id: composeLoader
+        active: false
+        sourceComponent: NativeMailComposeDialog {
+            colors: page.colors
+            mail: page.mail
+        }
+        onLoaded: item.open()
+    }
+    onVisibleChanged: if (!visible && composeLoader.item) composeLoader.item.close()
+    Connections {
+        target: page.mail
+        function onMailChanged() {
+            if (composeLoader.item && composeLoader.item.visible && page.mail.state === "idle")
+                composeLoader.item.close()
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -81,6 +99,19 @@ Item {
                     anchors.fill: parent
                     anchors.margins: 14
                     spacing: 6
+                    NativeButton {
+                        objectName: "mailComposeButton"
+                        Layout.fillWidth: true
+                        text: qsTr("Compose")
+                        colors: page.colors
+                        primary: true
+                        onClicked: {
+                            if (composeLoader.item)
+                                composeLoader.item.open()
+                            else
+                                composeLoader.active = true
+                        }
+                    }
                     Repeater {
                         id: folderList
                         objectName: "mailFolderList"

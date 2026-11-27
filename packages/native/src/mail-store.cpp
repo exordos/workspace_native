@@ -1,7 +1,9 @@
 #include "mail-store.h"
 
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLocale>
 #include <QUrlQuery>
 
 namespace workspace {
@@ -140,6 +142,20 @@ void MailStore::selectFolder(const QString &folder)
 {
     m_folderId = folder;
     loadMessages();
+}
+
+QVariantList MailStore::describeAttachments(const QList<QUrl> &urls) const
+{
+    QVariantList rows;
+    for (const auto &url : urls) {
+        if (!url.isLocalFile())
+            continue;
+        const QFileInfo file(url.toLocalFile());
+        if (file.isFile())
+            rows.append(QVariantMap{{QStringLiteral("name"), file.fileName()},
+                                    {QStringLiteral("displaySize"), QLocale().formattedDataSize(file.size())}});
+    }
+    return rows;
 }
 
 void MailStore::selectMessage(const QString &uuid)

@@ -33,6 +33,7 @@ public:
     QString selectedMessageUuid() const { return m_selectedMessage; }
 
     void reset();
+    Q_INVOKABLE QVariantList describeAttachments(const QList<QUrl> &urls) const;
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void selectFolder(const QString &folder);
     Q_INVOKABLE void selectMessage(const QString &uuid);
