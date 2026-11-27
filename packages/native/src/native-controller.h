@@ -763,8 +763,9 @@ public:
     // events for the last fetched window; the live adapter is #852.
     bool sampleCalendar() const { return m_calendar.sample; }
     void setSampleCalendar(bool enabled);
-    Q_INVOKABLE bool createSampleMeeting(const QVariantMap &draft);
-    QVariantList calendarEvents() const { return sampleCalendar() ? m_calendar.sampleEvents : m_calendar.events; }
+    Q_INVOKABLE bool saveSampleMeeting(const QString &uuid, const QVariantMap &draft);
+    Q_INVOKABLE bool deleteSampleMeeting(const QString &uuid);
+    QVariantList calendarEvents() const { return sampleCalendar() ? m_calendar.sampleEvents.values() : m_calendar.events; }
     bool calendarLoading() const { return !sampleCalendar() && m_calendar.loading; }
     bool calendarError() const { return !sampleCalendar() && m_calendar.error; }
     // Activity starred page (#41, docs/NATIVE_DESKTOP_ACTIVITY_STARRED.md).
@@ -2763,7 +2764,8 @@ private:
     // identity discipline as FeedState, issue #356); a re-show of the same
     // loaded window is not re-fetched, so section re-entry is traffic-free.
     struct CalendarState {
-        QVariantList events, sampleEvents;
+        QVariantList events;
+        QVariantMap sampleEvents; // UUID -> session-local meeting
         bool sample = false;
         QString from, to;
         bool loading = false, error = false, inflight = false, hasLoaded = false;

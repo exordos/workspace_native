@@ -159,6 +159,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
     windowStreamContextMenuNotificationSwitchDisabledWhileBusy
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_7
+    calendarEditsAndDeletesSampleMeeting
     channelHeaderOpensInfoOverSettingsAndRestoresTheLayer
     conversationTailAndReentryAnchorStaySteadyThroughUpdates
     diagnosticsLogViewerModalLongPayloadRemainsScrollable

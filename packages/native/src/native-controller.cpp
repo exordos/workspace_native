@@ -8972,9 +8972,10 @@ void NativeController::setSampleCalendar(bool enabled)
     emit calendarChanged();
 }
 
-bool NativeController::createSampleMeeting(const QVariantMap &draft)
+bool NativeController::saveSampleMeeting(const QString &uuid, const QVariantMap &draft)
 {
-    if (!authenticated() || !m_calendar.sample)
+    if (!authenticated() || !m_calendar.sample
+        || (!uuid.isEmpty() && !m_calendar.sampleEvents.contains(uuid)))
         return false;
 
     const auto title = draft.value("title").toString().trimmed();
@@ -8985,8 +8986,9 @@ bool NativeController::createSampleMeeting(const QVariantMap &draft)
         || (calendar != QStringLiteral("work") && calendar != QStringLiteral("personal")))
         return false;
 
-    m_calendar.sampleEvents.append(QVariantMap{
-        {"uuid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+    const QString id = uuid.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : uuid;
+    m_calendar.sampleEvents.insert(id, QVariantMap{
+        {"uuid", id},
         {"title", title}, {"calendar", calendar}, {"colorToken", QStringLiteral("accent")},
         {"day", start.date().toString(Qt::ISODate)},
         {"lastDay", end.addMSecs(-1).date().toString(Qt::ISODate)},
@@ -8995,6 +8997,14 @@ bool NativeController::createSampleMeeting(const QVariantMap &draft)
         {"allDay", false}, {"location", draft.value("location").toString().trimmed()},
         {"participants", draft.value("participants").toStringList()},
     });
+    emit calendarChanged();
+    return true;
+}
+
+bool NativeController::deleteSampleMeeting(const QString &uuid)
+{
+    if (!authenticated() || !m_calendar.sample || !m_calendar.sampleEvents.remove(uuid))
+        return false;
     emit calendarChanged();
     return true;
 }

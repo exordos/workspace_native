@@ -5923,6 +5923,22 @@
     <context>
         <name>NativeCalendarPage</name>
         <message>
+            <source>Delete meeting?</source>
+            <translation>Удалить встречу?</translation>
+        </message>
+        <message>
+            <source>Delete “%1” from the sample calendar?</source>
+            <translation>Удалить «%1» из демонстрационного календаря?</translation>
+        </message>
+        <message>
+            <source>Cancel</source>
+            <translation>Отмена</translation>
+        </message>
+        <message>
+            <source>Delete</source>
+            <translation>Удалить</translation>
+        </message>
+        <message>
             <source>Sample calendar</source>
             <translation>Демонстрационный календарь</translation>
         </message>
@@ -5974,6 +5990,14 @@
     <context>
         <name>NativeCalendarEventDetail</name>
         <message>
+            <source>Edit meeting</source>
+            <translation>Редактировать встречу</translation>
+        </message>
+        <message>
+            <source>Delete meeting</source>
+            <translation>Удалить встречу</translation>
+        </message>
+        <message>
             <source>(untitled)</source>
             <translation>(без названия)</translation>
         </message>
@@ -5996,6 +6020,18 @@
     </context>
     <context>
         <name>NativeCalendarMeetingDialog</name>
+        <message>
+            <source>Edit meeting</source>
+            <translation>Редактировать встречу</translation>
+        </message>
+        <message>
+            <source>Save changes</source>
+            <translation>Сохранить изменения</translation>
+        </message>
+        <message>
+            <source>Delete meeting</source>
+            <translation>Удалить встречу</translation>
+        </message>
         <message>
             <source>New meeting</source>
             <translation>Новая встреча</translation>

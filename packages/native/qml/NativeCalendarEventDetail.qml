@@ -38,7 +38,10 @@ Rectangle {
 
     required property var colors
     property var event: ({})
+    property bool editable: false
     signal closed()
+    signal editRequested()
+    signal deleteRequested()
 
     // Fallback width when the rows are all short: keep a readable card.
     readonly property real implicitChildrenWidth: 320
@@ -175,6 +178,21 @@ Rectangle {
                 visible: (detail.event.participants || []).length > 3
                 text: qsTr("+%1 more").arg((detail.event.participants || []).length - 3)
                 color: detail.colors["text-muted"]
+            }
+        }
+        RowLayout {
+            visible: detail.editable
+            Layout.fillWidth: true
+            Button {
+                objectName: "calendarDetailEdit"
+                text: qsTr("Edit meeting")
+                onClicked: detail.editRequested()
+            }
+            Button {
+                objectName: "calendarDetailDelete"
+                text: qsTr("Delete meeting")
+                palette.buttonText: detail.colors["danger"]
+                onClicked: detail.deleteRequested()
             }
         }
         }
