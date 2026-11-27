@@ -244,6 +244,62 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visible(page, "mailEmptyState"), 5000);
     }
 
+    // exordy finding 4714792891: the reader wrapper's title and body Text
+    // items must keep their fill-width hints. Without them both retain their
+    // implicit widths, so a long subject (and the body note) overflows the
+    // constrained reader column and elide/wrap never engage. Measured at a
+    // narrow page width so the reader column is genuinely constrained.
+    void readerTextStaysWithinColumn()
+    {
+        QQmlEngine engine;
+        QQmlComponent component(&engine);
+        component.setData(readFile("NativeMailPage.qml"),
+                          QUrl::fromLocalFile(QStringLiteral(
+                              WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeMailPage.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        const QVariantMap initial {
+            {QStringLiteral("colors"), lightColors()},
+            {QStringLiteral("mail"), QVariant::fromValue(store)}};
+        QScopedPointer<QObject> object(component.createWithInitialProperties(initial));
+        QVERIFY(object);
+        auto *page = qobject_cast<QQuickItem *>(object.data());
+        QVERIFY(page);
+        QQuickWindow window;
+        window.resize(480, 700);
+        page->setParentItem(window.contentItem());
+        page->setWidth(480);
+        page->setHeight(700);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        store->refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(store->state(), QStringLiteral("ready"), 5000);
+        store->selectMessage(QStringLiteral("mail-inbox-2"));
+        QTRY_COMPARE(textOf(page, "mailReaderTitle"),
+                     QStringLiteral("Demo agenda for Friday"));
+        auto *title = item(page, QStringLiteral("mailReaderTitle"));
+        auto *body = item(page, QStringLiteral("mailReaderBody"));
+        QVERIFY(title);
+        QVERIFY(body);
+        auto *column = title->parentItem();
+        QVERIFY(column);
+        QVERIFY2(column->width() > 0 && column->width() < 200,
+                 qPrintable(QStringLiteral("reader column unexpectedly %1 px wide")
+                                .arg(column->width())));
+        QVERIFY2(title->width() <= column->width(),
+                 qPrintable(QStringLiteral("reader title %1 px overflows its %2 px column")
+                                .arg(title->width()).arg(column->width())));
+        QVERIFY2(body->width() <= column->width(),
+                 qPrintable(QStringLiteral("reader body %1 px overflows its %2 px column")
+                                .arg(body->width()).arg(column->width())));
+        // The elide/wrap affordances must actually engage at this width:
+        // implicit text is wider than the column, so the painted layout
+        // reports an elided width that fills the column.
+        const qreal elided = title->property("elidedWidth").toReal();
+        QVERIFY2(qAbs(elided - column->width()) <= 1.0,
+                 qPrintable(QStringLiteral("title elidedWidth %1 not at column %2")
+                                .arg(elided).arg(column->width())));
+    }
+
 private:
     Response respond(const Request &request)
     {
