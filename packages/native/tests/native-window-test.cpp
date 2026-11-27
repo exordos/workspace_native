@@ -457,8 +457,9 @@ static void openStreamTopicForm(QQuickWindow *window, const QString &id)
         const auto path = QDir(directory).filePath(QString("cassi-native-topic-failure-%1.png").arg(QCoreApplication::applicationPid()));
         if (window->grabWindow().save(path)) qWarning() << "Failure screenshot" << path;
     });
-    auto *stream = item(window->contentItem(), "stream-" + id);
-    QVERIFY(stream);
+    const auto streamName = "stream-" + id;
+    QTRY_VERIFY(item(window->contentItem(), streamName));
+    auto *stream = item(window->contentItem(), streamName);
     QTest::mouseClick(window, Qt::RightButton, {},
         stream->mapToScene(QPointF(20, stream->height() / 2)).toPoint());
     QTRY_VERIFY(visibleItem("streamNewTopicAction"));
@@ -9699,6 +9700,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 4);
         QTRY_VERIFY(controller.canCreateTopicIn(target));
+        if (kind == "ordinary") {
+            const int projections = controller.streamsProjectionCountForTest();
+            emit controller.streamsChanged();
+            QVERIFY(window->property("globalTopicStreams").toList().isEmpty());
+            QCOMPARE(controller.streamsProjectionCountForTest(), projections);
+        }
         if (kind == "shared-sidebar") {
             openStreamTopicForm(window, target);
             visibleItem("topicNameInput")->setProperty("text", "Native metadata topic");
@@ -14087,6 +14094,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(controller.canCreateTopicIn(streamId));
         if (global) openGlobalTopic(window); else openStreamTopicForm(window, streamId);
         const auto inputName = global ? "globalTopicNameInput" : "topicNameInput";
+        QVERIFY(visibleItem(inputName));
         visibleItem(inputName)->setProperty("text", "Same name");
         click(window, visibleItem(global ? "globalTopicCreateButton" : "topicFormSubmit"));
         QTRY_VERIFY(reentered);
@@ -17006,9 +17014,11 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), reentry ? 2 : 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), reentry ? 20 : 40);
         auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
         QTRY_VERIFY(list->property("atYEnd").toBool());
@@ -17068,8 +17078,7 @@ mv -Tf "$root/.current-new" "$root/current"
             // The identical page must restore the saved reading anchor exactly.
             // The topic rail re-incubates its rows while the visible-read
             // batch lands, so aim only once the target delegate identity is
-            // stable across two polls (click helper QFAILs on a disappearing
-            // target mid-readiness-wait).
+            // stable across two polls, then resolve it again at click time.
             const auto clickTopic = [&](const QString &id) {
                 QVERIFY(QTest::qWaitFor([&] {
                     auto *first = item(window->contentItem(), "topic-" + id);
@@ -17078,7 +17087,7 @@ mv -Tf "$root/.current-new" "$root/current"
                     auto *second = item(window->contentItem(), "topic-" + id);
                     return second && first == second && second->isVisible();
                 }, 6000));
-                click(window, item(window->contentItem(), "topic-" + id));
+                clickCurrentItem(window, "topic-" + id);
             };
             clickTopic(secondTopicId);
             QTRY_COMPARE(controller.selectedTopic(), secondTopicId);

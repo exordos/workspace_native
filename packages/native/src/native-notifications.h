@@ -194,7 +194,8 @@ public:
     // Account transition: close every banner the owner still has open and
     // drop its pending/pending-decision state (closeAllActiveMessageNotifications).
     void onOwnerRetired(const QString &owner);
-    void click(const QString &tag);
+    bool click(const QString &tag);
+    void setWorkspaceLabel(const QString &label) { m_workspaceLabel = label; }
 
     // Observability for tests and future diagnostics.
     int aggregateCount(const QString &tag) const { return m_registry.count(tag); }
@@ -216,6 +217,8 @@ signals:
     // A notification click was routed: open the conversation (topic wins;
     // a dm falls back to the stream conversation).
     void routeRequested(const QString &streamUuid, const QString &topicUuid);
+    void messageRouteRequested(const QString &messageUuid, const QString &streamUuid,
+                               const QString &topicUuid);
 
 private:
     struct Pending {
@@ -233,11 +236,13 @@ private:
     NotificationTransport *m_transport = nullptr;
     std::function<bool(NotificationCandidate &)> m_resolver;
     std::function<QString()> m_genericBody;
+    QString m_workspaceLabel;
     NotificationAggregateRegistry m_registry;
     NotificationDedup m_dedup;
     QSet<QString> m_processed;         // owner::messageUuid decisions
     QStringList m_processedOrder;      // insertion order for eviction
-    QHash<QString, QPair<QString, QString>> m_fallbackRoutes; // tag -> (stream, topic)
+    struct MessageRoute { QString message, stream, topic; };
+    QHash<QString, MessageRoute> m_fallbackRoutes;
     // Generic (msg: scheme) banners are outside the aggregate registry; the
     // service tracks them per owner so retirement can close them too.
     QHash<QString, QSet<QString>> m_liveFallbackTags;

@@ -449,7 +449,10 @@ void NotificationService::ingestNow(const NotificationCandidate &candidate)
         markProcessed(key);
         return;
     }
-    m_transport->show(snap->tag, formatTitle(snap->titleContext, snap->count), snap->body);
+    auto displayTitle = formatTitle(snap->titleContext, snap->count);
+    if (!m_workspaceLabel.isEmpty())
+        displayTitle = m_workspaceLabel + notificationSeparator() + displayTitle;
+    m_transport->show(snap->tag, displayTitle, snap->body);
     emit soundRequested();
     if (!m_windowFocused)
         m_transport->requestAttention();
@@ -465,7 +468,7 @@ void NotificationService::showGeneric(const NotificationCandidate &candidate)
     const auto body = m_genericBody ? m_genericBody() : QString();
     m_transport->show(tag, tr("You have a new message"), body);
     emit soundRequested();
-    m_fallbackRoutes.insert(tag, qMakePair(candidate.streamUuid, candidate.topicUuid));
+    m_fallbackRoutes.insert(tag, {candidate.messageUuid, candidate.streamUuid, candidate.topicUuid});
     m_liveFallbackTags[candidate.owner].insert(tag);
     m_fallbackOrder.append(qMakePair(candidate.owner, tag));
     // Overflow must not leave untracked banners open: the oldest generic
@@ -564,7 +567,6 @@ void NotificationService::onOwnerRetired(const QString &owner)
         else keptOrder.append(key);
     }
     m_processedOrder = keptOrder;
-    m_fallbackRoutes.clear();
 }
 
 void NotificationService::onMessagesClosed(const QString &owner, const QList<QString> &messageUuids)
@@ -584,11 +586,12 @@ void NotificationService::onMessagesClosed(const QString &owner, const QList<QSt
     for (const auto &messageUuid : outcome.untrackedMessageUuids) {
         const auto fallback = NotificationAggregateRegistry::fallbackTag(owner, messageUuid);
         m_liveFallbackTags[owner].remove(fallback);
+        m_fallbackRoutes.remove(fallback);
         m_transport->closeByTag(fallback);
     }
 }
 
-void NotificationService::click(const QString &tag)
+bool NotificationService::click(const QString &tag)
 {
     if (const auto snap = m_registry.peek(tag)) {
         m_registry.consumeByTag(tag);
@@ -597,16 +600,19 @@ void NotificationService::click(const QString &tag)
         // Reference notification click restores and focuses the window
         // before the routed conversation is delivered (main.ts focusMainWindow).
         emit activationRequested();
+        emit messageRouteRequested(snap->lastMessageUuid, snap->routeStream, snap->routeTopic);
         emit routeRequested(snap->routeStream, snap->routeTopic);
-        return;
+        return true;
     }
     const auto route = m_fallbackRoutes.take(tag);
-    if (route.first.isEmpty() && route.second.isEmpty())
-        return;
+    if (route.message.isEmpty())
+        return false;
     if (m_transport)
         m_transport->closeByTag(tag);
     emit activationRequested();
-    emit routeRequested(route.first, route.second);
+    emit messageRouteRequested(route.message, route.stream, route.topic);
+    emit routeRequested(route.stream, route.topic);
+    return true;
 }
 
 QString NotificationService::formatTitle(const NotificationTitleContext &context, int count)

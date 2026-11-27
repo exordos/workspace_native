@@ -109,6 +109,14 @@ text, everything else mirrors the reference.
 
 ## Native design
 
+The desktop application binds the switcher to
+[`WorkspaceSessions`](decisions/0012-workspace-session-lifetime.md). Selecting
+a verified account attaches the window to its running session and adopts its
+in-memory sidebar tree before the window's network reconciliation. Every
+verified account retains prepared stream rows, folders and previously loaded
+topic branches. Updates coalesce in each background model. Saved accounts that
+are still opening keep their own authentication attempts.
+
 New `qml/SessionSwitcher.qml` replaces the left-slot Row of `qml/Main.qml`
 (the old single organization button). It renders quick buttons, the overflow
 chip, the chevron trigger, the session dropdown Popup and the logout
@@ -132,11 +140,9 @@ Controller additions in `src/native-controller.h/.cpp`:
   dot, matching "no projection yet".
 - `NativeController::unreadBadgeLabel(unread)`: `"37"` for 37, `"1000"` at
   the limit and `"1000+"` above it (see the deviation note above).
-- `selectWorkspaceSession(id)`: no-op for the current id; otherwise
-  `Session::detach()` (new: clears only in-memory session state and keeps the
-  vault entry, emitting `signedOut` so the existing controller `reset()`
-  teardown runs), then `resumeSavedAccount(id)`. Switching does not erase any
-  cache partition: identities stay remembered.
+- `selectWorkspaceSession(id)`: passes the selection to the desktop
+  coordinator. The standalone controller falls back to one
+  `Session::resumeSavedAccount(id)` teardown and restore.
 - `logoutWorkspaceSession(id)`: for a non-current row this is the existing
   remembered-account removal (durable cache cleanup first). For the current
   row it detaches the live session, removes the remembered account, and then
@@ -150,10 +156,8 @@ Controller additions in `src/native-controller.h/.cpp`:
 `sessionSwitcherSessions` also synthesizes the live session as the first
 row when it is not (yet) a remembered account, mirroring
 `accountsFromApiSession` in the reference store, and deduplicates it against
-the vault entry with the same identity. Until a background sync exists, per
-remembered account the native client only renders unread state fed through
-`publishSessionProjection` (the hook the background sync will call); no
-projection means no dot, as in the reference. The row logo uses the static
+the vault entry with the same identity. The desktop coordinator feeds the unread
+projection per signed-in account through `publishSessionProjection`. The row logo uses the static
 `organization-fallback.svg` brand asset: the native client has no per-server
 logo store yet, matching the pre-feature top bar behavior.
 
@@ -167,6 +171,11 @@ wiring binds the authenticated owner, so automated tests that pin dark-palette
 tokens must call `setMode("dark")` after the window is wired, not before.
 
 ## Acceptance (CTest)
+
+The controller switch test counts one teardown per accepted account change.
+The sidebar model publishes the first catalog and clears an outgoing catalog
+as contiguous row ranges. Same-catalog refreshes keep granular row moves for
+surviving delegates so focus and scroll anchors can follow their rows.
 
 Controller group (`native-controller-test`): row list content/order and
 current marker from saved accounts; the ladder port covers the reference
@@ -188,14 +197,9 @@ Geometry oracles are fixed pixel values measured from the reference component
 
 ## Notification ownership on session transitions (issue #183)
 
-Leaving the live session through a switcher logout, account switch or Add server
-retires its active desktop banners, pending metadata-grace candidates and click
-routes through the same `Session::signedOut` cleanup as ordinary logout. This
-happens before a successor resumes and uses the controller's last verified owner
-key, since `Session` has already cleared its public identity. Switching and Add
-server still preserve remembered credentials. Removing a different remembered
-row and refreshing the current token preserve the live owner's notifications.
-
-The controller regression `sessionTransitionsRetireNotificationOwner` covers
-remembered and synthesized current rows, successor/no-successor transitions and
-the corresponding preservation cases; see [notification tests](NATIVE_DESKTOP_NOTIFICATIONS.md#session-switcher-retirement-regression-issue-183).
+Changing the visible account or opening Add server preserves the background
+session and its desktop notifications. Account removal or invalidation closes
+that owner's banners and clears their routes. The regression
+`liveWorkspaceSwitchKeepsBothSocketsAndOpensNotificationMessage` drives two
+accounts through the desktop coordinator with TLS, realtime sockets and the
+desktop notification transport seam.

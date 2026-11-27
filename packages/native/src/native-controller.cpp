@@ -48,6 +48,7 @@
 #include <QFutureWatcher>
 #include "heif-preview.h"
 #include <QScopeGuard>
+#include <QScopedValueRollback>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QPointer>
@@ -3554,7 +3555,7 @@ void NativeController::setPowerWatcher(PowerWatcher *watcher)
         m_sawSleepNotification = true;
     });
     connect(watcher, &PowerWatcher::resumed, this, [this] {
-        if (!m_realtime) return;
+        if (!m_realtime || m_workspaceNotifications) return;
         // Resume-triggered reconnects bypass the reconnect backoff, so bound
         // them (fix-round-1 finding 4, cid 4576526936): bare resumes inside a
         // floor window are ignored (the restored link stays up, and
@@ -10561,6 +10562,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // like the reference click route (layout-workspace-notifications.hook.ts).
     connect(&m_notifications, &NotificationService::routeRequested, this,
         [this](const QString &stream, const QString &topic) {
+            if (m_backgroundWorkspace) return;
             if (!topic.isEmpty()) openTopic(topic, stream);
             else if (!stream.isEmpty()) selectStream(stream);
         });
@@ -10900,8 +10902,10 @@ void NativeController::startAuthenticatedWorkspace()
     m_topicChanging = false;
     ++m_topicMutation;
     m_recoveringMarker = m_resumeOlder = false;
-    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
-    m_presenceHeartbeat.start();
+    if (!m_backgroundWorkspace) {
+        m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+        m_presenceHeartbeat.start();
+    }
     if (!m_realtimeMode) {
         refresh();
         m_poll.start();
@@ -12078,70 +12082,7 @@ void NativeController::useRealtime(RealtimeClient *client)
         QTimer::singleShot(1000, client, &RealtimeClient::retrySnapshot);
     });
     connect(this, &NativeController::resynchronizeRequested, client, &RealtimeClient::resynchronize);
-    connect(client, &RealtimeClient::connectionChanged, this, [this](const QString &state) {
-        // Issue #50: each backoff retry is one reconnect attempt for the
-        // diagnostics Connection card (connection.reconnectAttempt).
-        if (state == QLatin1String("retrying"))
-            ++m_realtimeReconnectAttempts;
-        // Issue #717: automatic recovery is silent in the reference
-        // (connection-health requestReconnect with showReconnecting:false),
-        // so the visible reconnecting phase is gated on escalation: a second
-        // retrying phase between two live links means the first reconnect
-        // retry also failed and the outage is sustained, not self-recovering.
-        if (state == QLatin1String("live"))
-            m_reconnectRetriesSinceLive = 0;
-        else if (state == QLatin1String("retrying"))
-            ++m_reconnectRetriesSinceLive;
-        // Issue #51: real connection-health transitions feed the session log
-        // (reference scope "connection-health", connection-health logger).
-        if (state == QLatin1String("live"))
-            m_sessionLog.append(QStringLiteral("info"), QStringLiteral("connection-health"),
-                QStringLiteral("Realtime connection live"));
-        else if (state == QLatin1String("retrying"))
-            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
-                QStringLiteral("Realtime reconnect attempt %1")
-                    .arg(m_realtimeReconnectAttempts));
-        else if (state != QLatin1String("connecting") && state != QLatin1String("catching_up"))
-            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
-                QStringLiteral("Realtime connection state: %1").arg(state));
-        const bool previous = m_syncBlocked;
-        m_syncState = state;
-        // Issue #717 (exo-review finding 1): bounded escalation. A drop that
-        // parks in an unstable phase without entering further retry
-        // transitions (e.g. a catch-up request the server never answers)
-        // must not stay invisible forever: stamp the unstable streak and
-        // schedule one escalation notice for the window's expiry.
-        const bool unstablePhase = state == QLatin1String("connecting")
-            || state == QLatin1String("catching_up") || state == QLatin1String("retrying")
-            || state == QLatin1String("waiting_for_session");
-        if (unstablePhase && m_reconnectUnstableSinceMs == 0) {
-            m_reconnectUnstableSinceMs = QDateTime::currentMSecsSinceEpoch();
-            QTimer::singleShot(m_reconnectEscalationGraceMs, this, [this]() {
-                if (m_reconnectUnstableSinceMs)
-                    emit stateChanged();
-            });
-        } else if (!unstablePhase && m_reconnectUnstableSinceMs != 0) {
-            m_reconnectUnstableSinceMs = 0;
-        }
-        if (state == "live") {
-            m_syncBlocked = false;
-            if (previous) ++m_realtimeRecovery;
-            // A healthy realtime link proves reachability on its own: a
-            // stale transport-offline flag must not outlive the realtime
-            // recovery and mask live sync state with the offline banner.
-            m_transportOffline = false;
-        }
-        else if (state != "catching_up" && state != "connecting") m_syncBlocked = true;
-        if (!previous && m_syncBlocked) {
-            interruptChannelCreations();
-            interruptDirectChats();
-        }
-        if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
-            || state == "waiting_for_session" || state == "stopped") markCacheStale();
-        const QPointer<NativeController> guard(this);
-        if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
-        if (guard && previous && state == "live") retryInterruptedHistory();
-    });
+    connect(client, &RealtimeClient::connectionChanged, this, &NativeController::publishRealtimeState);
     connect(client, &RealtimeClient::eventReceived, this, [this, client](const QJsonObject &event) {
         // Issue #50: diagnostics realtime stats mirror
         // diagnostics-realtime.lib.ts:16-20 (recorded on every receive).
@@ -12162,6 +12103,72 @@ void NativeController::useRealtime(RealtimeClient *client)
         }
     });
     client->start();
+}
+
+void NativeController::publishRealtimeState(const QString &state)
+{
+    // Issue #50: each backoff retry is one reconnect attempt for the
+    // diagnostics Connection card (connection.reconnectAttempt).
+    if (state == QLatin1String("retrying"))
+        ++m_realtimeReconnectAttempts;
+    // Issue #717: automatic recovery is silent in the reference
+    // (connection-health requestReconnect with showReconnecting:false),
+    // so the visible reconnecting phase is gated on escalation: a second
+    // retrying phase between two live links means the first reconnect
+    // retry also failed and the outage is sustained, not self-recovering.
+    if (state == QLatin1String("live"))
+        m_reconnectRetriesSinceLive = 0;
+    else if (state == QLatin1String("retrying"))
+        ++m_reconnectRetriesSinceLive;
+    // Issue #51: real connection-health transitions feed the session log
+    // (reference scope "connection-health", connection-health logger).
+    if (state == QLatin1String("live"))
+        m_sessionLog.append(QStringLiteral("info"), QStringLiteral("connection-health"),
+            QStringLiteral("Realtime connection live"));
+    else if (state == QLatin1String("retrying"))
+        m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+            QStringLiteral("Realtime reconnect attempt %1")
+                .arg(m_realtimeReconnectAttempts));
+    else if (state != QLatin1String("connecting") && state != QLatin1String("catching_up"))
+        m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+            QStringLiteral("Realtime connection state: %1").arg(state));
+    const bool previous = m_syncBlocked;
+    m_syncState = state;
+    // Issue #717 (exo-review finding 1): bounded escalation. A drop that
+    // parks in an unstable phase without entering further retry
+    // transitions (e.g. a catch-up request the server never answers)
+    // must not stay invisible forever: stamp the unstable streak and
+    // schedule one escalation notice for the window's expiry.
+    const bool unstablePhase = state == QLatin1String("connecting")
+        || state == QLatin1String("catching_up") || state == QLatin1String("retrying")
+        || state == QLatin1String("waiting_for_session");
+    if (unstablePhase && m_reconnectUnstableSinceMs == 0) {
+        m_reconnectUnstableSinceMs = QDateTime::currentMSecsSinceEpoch();
+        QTimer::singleShot(m_reconnectEscalationGraceMs, this, [this]() {
+            if (m_reconnectUnstableSinceMs)
+                emit stateChanged();
+        });
+    } else if (!unstablePhase && m_reconnectUnstableSinceMs != 0) {
+        m_reconnectUnstableSinceMs = 0;
+    }
+    if (state == "live") {
+        m_syncBlocked = false;
+        if (previous) ++m_realtimeRecovery;
+        // A healthy realtime link proves reachability on its own: a
+        // stale transport-offline flag must not outlive the realtime
+        // recovery and mask live sync state with the offline banner.
+        m_transportOffline = false;
+    }
+    else if (state != "catching_up" && state != "connecting") m_syncBlocked = true;
+    if (!previous && m_syncBlocked) {
+        interruptChannelCreations();
+        interruptDirectChats();
+    }
+    if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
+        || state == "waiting_for_session" || state == "stopped") markCacheStale();
+    const QPointer<NativeController> guard(this);
+    if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
+    if (guard && previous && state == "live") retryInterruptedHistory();
 }
 
 ApiClient::RequestId NativeController::request(const QByteArray &method, const QString &path,
@@ -13212,14 +13219,14 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // filters own/read/non-DM/non-markdown/foreign-host messages, and the
         // store keeps the dedupe-by-id and ignore-while-active matrix, so the
         // call stays invisible unless every reference condition holds.
-        if (kind == QLatin1String("message.created"))
+        if (kind == QLatin1String("message.created") && !m_backgroundWorkspace)
             maybeOfferCallInvite(*message);
         if (kind == "message.read") {
             staleReadConversation(message->stream, message->topic);
             if (message->read && m_cache)
                 m_cache->markHistoryRead(m_cacheLease, message->stream, message->topic, {message->uuid});
             if (message->read)
-                m_notifications.onMessagesClosed(creationOwnerKey(), {message->uuid});
+                closeMessageNotifications({message->uuid});
             // A read event owns only a monotonic flag, even if its envelope also
             // carries an older complete message DTO.
             if (selected && message->read) {
@@ -13367,7 +13374,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (unreadMentionRemoved) emit sidebarStreamsChanged();
         // Deletion closes notifications the same way a read does in the
         // reference closeReadMessageNotifications flow.
-        m_notifications.onMessagesClosed(creationOwnerKey(), {id});
+        closeMessageNotifications({id});
         const auto outcome = std::find_if(m_chatOutcomeFacts.begin(), m_chatOutcomeFacts.end(),
             [&](const ChatOutcomeFact &fact) { return fact.id == id; });
         const bool knownOutcome = outcome != m_chatOutcomeFacts.end()
@@ -13428,7 +13435,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // old pagination boundary, and every retained page stays stale.
         staleCache(NativeCache::Kind::History);
         if (m_cache && !ids.isEmpty()) m_cache->markHistoryRead(m_cacheLease, {}, {}, ids);
-        m_notifications.onMessagesClosed(creationOwnerKey(), QList<QString>(ids.cbegin(), ids.cend()));
+        closeMessageNotifications(QList<QString>(ids.cbegin(), ids.cend()));
         staleCache(NativeCache::Kind::Streams);
         staleCache(NativeCache::Kind::Topics);
         ++m_messageRevision;
@@ -14169,22 +14176,25 @@ QVariantList NativeController::sessionSwitcherSessions() const
 void NativeController::publishSessionProjection(const QString &accountId, const QVariantMap &projection)
 {
     if (accountId.isEmpty()) return;
-    if (projection.isEmpty()) m_sessionProjections.remove(accountId);
-    else m_sessionProjections.insert(accountId, projection);
+    if (projection.isEmpty()) {
+        if (!m_sessionProjections.remove(accountId)) return;
+    } else {
+        if (m_sessionProjections.value(accountId) == projection) return;
+        m_sessionProjections.insert(accountId, projection);
+    }
     emit sessionSwitcherChanged();
 }
 
 void NativeController::selectWorkspaceSession(const QString &id)
 {
-    if (busy() || id.isEmpty() || id == m_session->currentSavedAccountId()) return;
+    if (id.isEmpty() || m_cacheForgettingAccount) return;
+    if (!m_session->hasWorkspaceManager() && (busy() || id == m_session->currentSavedAccountId())) return;
     bool remembered = false;
     for (const auto &account : m_session->savedAccounts()) remembered = remembered || account.id == id;
     if (!remembered) return;
     m_error.clear();
-    // The live identity leaves memory (signedOut runs the standard reset) while
-    // every remembered identity survives, then the target resumes like the
-    // sign-in screen's Continue.
-    m_session->detach();
+    // Resume retires the previous identity itself. Detaching first would run
+    // the same signedOut teardown twice before the secure-store read.
     m_session->resumeSavedAccount(id);
 }
 
@@ -14556,7 +14566,7 @@ void NativeController::mutateChat(const QString &id, const QString &name, bool r
             if (allRead) {
                 mentionIndexClearStream(id); inboxSlotStreamRead(id);
             } else for (const auto &message : loaded) mentionIndexRemove(message);
-            m_notifications.onMessagesClosed(creationOwnerKey(), QList<QString>(loaded.cbegin(), loaded.cend()));
+            closeMessageNotifications(QList<QString>(loaded.cbegin(), loaded.cend()));
             if (!owned()) return;
             ++m_messageRevision;
             emit messagesChanged(); if (!owned()) return;
@@ -14671,6 +14681,32 @@ QVariantMap NativeController::streamById(const QString &id) const
     return {};
 }
 
+QVariantList NativeController::streamPickerRows(bool forwarding) const
+{
+    const auto ordered = orderedStreamPointers();
+    QVariantList choices;
+    choices.reserve(ordered.size());
+    for (const auto *stream : ordered) {
+        if (forwarding && stream->encrypted) continue;
+        const auto peer = forwarding && stream->privateStream && isUuid(stream->directUser)
+            ? peerDisplayName(stream->directUser) : QString{};
+        choices.append(QVariantMap{{QStringLiteral("id"), stream->uuid},
+            {QStringLiteral("name"), peer.isEmpty() ? stream->name : peer}});
+    }
+    return choices;
+}
+
+qint64 NativeController::desktopUnreadCount() const
+{
+    if (!authenticated()) return 0;
+    qint64 count = 0;
+    for (const auto &stream : std::as_const(m_streams)) {
+        if (!stream.archived)
+            count += qMin<qint64>(qMax(0, stream.unread), std::numeric_limits<qint64>::max() - count);
+    }
+    return count;
+}
+
 QVector<const Stream *> NativeController::orderedStreamPointers() const
 {
     // exordy finding on PR #866: the projected sidebar order, factored out of streams()
@@ -14688,10 +14724,10 @@ QVector<const Stream *> NativeController::orderedStreamPointers() const
     QHash<QString, qint64> activity;
     for (const auto *stream : ordered)
         activity.insert(stream->uuid, rowActivityMicros(stream->lastMessage, stream->updatedMicros));
-    const auto sortMode = m_preferences ? m_preferences->sidebarSortMode() : QString{};
+    const auto sortMode = sidebarSortMode();
     std::optional<QCollator> names;
     if (sortMode == "alphabetical") {
-        names.emplace(QLocale(m_preferences->locale()));
+        names.emplace(QLocale(sidebarSortLocale()));
         names->setCaseSensitivity(Qt::CaseInsensitive);
         names->setNumericMode(true);
     }
@@ -14711,6 +14747,16 @@ QVector<const Stream *> NativeController::orderedStreamPointers() const
         return activity.value(a->uuid) > activity.value(b->uuid);
     });
     return ordered;
+}
+
+QString NativeController::sidebarSortMode() const
+{
+    return m_preferences ? m_preferences->sidebarSortMode() : m_backgroundSidebarSortMode;
+}
+
+QString NativeController::sidebarSortLocale() const
+{
+    return m_preferences ? m_preferences->locale() : m_backgroundSidebarLocale;
 }
 
 bool NativeController::applyHydratedRowActivity(const Message &message)
@@ -15568,6 +15614,13 @@ QString NativeSidebarStreamListModel::keyForRow(const QVariant &value, int fallb
 
 void NativeSidebarStreamListModel::sync()
 {
+    if (const auto *prepared = m_controller->m_preparedSidebar) {
+        if (m_rows.constData() == prepared->m_rows.constData()) return;
+        beginResetModel();
+        m_rows = prepared->m_rows;
+        endResetModel();
+        return;
+    }
     const QVariantList projection = m_controller->sidebarStreams();
     QVector<Row> next;
     next.reserve(projection.size());
@@ -15583,16 +15636,32 @@ void NativeSidebarStreamListModel::sync()
     }
     if (!uniqueKeys) {
         beginResetModel();
-        m_rows = next;
+        m_rows = std::move(next);
         endResetModel();
         return;
     }
+    if (m_rows.isEmpty()) {
+        if (next.isEmpty()) return;
+        beginInsertRows({}, 0, next.size() - 1);
+        m_rows = std::move(next);
+        endInsertRows();
+        return;
+    }
+    if (next.isEmpty()) {
+        beginRemoveRows({}, 0, m_rows.size() - 1);
+        m_rows.clear();
+        endRemoveRows();
+        return;
+    }
     // Removals back-to-front so the remaining indices stay valid.
+    QSet<QString> survivors;
+    survivors.reserve(m_rows.size());
     for (int i = m_rows.size() - 1; i >= 0; --i) {
-        const auto key = m_rows.at(i).key;
-        if (std::any_of(next.cbegin(), next.cend(),
-                [&](const Row &row) { return row.key == key; }))
+        const auto &key = m_rows.at(i).key;
+        if (seenKeys.contains(key)) {
+            survivors.insert(key);
             continue;
+        }
         beginRemoveRows(QModelIndex(), i, i);
         m_rows.remove(i);
         endRemoveRows();
@@ -15606,8 +15675,7 @@ void NativeSidebarStreamListModel::sync()
     // multiset equals m_rows exactly - every round finds its key.
     QStringList survivorOrder;
     for (const Row &row : next) {
-        if (std::any_of(m_rows.cbegin(), m_rows.cend(),
-                [&](const Row &existing) { return existing.key == row.key; }))
+        if (survivors.contains(row.key))
             survivorOrder.append(row.key);
     }
     // Selection sort over the survivor order: everything below the cursor is
@@ -15648,6 +15716,16 @@ void NativeSidebarStreamListModel::sync()
     }
 }
 
+void NativeSidebarStreamListModel::scheduleSync()
+{
+    if (m_syncScheduled) return;
+    m_syncScheduled = true;
+    QTimer::singleShot(0, this, [this] {
+        m_syncScheduled = false;
+        sync();
+    });
+}
+
 NativeSidebarStreamListModel *NativeController::sidebarStreamListModel()
 {
     if (!m_sidebarStreamModel) {
@@ -15655,12 +15733,11 @@ NativeSidebarStreamListModel *NativeController::sidebarStreamListModel()
         // Every notify that can move the sidebar projection, i.e. exactly the
         // signals the QVariantList binding re-evaluated on. sync() is a
         // no-op diff on a settled projection (no traffic, no churn).
-        connect(this, &NativeController::streamsChanged,
-            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
-        connect(this, &NativeController::sidebarStreamsChanged,
-            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
-        connect(this, &NativeController::foldersChanged,
-            m_sidebarStreamModel, &NativeSidebarStreamListModel::sync);
+        const auto update = m_backgroundWorkspace
+            ? &NativeSidebarStreamListModel::scheduleSync : &NativeSidebarStreamListModel::sync;
+        connect(this, &NativeController::streamsChanged, m_sidebarStreamModel, update);
+        connect(this, &NativeController::sidebarStreamsChanged, m_sidebarStreamModel, update);
+        connect(this, &NativeController::foldersChanged, m_sidebarStreamModel, update);
         m_sidebarStreamModel->sync();
     }
     return m_sidebarStreamModel;
@@ -15674,16 +15751,14 @@ QVariantList NativeController::sidebarStreams() const
     // the sidebar projection (not streams()) so header, encryption and unread
     // lookups by selected stream still resolve the self stream while it is open.
     const auto selfUser = m_session->user();
-    const auto isSelfChat = [this, &selfUser](const QString &id) {
-        const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
-            [&id](const Stream &stream) { return stream.uuid == id; });
-        return entry != m_streams.cend() && entry->privateStream && isUuid(selfUser)
-            && entry->directUser == selfUser;
-    };
+    const bool hasSelfUser = isUuid(selfUser);
+    const auto ordered = orderedStreamPointers();
     QVariantList all;
-    for (const auto &value : streams()) {
-        if (isSelfChat(value.toMap().value("id").toString())) { continue; }
-        all.append(value);
+    all.reserve(ordered.size());
+    for (const auto *stream : ordered) {
+        if (hasSelfUser && stream->privateStream && stream->directUser == selfUser)
+            continue;
+        all.append(streamRowMap(*stream));
     }
     auto scoped = all;
     const auto effective = selectedFolder();
@@ -15779,12 +15854,27 @@ QVariantMap NativeController::sidebarCatalogState() const
     QVariantMap state;
     if (!authenticated())
         return state;
-    const auto shown = sidebarStreams();
     const bool queryActive = !m_sidebarSearchQuery.isEmpty();
     const bool hasError = !m_sidebarError.isEmpty();
     const bool loading = !m_catalogVerified && !hasError;
     const bool hasSpecificEmptyContext = queryActive || !m_streams.isEmpty();
-    const bool shownEmpty = shown.isEmpty();
+    bool shownEmpty;
+    if (queryActive) {
+        shownEmpty = sidebarStreams().isEmpty();
+    } else if (m_preparedSidebar) {
+        shownEmpty = m_preparedSidebar->rowCount() == 0;
+    } else {
+        const auto selected = selectedFolder();
+        const auto scope = std::find_if(m_folders.cbegin(), m_folders.cend(), [&](const FolderRow &folder) {
+            return folder.uuid == selected && !folder.synthesized && folder.systemType != QLatin1String("all");
+        });
+        const auto user = m_session->user();
+        const bool validUser = isUuid(user);
+        shownEmpty = std::none_of(m_streams.cbegin(), m_streams.cend(), [&](const Stream &stream) {
+            return !stream.archived && !(validUser && stream.privateStream && stream.directUser == user)
+                && (scope == m_folders.cend() || scope->streamIds.contains(stream.uuid));
+        });
+    }
     state.insert(QStringLiteral("showLoading"), loading && shownEmpty);
     state.insert(QStringLiteral("showBlockingError"),
         hasError && shownEmpty && !hasSpecificEmptyContext);
@@ -16507,6 +16597,11 @@ QVariantMap NativeController::presentMessageSecrets(const QString &messageId, co
 
 void NativeController::offerNotificationCandidate(const Message &message)
 {
+    if (m_workspaceNotifications) return;
+    if (m_notificationViewport
+        && m_notificationViewport->creationOwnerKey() == creationOwnerKey()
+        && m_notificationViewport->inConversation(message))
+        return;
     NotificationCandidate candidate;
     candidate.owner = creationOwnerKey();
     candidate.messageUuid = message.uuid;
@@ -16520,9 +16615,43 @@ void NativeController::offerNotificationCandidate(const Message &message)
     candidate.mentioned = message.mentioned.value_or(false);
     candidate.createdMicros = message.createdMicros;
     // The caller only offers messages outside the on-screen conversation.
-    candidate.viewport.windowFocused = m_windowFocused;
+    candidate.viewport.windowFocused = m_notificationViewport
+        ? m_notificationViewport->m_windowFocused : m_windowFocused;
     candidate.viewport.conversationOnScreen = false;
     m_notifications.ingest(candidate);
+}
+
+void NativeController::closeMessageNotifications(const QList<QString> &messages)
+{
+    auto *service = m_workspaceNotifications ? m_workspaceNotifications.data() : &m_notifications;
+    service->onMessagesClosed(creationOwnerKey(), messages);
+}
+
+void NativeController::publishWorkspaceCatalog(const NativeController &source)
+{
+    if (!authenticated() || creationOwnerKey() != source.creationOwnerKey()
+        || !source.m_catalogVerified || !m_streams.isEmpty()) return;
+    m_streams = source.m_streams;
+    ++m_streamsMutation;
+    m_folders = source.m_folders;
+    m_inboxTopics = source.m_inboxTopics;
+    m_inboxStaleTopics = source.m_inboxStaleTopics;
+    m_names = source.m_names;
+    m_viewerDirectoryOwner = source.m_viewerDirectoryOwner;
+    m_channelDirectoryOwner = source.m_channelDirectoryOwner;
+    m_unreadMentions = source.m_unreadMentions;
+    m_activityTimestamps = source.m_activityTimestamps;
+    m_cacheHydrated = !m_streams.isEmpty();
+    const auto *prepared = source.m_sidebarStreamModel;
+    const auto mode = sidebarSortMode();
+    if (!prepared || prepared->m_syncScheduled || !m_sidebarSearchQuery.isEmpty()
+        || selectedFolder() != source.selectedFolder()
+        || mode != source.sidebarSortMode()
+        || (mode == QLatin1String("alphabetical") && sidebarSortLocale() != source.sidebarSortLocale()))
+        prepared = nullptr;
+    const QScopedValueRollback<const NativeSidebarStreamListModel *> usePrepared(m_preparedSidebar, prepared);
+    emit streamsChanged();
+    emit foldersChanged();
 }
 
 void NativeController::setWindowFocused(bool focused)
@@ -19710,7 +19839,7 @@ void NativeController::noteActivityTimestamps(const QVector<Message> &rows)
 // reply re-arms the timer so completion, not polling, paces the batches.
 void NativeController::scheduleTopicPreload(int delayMs)
 {
-    if (!m_topicPreloadEnabled) return;
+    if (m_backgroundWorkspace || !m_topicPreloadEnabled) return;
     if (!m_topicPreloadTimer) {
         m_topicPreloadTimer = new QTimer(this);
         m_topicPreloadTimer->setSingleShot(true);
@@ -20269,6 +20398,7 @@ QString NativeController::takeRowPreviewCandidate(QQueue<QString> &queue) const
 
 void NativeController::seedRowPreviewHydrationFromCatalog()
 {
+    if (m_backgroundWorkspace) return;
     // #860: the reference primes the sidebar's last-message data for EVERY row on catalog
     // accept, not only the rendered ones (messenger-bootstrap.lib.ts L285-329,
     // messenger-last-messages-loader.lib.ts L96-129). Pointers are deduplicated, resolved
@@ -20359,6 +20489,7 @@ int NativeController::streamRowByUuid(const QString &uuid)
 // the channel list per topic accept; repeated for every background inbox accept too).
 void NativeController::seedRowPreviewHydrationForStream(const QString &streamUuid)
 {
+    if (m_backgroundWorkspace) return;
     const auto queue = [this](const QString &uuid) { enqueueRowPreviewDisk(uuid); };
     // #888 (exordy round 2): the row comes from the reusable uuid index - a sweep
     // of N background accepts inspects the streams catalog once, not N times.

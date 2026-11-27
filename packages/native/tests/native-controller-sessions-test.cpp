@@ -1,5 +1,8 @@
 #include "native-auth-guard.h"
+#include "native-realtime-cursor-store.h"
+#include "workspace-sessions.h"
 #include "support/native-test-harness.h"
+#include "support/controller-folder-fixtures.h"
 #include "support/controller-identity-fixtures.h"
 #include "support/controller-realtime-fixtures.h"
 #include "support/controller-notifications-fixtures.h"
@@ -818,7 +821,9 @@ private slots:
         QVERIFY(controller.authenticated());
         QTRY_VERIFY(!controller.busy());
         // Switching keeps every remembered identity (reference behaviour).
+        QSignalSpy signedOut(&session, &Session::signedOut);
         controller.selectWorkspaceSession(b.id);
+        QCOMPARE(signedOut.size(), 1);
         QTRY_VERIFY(controller.authenticated());
         QTRY_COMPARE(controller.sessionSwitcherSessions().first().toMap().value("isCurrent"), QVariant(true));
         QCOMPARE(controller.savedAccounts().size(), 2);
@@ -829,6 +834,221 @@ private slots:
         QTRY_VERIFY(!controller.authenticated());
         QCOMPARE(controller.loginStep(), QString("organization"));
         QCOMPARE(controller.savedAccounts().size(), 2);
+    }
+
+    void liveWorkspaceSwitchKeepsBothSocketsAndOpensNotificationMessage()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        Fixture a, b;
+        RealtimeGateway gatewayA(a.server.serverPort()), gatewayB(b.server.serverPort());
+        LoopbackKeyTls tlsA(gatewayA.serverPort()), tlsB(gatewayB.serverPort());
+        QVERIFY(tlsA.isListening() && tlsB.isListening());
+        QList<QJsonObject> eventsA, eventsB;
+        auto arrival = incomingDto(historyMessage(521), notificationAuthor);
+        const auto id = arrival.value("uuid").toString();
+        const auto configure = [&](Fixture &fixture, QList<QJsonObject> &events, const QString &name) {
+            fixture.realtime = [&events](const Request &request) {
+                if (request.target.path().endsWith("/epoch/"))
+                    return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                        {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+                const auto after = QUrlQuery(request.target).queryItemValue("epoch_version>").toInt();
+                QJsonArray result;
+                for (const auto &event : events)
+                    if (event.value("epoch_version").toInt() > after) result.append(event);
+                return Response{result};
+            };
+            fixture.streams = [name](const Request &) {
+                auto stream = notificationStreamDto();
+                stream["name"] = name;
+                stream["active_unread_count"] = 1;
+                return Response{QJsonArray{stream}};
+            };
+            fixture.counters = [name](const Request &request) {
+                if (request.target.path().endsWith(streamId)) {
+                    auto stream = notificationStreamDto();
+                    stream["name"] = name;
+                    stream["active_unread_count"] = 1;
+                    return Response{stream};
+                }
+                auto topic = notificationTopicDto();
+                topic["user_uuid"] = userId;
+                topic["is_done"] = false;
+                topic["is_default"] = false;
+                topic["unread_count"] = 1;
+                topic["active_unread_count"] = 1;
+                topic["passive_unread_count"] = 0;
+                return Response{topic};
+            };
+            fixture.aggregateMessages = true;
+            fixture.messages = [arrival](const Request &) { return Response{QJsonArray{arrival}}; };
+        };
+        configure(a, eventsA, "Organization A");
+        configure(b, eventsB, "Organization B");
+
+        ControllerMemorySecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const auto remember = [&](const QUrl &origin) {
+            SavedAccount account{SessionVault::accountId(origin, projectId, userId),
+                origin, projectId, userId, "synthetic", "Synthetic"};
+            vault.save(account, "synthetic-refresh-token");
+            return account.id;
+        };
+        const auto accountA = remember(tlsA.origin());
+        const auto accountB = remember(tlsB.origin());
+        QTRY_COMPARE(vault.accounts().size(), 2);
+        QVERIFY(vault.setCurrentAccountId(accountA).isEmpty());
+
+        ApiClient api;
+        Session session(&api);
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        auto *sidebarModel = controller.sidebarStreamListModel();
+        RealtimeCursorStore cursors(directory.filePath("cursors"));
+        RecordingNotifications notifications;
+        WorkspaceSessions workspaces(session, controller, vault, cursors);
+        workspaces.setNotificationTransport(&notifications);
+        QSignalSpy activated(&workspaces, &WorkspaceSessions::activationRequested);
+        workspaces.start();
+        QTRY_COMPARE(session.currentSavedAccountId(), accountA);
+        QTRY_COMPARE(controller.syncState(), QString("live"));
+        QTRY_COMPARE(gatewayA.sockets.size(), 1);
+        QTRY_COMPARE(gatewayB.sockets.size(), 1);
+        const auto socketA = gatewayA.sockets.first();
+        const auto socketB = gatewayB.sockets.first();
+
+        const auto send = [&](const QPointer<QWebSocket> &socket, QList<QJsonObject> &events, int epoch) {
+            QVERIFY(socket);
+            const auto event = controllerEvent("message.created", arrival, epoch);
+            events.append(event);
+            socket->sendTextMessage(QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact)));
+        };
+        send(socketB, eventsB, 11);
+        QTRY_COMPARE(notifications.shows.size(), 1);
+        QCOMPARE(session.currentSavedAccountId(), accountA);
+        const auto tagB = notifications.lastTag();
+        QSignalSpy adoptedTree(sidebarModel, &QAbstractItemModel::modelReset);
+        workspaces.clickNotification(tagB);
+        QCOMPARE(activated.size(), 1);
+        QCOMPARE(session.currentSavedAccountId(), accountB);
+        QCOMPARE(adoptedTree.size(), 1);
+        QCOMPARE(sidebarModel->rowCount(), 1);
+        QCOMPARE(sidebarModel->index(0).data(Qt::UserRole).toMap().value("name").toString(),
+                 QString("Organization B"));
+        QCOMPARE(controller.sidebarStreams().first().toMap().value("name").toString(),
+                 QString("Organization B"));
+        QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), id, 5000);
+        QTRY_VERIFY(controller.sidebarTopicState(streamId, true).value("known").toBool());
+        QVERIFY(socketA && socketB);
+
+        // Same project, user and message UUID in another origin still produces
+        // its own notification and navigation target.
+        send(socketA, eventsA, 11);
+        QTRY_COMPARE(notifications.shows.size(), 2);
+        const auto tagA = notifications.lastTag();
+        QVERIFY(tagA != tagB);
+        QTRY_VERIFY(folderKeys(controller.folders()).contains(QStringLiteral("channels")));
+        controller.selectFolder(channelsFolder);
+        QCOMPARE(controller.selectedFolder(), channelsFolder);
+        controller.selectWorkspaceSession(accountA);
+        QCOMPARE(session.currentSavedAccountId(), accountA);
+        QCOMPARE(controller.selectedFolder(), allChatsFolder);
+        controller.selectWorkspaceSession(accountB);
+        QCOMPARE(session.currentSavedAccountId(), accountB);
+        QCOMPARE(controller.selectedFolder(), channelsFolder);
+        QVERIFY(controller.sidebarTopicState(streamId, true).value("known").toBool());
+        QCOMPARE(gatewayA.sockets.size(), 1);
+        QCOMPARE(gatewayB.sockets.size(), 1);
+        QVERIFY(socketA && socketB);
+        workspaces.clickNotification(tagA);
+        QCOMPARE(activated.size(), 2);
+        QCOMPARE(session.currentSavedAccountId(), accountA);
+        QTRY_COMPARE_WITH_TIMEOUT(controller.anchorMessageId(), id, 5000);
+
+        // The second organization catches up from its own cursor after a
+        // socket loss. The already delivered message must not pop again.
+        socketB->close();
+        const auto next = incomingDto(historyMessage(522), notificationAuthor);
+        eventsB.append(controllerEvent("message.created", next, 12));
+        QTRY_COMPARE_WITH_TIMEOUT(gatewayB.sockets.size(), 2, 8000);
+        QTRY_COMPARE_WITH_TIMEOUT(notifications.shows.size(), 3, 8000);
+        QCOMPARE(notifications.shows.last().body, QString("Message 522"));
+        QCOMPARE(gatewayA.sockets.size(), 1);
+
+        const auto unseen = notifications.lastTag();
+        const auto closeCount = notifications.closed.count(unseen);
+        vault.forget(accountB);
+        QTRY_COMPARE(notifications.closed.count(unseen), closeCount + 1);
+        workspaces.clickNotification(unseen);
+        QCOMPARE(activated.size(), 2);
+        QCOMPARE(session.currentSavedAccountId(), accountA);
+        QVERIFY(socketA);
+        QTRY_VERIFY(!controller.busy());
+        controller.logoutWorkspaceSession(accountA);
+        QTRY_VERIFY(!controller.authenticated() && !socketA);
+    }
+
+    void visibleWorkspaceKeepsSelectedFolderWhenFirstStreamArrives()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        Fixture fixture;
+        RealtimeGateway gateway(fixture.server.serverPort());
+        LoopbackKeyTls tls(gateway.serverPort());
+        QVERIFY(tls.isListening());
+        const QString customFolder = "9f9f9f9f-9f9f-4f9f-8f9f-9f9f9f9f9f9f";
+        QJsonArray catalog;
+        QJsonArray events;
+        fixture.streams = [&](const Request &) { return Response{catalog}; };
+        fixture.folders = [&](const Request &) {
+            return Response{QJsonArray{
+                folderRailFolder(allChatsFolder, "All chats", "all", 0, 0),
+                folderRailFolder(customFolder, "Focus", "created", 0, 0)}};
+        };
+        fixture.realtime = [&](const Request &request) {
+            if (request.target.path().endsWith("/epoch/"))
+                return Response{QJsonObject{{"epoch_generation", "controller-generation"},
+                    {"epoch_version", 10}, {"current_epoch_version", 10}, {"minimum_epoch_version", 1}}};
+            return Response{events};
+        };
+
+        ControllerMemorySecrets secrets;
+        SessionVault vault(directory.filePath("accounts.ini"), &secrets);
+        const SavedAccount account{SessionVault::accountId(tls.origin(), projectId, userId),
+            tls.origin(), projectId, userId, "synthetic", "Synthetic"};
+        vault.save(account, "synthetic-refresh-token");
+        QTRY_COMPARE(vault.accounts().size(), 1);
+        QVERIFY(vault.setCurrentAccountId(account.id).isEmpty());
+
+        ApiClient api;
+        Session session(&api);
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        auto *model = controller.sidebarStreamListModel();
+        RealtimeCursorStore cursors(directory.filePath("cursors"));
+        WorkspaceSessions workspaces(session, controller, vault, cursors);
+        QSignalSpy received(&workspaces, &WorkspaceSessions::eventReceived);
+        workspaces.start();
+        QTRY_COMPARE(controller.syncState(), QString("live"));
+        QTRY_VERIFY(folderKeys(controller.folders()).contains(customFolder));
+        QTRY_COMPARE(gateway.sockets.size(), 1);
+        QVERIFY(gateway.sockets.first());
+        QCOMPARE(model->rowCount(), 0);
+        controller.selectFolder(customFolder);
+        QCOMPARE(controller.selectedFolder(), customFolder);
+
+        const auto stream = notificationStreamDto();
+        const auto created = controllerEvent("stream.created", stream, 11);
+        catalog.append(stream);
+        events.append(created);
+        gateway.sockets.first()->sendTextMessage(
+            QString::fromUtf8(QJsonDocument(created).toJson(QJsonDocument::Compact)));
+        QTRY_COMPARE(received.size(), 1);
+        QVERIFY(!controller.streamById(streamId).isEmpty());
+        QCOMPARE(controller.selectedFolder(), customFolder);
+        QCOMPARE(model->rowCount(), 0);
+        controller.selectFolder(allChatsFolder);
+        QTRY_COMPARE(model->rowCount(), 1);
     }
 
     void sessionTransitionsRetireNotificationOwner_data()

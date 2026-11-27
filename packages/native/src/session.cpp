@@ -5,6 +5,8 @@
 #include <QSet>
 #include <QUrl>
 #include <algorithm>
+#include <climits>
+#include <utility>
 
 namespace workspace {
 
@@ -87,6 +89,10 @@ void Session::resumeCurrentAccount()
 
 void Session::resumeSavedAccount(const QString &id)
 {
+    if (m_resumeWorkspace) {
+        m_resumeWorkspace(id);
+        return;
+    }
     clearMemory();
     if (!m_vault) {
         emit error(tr("Saved sessions are unavailable."));
@@ -120,6 +126,69 @@ void Session::resumeSavedAccount(const QString &id)
         emit guard->startupIdentityResolved();
         guard->refreshProject();
     });
+}
+
+void Session::copyVerifiedIdentity(const Session &source)
+{
+    m_savedAccountId = source.m_savedAccountId;
+    m_login = source.m_login;
+    m_publicProfile = source.m_publicProfile;
+    m_summaryServiceAllowed = source.m_summaryServiceAllowed;
+    m_summaryGatesAllowed = source.m_summaryGatesAllowed;
+    m_summaryEndpointsAllowed = source.m_summaryEndpointsAllowed;
+    m_projects = source.m_projects;
+    m_project = source.m_project;
+    m_user = source.m_user;
+}
+
+void Session::assumeRenewalFrom(Session &source)
+{
+    Q_ASSERT(source.ready() && !source.m_refreshInFlight && !source.m_renewalSource);
+    clearMemory();
+    m_api->setServer(source.m_api->server());
+    copyVerifiedIdentity(source);
+    const auto expiry = source.accessRemainingMs();
+    const auto refresh = source.m_refreshTimer.remainingTime();
+    source.m_refreshTimer.stop();
+    source.m_expiryTimer.stop();
+    m_refreshToken = std::exchange(source.m_refreshToken, QByteArray{});
+    source.m_renewalSource = this;
+    m_accessExpiresAt = m_clock.elapsed() + qMax<qint64>(0, expiry);
+    m_expiryTimer.start(int(std::clamp(expiry, qint64(0), qint64(INT_MAX))));
+    m_refreshTimer.start(qMax(0, refresh));
+    m_api->setAccessToken(source.m_api->m_accessToken);
+    m_ready = true;
+    emit authenticated();
+}
+
+void Session::presentLocalIdentity(Session &source)
+{
+    Q_ASSERT(!source.m_savedAccountId.isEmpty());
+    clearMemory();
+    m_api->setServer(source.m_api->server());
+    copyVerifiedIdentity(source);
+    m_renewalSource = &source;
+    emit busyChanged(!source.m_renewalUnavailable);
+    emit startupIdentityResolved();
+}
+
+void Session::present(Session &source)
+{
+    Q_ASSERT(source.ready() && !source.m_renewalSource);
+    const bool sameSource = m_renewalSource == &source;
+    const bool sameOwner = sameSource && m_ready;
+    if (!sameSource) {
+        clearMemory();
+        m_api->setServer(source.m_api->server());
+        m_renewalSource = &source;
+    }
+    copyVerifiedIdentity(source);
+    m_api->setAccessToken(source.m_api->m_accessToken, sameOwner);
+    m_ready = true;
+    const auto unavailable = std::exchange(m_renewalUnavailable, false);
+    if (unavailable) emit renewalUnavailableChanged();
+    if (!sameOwner) emit busyChanged(false);
+    emit authenticated();
 }
 
 void Session::abandonStartupResume()
@@ -168,6 +237,7 @@ void Session::request(const QByteArray &method, const QString &path, const QJson
 void Session::clearMemory()
 {
     ++m_attempt;
+    m_renewalSource = nullptr;
     m_otpBody = {};
     m_otpServer = QUrl{};
     m_otpRejected = m_otpInFlight = false;
@@ -250,7 +320,7 @@ void Session::rememberVerifiedSession()
         if (!guard || attempt != guard->m_attempt || id != guard->m_savedAccountId) return;
         // A late save of another account may keep that account available, but
         // only this still-current, verified session selects the startup identity.
-        if (error.isEmpty() && guard->m_vault)
+        if (error.isEmpty() && guard->m_vault && guard->m_selectRememberedAccount)
             error = guard->m_vault->setCurrentAccountId(id);
         if (!error.isEmpty())
             emit guard->error(tr("Signed in, but this session could not be remembered. %1").arg(error));
@@ -704,11 +774,13 @@ void Session::refreshProject()
 
 void Session::requestRefresh()
 {
-    refreshProject();
+    if (m_renewalSource) m_renewalSource->requestRefresh();
+    else refreshProject();
 }
 
 qint64 Session::accessRemainingMs() const
 {
+    if (m_renewalSource) return m_renewalSource->accessRemainingMs();
     if (m_accessExpiresAt <= 0)
         return -1;
     const auto remaining = m_accessExpiresAt - m_clock.elapsed();

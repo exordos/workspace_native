@@ -103,7 +103,11 @@ New module `packages/native/src/native-notifications.{h,cpp}` inside
    `flashFrame(false)` focus handler.
 
 Owner key = `NativeController::creationOwnerKey()` so the tag schema stays
-multi-owner-correct even though one window hosts one session.
+scoped to the exact origin, project and user. In the desktop application
+[`WorkspaceSessions`](decisions/0012-workspace-session-lifetime.md) keeps a
+notification service for each account and dispatches a clicked tag to the
+runtime that issued it. It activates that account and opens the message UUID
+through the normal anchor route.
 
 Viewport rule: conversation on screen when the message's stream equals the
 active stream and (no topic is selected OR the message's topic equals the
@@ -197,15 +201,10 @@ list (the pollution repro reverted to the old append fails this guard).
   owner retirement together with their click routes, and pruned from tracking
   when a read closes them. Sign-out can no longer leave an untracked generic
   banner on the desktop.
-- Account transitions: all session logout/detach paths retire the last verified
-  notification owner through the controller's `Session::signedOut` handler.
-  This includes ordinary logout, both remembered and synthesized switcher rows,
-  switching accounts and Add server. The sweep covers aggregates, pending
-  candidates, decided entries, fallback banners and the notification topic
-  backfill. Switching and Add server keep remembered credentials, but retire
-  notifications because their click routes use the window's active session.
-  A same-owner token refresh and removing a non-current remembered account keep
-  the active owner's notifications.
+- Account retirement clears that owner's aggregates, pending candidates,
+  decided entries, fallback banners and topic metadata backfill. Switching the
+  desktop window preserves each owning runtime, so existing tags remain
+  actionable. Removing or invalidating an account retires that runtime.
 
 New acceptance cases: 14. per-bucket row bound with an honest display count;
 15. sign-out closes generic fallback banners (RED observed: the generic banner

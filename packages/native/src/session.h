@@ -10,6 +10,8 @@
 
 namespace workspace {
 
+class WorkspaceSessions;
+
 class Session final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool otpRequired READ otpRequired NOTIFY otpChallengeChanged)
@@ -35,6 +37,7 @@ public:
     // reopens for "Add server".
     void detach();
     void resumeSavedAccount(const QString &id);
+    bool hasWorkspaceManager() const { return bool(m_resumeWorkspace); }
     void abandonStartupResume();
     void resumeCurrentAccount();
     // Removing a saved identity is asynchronous. The optional completion is
@@ -95,6 +98,11 @@ signals:
     void renewalUnavailableChanged();
 
 private:
+    friend class WorkspaceSessions;
+    void assumeRenewalFrom(Session &source);
+    void presentLocalIdentity(Session &source);
+    void present(Session &source);
+    void copyVerifiedIdentity(const Session &source);
     void invalidateOtpContext();
     void requestLoginToken(const QJsonObject &body, const QString &otp);
     bool acceptToken(const ApiResult &result, qint64 requestStarted, bool sameOwnerRenewal = false);
@@ -113,6 +121,8 @@ private:
     RequestExecutor m_request;
     QPointer<SessionVault> m_vault;
     QMetaObject::Connection m_vaultConnection;
+    std::function<void(const QString &)> m_resumeWorkspace;
+    QPointer<Session> m_renewalSource;
     QString m_savedAccountId;
     QString m_login;
     QVariantMap m_publicProfile;
@@ -137,6 +147,7 @@ private:
     bool m_refreshInFlight = false;
     bool m_ready = false;
     bool m_renewalUnavailable = false;
+    bool m_selectRememberedAccount = true;
 };
 
 }

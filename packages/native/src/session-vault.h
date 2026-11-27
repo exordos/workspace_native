@@ -44,6 +44,7 @@ public:
     void remove(const QString &key, Completion done) override;
 
 private:
+    void afterKeyringProbe(Completion done);
     JobStarter m_start;
 };
 
