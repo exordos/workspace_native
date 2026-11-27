@@ -1,4 +1,5 @@
 #include "native-logging.h"
+#include "gui-phase-trace.h"
 #include "support/native-test-harness.h"
 #ifdef Q_OS_LINUX
 #include <csignal>
@@ -1529,6 +1530,42 @@ private slots:
         f.controller.reloadSnapshot();
         QTRY_VERIFY_WITH_TIMEOUT(transportErrorCount() >= firstCount + 1, 5000);
         QVERIFY(offlineTransitions() >= 1);
+    }
+
+    // PR #898 review: reset must keep span ids unique across generations.
+    // An outstanding span from before the reset still holds its old id; if
+    // reset restarts the counter, a late endSpan of that stale id can close
+    // a NEW span that received the reused id, corrupting attribution. An end
+    // request for an id absent from the current thread's stack must be
+    // ignored outright.
+    void guiPhaseTraceSpanIdsRemainUniqueAcrossResets()
+    {
+        GuiPhaseTrace &trace = GuiPhaseTrace::instance();
+        trace.reset(); // reset (re-)enables recording
+        const qint64 staleId = trace.beginSpan(QStringLiteral("before-reset"));
+        QVERIFY(staleId > 0);
+        trace.reset(); // caller forgets the open span; a late end will follow
+        const qint64 liveId = trace.beginSpan(QStringLiteral("after-reset"));
+        QVERIFY(liveId > 0);
+        // The stale end must never close the live span, whatever ids were used.
+        trace.endSpan(staleId);
+        auto recordsOf = [&trace](const QString &name) {
+            QStringList names;
+            const auto records = trace.snapshot().value(QStringLiteral("records")).toList();
+            for (const auto &record : records)
+            {
+                const auto row = record.toMap();
+                if (row.value(QStringLiteral("name")).toString() == name)
+                    names << row.value(QStringLiteral("name")).toString();
+            }
+            return names;
+        };
+        const QStringList premature = recordsOf(QStringLiteral("after-reset"));
+        QVERIFY2(premature.isEmpty(),
+                 "a pre-reset span id closed the post-reset span (id reuse)");
+        trace.endSpan(liveId);
+        QCOMPARE(recordsOf(QStringLiteral("after-reset")).size(), 1);
+        GuiPhaseTrace::instance().setEnabled(false);
     }
 };
 
