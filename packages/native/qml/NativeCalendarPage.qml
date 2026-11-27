@@ -132,83 +132,90 @@ FocusScope {
         spacing: 0
 
         // ---- header: view tabs + date navigation (pending-Figma metrics) ----
-        RowLayout {
+        GridLayout {
             id: header
             objectName: "calendarHeader"
             Layout.fillWidth: true
-            Layout.preferredHeight: 48
             Layout.leftMargin: 12
             Layout.rightMargin: 12
-            spacing: 8
+            columns: page.width - Layout.leftMargin - Layout.rightMargin >= tabRow.implicitWidth + dateNavigation.implicitWidth + columnSpacing ? 2 : 1
+            columnSpacing: 8
+            rowSpacing: 0
 
-            Repeater {
-                id: viewTabs
-                objectName: "calendarViewTabs"
-                model: [{ key: "day", label: qsTr("Day") },
-                        { key: "week", label: qsTr("Week") },
-                        { key: "month", label: qsTr("Month") }]
-                delegate: Button {
-                    id: viewTab
-                    objectName: "viewTab" + modelData.key.charAt(0).toUpperCase()
-                                + modelData.key.slice(1)
-                    required property var modelData
-                    text: modelData.label
-                    checkable: true
-                    checked: page.viewMode === modelData.key
-                    onClicked: page.viewMode = modelData.key
+            RowLayout {
+                id: tabRow
+                Layout.fillWidth: true
+                Layout.preferredHeight: 48
+                spacing: 8
+                Repeater {
+                    id: viewTabs
+                    objectName: "calendarViewTabs"
+                    model: [{ key: "day", label: qsTr("Day") },
+                            { key: "week", label: qsTr("Week") },
+                            { key: "month", label: qsTr("Month") }]
+                    delegate: Button {
+                        id: viewTab
+                        objectName: "viewTab" + modelData.key.charAt(0).toUpperCase()
+                                    + modelData.key.slice(1)
+                        required property var modelData
+                        text: modelData.label
+                        checkable: true
+                        checked: page.viewMode === modelData.key
+                        onClicked: page.viewMode = modelData.key
+                    }
                 }
+                Item { Layout.fillWidth: true }
             }
-
-            Item { Layout.fillWidth: true }
-
-            Button {
-                objectName: "calendarPrev"
-                text: "<"
-                onClicked: {
-                    if (page.viewMode === "day")
-                        page.selectedDate = page.shiftDate(page.selectedDate, -1);
-                    else if (page.viewMode === "week")
-                        page.selectedDate = page.shiftDate(page.selectedDate, -7);
-                    else
-                        page.selectedDate = new Date(page.selectedDate.getFullYear(),
-                                                     page.selectedDate.getMonth() - 1, 1);
+            RowLayout {
+                id: dateNavigation
+                Layout.preferredHeight: 48
+                Layout.alignment: Qt.AlignRight
+                spacing: 8
+                Button {
+                    objectName: "calendarPrev"
+                    text: "<"
+                    onClicked: {
+                        if (page.viewMode === "day")
+                            page.selectedDate = page.shiftDate(page.selectedDate, -1);
+                        else if (page.viewMode === "week")
+                            page.selectedDate = page.shiftDate(page.selectedDate, -7);
+                        else
+                            page.selectedDate = new Date(page.selectedDate.getFullYear(),
+                                                         page.selectedDate.getMonth() - 1, 1);
+                    }
                 }
-            }
-            Label {
-                id: dateTitle
-                objectName: "calendarDateTitle"
-                color: page.colors["text-primary"]
-                text: {
-                    if (page.viewMode === "day")
-                        return Qt.formatDate(page.selectedDate, "dd.MM.yyyy");
-                    if (page.viewMode === "week")
-                        return Qt.formatDate(page.weekStart(page.selectedDate), "dd.MM")
-                               + " - "
-                               + Qt.formatDate(page.shiftDate(page.weekStart(page.selectedDate), 6), "dd.MM.yyyy");
-                    // #952 round 2 (finding 4722274191): same contract as the
-                    // mini-calendar title - the header names the month the
-                    // month grid displays, which a keyboard edge re-anchor
-                    // moves independently of the selection.
-                    return Qt.formatDate(monthGrid.gridAnchor, "MMMM yyyy");
+                Label {
+                    id: dateTitle
+                    objectName: "calendarDateTitle"
+                    color: page.colors["text-primary"]
+                    text: {
+                        if (page.viewMode === "day")
+                            return Qt.formatDate(page.selectedDate, "dd.MM.yyyy");
+                        if (page.viewMode === "week")
+                            return Qt.formatDate(page.weekStart(page.selectedDate), "dd.MM")
+                                   + " - "
+                                   + Qt.formatDate(page.shiftDate(page.weekStart(page.selectedDate), 6), "dd.MM.yyyy");
+                        return Qt.formatDate(monthGrid.gridAnchor, "MMMM yyyy");
+                    }
                 }
-            }
-            Button {
-                objectName: "calendarNext"
-                text: ">"
-                onClicked: {
-                    if (page.viewMode === "day")
-                        page.selectedDate = page.shiftDate(page.selectedDate, 1);
-                    else if (page.viewMode === "week")
-                        page.selectedDate = page.shiftDate(page.selectedDate, 7);
-                    else
-                        page.selectedDate = new Date(page.selectedDate.getFullYear(),
-                                                     page.selectedDate.getMonth() + 1, 1);
+                Button {
+                    objectName: "calendarNext"
+                    text: ">"
+                    onClicked: {
+                        if (page.viewMode === "day")
+                            page.selectedDate = page.shiftDate(page.selectedDate, 1);
+                        else if (page.viewMode === "week")
+                            page.selectedDate = page.shiftDate(page.selectedDate, 7);
+                        else
+                            page.selectedDate = new Date(page.selectedDate.getFullYear(),
+                                                         page.selectedDate.getMonth() + 1, 1);
+                    }
                 }
-            }
-            Button {
-                objectName: "calendarToday"
-                text: qsTr("Today")
-                onClicked: page.selectedDate = new Date()
+                Button {
+                    objectName: "calendarToday"
+                    text: qsTr("Today")
+                    onClicked: page.selectedDate = new Date()
+                }
             }
         }
 
@@ -440,6 +447,7 @@ FocusScope {
             StackLayout {
                 id: mainPane
                 objectName: "calendarMainPane"
+                Layout.minimumWidth: 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 currentIndex: page.viewMode === "day" ? 0 : (page.viewMode === "week" ? 1 : 2)
@@ -516,11 +524,16 @@ FocusScope {
                 }
 
                 // Month view: 6x7 grid with event dots + agenda pane.
-                RowLayout {
-                    spacing: 12
+                Item {
+                    id: monthView
+                    // At narrower widths the agenda needs its own row.
+                    readonly property bool stacked: width < 7 * 64 + 6 + 12 + 200
                     Grid {
                         id: monthGrid
                         objectName: "calendarMonthGrid"
+                        anchors.left: parent.left
+                        anchors.top: monthView.stacked ? parent.top : undefined
+                        anchors.verticalCenter: monthView.stacked ? undefined : parent.verticalCenter
                         columns: 7
                         spacing: 1
                         // #925: same roving-focus keyboard contract as the
@@ -594,8 +607,8 @@ FocusScope {
                                 id: monthCell
                                 required property int modelData
                                 objectName: "monthCell-" + modelData
-                                width: 64
-                                height: 64
+                                width: Math.max(0, Math.min(64, Math.floor((monthView.width - 6 * monthGrid.spacing) / monthGrid.columns)))
+                                height: monthView.stacked ? Math.min(48, width) : 64
                                 readonly property var cellDate: {
                                     monthGrid.gridAnchor; // re-evaluate when the grid re-anchors
                                     const first = monthGrid.gridAnchor;
@@ -666,8 +679,12 @@ FocusScope {
                     ListView {
                         id: monthAgendaList
                         objectName: "calendarMonthAgenda"
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        anchors.left: monthView.stacked ? parent.left : monthGrid.right
+                        anchors.leftMargin: monthView.stacked ? 0 : 12
+                        anchors.top: monthView.stacked ? monthGrid.bottom : parent.top
+                        anchors.topMargin: monthView.stacked ? 8 : 0
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
                         clip: true
                         model: page.dayEvents()
                         delegate: Label {

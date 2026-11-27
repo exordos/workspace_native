@@ -1,3 +1,4 @@
+calendarMonthLayoutFitsWindow=10.0963
 channelTopicSummaryDialogCreateEditDuringPendingSavesAsUpdate=1.25004
 channelTopicSummaryProviderDefaultEffortSendsNull=1.02811
 diagnosticsAdvancedToggleScrollsOnPixelDeltaWheel=1.13386

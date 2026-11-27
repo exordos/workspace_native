@@ -59,7 +59,10 @@ in `Main.qml` (the `section === "calendar"` branch). The objectName
     (time pill, title, colour chip per calendar).
   - Week: 7-column grid `calendarWeekGrid` with event chips per day cell.
   - Month: 6x7 day grid `calendarMonthGrid` with day numbers, today mark,
-    event dots, plus the agenda pane for the selected day.
+    event dots, plus the agenda pane for the selected day. When the main
+    pane cannot fit the grid beside a 200 px agenda, the agenda moves below
+    the grid. The cells shrink to keep all seven columns in view. The header
+    puts date navigation on a second row when its controls need the space.
 - States (same card pattern as the feed page, `m-3 rounded-xl ...` tokens):
   `calendarLoading`, `calendarEmpty`, `calendarError` + `calendarRetry`.
 

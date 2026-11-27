@@ -516,6 +516,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_20
     windowProfileAboutMeFieldAcceptsMultilineDescription
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_21
+    calendarMonthLayoutFitsWindow
     channelTopicSummaryDialogCreateEditDuringPendingSavesAsUpdate
     channelTopicSummaryProviderDefaultEffortSendsNull
     diagnosticsAdvancedToggleScrollsOnPixelDeltaWheel

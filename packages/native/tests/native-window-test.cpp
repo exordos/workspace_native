@@ -39705,6 +39705,88 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
     }
 
+    void calendarMonthLayoutFitsWindow_data()
+    {
+        QTest::addColumn<QString>("locale");
+        QTest::addColumn<int>("width");
+        for (const QString &locale : {QStringLiteral("en"), QStringLiteral("ru")}) {
+            for (int width : {700, 800, 1100})
+                QTest::newRow(qPrintable(locale + "-" + QString::number(width))) << locale << width;
+        }
+    }
+
+    void calendarMonthLayoutFitsWindow()
+    {
+        QFETCH(QString, locale);
+        QFETCH(int, width);
+        WindowCalendarRouteFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale(locale);
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->showNormal();
+        window->resize(width, 600);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        const auto fitsWindow = [&](QQuickItem *item) {
+            return item && item->isVisible() && !item->boundingRect().isEmpty()
+                && window->contentItem()->boundingRect().contains(item->mapRectToScene(item->boundingRect()));
+        };
+
+        clickCurrentItem(window, "sectionCalendarButton");
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading() && !controller.calendarEvents().isEmpty(), 5000);
+        clickCurrentItem(window, "viewTabMonth");
+        auto *page = view("calendarSectionPage");
+        QVERIFY(page);
+        QVERIFY(page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0))));
+        auto *today = view("calendarToday");
+        auto *grid = view("calendarMonthGrid");
+        auto *agenda = view("calendarMonthAgenda");
+        QVERIFY(today && grid && agenda);
+        QTRY_COMPARE(window->size(), QSize(width, 600));
+        QTRY_VERIFY(fitsWindow(today));
+        QCOMPARE(today->property("text").toString(), locale == "ru" ? QStringLiteral("Сегодня") : QStringLiteral("Today"));
+        QTRY_VERIFY(fitsWindow(grid));
+        QTRY_VERIFY(fitsWindow(agenda));
+
+        // Click the populated trailing January date from February's grid.
+        // Checking all 42 rectangles also covers the far edge of every column.
+        QQuickItem *eventCell = nullptr;
+        int cells = 0;
+        for (auto *item : grid->childItems()) {
+            const auto date = item->property("cellDate").toDateTime().date();
+            if (!date.isValid()) continue;
+            ++cells;
+            QVERIFY(fitsWindow(item));
+            if (date == QDate(2026, 1, 30)) eventCell = item;
+        }
+        QCOMPARE(cells, 42);
+        QVERIFY(eventCell);
+        click(window, eventCell);
+        QTRY_COMPARE(page->property("selectedDate").toDateTime().date(), QDate(2026, 1, 30));
+        QTRY_COMPARE(agenda->property("count").toInt(), 1);
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY((row = agenda->property("currentItem").value<QQuickItem *>()));
+        QCOMPARE(row->property("text").toString(), QStringLiteral("09:00 Adjacent-month review"));
+        QTRY_VERIFY(agenda->boundingRect().contains(row->mapRectToItem(agenda, row->boundingRect())));
+        QVERIFY(row->property("contentWidth").toReal() <= agenda->width());
+
+        click(window, today);
+        QTRY_COMPARE(page->property("selectedDate").toDateTime().date(), QDate::currentDate());
+    }
+
     // Issue #35 review 4581320967: the reference available-chip class string
     // is `border border-transparent hover:border-border-subtle`
     // (top-bar.lib.ts resolveTopBarSectionButtonClassName at workspace_ui
