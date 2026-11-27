@@ -40036,8 +40036,16 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(standalone->width() > chip->width());
     }
 
+    void calendarCreatesEditsMovesAndDeletesServerMeeting_data()
+    {
+        QTest::addColumn<bool>("hideDuringCreate");
+        QTest::newRow("resume-uncertain-create") << true;
+        QTest::newRow("edit-after-remote-change") << false;
+    }
+
     void calendarCreatesEditsMovesAndDeletesServerMeeting()
     {
+        QFETCH(bool, hideDuringCreate);
         WindowChannelFixture fixture;
         fixture.sourceScene = true;
         const auto fallback = fixture.server.handler;
@@ -40045,6 +40053,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QStringList writes;
         int lookups = 0;
         bool firstCreate = true, denyEdit = true;
+        QStringList creationIds;
+        std::function<void()> unavailableLookup;
         const auto route = QStringLiteral("/api/workspace/v1/calendar/events/");
         fixture.server.handler = [&](const Request &request) -> Response {
             const auto path = request.target.path();
@@ -40064,6 +40074,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
                 return {persisted.isEmpty() ? QJsonArray{} : QJsonArray{persisted}};
             if (request.method == "POST" && path == route) {
                 writes.append("create");
+                creationIds.append(request.body.value("uuid").toString());
+                if (!persisted.isEmpty()) return {QJsonObject{}, 409};
                 persisted = request.body;
                 persisted["project_id"] = projectId;
                 if (firstCreate) {
@@ -40071,7 +40083,14 @@ QTRY_VERIFY(create->property("enabled").toBool());
                     return {QJsonObject{}, 503}; // server committed but the response was lost
                 }
             } else if (path == route + persisted.value("uuid").toString()) {
-                if (request.method == "GET") ++lookups;
+                if (request.method == "GET") {
+                    ++lookups;
+                    if (hideDuringCreate && lookups == 1) {
+                        Response response{QJsonObject{}, 503};
+                        response.defer = [&](auto send) { unavailableLookup = std::move(send); };
+                        return response;
+                    }
+                }
                 if (request.method == "PUT") {
                     writes.append("edit");
                     if (denyEdit) {
@@ -40112,9 +40131,21 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!view("calendarMeetingParticipants"));
         QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Planning")));
         click(window, view("calendarMeetingSave"));
+        if (hideDuringCreate) {
+            QTRY_VERIFY(unavailableLookup);
+            controller.showSection("chat");
+            QTRY_VERIFY(!view("calendarSectionPage"));
+            unavailableLookup();
+            QTRY_VERIFY(!controller.calendarWriting());
+            controller.showSection("calendar");
+            QTRY_VERIFY(view("calendarMeetingSave") && view("calendarMeetingError"));
+            QCOMPARE(view("calendarMeetingTitle")->property("text").toString(), QStringLiteral("Planning"));
+            click(window, view("calendarMeetingSave"));
+        }
         QTRY_VERIFY(!view("calendarMeetingSave"));
-        QCOMPARE(writes, QStringList{"create"});
-        QCOMPARE(lookups, 1);
+        QCOMPARE(creationIds.size(), hideDuringCreate ? 2 : 1);
+        QCOMPARE(creationIds.first(), creationIds.last());
+        QCOMPARE(lookups, creationIds.size());
         const auto uuid = persisted.value("uuid").toString();
         QVERIFY(!QUuid(uuid).isNull());
         const auto row = "calendarAgendaRow-" + uuid;
@@ -40151,6 +40182,27 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(!view("calendarDetailParticipantsHeader"));
         click(window, view("calendarDetailEdit"));
         QTRY_VERIFY(view("calendarMeetingTitle"));
+        if (!hideDuringCreate) {
+            auto remote = persisted.value("payload").toObject();
+            remote["location"] = "Updated by another session";
+            persisted["payload"] = remote;
+            QVERIFY(secondController.applyRealtimeEvent(QJsonObject{
+                {"uuid", channelPeer}, {"project_id", projectId}, {"user_uuid", userId},
+                {"payload", QJsonObject{{"kind", "calendar.event.updated"}, {"uuid", uuid}}}}));
+            QTRY_COMPARE(secondController.calendarEvents().first().toMap().value("location").toString(),
+                         QStringLiteral("Updated by another session"));
+            QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Stale attempt")));
+            click(window, view("calendarMeetingSave"));
+            QTRY_VERIFY(view("calendarMeetingError"));
+            QCOMPARE(writes.count("edit"), 0);
+            click(window, view("calendarMeetingCancel"));
+            QTRY_VERIFY(!view("calendarMeetingSave"));
+            QTRY_VERIFY(view("calendarDetailEdit"));
+            click(window, view("calendarDetailEdit"));
+            QTRY_VERIFY(view("calendarMeetingLocation"));
+            QCOMPARE(view("calendarMeetingLocation")->property("text").toString(),
+                     QStringLiteral("Updated by another session"));
+        }
         QVERIFY(view("calendarMeetingTitle")->setProperty("text", QStringLiteral("Approved")));
         click(window, view("calendarMeetingSave"));
         QTRY_VERIFY(view("calendarMeetingError"));
@@ -40187,7 +40239,9 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, view("calendarConfirmDelete"));
         QTRY_VERIFY(persisted.isEmpty());
         QTRY_VERIFY(!view(row));
-        QCOMPARE(writes, QStringList({"create", "edit", "edit", "move", "delete"}));
+        QStringList expected{"create", "edit", "edit", "move", "delete"};
+        if (hideDuringCreate) expected.prepend("create");
+        QCOMPARE(writes, expected);
     }
 
     void calendarLiveFiltersUseOwnedServerIdsAcrossViews()

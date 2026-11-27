@@ -12,6 +12,8 @@ Dialog {
     required property var serverActions
     required property var calendars
     required property bool sample
+    property bool suspended: false
+    property var openedPayload: null
     property string sourceCalendar: ""
     property bool moving: false
     property string createUuid: ""
@@ -41,6 +43,9 @@ Dialog {
     }
 
     function openForDate(selectedDate, meeting, moveOnly) {
+        suspended = false
+        submittedStart = null
+        openedPayload = meeting && !sample ? Object.assign({}, meeting.wirePayload) : null
         retryOriginal = false
         sourceCalendar = meeting ? meeting.calendar : ""
         moving = moveOnly === true
@@ -78,7 +83,35 @@ Dialog {
             ? instant : null
     }
 
+    function unchangedSinceOpen() {
+        if (sample || !editingUuid) return true
+        const current = serverActions.calendarEvents.find(row => row.uuid === editingUuid)
+        if (current && current.calendar === sourceCalendar && openedPayload && current.wirePayload
+                && ["kind", "title", "location", "description", "starts_at", "ends_at"].every(
+                    field => openedPayload[field] === current.wirePayload[field]))
+            return true
+        errorMessage = qsTr("This meeting changed or was removed. Close and reopen it before saving.")
+        return false
+    }
+
+    function hideForSection() {
+        if (!sample && !editingUuid && submittedStart !== null && (serverActions.calendarWriting || retryOriginal))
+            suspended = true
+        close()
+    }
+
+    function resumeForSection() { if (suspended) open() }
+
+    function retire() {
+        suspended = false
+        submittedStart = null
+        retryOriginal = false
+        createUuid = ""
+        close()
+    }
+
     function submit() {
+        if (!unchangedSinceOpen()) return
         const calendar = calendarBox.currentValue
         if (!calendar || serverActions.calendarWriting) return
         if (moving) {
@@ -125,9 +158,11 @@ Dialog {
         close()
     }
     function completed(accepted, retryUnchanged) {
-        if (!visible || submittedStart === null) return
+        if ((!visible && !suspended) || submittedStart === null) return
         if (accepted) {
+            suspended = false
             saved(submittedStart, submittedCalendar)
+            submittedStart = null
             close()
         } else {
             retryOriginal = retryUnchanged
@@ -135,8 +170,12 @@ Dialog {
                                           : qsTr("Could not confirm the change. Try again.")
         }
     }
-    onClosed: submittedStart = null
-    onOpened: moving ? calendarBox.forceActiveFocus() : subject.forceActiveFocus()
+    onClosed: if (!suspended) submittedStart = null
+    onOpened: {
+        suspended = false
+        if (moving) calendarBox.forceActiveFocus()
+        else subject.forceActiveFocus()
+    }
 
     contentItem: ScrollView {
         id: scroller
@@ -290,7 +329,7 @@ Dialog {
             Layout.bottomMargin: 16
             palette.buttonText: form.colors["danger"]
             text: qsTr("Delete meeting")
-            onClicked: form.deleteRequested(form.editingUuid, form.originalTitle)
+            onClicked: if (form.unchangedSinceOpen()) form.deleteRequested(form.editingUuid, form.originalTitle)
         }
     }
 }
