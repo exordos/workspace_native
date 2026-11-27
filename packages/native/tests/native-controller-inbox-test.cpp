@@ -1586,6 +1586,59 @@ private slots:
         fixture.controller.showSection(QStringLiteral("chat"));
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
+
+    // Issue #926: a same-account token renewal bumps the API generation and
+    // aborts the in-flight GET /calendar/events; the shared request wrapper
+    // drops the retired callback, so nothing ever cleared the calendar
+    // inflight/loading flags and every later entry point (date navigation,
+    // reopen, retry) refused to load for the rest of the session. The renewal
+    // must settle the interrupted window into an actionable error state, a
+    // retry must dispatch a fresh GET under the renewed session, and the
+    // retired response must not settle or replace the newer request.
+    void calendarSameOwnerRenewalSettlesInterruptedLoadAndRetryReloads()
+    {
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto calendarGets = std::make_shared<int>(0);
+        fixture.calendar = [gates, calendarGets](const Request &) {
+            ++*calendarGets;
+            QJsonArray events;
+            events.append(QJsonObject{{"uuid", QStringLiteral("evt-1")},
+                {"day", QStringLiteral("2026-07-02")}, {"start", QStringLiteral("09:00")},
+                {"end", QStringLiteral("10:00")}, {"title", QStringLiteral("Standup")},
+                {"calendar", QStringLiteral("work")}, {"color_token", QStringLiteral("accent")}});
+            Response response{events};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(
+            QStringLiteral("2026-07-01"), QStringLiteral("2026-07-07"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        QVERIFY(fixture.controller.calendarLoading());
+        const int firstWindowGets = *calendarGets;
+        fixture.api.setAccessToken("synthetic-renewed-access-token");
+        // AC1: the interrupted fetch settles its transient state into the
+        // actionable error the page already knows how to render.
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 4000);
+        QVERIFY(fixture.controller.calendarError());
+        // AC2: a retry under the renewed session dispatches a fresh GET.
+        fixture.controller.retryCalendar();
+        QTRY_VERIFY_WITH_TIMEOUT(*calendarGets >= firstWindowGets + 1, 4000);
+        QVERIFY(fixture.controller.calendarLoading());
+        QCOMPARE(*calendarGets, firstWindowGets + 1);
+        // AC3: the retired first-window answer may not settle the newer request.
+        (*gates)[0]();
+        QTest::qWait(250); // give the retired callback a chance to misfire
+        QVERIFY(fixture.controller.calendarLoading());
+        QVERIFY(fixture.controller.calendarEvents().isEmpty());
+        // The newer request's own answer settles it and the page stays usable.
+        QVERIFY(gates->size() >= 2);
+        (*gates)[1]();
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.controller.calendarEvents().size() == 1, 4000);
+        QVERIFY(!fixture.controller.calendarLoading());
+        QVERIFY(!fixture.controller.calendarError());
+    }
 };
 
 QTEST_MAIN(ControllerInboxTest)

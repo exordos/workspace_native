@@ -238,6 +238,7 @@ public:
     std::function<Response(const Request &)> reactions;
     std::function<Response(const Request &)> serverSettings;
     std::function<Response(const Request &)> folders;
+    std::function<Response(const Request &)> calendar;
     bool extraTopic = false;
     bool encrypted = false;
     bool aggregateMessages = false;
@@ -276,6 +277,8 @@ public:
                 return users ? users(request) : Response{QJsonArray{}};
             if (path.endsWith("/folders/"))
                 return folders ? folders(request) : Response{QJsonArray{}};
+            if (path.endsWith("/calendar/events") && calendar)
+                return calendar(request);
             if (path.endsWith("/stream_bindings/") && bindings)
                 return bindings(request);
             if (path.endsWith("/stream_topics/")) {
