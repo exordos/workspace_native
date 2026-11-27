@@ -61,6 +61,19 @@ the reader occupies its existing column. The test fixture exercises an empty
 selection and a long selected message in English and Russian in both color
 modes. The API integration in #852 owns delivery and write actions.
 
+## Compose
+
+Compose opens a fresh local draft from the folder rail. The modal follows the
+centered compose frame `18687:30635` with recipients, subject, attachments,
+a plain-text body and a disabled Send button. Moving past an empty recipient
+field displays the validation error until a recipient is supplied. The user
+can select local files or remove their rows. The store reads the display name
+and formatted byte size; the draft holds no paths or file contents and makes
+no network requests. Closing the dialog, leaving Mail or retiring the session
+discards its fields and attachments. The Mail test group opens and closes the
+dialog and exercises validation, local attachment metadata and owner retirement
+in both themes and languages.
+
 ## Figma
 
 `FIGMA_TOKEN` returns HTTP 403 from this host as of 2026-11-26 - mockups not

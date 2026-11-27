@@ -10,6 +10,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QTemporaryDir>
 #include <QTranslator>
 #include <QUrlQuery>
 #include <QVariant>
@@ -296,32 +297,19 @@ private slots:
     {
         QFETCH(bool, russian);
         QFETCH(bool, dark);
+        const QLocale previousLocale;
+        QLocale::setDefault(QLocale(russian ? "ru_RU" : "en_US"));
+        const auto restoreLocale = qScopeGuard([&] { QLocale::setDefault(previousLocale); });
         QTranslator translation;
         if (russian) {
             QVERIFY(translation.load(":/workspace/i18n/workspace_ru.qm"));
             QVERIFY(QCoreApplication::installTranslator(&translation));
         }
         QQmlEngine engine;
-        QQmlComponent palette(&engine, QUrl::fromLocalFile(QStringLiteral(
-            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeTheme.qml")));
-        QScopedPointer<QObject> theme(palette.createWithInitialProperties(
-            {{"paletteId", QStringLiteral("orange-warm")}, {"dark", dark}}));
-        QVERIFY2(theme, qPrintable(palette.errorString()));
-        auto colors = theme->property("colors").value<QJSValue>().toVariant().toMap();
-        QVERIFY(colors.contains("bg"));
-        QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(
-            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeMailPage.qml")));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        const QVariantMap properties{{"colors", colors}, {"dark", dark}, {"mail", QVariant::fromValue(store)}};
-        QScopedPointer<QObject> object(component.createWithInitialProperties(properties));
-        auto *page = qobject_cast<QQuickItem *>(object.data());
-        QVERIFY(page);
         QQuickWindow window;
-        window.setColor(colors.value("bg").value<QColor>());
         window.resize(900, 700);
-        page->setSize(window.size());
-        page->setParentItem(window.contentItem());
-        window.show();
+        auto *page = showMailWindow(engine, window, dark);
+        QVERIFY(page);
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         store->refresh();
         QTRY_COMPARE(store->state(), QStringLiteral("ready"));
@@ -370,6 +358,98 @@ private slots:
         QTRY_COMPARE(store->state(), QStringLiteral("ready"));
         QVERIFY(!visible(page, "mailReaderBody"));
         QVERIFY(!visible(page, "mailReaderAction-reply"));
+    }
+
+    void composeDraft_data() { selectedMessageOpensReader_data(); }
+
+    void composeDraft()
+    {
+        QFETCH(bool, russian);
+        QFETCH(bool, dark);
+        const QLocale previousLocale;
+        QLocale::setDefault(QLocale(russian ? "ru_RU" : "en_US"));
+        const auto restoreLocale = qScopeGuard([&] { QLocale::setDefault(previousLocale); });
+        QTranslator translation;
+        if (russian) {
+            QVERIFY(translation.load(":/workspace/i18n/workspace_ru.qm"));
+            QVERIFY(QCoreApplication::installTranslator(&translation));
+        }
+        QQmlEngine engine;
+        QQuickWindow window;
+        window.resize(1024, 768);
+        auto *page = showMailWindow(engine, window, dark);
+        QVERIFY(page);
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QCOMPARE(store->state(), QStringLiteral("idle"));
+        const auto requests = server.requests.size();
+        auto *compose = item(page, "mailComposeButton");
+        QVERIFY(compose);
+        auto click = [&window](QQuickItem *control) {
+            QSignalSpy rendered(&window, &QQuickWindow::frameSwapped);
+            window.update();
+            QTRY_VERIFY(!rendered.isEmpty());
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                              control->mapToScene(control->boundingRect().center()).toPoint());
+        };
+        QVERIFY(!page->findChild<QObject *>("mailComposeDialog"));
+        click(compose);
+        QPointer<QObject> dialog = page->findChild<QObject *>("mailComposeDialog");
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        auto *overlay = window.contentItem();
+        auto *to = item(overlay, "mailComposeRecipients");
+        auto *subject = item(overlay, "mailComposeSubject");
+        auto *body = item(overlay, "mailComposeBody");
+        auto *send = item(overlay, "mailComposeSend");
+        QVERIFY(to && subject && body && send);
+        QTRY_VERIFY(to->hasActiveFocus());
+        QVERIFY(!visible(overlay, "mailComposeRecipientsError"));
+        click(subject);
+        QTRY_VERIFY(visible(overlay, "mailComposeRecipientsError"));
+        QCOMPARE(textOf(overlay, "mailComposeRecipientsError"),
+                 russian ? QStringLiteral("Укажите хотя бы одного получателя.")
+                         : QStringLiteral("Enter at least one recipient."));
+        QVERIFY(!send->isEnabled());
+        to->setProperty("text", "team@example.test");
+        subject->setProperty("text", "Workspace review");
+        body->setProperty("text", "Please review the attached notes.");
+        QVERIFY(!visible(overlay, "mailComposeRecipientsError"));
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile attachment(directory.filePath("review.txt"));
+        QVERIFY(attachment.open(QIODevice::WriteOnly));
+        QCOMPARE(attachment.write("Hello!"), 6);
+        attachment.close();
+        const QVariant files = QVariant::fromValue(QList<QUrl>{QUrl::fromLocalFile(attachment.fileName())});
+        QVERIFY(QMetaObject::invokeMethod(dialog, "addAttachments", Q_ARG(QVariant, files)));
+        QTRY_COMPARE(textOf(overlay, "mailComposeAttachmentName-0"), QStringLiteral("review.txt"));
+        QCOMPARE(textOf(overlay, "mailComposeAttachmentSize-0"), QLocale().formattedDataSize(6));
+        QVERIFY(!send->isEnabled());
+        click(send);
+        QCOMPARE(server.requests.size(), requests);
+        auto *remove = item(overlay, "mailComposeRemove-0");
+        QVERIFY(remove);
+        click(remove);
+        QTRY_VERIFY(!visible(overlay, "mailComposeAttachmentName-0"));
+        auto *close = item(overlay, "mailComposeClose");
+        QVERIFY(close);
+        click(close);
+        QTRY_VERIFY(dialog.isNull());
+        click(compose);
+        dialog = page->findChild<QObject *>("mailComposeDialog");
+        QVERIFY(dialog);
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        QCOMPARE(textOf(overlay, "mailComposeRecipients"), QString());
+        QCOMPARE(textOf(overlay, "mailComposeSubject"), QString());
+        QCOMPARE(textOf(overlay, "mailComposeBody"), QString());
+        QVERIFY(!visible(overlay, "mailComposeRecipientsError"));
+        QVERIFY(!visible(overlay, "mailComposeAttachmentName-0"));
+        body = item(overlay, "mailComposeBody");
+        QVERIFY(body);
+        body->setProperty("text", "Account-local draft");
+        api.clearSession();
+        QTRY_VERIFY(dialog.isNull());
+        QVERIFY(!visible(overlay, "mailComposeBody"));
     }
 
     // exordy finding 4714792891: the reader wrapper's title and body Text
@@ -429,6 +509,29 @@ private slots:
     }
 
 private:
+    QQuickItem *showMailWindow(QQmlEngine &engine, QQuickWindow &window, bool dark)
+    {
+        QQmlComponent palette(&engine, QUrl::fromLocalFile(QStringLiteral(
+            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeTheme.qml")));
+        QScopedPointer<QObject> theme(palette.createWithInitialProperties(
+            {{"paletteId", QStringLiteral("orange-warm")}, {"dark", dark}}));
+        if (!theme)
+            return nullptr;
+        const auto colors = theme->property("colors").value<QJSValue>().toVariant().toMap();
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(
+            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeMailPage.qml")));
+        const QVariantMap properties{{"colors", colors}, {"dark", dark}, {"mail", QVariant::fromValue(store)}};
+        auto *page = qobject_cast<QQuickItem *>(component.createWithInitialProperties(properties));
+        if (page) {
+            window.setColor(colors.value("bg").value<QColor>());
+            page->setParent(&window);
+            page->setParentItem(window.contentItem());
+            page->setSize(window.size());
+            window.show();
+        }
+        return page;
+    }
+
     Response respond(const Request &request)
     {
         Response response;
