@@ -9013,51 +9013,42 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         const QString pendingFrom = m_calendar.pendingFrom;
         const QString pendingTo = m_calendar.pendingTo;
         m_calendar.hasPending = false;
-        // A server without a calendar feed shows an empty agenda. Recheck
-        // on the next visit so deploying the endpoint refreshes this window.
         if (result.status == 501) {
+            // Recheck an absent endpoint when this window is requested again.
             m_calendar.events.clear();
             m_calendar.hasLoaded = false;
-            m_calendar.loading = false;
             m_calendar.error = false;
-            emit calendarChanged();
-            return;
-        }
-        if (!result.ok() || !result.data.isArray()) {
-            m_calendar.loading = false;
+        } else if (!result.ok() || !result.data.isArray()) {
             m_calendar.error = true;
-            emit calendarChanged();
-            if (hasPending)
-                requestCalendarWindow(pendingFrom, pendingTo);
-            return;
+        } else {
+            QVariantList events;
+            for (const auto &value : result.data.toArray()) {
+                const auto row = value.toObject();
+                QVariantList participants;
+                for (const auto &person : row.value("participants").toArray())
+                    participants.append(person.toString());
+                events.append(QVariantMap{
+                    {"uuid", row.value("uuid").toString()},
+                    {"day", row.value("day").toString()},
+                    {"start", row.value("start").toString()},
+                    {"end", row.value("end").toString()},
+                    {"title", row.value("title").toString()},
+                    {"calendar", row.value("calendar").toString()},
+                    {"colorToken", row.value("color_token").toString()},
+                    {"location", row.value("location").toString()},
+                    {"allDay", row.value("all_day").toBool()},
+                    {"startUtc", row.value("start_utc").toString()},
+                    {"endUtc", row.value("end_utc").toString()},
+                    {"participants", participants},
+                });
+            }
+            m_calendar.events = events;
+            m_calendar.hasLoaded = true;
+            m_calendar.error = false;
         }
-        QVariantList events;
-        for (const auto &value : result.data.toArray()) {
-            const auto row = value.toObject();
-            QVariantList participants;
-            for (const auto &person : row.value("participants").toArray())
-                participants.append(person.toString());
-            events.append(QVariantMap{
-                {"uuid", row.value("uuid").toString()},
-                {"day", row.value("day").toString()},
-                {"start", row.value("start").toString()},
-                {"end", row.value("end").toString()},
-                {"title", row.value("title").toString()},
-                {"calendar", row.value("calendar").toString()},
-                {"colorToken", row.value("color_token").toString()},
-                {"location", row.value("location").toString()},
-                {"allDay", row.value("all_day").toBool()},
-                {"startUtc", row.value("start_utc").toString()},
-                {"endUtc", row.value("end_utc").toString()},
-                {"participants", participants},
-            });
-        }
-        m_calendar.events = events;
-        m_calendar.hasLoaded = true;
         m_calendar.loading = false;
-        m_calendar.error = false;
         emit calendarChanged();
-        if (hasPending)
+        if (hasPending && version == m_calendar.version && owner == creationOwnerKey())
             requestCalendarWindow(pendingFrom, pendingTo);
     });
 }
