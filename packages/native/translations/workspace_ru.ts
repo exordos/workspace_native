@@ -3854,6 +3854,18 @@
             <source>Media %1</source>
             <translation>Медиа %1</translation>
         </message>
+        <message>
+            <source>Zoom in</source>
+            <translation>Приблизить</translation>
+        </message>
+        <message>
+            <source>Zoom out</source>
+            <translation>Отдалить</translation>
+        </message>
+        <message>
+            <source>Reset zoom</source>
+            <translation>Сбросить масштаб</translation>
+        </message>
     </context>
 <context>
     <name>NativeExternalAccountBlock</name>
