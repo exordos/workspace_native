@@ -124,7 +124,8 @@ add_library(workspace-native-core STATIC
     src/native-controller.cpp src/native-controller.h src/native-outgoing.cpp
     src/gui-phase-trace.cpp src/gui-phase-trace.h
     src/native-hotkeys.cpp src/native-hotkeys.h
-    src/composer-references.cpp)
+    src/composer-references.cpp
+    src/mail-store.cpp src/mail-store.h)
 target_include_directories(workspace-native-core PUBLIC src)
 # Incoming invite UI variant, the native counterpart of the reference
 # VITE_CALL_INCOMING_MODAL_VARIANT build flag (shared/lib/env.ts:132-135):
@@ -269,7 +270,7 @@ qml/NativeCallWindow.qml qml/NativeIncomingCallWindow.qml qml/ShellIconButton.qm
 qml/NativePollManagementDialog.qml
 qml/SessionSwitcher.qml
     qml/NativeComposerTimePicker.qml qml/NativeComposerSnippets.qml qml/NativeComposerStickerPicker.qml
-    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeCalendarPage.qml qml/NativeCalendarEventDetail.qml qml/NativeCalendarMeetingDialog.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicContextMenu.qml qml/NativeTopicSummary.qml qml/NativeTopicSummarySettingsDialog.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml qml/NativeAccountMenu.qml)
+    qml/NativeReactionPicker.qml qml/NativeQuickReactions.qml qml/NativeAvatarImage.qml qml/NativeAboutDrawer.qml qml/NativeRightDrawer.qml qml/NativeMessageImage.qml qml/NativeQuoteMediaThumbnail.qml qml/NativeMediaViewer.qml qml/NativeDraftsPage.qml qml/NativeMentionsPage.qml qml/NativeStarredPage.qml qml/NativeActivityUnsupportedPage.qml qml/NativeInboxPage.qml qml/NativeFeedPage.qml qml/NativeFavoritesPage.qml qml/NativeCallsPage.qml qml/NativeServicesPage.qml qml/NativeLicensesPage.qml qml/NativeDiagnosticsPage.qml qml/NativeSectionUnavailablePage.qml qml/NativeCalendarPage.qml qml/NativeCalendarEventDetail.qml qml/NativeCalendarMeetingDialog.qml qml/NativeMailPage.qml qml/NativeMailReader.qml qml/NativeMailComposeDialog.qml qml/NativeChannelInfo.qml qml/NativeChannelTopics.qml qml/NativeTopicContextMenu.qml qml/NativeTopicSummary.qml qml/NativeTopicSummarySettingsDialog.qml qml/NativeEncryptedChatInfo.qml qml/NativeUserProfile.qml qml/NativePollDialog.qml qml/NativeAccountMenu.qml)
 
 foreach(qml_file IN LISTS native_qml_files)
     string(REGEX REPLACE "^qml/" "" qml_name "${qml_file}")
@@ -539,7 +540,7 @@ if(BUILD_TESTING)
     endif()
     find_program(WORKSPACE_NATIVE_LUPDATE NAMES lupdate-qt6 lupdate6 lupdate
         HINTS "${native_qt_tools}" /usr/lib/qt6/bin REQUIRED)
-    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-heif native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-chat-background native-preferences native-hotkeys native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-window native-desktop native-call)
+    foreach(test api-client domain workspace-reference file-client avatar-images message-images native-design native-heif native-markdown native-chat-crypto native-chat-key-vault native-chat-runtime native-chat-background native-preferences native-hotkeys native-auth-guard native-locale native-instance native-cache native-cache-service native-cache-preferences native-draft-store native-draft-service native-drafts native-draft-sync session session-vault realtime-client native-window native-desktop native-call native-mail)
         add_executable(${test}-test tests/${test}-test.cpp)
         target_link_libraries(${test}-test PRIVATE workspace-native-ui Qt6::Test Qt6::DBus)
         if(test STREQUAL "file-client" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -564,6 +565,12 @@ if(BUILD_TESTING)
             # sources from the source tree (the same files qrc embeds).
             target_compile_definitions(${test}-test PRIVATE
                 WORKSPACE_NATIVE_CALL_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
+        endif()
+        if(test STREQUAL "native-mail")
+            # #879: the mailbox slice instantiates NativeMailPage.qml from the
+            # source tree; the Main.qml wiring lands with the window cases.
+            target_compile_definitions(${test}-test PRIVATE
+                WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml")
         endif()
         # Only the window harness loads the scene; the production executable embeds
         # the same sources as a QML module so deployment scans its actual imports.

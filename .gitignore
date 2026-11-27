@@ -19,3 +19,4 @@ packages/native/build-*.log
 packages/native/cfg-*.log
 packages/native/witness-*
 packages/native/neigh*.*
+logs/

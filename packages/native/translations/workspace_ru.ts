@@ -6125,4 +6125,137 @@
             <translation>Отмена</translation>
         </message>
     </context>
+    <context>
+        <name>NativeMailComposeDialog</name>
+        <message>
+            <source>New message</source>
+            <translation>Новое письмо</translation>
+        </message>
+        <message>
+            <source>Close</source>
+            <translation>Закрыть</translation>
+        </message>
+        <message>
+            <source>To</source>
+            <translation>Кому</translation>
+        </message>
+        <message>
+            <source>Names or email addresses</source>
+            <translation>Имена или адреса электронной почты</translation>
+        </message>
+        <message>
+            <source>Enter at least one recipient.</source>
+            <translation>Укажите хотя бы одного получателя.</translation>
+        </message>
+        <message>
+            <source>Subject</source>
+            <translation>Тема</translation>
+        </message>
+        <message>
+            <source>Attach files</source>
+            <translation>Прикрепить файлы</translation>
+        </message>
+        <message>
+            <source>Remove</source>
+            <translation>Убрать</translation>
+        </message>
+        <message>
+            <source>Write a message…</source>
+            <translation>Напишите сообщение…</translation>
+        </message>
+        <message>
+            <source>Message</source>
+            <translation>Сообщение</translation>
+        </message>
+        <message>
+            <source>Send</source>
+            <translation>Отправить</translation>
+        </message>
+        <message>
+            <source>Sending mail is unavailable in this preview.</source>
+            <translation>Отправка писем недоступна в режиме предпросмотра.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeMailReader</name>
+        <message>
+            <source>Select a message</source>
+            <translation>Выберите сообщение</translation>
+        </message>
+        <message>
+            <source>From: %1</source>
+            <translation>От: %1</translation>
+        </message>
+        <message>
+            <source>To: %1</source>
+            <translation>Кому: %1</translation>
+        </message>
+        <message>
+            <source>Date: %1</source>
+            <translation>Дата: %1</translation>
+        </message>
+        <message>
+            <source>Message body unavailable</source>
+            <translation>Текст письма недоступен</translation>
+        </message>
+        <message>
+            <source>Reply</source>
+            <translation>Ответить</translation>
+        </message>
+        <message>
+            <source>Forward</source>
+            <translation>Переслать</translation>
+        </message>
+        <message>
+            <source>Mark as read</source>
+            <translation>Пометить прочитанным</translation>
+        </message>
+        <message>
+            <source>Mark as unread</source>
+            <translation>Пометить непрочитанным</translation>
+        </message>
+        <message>
+            <source>Delete</source>
+            <translation>Удалить</translation>
+        </message>
+        <message>
+            <source>Mail actions are unavailable in this preview.</source>
+            <translation>Действия с письмами недоступны в режиме предпросмотра.</translation>
+        </message>
+    </context>
+    <context>
+        <name>NativeMailPage</name>
+        <message>
+            <source>Compose</source>
+            <translation>Написать письмо</translation>
+        </message>
+        <message>
+            <source>Sample mailbox. These messages and unread counts are examples.</source>
+            <translation>Демоящик. Письма и счётчики непрочитанных показаны для примера.</translation>
+        </message>
+        <message>
+            <source>Sample folders. The unread counts are examples.</source>
+            <translation>Демопапки. Счётчики непрочитанных показаны для примера.</translation>
+        </message>
+        <message>
+            <source>Mail</source>
+            <translation>Почта</translation>
+        </message>
+        <message>
+            <source>Search mail...</source>
+            <translation>Поиск в почте...</translation>
+        </message>
+        <message>
+            <source>No messages in this folder</source>
+            <translation>В этой папке нет сообщений</translation>
+        </message>
+        <message>
+            <source>Couldn't load mail</source>
+            <translation>Не удалось загрузить почту</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+    </context>
 </TS>

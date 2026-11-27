@@ -549,6 +549,39 @@ static bool isInitialUnreadMentionIndex(const Request &request)
         && !query.hasQueryItem("stream_uuid") && !query.hasQueryItem("topic_uuid");
 }
 
+// #879: deterministic mailbox fixtures for the mail window cases
+// (mirrors the native-mail-test adapter fixtures; live integration is #852).
+static QJsonArray mailFixtureFolders()
+{
+    auto row = [](const char *id, const char *title, int unread) {
+        return QJsonObject{{"id", id}, {"title", title}, {"unread", unread}};
+    };
+    return {row("inbox", "Inbox", 12), row("sent", "Sent", 0), row("drafts", "Drafts", 3),
+            row("archive", "Archive", 0), row("spam", "Spam", 1), row("trash", "Trash", 0)};
+}
+
+static QJsonArray mailFixtureMessages(const QString &folder)
+{
+    if (folder == QLatin1String("inbox")) {
+        auto row = [](const char *uuid, const char *sender, const char *subject,
+                      const char *snippet, const char *time) {
+            return QJsonObject{{"uuid", uuid}, {"sender", sender}, {"subject", subject},
+                               {"snippet", snippet}, {"time", time}, {"unread", true}};
+        };
+        return {row("mail-inbox-1", "Build Bot", "Release 0.5.0 checks passed",
+                    "All pipelines are green and artifacts are ready.", "10:24"),
+                row("mail-inbox-2", "Product Team", "Demo agenda for Friday",
+                    "Please review talking points before 15:00.", "09:02"),
+                row("mail-inbox-3", "<i>Design</i>", "Light theme polish proposal",
+                    "Attached updated spacing and color recommendations.", "Mon")};
+    }
+    if (folder == QLatin1String("sent"))
+        return {QJsonObject{{"uuid", "mail-sent-1"}, {"sender", "me"},
+                            {"subject", "Re: demo slot"}, {"snippet", "Works for me."},
+                            {"time", "Tue"}, {"unread", false}}};
+    return {};
+}
+
 class WindowChannelFixture {
 public:
     MockServer server;
@@ -563,6 +596,7 @@ public:
     int postDelay = 150, canonicalDelay = 80, topicDelay = 0, catalogDelay = 0;
     bool applyMembers = true, includeCreated = true, includeDefault = true;
     bool sourceScene = false;
+    bool serveMail = false;
     QJsonObject streamBody, memberBody;
 
     WindowChannelFixture()
@@ -656,6 +690,11 @@ public:
                 }
                 return {rows};
             }
+            if (serveMail && path.endsWith("/mail/folders"))
+                return {QJsonObject{{"folders", mailFixtureFolders()}}};
+            if (serveMail && path.endsWith("/mail/messages"))
+                return {QJsonObject{{"messages",
+                    mailFixtureMessages(QUrlQuery(request.target).queryItemValue("folder"))}}};
             auto response = sessionResponse(request);
             if (sourceScene && path.endsWith("/actions/introspect"))
                 response.data = QJsonObject{{"project_id", projectId}, {"user_info", QJsonObject{{"uuid", userId},
@@ -38845,7 +38884,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
     // padding, glyph 64 px at opacity 0.5, heading 20 px Medium text-primary
     // (i18n nav.mail), body 14 px wrapped at max 512 px text-muted
     // (i18n app.webModeUnavailable).
-    void mailSectionUnavailableCardMatchesReferenceContract_data()
+    void mailSectionOpensMailboxMatchesReferenceContract_data()
     {
         QTest::addColumn<QString>("locale");
         QTest::addColumn<QString>("mode");
@@ -38854,7 +38893,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTest::newRow("en-dark") << QString("en") << QString("dark");
         QTest::newRow("ru-dark") << QString("ru") << QString("dark");
     }
-    void mailSectionUnavailableCardMatchesReferenceContract()
+    void mailSectionOpensMailboxMatchesReferenceContract()
     {
         QFETCH(QString, locale);
         QFETCH(QString, mode);
@@ -38864,7 +38903,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const QColor iconActive = dark ? QColor("#ffffff") : QColor("#1b1b1d");
         const QColor cardBgActive = dark ? QColor("#2c3747") : QColor("#cde6ff");
         const QColor borderSubtle = dark ? QColor("#33384d") : QColor("#d8e4ef");
-        WindowChannelFixture fixture; fixture.sourceScene = true;
+        WindowChannelFixture fixture; fixture.sourceScene = true; fixture.serveMail = true;
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale(locale); preferences.setMode(mode);
@@ -38895,7 +38934,6 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(chatButton->property("selected").toBool());
         click(window, mailButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
-        auto *page = view("mailSectionPage");
         // Active chip: card-bg-active + border-subtle + icon-active; the Chat
         // chip drops back to idle text-muted.
         QVERIFY(mailButton->property("selected").toBool());
@@ -38905,38 +38943,98 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(QQmlProperty::read(mailButton, "background.border.color").value<QColor>(), borderSubtle);
         QVERIFY(!chatButton->property("selected").toBool());
         QCOMPARE(chatButton->property("iconColor").value<QColor>(), textMuted);
-        // The fallback card occupies the conversation slot.
+        // The mailbox occupies the conversation slot (reference demo mailbox:
+        // header + folder sidebar + thread list + reader placeholder).
         QVERIFY(!view("messageComposer"));
-        auto *column = view("sectionUnavailableColumn"); QVERIFY(column);
-        auto *glyph = view("sectionUnavailableGlyph"); QVERIFY(glyph);
-        auto *heading = view("sectionUnavailableHeading"); QVERIFY(heading);
-        auto *body = view("sectionUnavailableBody"); QVERIFY(body);
-        // p-6 (24 px) padding box, centered gap-4 (16 px) column.
-        auto *padding = view("sectionUnavailablePadding"); QVERIFY(padding);
-        QCOMPARE(pos(padding).x() - pos(page).x(), 24.0);
-        QCOMPARE(pos(padding).y() - pos(page).y(), 24.0);
-        QCOMPARE(column->property("spacing").toInt(), 16);
-        // Icon name="mail" size={64} className="opacity-50" tinted text-muted.
-        QCOMPARE(glyph->width(), 64.0);
-        QCOMPARE(glyph->height(), 64.0);
-        QVERIFY(qAbs(glyph->property("opacity").toReal() - 0.5) < 0.001);
-        QCOMPARE(glyph->property("tint").value<QColor>(), textMuted);
-        QCOMPARE(pos(heading).y() - (pos(glyph).y() + glyph->height()), 16.0);
-        QCOMPARE(pos(body).y() - (pos(heading).y() + heading->height()), 16.0);
-        // h2 text-xl font-medium text-text-primary = i18n key nav.mail.
-        QCOMPARE(heading->property("text").toString(),
+        // h1 23 px text-text-primary = nav.mail.
+        auto *title = view("mailPageTitle"); QVERIFY(title);
+        QCOMPARE(title->property("text").toString(),
             locale == QLatin1String("ru") ? QString::fromUtf8("Почта") : QString("Mail"));
-        QCOMPARE(heading->property("font").value<QFont>().pixelSize(), 20);
-        QCOMPARE(heading->property("font").value<QFont>().weight(), QFont::Medium);
-        QCOMPARE(heading->property("color").value<QColor>(), textPrimary);
-        // p max-w-lg text-center text-sm = i18n key app.webModeUnavailable.
-        QCOMPARE(body->property("text").toString(), locale == QLatin1String("ru")
-            ? QString::fromUtf8("Раздел временно недоступен в веб-режиме.")
-            : QString("This section is temporarily unavailable in web mode."));
-        QCOMPARE(body->property("font").value<QFont>().pixelSize(), 14);
-        QCOMPARE(body->property("wrapMode").toInt(), 4 /* QQuickText::Wrap at Qt 6.10 */);
-        QVERIFY(body->width() <= 512.0);
-        QCOMPARE(body->property("color").value<QColor>(), textMuted);
+        QCOMPARE(title->property("font").value<QFont>().pixelSize(), 23);
+        QCOMPARE(title->property("color").value<QColor>(), textPrimary);
+        // Six folder rows with the fixture unread counts (Inbox 12).
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailFolderRow-inbox"), 5000);
+        QVERIFY(view("mailFolderRow-sent") && view("mailFolderRow-drafts")
+            && view("mailFolderRow-archive") && view("mailFolderRow-spam")
+            && view("mailFolderRow-trash"));
+        QCOMPARE(view("mailFolderTitle-inbox")->property("text").toString(), QString("Inbox"));
+        QCOMPARE(view("mailFolderTitle-inbox")->property("color").value<QColor>(),
+                 dark ? textPrimary : QColor("#2347a7"));
+        QCOMPARE(view("mailFolderUnread-inbox")->property("text").toString(), QString("12"));
+        // Inbox is the default selection: the fixture threads render.
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailMessageRow-mail-inbox-1"), 5000);
+        // 3-column grid 220px|1fr|1fr: the thread column gets an even split of
+        // the leftover (a content-hinted fillWidth starved it to a sliver).
+        // Freshly incubated delegates report non-zero size only after the next
+        // layout pass, so poll (re-fetching the items each round).
+        auto *sectionPage = view("mailSectionPage"); QVERIFY(sectionPage);
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *threadList = view("mailThreadColumn");
+            return threadList
+                && threadList->width() >= (sectionPage->width() - 224.0) / 2.0 - 64.0;
+        })()), 5000);
+        // The visible contract: thread cards actually paint at the column
+        // width (a collapsed ScrollView contentItem clipped them to pills).
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *threadRow = view("mailMessageRow-mail-inbox-1");
+            return threadRow
+                && threadRow->width() >= (sectionPage->width() - 224.0) / 2.0 - 84.0;
+        })()), 5000);
+        QVERIFY(view("mailMessageRow-mail-inbox-2") && view("mailMessageRow-mail-inbox-3"));
+        // The thread card insets its text (reference card padding): sender and
+        // timestamp must sit inside the card edges, not flush against them.
+        auto *threadCard = view("mailMessageRow-mail-inbox-1"); QVERIFY(threadCard);
+        auto *senderLabel = view("mailMessageSender-mail-inbox-1"); QVERIFY(senderLabel);
+        auto *timeLabel = view("mailMessageTime-mail-inbox-1"); QVERIFY(timeLabel);
+        const qreal cardLeft = threadCard->mapToItem(window->contentItem(), QPointF(0, 0)).x();
+        const qreal cardRight = cardLeft + threadCard->width();
+        const qreal senderLeft = senderLabel->mapToItem(window->contentItem(), QPointF(0, 0)).x();
+        const qreal timeRight = timeLabel->mapToItem(window->contentItem(), QPointF(0, 0)).x()
+            + timeLabel->width();
+        QVERIFY2(senderLeft - cardLeft >= 12.0, QByteArray::number(senderLeft - cardLeft));
+        QVERIFY2(cardRight - timeRight >= 12.0, QByteArray::number(cardRight - timeRight));
+        QCOMPARE(view("mailMessageSubject-mail-inbox-1")->property("text").toString(),
+                 QString("Release 0.5.0 checks passed"));
+        QCOMPARE(view("mailMessageSender-mail-inbox-1")->property("text").toString(),
+                 QString("Build Bot"));
+        QCOMPARE(view("mailMessageTime-mail-inbox-1")->property("text").toString(),
+                 QString("10:24"));
+        // exordy finding 4712325992: every server-supplied field renders as
+        // plain text, so HTML-shaped content cannot be parsed as rich text or
+        // request remote images. The fixture carries an HTML-shaped sender to
+        // prove the contract on real delegate text.
+        QCOMPARE(view("mailMessageSender-mail-inbox-3")->property("text").toString(),
+                 QString("<i>Design</i>"));
+        const QStringList plainFields{QStringLiteral("mailFolderTitle-inbox"),
+            QStringLiteral("mailMessageSender-mail-inbox-3"),
+            QStringLiteral("mailMessageTime-mail-inbox-1"),
+            QStringLiteral("mailMessageSubject-mail-inbox-1"),
+            QStringLiteral("mailMessageSnippet-mail-inbox-1")};
+        for (const QString &field : plainFields) {
+            auto *label = view(field); QVERIFY(label);
+            QCOMPARE(label->property("textFormat").toString(), QString("PlainText"));
+        }
+        // The reader column names the missing selection before any row is picked.
+        QCOMPARE(view("mailReaderTitle")->property("text").toString(),
+            locale == QLatin1String("ru") ? QString::fromUtf8("Выберите сообщение")
+                                          : QString("Select a message"));
+        // Selecting a thread drives the reader column.
+        click(window, view("mailMessageRow-mail-inbox-2"));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            view("mailReaderTitle")
+            && view("mailReaderTitle")->property("text").toString() == QString("Demo agenda for Friday"),
+            5000);
+        // An empty folder shows the empty state; the inbox rows come back with
+        // the folder when switching back.
+        click(window, view("mailFolderRow-archive"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailEmptyState"), 5000);
+        auto *emptyText = view("mailEmptyStateText"); QVERIFY(emptyText);
+        QCOMPARE(emptyText->property("text").toString(),
+            locale == QLatin1String("ru") ? QString::fromUtf8("В этой папке нет сообщений")
+                                          : QString("No messages in this folder"));
+        click(window, view("mailFolderRow-inbox"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("mailMessageRow-mail-inbox-1"), 5000);
+        QVERIFY(!view("mailEmptyState"));
         // The Chat button restores the conversation (reference navigates the
         // section back to the chat root).
         click(window, chatButton);
@@ -38959,6 +39057,19 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, mailButton);
         QTRY_VERIFY_WITH_TIMEOUT(view("mailSectionPage"), 5000);
         QTRY_VERIFY(!view("sidebar"));
+        const QRect geometryBeforeMatrix = window->geometry();
+        window->resize(1024, 768);
+        QTest::qWait(400);
+        // The three-column split must survive the narrow width: the thread
+        // column keeps its share and the reader placeholder stays inside.
+        QTRY_VERIFY_WITH_TIMEOUT((([&] {
+            auto *narrowPage = view("mailSectionPage");
+            auto *narrowThread = view("mailThreadColumn");
+            return narrowPage && narrowThread
+                && narrowThread->width() >= narrowPage->width() / 3.0;
+        })()), 5000);
+        window->setGeometry(geometryBeforeMatrix);
+        QTest::qWait(400);
         // The Chat chip returns to the conversation with the sidebar
         // remounted; conversation restore via the Chat button is covered above.
         click(window, chatButton);

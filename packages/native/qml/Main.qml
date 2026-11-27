@@ -13798,16 +13798,27 @@ component NativeMentionChip: Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
-        // Mail section page (issue #35): the unavailable-state fallback card is
-        // the only state the shipping desktop product exposes for /mail
-        // (workspace_ui 61dacef7 electron main.ts:452); WebView is forbidden.
-        NativeSectionUnavailablePage {
+        // Mail section page (#879, part of #851): the reference desktop embeds
+        // the demo mailbox (workspace_ui e0194ff public/embeds/mail-placeholder.html
+        // behind EmbedFrame); WebView stays forbidden natively, so the measured
+        // mock-adapter page replaces the earlier unavailable fallback card.
+        // Live mail integration is #852. The store fetches lazily on first
+        // visibility so sessions that never open Mail issue no mail requests.
+        NativeMailPage {
             objectName: "mailSectionPage"
             colors: root.colors
-            asset: "mail.svg"
-            heading: qsTr("Mail")
-            body: qsTr("This section is temporarily unavailable in web mode.")
+            dark: root.preferences.dark
+            mail: root.controller.mail
             visible: root.controller.section === "mail"
+            readonly property bool needsMailbox: visible && root.controller.authenticated
+                && mail && mail.state === "idle"
+            function ensureFetched()
+            {
+                if (needsMailbox)
+                    mail.refresh()
+            }
+            Component.onCompleted: ensureFetched()
+            onNeedsMailboxChanged: if (needsMailbox) Qt.callLater(ensureFetched)
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
