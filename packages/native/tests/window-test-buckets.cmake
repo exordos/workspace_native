@@ -537,6 +537,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
     accountDrawerAppVersionOpensReachableAboutPanel
     accountScreensOpenFromNonChatSectionsWithoutStaleState
     activityPanelExpandedSearchRemovesChatListGap
+    calendarCellHoverStatesAndEventRowElide
     chatClickActionLatestTopicOpensTheLastMessageTopic
     chatHeaderStreamBindingsExclusionOnlyHidesCountedGet
     composerAiNoticeTracksItsTriggerAndOtherPickers
