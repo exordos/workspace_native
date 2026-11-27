@@ -216,6 +216,10 @@ FocusScope {
                             required property int modelData
                             width: 30
                             height: 30
+                            HoverHandler {
+                                id: miniHover
+                                cursorShape: Qt.PointingHandCursor
+                            }
                             readonly property var cellDate: {
                                 page.selectedDate; // re-evaluate on selection
                                 const first = page.monthStart(page.selectedDate);
@@ -231,8 +235,12 @@ FocusScope {
                                 radius: 6
                                 // #924: hover tint per the #665 interaction-state
                                 // pattern, distinct from the selected accent fill.
+                                // Qt 6.10 hit-pick: a sibling MouseArea NEVER
+                                // receives hover when a label claims the point
+                                // (probe-reproduced), so the tint binds the
+                                // HoverHandler attached to the cell root.
                                 color: miniCell.isSelected ? page.colors["accent"]
-                                                           : (miniPointer.hovered
+                                                           : (miniHover.hovered
                                                               ? page.colors["card-bg-active"]
                                                               : "transparent")
                             }
@@ -244,11 +252,7 @@ FocusScope {
                                                                               : page.colors["text-muted"])
                             }
                             MouseArea {
-                                id: miniPointer
-                                objectName: "miniCellHover-" + miniCell.modelData
                                 anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
                                 onClicked: page.selectedDate = miniCell.cellDate
                             }
                         }
@@ -390,11 +394,18 @@ FocusScope {
                                 }
                                 readonly property int eventCount: page.visibleEvents(
                                     page.calDate(cellDate), page.calDate(cellDate)).length
+                                HoverHandler {
+                                    id: monthHover
+                                    cursorShape: Qt.PointingHandCursor
+                                }
                                 // #924: the hover tint is distinct from the
                                 // event-day fill so both states are separable.
-                                color: monthPointer.hovered ? page.colors["card-bg-active"]
-                                                            : (monthCell.eventCount > 0
-                                                               ? page.colors["bg-elevated"] : "transparent")
+                                // Bound to the root HoverHandler: in Qt 6.10 a
+                                // sibling MouseArea never receives hover once a
+                                // Label claims the point (probe-verified).
+                                color: monthHover.hovered ? page.colors["card-bg-active"]
+                                                          : (monthCell.eventCount > 0
+                                                             ? page.colors["bg-elevated"] : "transparent")
                                 radius: 4
                                 Label {
                                     anchors.top: parent.top
@@ -414,10 +425,7 @@ FocusScope {
                                     }
                                 }
                                 MouseArea {
-                                    id: monthPointer
                                     anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: page.selectedDate = monthCell.cellDate
                                 }
                             }
