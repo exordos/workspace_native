@@ -642,6 +642,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     existingEncryptedDirectFromNewChatOpensWithoutChangingThePair
     externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision
     freezeProbeParentConsumesAllMonitorReports
+    guiStallSamplerFlushNeverExposesPartialReport
     loginCardMountsOrganizationStepOnly
     mediaViewerAnnouncesLoadingAndFailureInBothLocales
     mentionsPageChipFilterAndCloseFlow
