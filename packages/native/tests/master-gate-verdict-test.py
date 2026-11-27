@@ -1,269 +1,143 @@
 #!/usr/bin/env python3
-"""Regression tests for scripts/master-gate-verdict.py (tag publish gate).
-
-Fixtures replay real check-run shapes the master-gate-reuse lookup sees,
-including the exact races the review findings produced:
-- an older green pair must not authorize reuse while a newer matching run
-  (re-check / rerun / second master push of the same sha) is still running;
-- a completed non-success must block even when the other check is green.
-"""
+"""Test master-push provenance, reruns and fail-closed pagination."""
+import contextlib
 import importlib.util
+import io
 import json
-import os
+import pathlib
 import subprocess
 import sys
-import tempfile
 import unittest
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(HERE, "..", "scripts", "master-gate-verdict.py")
-
-
-def load_script():
-    spec = importlib.util.spec_from_file_location("master_gate_verdict", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+import unittest.mock
+import urllib.parse
 
 
-def run(name, status="completed", conclusion="success",
-        event="push", branch="master"):
-    return {
-        "name": name,
-        "status": status,
-        "conclusion": conclusion if status == "completed" else None,
-        "check_suite": {"event": event, "head_branch": branch},
-    }
+SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts/master-gate-verdict.py"
+SPEC = importlib.util.spec_from_file_location("master_gate_verdict", SCRIPT)
+gate = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(gate)
+SHA = "deadbeef"
 
 
-class DecideTests(unittest.TestCase):
-    def decide(self, payload):
-        return load_script().decide(payload)
-
-    def payload(self, *runs):
-        return {"check_runs": list(runs)}
-
-    def test_green_pair_all_completed_reuses(self):
-        payload = self.payload(run("package-linux"), run("full-gate-linux"))
-        self.assertEqual(self.decide(payload), "reuse")
-
-    def test_queued_matching_run_blocks_reuse_finding1(self):
-        # exordy finding: an earlier green pair must not authorize reuse
-        # while another matching gate check is still running.
-        payload = self.payload(
-            run("package-linux"), run("full-gate-linux"),
-            run("full-gate-linux", status="queued"),
-        )
-        self.assertEqual(self.decide(payload), "wait")
-
-    def test_newer_in_progress_run_blocks_reuse_finding2(self):
-        # exordy finding: a previous green verdict must not be reused while a
-        # newer matching check (a re-check that may return red) is in flight.
-        payload = self.payload(
-            run("package-linux"), run("full-gate-linux"),
-            run("package-linux", status="in_progress"),
-        )
-        self.assertEqual(self.decide(payload), "wait")
-
-    def test_one_red_blocks_immediately(self):
-        payload = self.payload(
-            run("package-linux"),
-            run("full-gate-linux", status="completed", conclusion="failure"),
-        )
-        self.assertEqual(self.decide(payload), "block")
-
-    def test_red_beside_queued_green_other_still_blocks(self):
-        payload = self.payload(
-            run("package-linux"),
-            run("full-gate-linux", status="completed", conclusion="cancelled"),
-            run("package-linux", status="queued"),
-        )
-        self.assertEqual(self.decide(payload), "block")
-
-    def test_duplicate_green_single_name_waits(self):
-        # Regression: two green runs sharing one name must not satisfy a
-        # gate shaped like a count while the other check never ran.
-        payload = self.payload(
-            run("package-linux"), run("package-linux"),
-        )
-        self.assertEqual(self.decide(payload), "wait")
-
-    def test_only_one_required_name_green_waits(self):
-        payload = self.payload(run("package-linux"))
-        self.assertEqual(self.decide(payload), "wait")
-
-    def test_no_matching_runs_waits(self):
-        self.assertEqual(self.decide(self.payload()), "wait")
-
-    def test_non_master_push_runs_are_ignored(self):
-        # The tag's own runs (event=tag) and PR runs must never match.
-        payload = self.payload(
-            run("package-linux"), run("full-gate-linux"),
-            run("package-linux", event="tag", branch="0.50.3"),
-            run("full-gate-linux", event="pull_request", branch="cassi/x"),
-        )
-        self.assertEqual(self.decide(payload), "reuse")
-
-    def test_missing_check_suite_is_ignored(self):
-        payload = {"check_runs": [{"name": "package-linux",
-                                   "status": "completed",
-                                   "conclusion": "success"}]}
-        self.assertEqual(self.decide(payload), "wait")
+def workflow(suite=10, **fields):
+    return dict({"check_suite_id": suite, "head_sha": SHA, "event": "push",
+                 "head_branch": "master", "path": ".github/workflows/linux-release.yml",
+                 "status": "completed"}, **fields)
 
 
-class CliTests(unittest.TestCase):
-    def invoke(self, payload):
-        with tempfile.NamedTemporaryFile("w", suffix=".json",
-                                         delete=False) as handle:
-            json.dump(payload, handle)
-            path = handle.name
-        try:
-            proc = subprocess.run([sys.executable, SCRIPT, path],
-                                  capture_output=True, text=True)
-            return proc.returncode, proc.stdout.strip()
-        finally:
-            os.unlink(path)
-
-    def test_cli_exit_codes_match_verdicts(self):
-        reuse = {"check_runs": [run("package-linux"), run("full-gate-linux")]}
-        wait = {"check_runs": [run("package-linux"),
-                               run("full-gate-linux", status="queued")]}
-        block = {"check_runs": [
-            run("full-gate-linux", status="completed", conclusion="failure")]}
-        self.assertEqual(self.invoke(reuse), (0, "reuse"))
-        self.assertEqual(self.invoke(wait), (1, "wait"))
-        self.assertEqual(self.invoke(block), (2, "block"))
-
-    def invoke_pages(self, *pages):
-        paths = []
-        for payload in pages:
-            with tempfile.NamedTemporaryFile("w", suffix=".json",
-                                             delete=False) as handle:
-                json.dump(payload, handle)
-                paths.append(handle.name)
-        try:
-            proc = subprocess.run([sys.executable, SCRIPT, *paths],
-                                  capture_output=True, text=True)
-            return proc.returncode, proc.stdout.strip()
-        finally:
-            for path in paths:
-                os.unlink(path)
-
-    def test_cli_merges_all_pagination_pages(self):
-        # exordy findings 4712353365/369: the commit check-runs listing is
-        # paginated; every page must reach the decision - the green pair split
-        # across pages is still reuse, and an in-flight match on the LAST page
-        # still forces wait.
-        split = self.invoke_pages(
-            {"check_runs": [run("package-linux")]},
-            {"check_runs": [run("full-gate-linux")]})
-        self.assertEqual(split, (0, "reuse"))
-        late_race = self.invoke_pages(
-            {"check_runs": [run("package-linux"), run("full-gate-linux")]},
-            {"check_runs": [run("full-gate-linux", status="in_progress")]})
-        self.assertEqual(late_race, (1, "wait"))
-        late_red = self.invoke_pages(
-            {"check_runs": [run("package-linux"), run("full-gate-linux")]},
-            {"check_runs": [run("full-gate-linux", status="completed",
-                                conclusion="failure")]})
-        self.assertEqual(late_red, (2, "block"))
+def check(name, suite=10, status="completed", conclusion="success"):
+    return {"check_suite": {"id": suite}, "name": name, "status": status,
+            "conclusion": conclusion if status == "completed" else None}
 
 
-STUB_GH = """#!/usr/bin/env python3
-import json
-import os
-import sys
-
-url = sys.argv[-1]
-page = int(url.split("page=")[-1])
-spec = json.loads(os.environ["STUB_SPEC"])
-if spec.get("fail_at") == page:
-    sys.exit(1)
-count = spec["pages"].get(str(page), 0)
-runs = [{"name": "pad-%d-%d" % (page, i),
-         "status": "completed", "conclusion": "success",
-         "check_suite": {"event": "push", "head_branch": "master"}}
-        for i in range(count)]
-runs.extend(spec.get("extra_runs", {}).get(str(page), []))
-print(json.dumps({"check_runs": runs}))
-"""
+def pair(suite=10):
+    return [check("package-linux", suite), check("full-gate-linux", suite)]
 
 
-class FetchModeTests(unittest.TestCase):
-    """exordy findings 4712353365/369 round 2: a truncated listing must
-    never be treated as complete. In --fetch mode the script paginates gh
-    itself; running out of page budget while the last page was still full
-    reports INCOMPLETE (rc 3) so the caller can never decide reuse from
-    pages that stopped before the listing ended. A gh failure is rc 4."""
+class VerdictTests(unittest.TestCase):
+    def test_tag_push_and_pr_suites_cannot_block_or_authorize_reuse(self):
+        runs = [workflow(), workflow(20, head_branch="0.51.1"),
+                workflow(30, event="pull_request"), workflow(40, head_sha="other"),
+                workflow(50, path=".github/workflows/unrelated.yml")]
+        other = [check("package-linux", 20, status="in_progress"),
+                 check("full-gate-linux", 20, conclusion="skipped"),
+                 check("full-gate-linux", 30, conclusion="failure"),
+                 check("package-linux", 40), check("full-gate-linux", 50)]
+        self.assertEqual(gate.decide(SHA, runs, pair() + other, True), "reuse")
+        self.assertEqual(gate.decide(SHA, runs, other, True), "wait")
 
-    def invoke_fetch(self, spec, max_pages):
-        with tempfile.TemporaryDirectory() as tmp:
-            stub = os.path.join(tmp, "gh")
-            with open(stub, "w", encoding="utf-8") as handle:
-                handle.write(STUB_GH)
-            os.chmod(stub, 0o755)
-            env = dict(os.environ, STUB_SPEC=json.dumps(spec))
-            prefix = os.path.join(tmp, "check-runs-page-")
-            proc = subprocess.run(
-                [sys.executable, SCRIPT, "--fetch", "deadbeef",
-                 "--repo", "o/r", "--gh", stub, "--out-prefix", prefix,
-                 "--max-pages", str(max_pages)],
-                capture_output=True, text=True, env=env)
-            written = sorted(os.path.basename(p)
-                             for p in os.listdir(tmp)
-                             if p.startswith("check-runs-page-"))
-            return proc.returncode, proc.stdout.strip(), written
+    def test_pending_check_alongside_green_pair_waits(self):
+        for status in ("queued", "in_progress"):
+            with self.subTest(status=status):
+                checks = pair() + [check("package-linux", status=status)]
+                self.assertEqual(gate.decide(SHA, [workflow()], checks, True), "wait")
 
-    def test_fetch_paginates_until_short_page(self):
-        rc, out, written = self.invoke_fetch(
-            {"pages": {"1": 100, "2": 100, "3": 3}}, max_pages=50)
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(written, ["check-runs-page-1.json",
-                                   "check-runs-page-2.json",
-                                   "check-runs-page-3.json"])
+    def test_reported_red_blocks_with_partial_results_and_pending_checks(self):
+        for conclusion in ("failure", "cancelled", "timed_out", "skipped"):
+            with self.subTest(conclusion=conclusion):
+                checks = pair() + [check("package-linux", status="queued"),
+                                   check("full-gate-linux", conclusion=conclusion)]
+                self.assertEqual(gate.decide(SHA, [workflow()], checks, False), "block")
 
-    def test_fetch_full_page_at_budget_is_incomplete(self):
-        # Both fetched pages hold a green required pair, yet the fetch must
-        # report INCOMPLETE: runs beyond the budget were never examined.
-        pages = {"1": 100, "2": 100}
-        rc, out, _written = self.invoke_fetch({"pages": pages}, max_pages=2)
-        self.assertEqual(rc, 3, out)
+    def test_second_master_push_needs_a_complete_green_pair_of_its_own(self):
+        for runs, checks in [
+            ([workflow(), workflow(20, status="queued")], pair()),
+            ([workflow(), workflow(20)], pair() + [check("package-linux", 20)]),
+            ([workflow(), workflow(20)], [check("package-linux"), check("full-gate-linux", 20)]),
+            ([workflow()], [check("package-linux")] * 2),
+            ([], pair()), ([workflow()], []),
+        ]:
+            with self.subTest(runs=runs, checks=checks):
+                self.assertEqual(gate.decide(SHA, runs, checks, True), "wait")
+        self.assertEqual(gate.decide(SHA, [workflow(), workflow(20)],
+                                     pair() + pair(20), True), "reuse")
 
-    def test_fetch_gh_failure_is_incomplete(self):
-        rc, _out, _written = self.invoke_fetch(
-            {"pages": {"1": 100}, "fail_at": 2}, max_pages=50)
-        self.assertEqual(rc, 4)
+    def test_incomplete_green_listing_never_authorizes_reuse(self):
+        self.assertEqual(gate.decide(SHA, [workflow()], pair(), False), "wait")
 
-    def test_truncated_listing_with_visible_red_blocks(self):
-        # exordy finding 4714995326: the in-job fallback gate must never
-        # outrace a red master-push check that is already visible on the
-        # fetched pages. Truncation forbids REUSE only; a visible completed
-        # non-success still blocks the publish immediately.
-        spec = {"pages": {"1": 100},
-                "extra_runs": {"1": [run("full-gate-linux", status="completed",
-                                         conclusion="failure")]}}
-        rc, out, _written = self.invoke_fetch(spec, max_pages=1)
-        self.assertEqual(rc, 2, out)
-        self.assertEqual(out.split(" ")[0], "block")
 
-    def test_fetch_error_with_visible_red_still_blocks(self):
-        # A gh failure after a page that already shows a red must block too:
-        # the red was observed, the failure only means the listing is wider.
-        spec = {"pages": {"1": 100}, "fail_at": 2,
-                "extra_runs": {"1": [run("package-linux", status="completed",
-                                         conclusion="timed_out")]}}
-        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
-        self.assertEqual(rc, 2, out)
-        self.assertEqual(out.split(" ")[0], "block")
+class FetchTests(unittest.TestCase):
+    def response(self, items, total):
+        return subprocess.CompletedProcess([], 0, json.dumps({"workflow_runs": items,
+                                                               "total_count": total}))
 
-    def test_truncated_listing_without_red_stays_incomplete(self):
-        # Guard for the guard: no visible red on a truncated listing must
-        # keep the old fail-closed-for-reuse verdict rc 3 (fallback allowed).
-        spec = {"pages": {"1": 100},
-                "extra_runs": {"1": [run("package-linux"),
-                                     run("full-gate-linux")]}}
-        rc, out, _written = self.invoke_fetch(spec, max_pages=1)
-        self.assertEqual(rc, 3, out)
+    def fetch(self, pages, max_pages=3):
+        with unittest.mock.patch.object(subprocess, "run", side_effect=pages) as gh:
+            result = gate.fetch_listing("o/r", "actions/runs", {"head_sha": SHA},
+                                        "workflow_runs", per_page=1, max_pages=max_pages)
+        return result, [call.args[0][-1] for call in gh.call_args_list]
+
+    def test_pages_are_joined_until_a_short_page(self):
+        result, urls = self.fetch([self.response([workflow()], 2),
+                                   self.response([workflow(20)], 2), self.response([], 2)])
+        self.assertEqual(result, ([workflow(), workflow(20)], True))
+        self.assertEqual([urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["page"]
+                          for url in urls], [["1"], ["2"], ["3"]])
+
+    def test_page_limit_failed_page_and_server_cap_preserve_partial_results(self):
+        first = self.response([workflow()], 2)
+        for pages, limit in [
+            ([first], 1), ([first, subprocess.CalledProcessError(1, ["gh"])], 3),
+            ([first, self.response([], 2)], 3),
+            ([first, subprocess.CompletedProcess([], 0, "{}")], 3),
+            ([first, subprocess.CompletedProcess([], 0, "bad json")], 3),
+        ]:
+            with self.subTest(pages=pages):
+                result, _ = self.fetch(pages, limit)
+                self.assertEqual(result, ([workflow()], False))
+
+    def test_red_with_missing_owner_triggers_a_suite_specific_lookup(self):
+        red = check("package-linux", suite=20, conclusion="failure")
+        for lookup, expected in [
+            (([workflow(20)], True), "block"),
+            (([], True), "incomplete"),  # Tag suite excluded by master/branch filter.
+            (([], False), "unknown-red"),
+        ]:
+            replies = [([workflow()], False), (pair() + [red], True), lookup]
+            with (self.subTest(expected=expected),
+                  unittest.mock.patch.object(gate, "fetch_listing", side_effect=replies) as fetch):
+                self.assertEqual(gate.resolve_verdict("o/r", SHA), expected)
+                self.assertEqual(fetch.call_args.args[2], {"head_sha": SHA, "branch": "master",
+                                                            "event": "push", "check_suite_id": 20})
+
+    def test_cli_joins_endpoint_shapes_and_returns_workflow_exit_codes(self):
+        for jobs, expected, rc in [(pair(), "reuse", 0), (pair()[:1], "wait", 1),
+                                   ([check("package-linux", conclusion="failure")], "block", 2)]:
+            with self.subTest(expected=expected):
+                jobs = jobs + [check("full-gate-linux", 20, conclusion="skipped")]
+                replies = [self.response([workflow()], 1),
+                           subprocess.CompletedProcess([], 0, json.dumps(
+                               {"check_runs": jobs, "total_count": len(jobs)}))]
+                with (unittest.mock.patch.object(sys, "argv", ["gate", "--fetch", SHA, "--repo", "o/r"]),
+                      unittest.mock.patch.object(subprocess, "run", side_effect=replies) as gh,
+                      contextlib.redirect_stdout(io.StringIO()) as output):
+                    self.assertEqual(gate.main(), rc)
+                self.assertEqual(output.getvalue().strip(), expected)
+                urls = [call.args[0] for call in gh.call_args_list]
+                self.assertEqual(urls, [
+                    ["gh", "api", "repos/o/r/actions/runs?head_sha=deadbeef&event=push&branch=master&per_page=100&page=1"],
+                    ["gh", "api", "repos/o/r/commits/deadbeef/check-runs?filter=latest&per_page=100&page=1"],
+                ])
 
 
 if __name__ == "__main__":
