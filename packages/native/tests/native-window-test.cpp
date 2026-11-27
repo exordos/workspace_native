@@ -38571,8 +38571,11 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QCOMPARE(chatButton->property("iconColor").value<QColor>(), textMuted);
         // The functional page occupies the conversation slot (#881 slice 2,
         // docs/NATIVE_DESKTOP_CALENDAR.md header strip + body row contract).
+        // QTRY, not QVERIFY: Qt reports a freshly-shown item visible one
+        // polish pass before the positioner places it, so a one-shot width
+        // read races the first layout pass under parallel CI load (#914).
         QVERIFY(!view("messageComposer"));
-        QVERIFY(page->width() >= window->contentItem()->width() * 0.5);
+        QTRY_VERIFY_WITH_TIMEOUT(page->width() >= window->contentItem()->width() * 0.5, 5000);
         for (const QString &handle : QStringList{"viewTabDay", "viewTabWeek", "viewTabMonth",
             "calendarPrev", "calendarNext", "calendarToday", "calendarDateTitle",
             "calendarMini", "calendarFilters", "calendarAgenda"})
