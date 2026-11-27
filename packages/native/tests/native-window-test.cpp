@@ -38590,6 +38590,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
             && view("mailFolderRow-archive") && view("mailFolderRow-spam")
             && view("mailFolderRow-trash"));
         QCOMPARE(view("mailFolderTitle-inbox")->property("text").toString(), QString("Inbox"));
+        QCOMPARE(view("mailFolderTitle-inbox")->property("color").value<QColor>(),
+                 dark ? textPrimary : QColor("#2347a7"));
         QCOMPARE(view("mailFolderUnread-inbox")->property("text").toString(), QString("12"));
         // Inbox is the default selection: the fixture threads render.
         QTRY_VERIFY_WITH_TIMEOUT(view("mailMessageRow-mail-inbox-1"), 5000);

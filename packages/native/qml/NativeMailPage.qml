@@ -17,7 +17,7 @@ Item {
 
     property var colors
     property var mail
-    readonly property bool dark: colors && colors.dark === true
+    property bool dark: false
     readonly property color panelColor: colors["bg-elevated"]
     readonly property color pageColor: colors["bg"]
     readonly property color borderColor: colors["border-subtle"]

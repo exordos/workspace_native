@@ -13807,6 +13807,7 @@ component NativeMentionChip: Item {
         NativeMailPage {
             objectName: "mailSectionPage"
             colors: root.colors
+            dark: root.preferences.dark
             mail: root.controller.mail
             visible: root.controller.section === "mail"
             readonly property bool needsMailbox: visible && root.controller.authenticated
