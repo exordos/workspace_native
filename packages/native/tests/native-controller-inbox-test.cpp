@@ -1568,6 +1568,14 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(queries->size() == 2, 3000);
         QVERIFY(queries->at(1).contains("from=2026-12-01"));
         QVERIFY(queries->at(1).contains("to=2026-12-31"));
+        // exo-review on #910: settle the re-issued window's reply before
+        // re-requesting it, otherwise the final request would exercise the
+        // in-flight branch instead of the settled-window guard under test.
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 3000); // the re-issue is gated
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 3000);
         // The settled newest window re-shows without re-fetching (guard intact).
         fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
                                                  QStringLiteral("2026-12-31"));
