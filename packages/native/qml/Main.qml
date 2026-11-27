@@ -931,7 +931,9 @@ ApplicationWindow {
     property string dismissedEncryptionKeyNotice: ""
     readonly property bool encryptedKeyNoticeVisible: root.encryptedSendingKeyOutdated && root.dismissedEncryptionKeyNotice !== root.encryptionKeyNoticeId
     readonly property bool aggregateConversation: root.controller.conversationKind === "stream"
-    readonly property var aggregateTopics: root.controller.topics.filter(topic => String(topic.name || "").trim().length > 0)
+    // The rail only consumes the four shortcut fields and is absent inside a topic.
+    readonly property var aggregateTopics: root.aggregateConversation && !root.encryptedConversation
+        ? root.controller.topicShortcuts : []
     property string sidebarQuery: ""
     readonly property string normalizedSidebarQuery: sidebarQuery.trim().toLocaleLowerCase()
     onNormalizedSidebarQueryChanged: {
@@ -6426,7 +6428,10 @@ component NativeMentionChip: Item {
                     readonly property bool expanded: root.controller.expandedSidebarStreams.indexOf(modelData.id) >= 0
                     readonly property var allTopics: sidebarTopicState.rows || []
                     function refreshTopics() {
-                        sidebarTopicState = root.controller.sidebarTopicState(modelData.id, expanded);
+                        // An expanded stream initially displays three topics. Request all
+                        // sorted rows when the user reveals the rest.
+                        sidebarTopicState = root.controller.sidebarTopicState(modelData.id, expanded,
+                            reveal === "collapsed" ? 3 : -1);
                     }
                     onExpandedChanged: {
                         if (!expanded && root.sidebarTopicRevealLevels[modelData.id] && root.sidebarTopicRevealLevels[modelData.id] !== "collapsed")
@@ -6434,6 +6439,7 @@ component NativeMentionChip: Item {
                         refreshTopics();
                     }
                     onModelDataChanged: refreshTopics()
+                    onRevealChanged: refreshTopics()
                     Component.onCompleted: refreshTopics()
                     // #866 companion: plain-JS liveGuard (the #708 rule) - the focus
                     // carry holds this object, never a QML wrapper, so a destroyed
@@ -6465,12 +6471,13 @@ component NativeMentionChip: Item {
                         }
                     }
                     readonly property string reveal: root.sidebarTopicRevealLevels[modelData.id] || "collapsed"
-                    readonly property int unfinishedCount: allTopics.filter(topic => !Boolean(topic.done)).length
-                    readonly property int collapsedCount: Math.min(3, allTopics.length)
-                    readonly property int visibleCount: reveal === "all" ? allTopics.length
+                    readonly property int unfinishedCount: Number(sidebarTopicState.unfinished || 0)
+                    readonly property int totalTopicCount: Number(sidebarTopicState.count || 0)
+                    readonly property int collapsedCount: Math.min(3, totalTopicCount)
+                    readonly property int visibleCount: reveal === "all" ? totalTopicCount
                         : reveal === "unfinished" ? Math.max(collapsedCount, unfinishedCount) : collapsedCount
                     readonly property int hiddenUnfinished: Math.max(0, unfinishedCount - visibleCount)
-                    readonly property int hiddenCompleted: Math.max(0, allTopics.length - Math.max(unfinishedCount, visibleCount))
+                    readonly property int hiddenCompleted: Math.max(0, totalTopicCount - Math.max(unfinishedCount, visibleCount))
                     readonly property string nextAction: hiddenUnfinished > 0 ? "more"
                         : hiddenCompleted > 0 ? "completed" : visibleCount > collapsedCount ? "collapse" : ""
                     readonly property int hiddenCount: nextAction === "more" ? hiddenUnfinished : hiddenCompleted
@@ -7450,7 +7457,7 @@ component NativeMentionChip: Item {
                     spacing: 0
                     Text {
                         Layout.maximumWidth: streamTitle.visible ? parent.width * 0.65 : parent.width
-                        text: root.selectedName(root.controller.topics, root.controller.selectedTopic) || root.selectedCatalogStreamName || qsTr("Choose a conversation")
+                        text: root.controller.selectedTopicName || root.selectedCatalogStreamName || qsTr("Choose a conversation")
                         textFormat: Text.PlainText
                         color: root.colors["text-primary"]
                         font.pixelSize: 14
@@ -7535,7 +7542,7 @@ component NativeMentionChip: Item {
                             width: parent.width; height: 20; spacing: 20
                             Item {
                                 id: encryptedTitleGroup
-                                readonly property bool topicShown: root.controller.selectedTopic.length > 0
+                                readonly property bool topicShown: root.encryptedConversation && root.controller.selectedTopic.length > 0
                                 readonly property real naturalWidth: encryptedTitle.implicitWidth + (topicShown ? 8 + encryptedStreamTitle.implicitWidth : 0)
                                 width: Math.max(0, Math.min(naturalWidth, encryptedTitleLine.width - protectedChatInfo.implicitWidth - encryptedTitleLine.spacing))
                                 height: 20
@@ -7545,7 +7552,7 @@ component NativeMentionChip: Item {
                                     objectName: "encryptedConversationTitle"
                                     width: Math.min(implicitWidth, parent.width)
                                     height: 20
-                                    text: root.selectedName(root.controller.topics, root.controller.selectedTopic) || root.encryptedStreamName
+                                    text: root.encryptedConversation ? root.controller.selectedTopicName || root.encryptedStreamName : ""
                                     textFormat: Text.PlainText
                                     color: root.colors["text-primary"]
                                     font.pixelSize: 16; font.weight: Font.Medium
@@ -7965,9 +7972,20 @@ component NativeMentionChip: Item {
                 bottomMargin: 16
                 spacing: 4
                 clip: true
-                // Keep delegates stable when a verified QVariantList snapshot
-                // changes, then restore the visible UUID after layout.
-                cacheBuffer: Math.ceil(height)
+                // On a cached relaunch the first visible messages can be at either end
+                // of the history. Prefetch the extra viewport after the initial placement.
+                property bool warmRestorePending: false
+                readonly property bool restoringCachedSession: root.controller.startupCacheMode
+                onRestoringCachedSessionChanged: if (restoringCachedSession) warmRestorePending = true
+                onOpeningAppliedChanged: if (openingApplied && root.controller.selectedStream.length)
+                    warmRestorePending = false
+                cacheBuffer: warmRestorePending && !openingApplied ? 0 : Math.ceil(height)
+                Timer {
+                    id: warmRestoreLayout
+                    interval: 16
+                    property int ticket: 0
+                    onTriggered: messageList.restoreViewport(ticket, true)
+                }
                 model: renderedMessages
                 property string preparedScope: ""
                 property bool preparedWindowOpened: false
@@ -8916,15 +8934,20 @@ component NativeMentionChip: Item {
                         scheduleVisibleRead();
                         return;
                     }
-                    forceMeasuredLayout();
                     const snapshot = pendingViewport;
+                    // A tail restoration immediately jumps to the newest row. Measuring
+                    // the old viewport here instantiates and shapes rows we just left.
+                    if (!snapshot.followTail)
+                        forceMeasuredLayout();
                     // Issue #874: set when the schedule carried a pending saved
                     // anchor whose row has not been rendered yet.
                     let savedAnchorMissing = false;
+                    let measuredTailY;
                     if (snapshot.followTail) {
                         tailFollow = true;
                         positionViewAtEnd();
                         forceMeasuredLayout();
+                        measuredTailY = contentY;
                         const tail = itemAtIndex(count - 1);
                         if (tail)
                             contentY = Math.max(originY - topMargin, contentY + tail.mapToItem(messageList, 0, tail.height).y + bottomMargin - height);
@@ -8958,7 +8981,15 @@ component NativeMentionChip: Item {
                             contentY = snapshot.scrollY;
                         }
                     }
-                    forceMeasuredLayout();
+                    if (!finalPass && warmRestorePending) {
+                        // Let the window handle input and paint after the first placement.
+                        // The finishing pass rechecks the route, ticket and user scroll.
+                        warmRestoreLayout.ticket = ticket;
+                        warmRestoreLayout.restart();
+                        return;
+                    }
+                    if (!snapshot.followTail || contentY !== measuredTailY)
+                        forceMeasuredLayout();
                     if (!finalPass) {
                         Qt.callLater(() => restoreViewport(ticket, true));
                         return;
@@ -9646,7 +9677,12 @@ component NativeMentionChip: Item {
                             else if (root.shortcutHoveredMessage === id) root.shortcutHoveredMessage = "";
                         }
                     }
-                    readonly property real quickReactionsLayer: quickReactions.expanded || quickReactions.hasFocus || quickReply.visualFocus ? 3 : quickReactions.visible || quickReply.hovered ? 2 : 1
+                    readonly property var reactionCapsule: reactionLoader.item
+                    readonly property real quickReactionsLayer: {
+                        if (quickReply.visualFocus || (reactionCapsule && (reactionCapsule.expanded || reactionCapsule.hasFocus)))
+                            return 3;
+                        return quickReply.hovered || (reactionCapsule && reactionCapsule.visible) ? 2 : 1;
+                    }
                     required property var entry
                     required property int index
                     required property bool groupFirst
@@ -10240,8 +10276,10 @@ component NativeMentionChip: Item {
                     }
                     Rectangle {
                         id: bubble
-                        readonly property bool actionsFocused: activeFocus || quickReply.visualFocus || quickReactions.hasFocus
+                        readonly property bool actionSourceFocused: activeFocus || quickReply.visualFocus
                             || messageBody.activeFocus || bodyMentionOverlay.activeFocus || mediaMentionOverlay.activeFocus
+                        readonly property bool actionsFocused: actionSourceFocused
+                            || Boolean(messageRow.reactionCapsule && messageRow.reactionCapsule.hasFocus)
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
                         width: messageRow.keyControl ? messageRow.width : messageRow.hasPoll
@@ -11345,48 +11383,61 @@ component NativeMentionChip: Item {
                                     }
                                 }
                             }
-                            Column {
+                            Loader {
                                 width: parent.width
-                                visible: Boolean(messageRow.modelData.reactionBusy)
-                                spacing: 4
-                                Text {
-                                    width: parent.width
-                                    text: messageRow.modelData.reactionUncertain ? qsTr("Reaction not confirmed") : qsTr("Updating reaction…")
-                                    textFormat: Text.PlainText
-                                    wrapMode: Text.Wrap
-                                    color: root.colors["text-muted"]
-                                    font.pixelSize: 11
-                                    Accessible.role: Accessible.StatusBar
-                                }
-                                NativeButton {
-                                    objectName: "check-reaction-" + messageRow.modelData.id
-                                    colors: root.colors
-                                    visible: Boolean(messageRow.modelData.reactionUncertain)
-                                    enabled: Boolean(messageRow.modelData.canReact)
-                                    text: qsTr("Check status")
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: qsTr("Check without sending the reaction again")
-                                    onClicked: root.checkReaction(messageRow.modelData.id)
+                                active: Boolean(messageRow.modelData.reactionBusy)
+                                visible: active
+                                sourceComponent: Column {
+                                    spacing: 4
+                                    Text {
+                                        width: parent.width
+                                        text: messageRow.modelData.reactionUncertain ? qsTr("Reaction not confirmed") : qsTr("Updating reaction…")
+                                        textFormat: Text.PlainText
+                                        wrapMode: Text.Wrap
+                                        color: root.colors["text-muted"]
+                                        font.pixelSize: 11
+                                        Accessible.role: Accessible.StatusBar
+                                    }
+                                    NativeButton {
+                                        objectName: "check-reaction-" + messageRow.modelData.id
+                                        colors: root.colors
+                                        visible: Boolean(messageRow.modelData.reactionUncertain)
+                                        enabled: Boolean(messageRow.modelData.canReact)
+                                        text: qsTr("Check status")
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: qsTr("Check without sending the reaction again")
+                                        onClicked: root.checkReaction(messageRow.modelData.id)
+                                    }
                                 }
                             }
                         }
-                        NativeQuickReactions {
-                            id: quickReactions
-                            colors: root.colors
-                            choices: root.quickReactionChoices
-                            reactions: messageRow.modelData.reactions || []
-                            messageId: messageRow.modelData.id
-                            allowed: Boolean(messageRow.modelData.canReact) && !Boolean(messageRow.modelData.reactionBusy)
-                            emojiFamily: fullReactionPicker.emojiFamily
-                            emojiPixelSize: Qt.platform.os === "linux" && fullReactionPicker.emojiFamily === "Noto Color Emoji" ? 28 : 24
+                        Loader {
+                            id: reactionLoader
+                            // NativeQuickReactions owns its anchor geometry and extends around that point.
                             x: messageRow.own ? 0 : parent.width
                             y: parent.height + 4
-                            visible: messageHover.hovered || bubble.actionsFocused || expanded
-                            onAboutToOpen: {
-                                root.quickUsage = root.preferences.quickReactionUsage;
-                                quickReactions.availableHeight = Math.max(40, quickReactions.mapToItem(messageList, 0, 0).y - 4);
+                            z: 3
+                            // Keep an opened capsule alive while focus or its hover timer moves into it.
+                            active: false
+                            readonly property bool requested: messageHover.hovered || bubble.actionSourceFocused
+                            onRequestedChanged: if (requested) active = true
+                            Component.onCompleted: if (requested) active = true
+                            sourceComponent: NativeQuickReactions {
+                                id: quickReactions
+                                colors: root.colors
+                                choices: root.quickReactionChoices
+                                reactions: messageRow.modelData.reactions || []
+                                messageId: messageRow.modelData.id
+                                allowed: Boolean(messageRow.modelData.canReact) && !Boolean(messageRow.modelData.reactionBusy)
+                                emojiFamily: fullReactionPicker.emojiFamily
+                                emojiPixelSize: Qt.platform.os === "linux" && fullReactionPicker.emojiFamily === "Noto Color Emoji" ? 28 : 24
+                                visible: messageHover.hovered || bubble.actionsFocused || expanded
+                                onAboutToOpen: {
+                                    root.quickUsage = root.preferences.quickReactionUsage;
+                                    quickReactions.availableHeight = Math.max(40, quickReactions.mapToItem(messageList, 0, 0).y - 4);
+                                }
+                                onChosen: emojiName => root.chooseQuickReaction(messageRow.modelData.id, emojiName)
                             }
-                            onChosen: emojiName => root.chooseQuickReaction(messageRow.modelData.id, emojiName)
                         }
                         MouseArea {
                             anchors.fill: parent

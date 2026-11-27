@@ -3333,10 +3333,10 @@ struct NativeWindowScene {
         session.selectProject(projectId);
         if (!QTest::qWaitFor([&] { return controller.streams().size() == 25; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         if (!QTest::qWaitFor([&] { return controller.topics().size() == 1; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         if (!QTest::qWaitFor([&] { return controller.messages().size() == 50; }, 5000))
             return false;
         auto *list = item(window->contentItem(), "messageList");
@@ -11120,6 +11120,183 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(cache.stopped());
     }
 
+    void largeTopicNavigationStallBudget()
+    {
+        const QString smallStream = QStringLiteral("31000000-0000-4000-8000-000000000002");
+        const QString smallTopic = QStringLiteral("41000000-0000-4000-8000-000000000002");
+        constexpr int topicCount = 512;
+        auto primary = windowChannel(streamId, "Large stream");
+        primary["default_topic_uuid"] = topicId;
+        auto secondary = windowChannel(smallStream, "Small stream");
+        secondary["default_topic_uuid"] = smallTopic;
+        const auto messageUuid = [](int i, bool otherTopic = false) {
+            return QString(otherTopic ? "54000000-0000-4000-8000-%1" : "53000000-0000-4000-8000-%1")
+                .arg(i, 12, 16, QLatin1Char('0'));
+        };
+        const QDateTime epoch(QDate(2026, 1, 1), QTime(12, 0), QTimeZone::utc());
+        QJsonArray topics{windowChannelTopic(topicId, streamId, "Main topic")};
+        for (int i = 1; i < topicCount; ++i) {
+            const auto id = QStringLiteral("42000000-0000-4000-8000-%1").arg(i, 12, 16, QLatin1Char('0'));
+            auto row = windowChannelTopic(id, streamId, QStringLiteral("Topic %1").arg(i));
+            row["is_default"] = false;
+            row["last_message_uuid"] = messageUuid(i, true);
+            row["unread_count"] = i % 5;
+            row["active_unread_count"] = i % 5;
+            row["notification_mode"] = (i % 8 == 0 ? "mute" : "default");
+            row["updated_at"] = epoch.addSecs(i).toString(Qt::ISODateWithMs);
+            topics.append(row);
+        }
+        QJsonArray history, aggregate;
+        for (int i = 0; i < 100; ++i) {
+            const auto id = messageUuid(i);
+            auto row = message(QStringLiteral("**Review %1**\n\nPlease check the change in `module_%1` before the meeting.").arg(i), id);
+            row["created_at"] = epoch.addSecs(100 - i).toString(Qt::ISODateWithMs);
+            history.append(row);
+            if (i > 0 && i % 2 == 0) {
+                row["uuid"] = messageUuid(i, true);
+                row["topic_uuid"] = topics[i].toObject().value("uuid");
+            }
+            aggregate.append(row);
+        }
+        auto smallMessage = message("Small chat", returnedId, smallTopic);
+        smallMessage["stream_uuid"] = smallStream;
+        int aggregateGets = 0, topicGets = 0;
+        MockServer server;
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            const QUrlQuery query(request.target);
+            const auto stream = query.queryItemValue("stream_uuid");
+            if (path.endsWith("/streams/")) return {QJsonArray{primary, secondary}};
+            if (path.endsWith("/users/")) return {QJsonArray{}};
+            if (path.endsWith("/stream_topics/" + topicId)) return {topics.first()};
+            if (path.endsWith("/streams/" + streamId)) return {primary};
+            if (path.endsWith("/stream_topics/")) return {stream == smallStream
+                ? QJsonArray{windowChannelTopic(smallTopic, smallStream, "Small topic")} : topics};
+            if (isInitialUnreadMentionIndex(request)) return {QJsonArray{}};
+            if (path.endsWith("/messages/")) {
+                if (stream == smallStream) return {QJsonArray{smallMessage}};
+                if (query.queryItemValue("read") == "false") return {QJsonArray{}};
+                const bool topic = query.hasQueryItem("topic_uuid");
+                if (topic && query.queryItemValue("topic_uuid") != topicId) return {QJsonArray{}};
+                const auto &rows = topic ? history : aggregate;
+                const int limit = query.queryItemValue("page_limit").toInt();
+                const bool older = query.hasQueryItem("page_marker");
+                if (limit == 50 && !older) ++(topic ? topicGets : aggregateGets);
+                const int first = older ? 50 : 0;
+                QJsonArray page;
+                for (int i = first; i < qMin(first + limit, int(rows.size())); ++i)
+                    page.append(rows[i]);
+                Response response{page};
+                if (!page.isEmpty() && first + page.size() < rows.size())
+                    response.headers.insert("X-Pagination-Marker", page.last().toObject()["uuid"].toString().toUtf8());
+                return response;
+            }
+            return sessionResponse(request);
+        };
+        QJsonArray transitions;
+        double worstMs = 0;
+        int maximumFullProjections = 0;
+        int maximumSidebarRows = 0;
+        for (const auto *pass : {"cold", "warm"}) {
+            QTemporaryDir directory;
+            QVERIFY(directory.isValid());
+            // Prepare the cold and warm cases independently. Large streams can fill
+            // the optional preview queue, so a completed cold visit alone does not
+            // promise that history pages have reached SQLite.
+            if (QLatin1String(pass) == "warm") {
+                NativeCache seed(directory.path(), {}, true);
+                QVERIFY(seed.open(server.origin(), projectId, userId));
+                QVERIFY(seed.put(seed.lease(), {NativeCache::Kind::Topics, streamId, {}, {}}, topics));
+                for (bool topic : {false, true}) {
+                    const auto &rows = topic ? history : aggregate;
+                    QJsonArray page;
+                    for (int n = 0; n < 50; ++n) page.append(rows[n]);
+                    const NativeCache::Key key{NativeCache::Kind::History, streamId, topic ? topicId : QString{}, {}};
+                    QVERIFY(seed.put(seed.lease(), key, page, page.last().toObject()["uuid"].toString().toUtf8()));
+                    const auto saved = seed.get(seed.lease(), key);
+                    QVERIFY(saved && saved->fresh && saved->rows.size() == 50);
+                }
+            }
+            NativeCacheService cache(directory.path(), {}, true);
+            NativePreferences preferences(directory.filePath("preferences.ini"));
+            ApiClient api(nullptr, true);
+            Session session(&api);
+            NativeController controller(&api, &session);
+            controller.setTopicPreloadEnabledForTest(false);
+            controller.useCache(&cache);
+            QQmlApplicationEngine engine;
+            loadNativeUi(engine, &controller, &preferences);
+            auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+            QVERIFY(window);
+            const auto tracingBefore = GuiPhaseTrace::instance().isEnabled();
+            auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window), tracingBefore] {
+                GuiPhaseTrace::instance().setEnabled(tracingBefore);
+                if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                    QTest::qFail("Navigation benchmark window teardown", __FILE__, __LINE__);
+            });
+            QVERIFY(QTest::qWaitForWindowExposed(window));
+            auto *list = item(window->contentItem(), "messageList");
+            auto *rail = item(window->contentItem(), "streamTopicRail");
+            auto *header = item(window->contentItem(), "channelHeaderTitleRow");
+            QVERIFY(list && rail && header);
+            session.login(server.origin(), "synthetic", "synthetic");
+            QTRY_COMPARE(session.projects().size(), 1);
+            session.selectProject(projectId);
+            QTRY_COMPARE(controller.streams().size(), 2);
+            controller.setRealtimeMode(true);
+            for (bool topic : {false, true}) {
+                clickCurrentItem(window, "stream-" + smallStream);
+                QTRY_VERIFY(controller.selectedStream() == smallStream && controller.messageHistoryReady()
+                    && list->property("count").toInt() == 1 && !list->property("positioning").toBool());
+                const int requestsBefore = topic ? topicGets : aggregateGets;
+                const auto targetName = topic ? "topic-" + topicId : "stream-" + streamId;
+                QTRY_VERIFY(item(window->contentItem(), targetName));
+                const int projections = controller.topicsProjectionCountForTest();
+                controller.resetGuiPhaseTraceForTest();
+                GuiStallSampler sampler(directory.filePath("navigation-stall.json"));
+                clickReadyItem(window, item(window->contentItem(), targetName));
+                QTRY_VERIFY(controller.selectedStream() == streamId && controller.selectedTopic() == (topic ? topicId : QString{})
+                    && controller.messageHistoryReady() && list->property("count").toInt() == 50
+                    && !list->property("positioning").toBool());
+                QSignalSpy frames(window, &QQuickWindow::frameSwapped);
+                window->update();
+                QTRY_VERIFY(!frames.isEmpty());
+                const auto beats = sampler.summary().value("samples").toInt();
+                QTRY_VERIFY(sampler.summary().value("samples").toInt() > beats);
+                if (!topic) QCOMPARE(rail->property("count").toInt(), topicCount);
+                QCOMPARE(rail->isVisible(), !topic);
+                QVERIFY(hasVisibleText(header, topic ? "Main topic" : "Large stream"));
+                const auto summary = sampler.summary();
+                worstMs = qMax(worstMs, summary.value("worst_gap_ms").toDouble());
+                const auto spans = controller.guiPhaseTraceForTest().value("spans").toMap();
+                transitions.append(QJsonObject{{"pass", pass}, {"route", topic ? "topic" : "aggregate"},
+                    {"topicProjections", controller.topicsProjectionCountForTest() - projections},
+                    {"firstPageGets", (topic ? topicGets : aggregateGets) - requestsBefore},
+                    {"sampler", QJsonObject::fromVariantMap(summary)}, {"spans", QJsonObject::fromVariantMap(spans)}});
+                maximumFullProjections = qMax(maximumFullProjections, controller.topicsProjectionCountForTest() - projections);
+            }
+            auto *sidebar = item(window->contentItem(), "stream-" + streamId);
+            while (sidebar && !sidebar->property("allTopics").isValid()) sidebar = sidebar->parentItem();
+            QVERIFY(sidebar);
+            QQmlExpression rowCount(engine.rootContext(), sidebar, QStringLiteral("allTopics.length"));
+            const auto materialized = rowCount.evaluate().toInt();
+            QVERIFY(!rowCount.hasError() && materialized > 0);
+            maximumSidebarRows = qMax(maximumSidebarRows, materialized);
+        }
+        const auto metricsPath = qEnvironmentVariable("WORKSPACE_NATIVE_NAVIGATION_STALL_REPORT");
+        if (!metricsPath.isEmpty()) {
+            QFile metrics(metricsPath);
+            QVERIFY(metrics.open(QIODevice::WriteOnly));
+            const auto report = QJsonDocument(QJsonObject{{"topicCount", topicCount}, {"pageSize", 50},
+                {"worstGapMs", worstMs}, {"transitions", transitions}}).toJson();
+            QCOMPARE(metrics.write(report), report.size());
+            QVERIFY2(worstMs < 300.0, qPrintable(QStringLiteral("Worst navigation gap was %1 ms").arg(worstMs)));
+        }
+        // Titles and shortcuts must not rebuild every sidebar topic row.
+        QCOMPARE(maximumFullProjections, 0);
+        QCOMPARE(maximumSidebarRows, 3);
+    }
+
     void warmNavigationUsesVerifiedSavedPagesWithoutExtraHttpRequests()
     {
         QTemporaryDir directory;
@@ -11180,14 +11357,14 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         perfPhase("project-open", clock.restart());
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         perfPhase("stream-open-1-cold", clock.restart());
         const QStringList topicPhaseNames{QStringLiteral("topic-select-1-cold"),
             QStringLiteral("topic-select-2-cold"), QStringLiteral("topic-select-3-warm")};
         int topicPhaseIndex = 0;
         for (const auto &id : {topicId, secondTopicId, topicId}) {
-            click(window, item(content, "topic-" + id));
+            clickIncubatedItem(window, "topic-" + id);
             QTRY_VERIFY(!controller.busy());
             QTRY_VERIFY(item(content, "message-content-" + (id == topicId ? messageId : returnedId)));
             QVERIFY(!controller.cacheStale());
@@ -11196,12 +11373,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(historyGets, 2);
         QCOMPARE(aggregateGets, 1);
         QCOMPARE(topicGets, 1);
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.messages().size(), 2);
         perfPhase("stream-open-2-warm", clock.restart());
-        click(window, item(content, "topic-" + secondTopicId));
+        clickIncubatedItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(item(content, "message-content-" + returnedId));
         perfPhase("topic-select-4-warm", clock.restart());
@@ -14290,7 +14467,7 @@ mv -Tf "$root/.current-new" "$root/current"
             // its own real-window regressions.
             controller.cancelConversationOpening();
         }
-        else click(window, item(window->contentItem(), "stream-" + streamId));
+        else clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 3);
         // This was the first actual UI RED: stream selection had no source
         // topic-choice footer and retained the disabled composer frame instead.
@@ -42568,9 +42745,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *content = window->contentItem();
@@ -47887,8 +48064,15 @@ private slots:
     // chip must ALSO be a tab stop, otherwise keyboard users cannot reach it
     // without a pointer; the focus-chain walk itself is witnessed by
     // mentionChipsReachedByTabWithoutPointer.
+    void mentionChipsActivateByKeyboardAndExposeName_data()
+    {
+        QTest::addColumn<bool>("inTopic");
+        QTest::newRow("aggregate") << false;
+        QTest::newRow("topic-direct-focus") << true;
+    }
     void mentionChipsActivateByKeyboardAndExposeName()
     {
+        QFETCH(bool, inTopic);
         WindowMentionFixture fixture;
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -47909,6 +48093,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
         controller.setRealtimeMode(true);
         controller.selectStream(streamId);
+        if (inTopic) {
+            QTRY_VERIFY(!controller.topics().isEmpty());
+            controller.selectTopic(topicId);
+        }
         QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + WindowMentionFixture::aliceUuid()), 3000);
         auto *chip = visibleItem("message-mention-" + WindowMentionFixture::aliceUuid());
@@ -47923,6 +48111,16 @@ private slots:
         QCOMPARE(problems, QStringList{});
         chip->forceActiveFocus();
         QTRY_VERIFY_WITH_TIMEOUT(chip->hasActiveFocus(), 2000);
+        if (inTopic) {
+            // Enter the message at a mention, without hovering or focusing its
+            // bubble first. The reaction control follows the final mention.
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(window->activeFocusItem()->objectName(),
+                "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(window->activeFocusItem()->objectName(), "quick-reactions-" + messageId);
+            chip->forceActiveFocus();
+        }
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
         if (!closeIncubatedTestWindow(engine, window))
@@ -48537,9 +48735,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
