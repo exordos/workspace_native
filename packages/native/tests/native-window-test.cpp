@@ -39533,6 +39533,12 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // selected over hover, and it must survive hover.
         page->setProperty("viewMode", "month");
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarMonthGrid"), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
+        // Completing the range request removes the loading strip and moves
+        // the month cells. Pick their centers after that layout pass.
+        QSignalSpy frames(window, &QQuickWindow::afterAnimating);
+        window->update();
+        QVERIFY(frames.wait(2000));
         const QColor monthAccent = page->property("colors").toMap().value("accent").value<QColor>();
         QVERIFY2(monthAccent != hoverTint,
                  "the selected fill must be distinguishable from the hover tint");
@@ -39750,7 +39756,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // One Tab from the control that precedes the grid enters it (no
         // 42-stop march), landing on the selected cell.
         auto *entry = view(grid == QLatin1String("mini")
-            ? "calendarToday" : "calendarFilterPersonal");
+            ? "calendarSampleToggle" : "calendarFilterPersonal");
         QVERIFY(entry);
         entry->forceActiveFocus();
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
