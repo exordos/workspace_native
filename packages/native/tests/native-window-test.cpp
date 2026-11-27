@@ -51556,6 +51556,18 @@ private slots:
         click(window, view(rowName));
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarEventDetail"), 5000);
         auto *card = view("calendarEventDetail"); QVERIFY(card);
+        // The 3000-char location wraps across several polish passes; on a loaded
+        // CI shard the scroller reports its pre-wrap contentHeight for a frame
+        // after the card is already visible (one-shot reads raced red in CI
+        // part12, same family as #914). Re-look-up inside the wait and wait for
+        // the settled overflowing content instead of one pre-relayout frame.
+        QQuickItem *scroller = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            scroller = view("calendarDetailScroller");
+            return scroller != nullptr
+                && scroller->property("contentHeight").toDouble()
+                    > scroller->property("height").toDouble();
+        })(), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(card->height() <= window->contentItem()->height(), 2000);
         auto *closeButton = view("calendarDetailClose"); QVERIFY(closeButton);
         const QPointF closePos = closeButton->mapToScene(QPointF(0, 0));
@@ -51563,9 +51575,6 @@ private slots:
                  && closePos.y() + closeButton->height() <= window->contentItem()->height(),
                  qPrintable(QStringLiteral("close button scene y=%1, window h=%2, card h=%3")
                      .arg(closePos.y()).arg(window->contentItem()->height()).arg(card->height())));
-        auto *scroller = view("calendarDetailScroller"); QVERIFY(scroller);
-        QVERIFY(scroller->property("contentHeight").toDouble()
-                > scroller->property("height").toDouble());
         // Closing still works from the visible header row.
         click(window, closeButton);
         QTRY_VERIFY_WITH_TIMEOUT(!view("calendarEventDetail"), 5000);
