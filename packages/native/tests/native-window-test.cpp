@@ -14467,7 +14467,7 @@ mv -Tf "$root/.current-new" "$root/current"
             // its own real-window regressions.
             controller.cancelConversationOpening();
         }
-        else click(window, item(window->contentItem(), "stream-" + streamId));
+        else clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 3);
         // This was the first actual UI RED: stream selection had no source
         // topic-choice footer and retained the disabled composer frame instead.
@@ -48064,8 +48064,15 @@ private slots:
     // chip must ALSO be a tab stop, otherwise keyboard users cannot reach it
     // without a pointer; the focus-chain walk itself is witnessed by
     // mentionChipsReachedByTabWithoutPointer.
+    void mentionChipsActivateByKeyboardAndExposeName_data()
+    {
+        QTest::addColumn<bool>("inTopic");
+        QTest::newRow("aggregate") << false;
+        QTest::newRow("topic-direct-focus") << true;
+    }
     void mentionChipsActivateByKeyboardAndExposeName()
     {
+        QFETCH(bool, inTopic);
         WindowMentionFixture fixture;
         QTemporaryDir directory;
         QVERIFY(directory.isValid());
@@ -48086,6 +48093,10 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(controller.channelMembersVerified(), 2000);
         controller.setRealtimeMode(true);
         controller.selectStream(streamId);
+        if (inTopic) {
+            QTRY_VERIFY(!controller.topics().isEmpty());
+            controller.selectTopic(topicId);
+        }
         QTRY_VERIFY_WITH_TIMEOUT(!controller.busy() && controller.messages().size() == 1, 2000);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("message-mention-" + WindowMentionFixture::aliceUuid()), 3000);
         auto *chip = visibleItem("message-mention-" + WindowMentionFixture::aliceUuid());
@@ -48100,6 +48111,16 @@ private slots:
         QCOMPARE(problems, QStringList{});
         chip->forceActiveFocus();
         QTRY_VERIFY_WITH_TIMEOUT(chip->hasActiveFocus(), 2000);
+        if (inTopic) {
+            // Enter the message at a mention, without hovering or focusing its
+            // bubble first. The reaction control follows the final mention.
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(window->activeFocusItem()->objectName(),
+                "message-mention-" + WindowMentionFixture::silentUuid());
+            QTest::keyClick(window, Qt::Key_Tab);
+            QTRY_COMPARE(window->activeFocusItem()->objectName(), "quick-reactions-" + messageId);
+            chip->forceActiveFocus();
+        }
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY_WITH_TIMEOUT(visibleItem("profileLayer"), 4000);
         if (!closeIncubatedTestWindow(engine, window))

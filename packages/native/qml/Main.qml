@@ -10276,8 +10276,10 @@ component NativeMentionChip: Item {
                     }
                     Rectangle {
                         id: bubble
-                        readonly property bool actionsFocused: activeFocus || quickReply.visualFocus || Boolean(messageRow.reactionCapsule && messageRow.reactionCapsule.hasFocus)
+                        readonly property bool actionSourceFocused: activeFocus || quickReply.visualFocus
                             || messageBody.activeFocus || bodyMentionOverlay.activeFocus || mediaMentionOverlay.activeFocus
+                        readonly property bool actionsFocused: actionSourceFocused
+                            || Boolean(messageRow.reactionCapsule && messageRow.reactionCapsule.hasFocus)
                         objectName: "message-" + messageRow.modelData.id
                         activeFocusOnTab: true
                         width: messageRow.keyControl ? messageRow.width : messageRow.hasPoll
@@ -11417,7 +11419,7 @@ component NativeMentionChip: Item {
                             z: 3
                             // Keep an opened capsule alive while focus or its hover timer moves into it.
                             active: false
-                            readonly property bool requested: messageHover.hovered || bubble.activeFocus || quickReply.visualFocus
+                            readonly property bool requested: messageHover.hovered || bubble.actionSourceFocused
                             onRequestedChanged: if (requested) active = true
                             Component.onCompleted: if (requested) active = true
                             sourceComponent: NativeQuickReactions {
