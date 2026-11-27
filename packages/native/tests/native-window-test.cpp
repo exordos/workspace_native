@@ -51547,9 +51547,16 @@ private slots:
         QVERIFY(!view("calendarDetailTime")->property("text").toString().contains(':'));
         QCOMPARE(view("calendarDetailLocation")->property("text").toString(),
                  QStringLiteral("No location specified"));
+        QVERIFY(view("calendarDetailParticipant-0"));
         QVERIFY(view("calendarDetailParticipant-1"));
         QVERIFY(!view("calendarDetailParticipant-2"));
-        QVERIFY(!view("calendarDetailParticipantsOverflow")->isVisible());
+        // The overflow label is hidden for a two-participant event, so the
+        // visibility-filtering lookup returns null for it: fetch it through the
+        // plain item() helper and assert invisibility on the real item.
+        auto *overflow = item(window->contentItem(),
+                              QStringLiteral("calendarDetailParticipantsOverflow"));
+        QVERIFY(overflow);
+        QVERIFY(!overflow->isVisible());
     }
 };
 
