@@ -296,6 +296,7 @@ FocusScope {
                     delegate: ItemDelegate {
                         id: agendaRow
                         required property var modelData
+                        objectName: "calendarAgendaRow-" + String(modelData.uuid)
                         width: agendaList.width
                         onClicked: page.detailEvent = agendaRow.modelData
                         contentItem: Row {
