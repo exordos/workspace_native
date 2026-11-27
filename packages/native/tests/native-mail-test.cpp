@@ -51,6 +51,8 @@ QJsonArray fixtureMessages(const QString &folder)
                 message["date"] = "13 October 2026, 10:24";
                 message["body"] = "Hello team,\n\n<Review the fixtures> before Friday.";
             }
+            if (message.value("uuid") == "mail-inbox-3")
+                message["body"] = QStringLiteral("");
             return message;
         };
         return {row("mail-inbox-1", "Build Bot", "Release 0.5.0 checks passed",
@@ -347,6 +349,12 @@ private slots:
         }
         QCOMPARE(store->selectedMessageUuid(), QStringLiteral("mail-inbox-1"));
         QCOMPARE(server.requests.size(), requests);
+        store->selectMessage("mail-inbox-2");
+        QCOMPARE(textOf(page, "mailReaderBody"),
+                 russian ? QStringLiteral("Текст письма недоступен") : QStringLiteral("Message body unavailable"));
+        store->selectMessage("mail-inbox-3");
+        QVERIFY(visible(page, "mailReaderBody"));
+        QCOMPARE(textOf(page, "mailReaderBody"), QStringLiteral(""));
         store->selectFolder("archive");
         QTRY_COMPARE(store->state(), QStringLiteral("ready"));
         QVERIFY(!visible(page, "mailReaderBody"));
@@ -373,18 +381,20 @@ private slots:
         auto *page = showMailWindow(engine, window, dark);
         QVERIFY(page);
         QVERIFY(QTest::qWaitForWindowExposed(&window));
-        store->refresh();
-        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(store->state(), QStringLiteral("idle"));
         const auto requests = server.requests.size();
         auto *compose = item(page, "mailComposeButton");
         QVERIFY(compose);
         auto click = [&window](QQuickItem *control) {
+            QSignalSpy rendered(&window, &QQuickWindow::frameSwapped);
+            window.update();
+            QTRY_VERIFY(!rendered.isEmpty());
             QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
                               control->mapToScene(control->boundingRect().center()).toPoint());
         };
         QVERIFY(!page->findChild<QObject *>("mailComposeDialog"));
         click(compose);
-        auto *dialog = page->findChild<QObject *>("mailComposeDialog");
+        QPointer<QObject> dialog = page->findChild<QObject *>("mailComposeDialog");
         QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("opened").toBool());
         auto *overlay = window.contentItem();
@@ -425,18 +435,22 @@ private slots:
         auto *close = item(overlay, "mailComposeClose");
         QVERIFY(close);
         click(close);
-        QTRY_VERIFY(!dialog->property("visible").toBool());
+        QTRY_VERIFY(dialog.isNull());
         click(compose);
+        dialog = page->findChild<QObject *>("mailComposeDialog");
+        QVERIFY(dialog);
         QTRY_VERIFY(dialog->property("opened").toBool());
         QCOMPARE(textOf(overlay, "mailComposeRecipients"), QString());
         QCOMPARE(textOf(overlay, "mailComposeSubject"), QString());
         QCOMPARE(textOf(overlay, "mailComposeBody"), QString());
         QVERIFY(!visible(overlay, "mailComposeRecipientsError"));
         QVERIFY(!visible(overlay, "mailComposeAttachmentName-0"));
+        body = item(overlay, "mailComposeBody");
+        QVERIFY(body);
         body->setProperty("text", "Account-local draft");
         api.clearSession();
-        QTRY_VERIFY(!dialog->property("visible").toBool());
-        QCOMPARE(body->property("text").toString(), QString());
+        QTRY_VERIFY(dialog.isNull());
+        QVERIFY(!visible(overlay, "mailComposeBody"));
     }
 
     // exordy finding 4714792891: the reader wrapper's title and body Text

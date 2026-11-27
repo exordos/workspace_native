@@ -29,15 +29,17 @@ Item {
         sourceComponent: NativeMailComposeDialog {
             colors: page.colors
             mail: page.mail
+            onClosed: composeLoader.active = false
         }
         onLoaded: item.open()
     }
     onVisibleChanged: if (!visible && composeLoader.item) composeLoader.item.close()
     Connections {
         target: page.mail
-        function onMailChanged() {
-            if (composeLoader.item && composeLoader.item.visible && page.mail.state === "idle")
+        function onOwnerRetired() {
+            if (composeLoader.item)
                 composeLoader.item.close()
+            composeLoader.active = false
         }
     }
 

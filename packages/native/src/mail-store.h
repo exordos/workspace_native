@@ -44,6 +44,7 @@ public:
 
 signals:
     void mailChanged();
+    void ownerRetired();
 
 private:
     void loadMessages();

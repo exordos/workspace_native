@@ -22,16 +22,11 @@ Dialog {
     focus: true
     closePolicy: Popup.CloseOnEscape
     onOpened: recipients.forceActiveFocus()
-    onClosed: {
-        chooser.close()
-        recipients.clear()
-        subject.clear()
-        body.clear()
-        attachments = []
-        recipientsVisited = false
-    }
+    onAboutToHide: chooser.close()
 
     function addAttachments(urls) {
+        if (!opened)
+            return
         attachments = attachments.concat(mail.describeAttachments(urls))
     }
     FileDialogs.FileDialog {

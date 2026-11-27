@@ -46,7 +46,7 @@ ScrollView {
         }
         ReaderLine {
             objectName: "mailReaderBody"
-            text: reader.message ? reader.message.body || qsTr("Message body unavailable") : ""
+            text: reader.message ? (reader.message.body ?? qsTr("Message body unavailable")) : ""
             font.pixelSize: 14
             color: reader.colors["text-primary"]
         }

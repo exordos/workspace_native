@@ -84,6 +84,7 @@ MailStore::MailStore(ApiClient *api, QObject *parent)
 
 void MailStore::reset()
 {
+    emit ownerRetired();
     if (m_state == QStringLiteral("idle"))
         return;
     ++m_requestToken;
@@ -209,16 +210,19 @@ void MailStore::loadMessages()
                 if (address.isString())
                     recipients.append(address.toString());
             }
-            messages.append(QVariantMap{
+            QVariantMap row{
                 {QStringLiteral("uuid"), object.value(QStringLiteral("uuid")).toString()},
                 {QStringLiteral("sender"), object.value(QStringLiteral("sender")).toString()},
                 {QStringLiteral("subject"), object.value(QStringLiteral("subject")).toString()},
                 {QStringLiteral("recipients"), recipients},
                 {QStringLiteral("date"), object.value(QStringLiteral("date")).toString()},
-                {QStringLiteral("body"), object.value(QStringLiteral("body")).toString()},
                 {QStringLiteral("snippet"), object.value(QStringLiteral("snippet")).toString()},
                 {QStringLiteral("time"), object.value(QStringLiteral("time")).toString()},
-                {QStringLiteral("unread"), object.value(QStringLiteral("unread")).toBool()}});
+                {QStringLiteral("unread"), object.value(QStringLiteral("unread")).toBool()}};
+            const auto body = object.value(QStringLiteral("body"));
+            if (body.isString())
+                row.insert(QStringLiteral("body"), body.toString());
+            messages.append(row);
         }
         // A reply that raced a folder switch would list the wrong folder's
         // rows; re-checking the folder keeps the list consistent with the
