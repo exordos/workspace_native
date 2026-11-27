@@ -10486,6 +10486,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::authenticated, this, [this] {
         const auto owner = creationOwnerKey();
         if (owner != m_sessionGenerationOwner) {
+            if (!m_sessionGenerationOwner.isEmpty())
+                m_mail->reset();
             ++m_sessionGeneration;
             m_sessionGenerationOwner = owner;
             m_sessionLog.beginSupportScope();

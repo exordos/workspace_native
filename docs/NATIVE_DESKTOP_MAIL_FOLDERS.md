@@ -68,6 +68,9 @@ consulted; the node id recorded by the issue is Mailbox and folders
   `GET /mail/folders` and `GET /mail/messages?folder=<id>` through the
   session `ApiClient` (token renewal Cancel; unauthenticated callers never see
   the page because the rail entry only exists inside a session).
+- The store retires its folder list, rows, selection and pending requests
+  when the account, server or project changes. It keeps loaded rows on
+  same-owner credential renewal. The active Mail route fetches for its new owner.
 - QML `NativeMailPage.qml` replaces `mailSectionPage`
   (`packages/native/qml/Main.qml:13244` block); the rail entry
   `sectionMailButton` (Main.qml:3098) and `controller.section == "mail"`

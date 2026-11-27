@@ -72,6 +72,24 @@ QVariantList sampleMessages(const QString &folder)
 MailStore::MailStore(ApiClient *api, QObject *parent)
     : QObject(parent), m_api(api)
 {
+    connect(api, &ApiClient::sessionChanged, this, [this](quint64, bool sameOwnerRenewal) {
+        if (!sameOwnerRenewal)
+            reset();
+    });
+}
+
+void MailStore::reset()
+{
+    if (m_state == QStringLiteral("idle"))
+        return;
+    ++m_requestToken;
+    m_folders.clear();
+    m_messages.clear();
+    m_folderId = QStringLiteral("inbox");
+    m_selectedMessage.clear();
+    m_sampleMode = false;
+    m_state = QStringLiteral("idle");
+    emit mailChanged();
 }
 
 void MailStore::refresh()

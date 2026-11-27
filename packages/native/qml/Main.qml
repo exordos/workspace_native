@@ -13809,13 +13809,15 @@ component NativeMentionChip: Item {
             colors: root.colors
             mail: root.controller.mail
             visible: root.controller.section === "mail"
+            readonly property bool needsMailbox: visible && root.controller.authenticated
+                && mail && mail.state === "idle"
             function ensureFetched()
             {
-                if (mail && visible && mail.state === "idle")
+                if (needsMailbox)
                     mail.refresh()
             }
             Component.onCompleted: ensureFetched()
-            onVisibleChanged: ensureFetched()
+            onNeedsMailboxChanged: if (needsMailbox) Qt.callLater(ensureFetched)
             Layout.fillWidth: true
             Layout.fillHeight: true
         }

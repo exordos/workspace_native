@@ -165,6 +165,33 @@ private slots:
         QVERIFY2(sawSentQuery, "folder switch must re-fetch the messages endpoint");
     }
 
+    void mailboxRetiresWithItsSession()
+    {
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        store->selectMessage(QStringLiteral("mail-inbox-1"));
+        api.setAccessToken("renewed-test-token", true);
+        QCOMPARE(store->messages().size(), 3);
+        QCOMPARE(store->selectedMessageUuid(), QStringLiteral("mail-inbox-1"));
+        api.clearSession();
+        QCOMPARE(store->state(), QStringLiteral("idle"));
+        QVERIFY(store->messages().isEmpty());
+        QVERIFY(store->folders().isEmpty());
+        QVERIFY(store->selectedMessageUuid().isEmpty());
+
+        api.setAccessToken("second-test-token");
+        slowInboxOnce = true;
+        store->refresh();
+        QTRY_VERIFY(!slowInboxOnce);
+        api.clearSession();
+        QCOMPARE(store->state(), QStringLiteral("idle"));
+        QVERIFY(store->folders().isEmpty());
+        // Process the retired transport callback before checking the new state.
+        QCoreApplication::processEvents();
+        QCOMPARE(store->state(), QStringLiteral("idle"));
+        QVERIFY(store->messages().isEmpty());
+    }
+
     void emptyFolderState()
     {
         store->refresh();
