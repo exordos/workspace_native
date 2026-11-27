@@ -85,7 +85,14 @@ FocusScope {
             // starts at the leading week of the month, so the requested window
             // must span exactly those 42 cells - the leading/trailing rows
             // show adjacent-month days and events on them are real content.
-            const gridStart = weekStart(monthStart(selectedDate));
+            // #952 round 2 (finding 4722274186): the window spans the DISPLAYED
+            // matrix - a keyboard rove past the matrix edge re-anchors the month,
+            // and the newly shown cells must not render without their events.
+            // Duplicate requests from a selection-driven re-anchor (which fires
+            // both onSelectedDateChanged and onGridAnchorChanged) are dropped by
+            // the controller-side in-flight / same-loaded-window guards in
+            // requestCalendarWindow, exactly as other refresh seams already.
+            const gridStart = weekStart(monthGrid.gridAnchor);
             visibleWindowChanged(calDate(gridStart),
                                  calDate(shiftDate(gridStart, 41)));
         }
@@ -161,7 +168,11 @@ FocusScope {
                             return Qt.formatDate(page.weekStart(page.selectedDate), "dd.MM")
                                    + " - "
                                    + Qt.formatDate(page.shiftDate(page.weekStart(page.selectedDate), 6), "dd.MM.yyyy");
-                        return Qt.formatDate(page.selectedDate, "MMMM yyyy");
+                        // #952 round 2 (finding 4722274191): same contract as the
+                        // mini-calendar title - the header names the month the
+                        // month grid displays, which a keyboard edge re-anchor
+                        // moves independently of the selection.
+                        return Qt.formatDate(monthGrid.gridAnchor, "MMMM yyyy");
                     }
                 }
                 Button {
@@ -225,7 +236,10 @@ FocusScope {
                 Label {
                     objectName: "miniCalendarTitle"
                     color: page.colors["text-primary"]
-                    text: Qt.formatDate(page.selectedDate, "MMMM yyyy")
+                    // #952 round 2 (finding 4722274191): the heading names the
+                    // month the cells SHOW - a rove past the matrix edge
+                    // re-anchors the grid without moving the selection.
+                    text: Qt.formatDate(miniGrid.gridAnchor, "MMMM yyyy")
                 }
                 // Stable positional model (issue pitfall): delegates read
                 // live state through `page`, never through modelData identity.
@@ -523,6 +537,11 @@ FocusScope {
                             page.selectedDate = monthGrid.rovedDate;
                             monthGrid.focusDate = null; // re-anchor onto the selected cell
                         }
+                        // #952 round 2 (finding 4722274186): keep the fetched
+                        // event window synchronized with the displayed matrix
+                        // when an edge rove re-anchors the month grid.
+                        onGridAnchorChanged: if (page.viewMode === "month")
+                            page.refreshWindow()
                         onActiveFocusChanged: if (!monthGrid.activeFocus)
                             monthGrid.focusDate = null
                         Keys.onPressed: (event) => {
