@@ -847,8 +847,13 @@ from the QtTest inventory, including every data row. CTest reserves one worker
 slot per process. The two 100 ms encrypted-read responsiveness checks run in a
 separate group with exclusive access.
 The full configuration runs the original suites and retains the shared-display
-locks. Before tagging, run the full gate on the intended release commit. A
-manual **Linux release artifacts** workflow runs it on a private display. A
+locks. On pull requests and master pushes, CI builds the full Release tree once
+and uses the [same workflow artifact](decisions/0012-linux-full-gate-build.md)
+in all six test shards. Each shard restores it at the original build path for
+CTest and starts its own desktop session. If the artifact has expired, rerun
+all jobs to rebuild it. Before tagging, run the full gate on the intended
+release commit. The manual **Linux release artifacts** workflow runs it on a
+private display. A
 locally configured full build can use
 `bash packages/native/tests/full-linux-gate.sh BUILD_DIR` on a host with
 Xvnc, Openbox, xauth, x11-utils, PulseAudio with a synthetic microphone, the Qt WebEngine and WebChannel QML modules, Mesa, Noto Color Emoji, the Qt GTK platform theme
