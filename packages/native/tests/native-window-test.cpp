@@ -51001,6 +51001,63 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
     }
 
+    // Issue #946 site 2 witness: the member-row remove button is opacity-0 until
+    // the row hover group claims (NativeChannelInfo.qml removeButton), so the
+    // reveal is driven by the same `cardHover` MouseArea as the row fill. The
+    // pointer goes to the member NAME center (sibling claimant point) and the
+    // button opacity must animate in, then out again when the pointer leaves.
+    void channelInfoRemoveButtonRevealsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        const QString prefix = QStringLiteral("channelInfoMember-");
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
+        const QString suffix = row->objectName().mid(prefix.size());
+        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+        QVERIFY(name);
+        auto *remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
+        QVERIFY(remove);
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 2000);
+        QTest::mouseMove(scene.window,
+            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 3000);
+        // Neutral corner away from the drawer: the reveal must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
+    }
+
+    // Issue #946 site 3 witness: the add-members picker option fill is driven by
+    // `optionArea` (NativeChannelInfo.qml :837), a MouseArea under the option
+    // name Text. The pointer to the option NAME center (sibling claimant point)
+    // must switch the row fill from transparent to the active surface, and the
+    // fill must revert when the pointer leaves.
+    void addMembersOptionFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        QVERIFY(visibleItem("channelInfoAddButton"));
+        click(scene.window, visibleItem("channelInfoAddButton"));
+        QTRY_VERIFY(scene.evaluate("channelInfoLayer.addDialogOpen").toBool());
+        const QString optionId = scene.fixture.daveUser;
+        auto *option = visibleItem(QStringLiteral("addMembersOption-") + optionId);
+        QVERIFY(option);
+        auto *label = visibleItem(QStringLiteral("addMembersOptionName-") + optionId);
+        QVERIFY(label);
+        // The fill rect is the delegate's first child (declared before the
+        // MouseArea and the Texts); unread fill = transparent (alpha 0).
+        auto *fill = option->childItems().value(0);
+        QVERIFY(fill);
+        QVERIFY(fill->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(scene.window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() != 0, 2000);
+        // Leaving the dialog area must revert the fill.
+        QTest::mouseMove(scene.window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
 };
 
 
