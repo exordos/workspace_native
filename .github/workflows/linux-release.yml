@@ -59,11 +59,21 @@ jobs:
             # it fetches every page until a short page ends the listing and
             # exits non-zero on truncation or gh failure, so the verdict
             # below is only ever computed from complete pages.
-            fetch_ok=false
+            # exordy finding 4714995326: the fetch itself reports rc 2 when
+            # a fetched page already shows a completed non-success - that
+            # block is honoured even on a truncated listing, because the
+            # in-job fallback gate must never outrace an observed red.
+            fetch_rc=0
             rm -f check-runs-page-*.json
-            if python3 packages/native/scripts/master-gate-verdict.py \
+            python3 packages/native/scripts/master-gate-verdict.py \
                 --fetch "${GATE_SHA}" --repo "${GITHUB_REPOSITORY}" \
-                --out-prefix check-runs-page-; then
+                --out-prefix check-runs-page- || fetch_rc=$?
+            if [ "${fetch_rc}" -eq 2 ]; then
+              echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
+              exit 1
+            fi
+            fetch_ok=false
+            if [ "${fetch_rc}" -eq 0 ]; then
               fetch_ok=true
             fi
             if [ "${fetch_ok}" = true ]; then
