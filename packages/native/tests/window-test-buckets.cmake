@@ -189,6 +189,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_8
     alreadyInstalledUpdateOffersExplicitRestart
     calendarCreatesSampleMeetingWithoutInvitingParticipants
     calendarGridsSupportKeyboardDateSelection
+    calendarLiveFiltersUseOwnedServerIdsAcrossViews
     callEmbedLoadStatusReachesReadyAndFailedRetryRecreatesToReady
     callWindowLiveParticipantCountArrivesFromEmbedPageEvents
     channelInfoMemberRowFillsOnLabelCenterHover

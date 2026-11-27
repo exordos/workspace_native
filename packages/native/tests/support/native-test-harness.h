@@ -20,6 +20,7 @@
 #include <QDBusVariant>
 #include <QTimer>
 #include "../mock-server.h"
+#include "calendar-fixtures.h"
 
 #include <QElapsedTimer>
 #include <QWindow>
@@ -277,8 +278,10 @@ public:
                 return users ? users(request) : Response{QJsonArray{}};
             if (path.endsWith("/folders/"))
                 return folders ? folders(request) : Response{QJsonArray{}};
-            if (path.endsWith("/calendar/events") && calendar)
-                return calendar(request);
+            if (path == "/api/workspace/v1/calendar/calendars/")
+                return Response{calendarList()};
+            if (path == "/api/workspace/v1/calendar/events/")
+                return calendar ? calendar(request) : Response{QJsonArray{}};
             if (path.endsWith("/stream_bindings/") && bindings)
                 return bindings(request);
             if (path.endsWith("/stream_topics/")) {
@@ -309,8 +312,6 @@ public:
                 return realtime(request);
             if (path.endsWith("/server_settings"))
                 return serverSettings ? serverSettings(request) : Response{organizationSettingsDto()};
-            if (path.contains("/calendar/") && calendar)
-                return calendar(request);
             return authentication ? authentication(request) : sessionResponse(request);
         };
     }

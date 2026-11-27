@@ -8954,16 +8954,28 @@ void NativeController::resetFeed()
 }
 
 // ---- Calendar section page (#881, docs/NATIVE_DESKTOP_CALENDAR.md) ----
-// UI-phase data contract: GET /calendar/events?from&to serves the events
-// intersecting the visible window; the live server adapter is #852. Rows stay
-// plain maps ({uuid, day, start, end, title, calendar, colorToken, location,
-// allDay, startUtc, endUtc, participants}) because
-// every view (agenda, week columns, month cells) needs random per-day access,
-// not a paginated sequence - the QAbstractListModel shape would only serve the
-// agenda list and force a second index for the grids (design doc amended).
-// #907 additions (event detail): location, all_day, start_utc/end_utc ISO
-// instants (display is converted to the client zone; stored instants stay UTC)
-// and participants (list of display names).
+// Workspace returns UTC timestamps with up to six fractional digits. Keep
+// microseconds for interval bounds, including events ending just after midnight.
+static std::optional<qint64> calendarUtcMicros(const QString &text)
+{
+    static const QRegularExpression isoUtc(
+        QStringLiteral(R"(^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,6}))?Z$)"));
+    const auto match = isoUtc.match(text);
+    if (!match.hasMatch())
+        return {};
+    const auto seconds = QDateTime::fromString(match.captured(1) + "Z", Qt::ISODate);
+    if (!seconds.isValid())
+        return {};
+    return seconds.toSecsSinceEpoch() * 1000000
+        + match.captured(2).leftJustified(6, QLatin1Char('0')).toInt();
+}
+
+static QDateTime calendarLocalTime(qint64 micros)
+{
+    // Division toward minus infinity also preserves the day before the epoch.
+    const auto secs = micros / 1000000 - (micros % 1000000 < 0 ? 1 : 0);
+    return QDateTime::fromSecsSinceEpoch(secs, QTimeZone::LocalTime);
+}
 
 void NativeController::setSampleCalendar(bool enabled)
 {
@@ -9042,61 +9054,102 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
     m_calendar.inflight = true;
     m_calendar.loading = true;
     m_calendar.error = false;
-    const quint64 version = ++m_calendar.version;
-    const auto owner = creationOwnerKey();
-    QUrlQuery query;
-    query.addQueryItem("from", from);
-    query.addQueryItem("to", to);
+    auto read = std::make_shared<CalendarWindowRead>();
+    read->version = ++m_calendar.version;
+    read->owner = creationOwnerKey();
+    const auto first = QDate::fromString(from, Qt::ISODate);
+    const auto last = QDate::fromString(to, Qt::ISODate);
+    if (!first.isValid() || !last.isValid() || last < first) {
+        finishCalendarWindow(*read, 400);
+        return;
+    }
+    read->range.addQueryItem("ends_after", first.startOfDay().toUTC().toString(Qt::ISODate));
+    read->range.addQueryItem("starts_before", last.addDays(1).startOfDay().toUTC().toString(Qt::ISODate));
     emit calendarChanged();
-    request("GET", messenger + "/calendar/events", {}, query,
-        [this, version, owner](const ApiResult &result) {
-        if (version != m_calendar.version || owner != creationOwnerKey())
-            return; // a newer window or an owner switch owns the state now
-        m_calendar.inflight = false;
-        // Issue #910: drain the newest window requested while this reply
-        // was in flight (both the success and the failure path re-issue it).
-        const bool hasPending = m_calendar.hasPending;
-        const QString pendingFrom = m_calendar.pendingFrom;
-        const QString pendingTo = m_calendar.pendingTo;
-        m_calendar.hasPending = false;
-        if (result.status == 501) {
-            // Recheck an absent endpoint when this window is requested again.
-            m_calendar.events.clear();
-            m_calendar.hasLoaded = false;
-            m_calendar.error = false;
-        } else if (!result.ok() || !result.data.isArray()) {
-            m_calendar.error = true;
-        } else {
-            QVariantList events;
-            for (const auto &value : result.data.toArray()) {
-                const auto row = value.toObject();
-                QVariantList participants;
-                for (const auto &person : row.value("participants").toArray())
-                    participants.append(person.toString());
-                events.append(QVariantMap{
-                    {"uuid", row.value("uuid").toString()},
-                    {"day", row.value("day").toString()},
-                    {"start", row.value("start").toString()},
-                    {"end", row.value("end").toString()},
-                    {"title", row.value("title").toString()},
-                    {"calendar", row.value("calendar").toString()},
-                    {"colorToken", row.value("color_token").toString()},
-                    {"location", row.value("location").toString()},
-                    {"allDay", row.value("all_day").toBool()},
-                    {"startUtc", row.value("start_utc").toString()},
-                    {"endUtc", row.value("end_utc").toString()},
-                    {"participants", participants},
-                });
-            }
-            m_calendar.events = events;
-            m_calendar.hasLoaded = true;
-            m_calendar.error = false;
+    readCalendarPage(read);
+}
+
+void NativeController::readCalendarPage(const std::shared_ptr<CalendarWindowRead> &read,
+                                       const QByteArray &marker)
+{
+    const QString path = read->readingEvents ? QStringLiteral("/api/workspace/v1/calendar/events/")
+                                             : QStringLiteral("/api/workspace/v1/calendar/calendars/");
+    QUrlQuery query = read->readingEvents ? read->range : QUrlQuery();
+    query.addQueryItem("page_limit", "200");
+    if (!marker.isEmpty())
+        query.addQueryItem("page_marker", QString::fromUtf8(marker));
+    request("GET", path, {}, query, [this, read](const ApiResult &result) {
+        if (read->version != m_calendar.version || read->owner != creationOwnerKey())
+            return;
+        if (!result.ok() || !result.data.isArray()) {
+            finishCalendarWindow(*read, result.ok() ? 400 : result.status);
+            return;
         }
-        m_calendar.loading = false;
-        emit calendarChanged();
-        if (hasPending && version == m_calendar.version && owner == creationOwnerKey())
-            requestCalendarWindow(pendingFrom, pendingTo);
+        const auto rows = result.data.toArray();
+        read->seenRows += rows.size();
+        if (read->seenRows > 100000 || read->markers.contains(result.nextMarker)
+            || (!result.nextMarker.isEmpty() && read->markers.size() >= 500)) {
+            finishCalendarWindow(*read, 400);
+            return;
+        }
+        for (const auto &value : rows) {
+            const auto row = value.toObject();
+            const auto uuid = row.value("uuid").toString();
+            if (row.value("project_id").toString() != m_session->project() || QUuid(uuid).isNull())
+                continue;
+            if (!read->readingEvents) {
+                read->calendars.insert(uuid, QVariantMap{{"key", uuid}, {"label", row.value("name").toString()}});
+                continue;
+            }
+            const auto calendar = row.value("calendar_uuid").toString();
+            const auto payload = row.value("payload").toObject();
+            const auto startUtc = payload.value("starts_at").toString();
+            const auto endUtc = payload.value("ends_at").toString();
+            const auto startMicros = calendarUtcMicros(startUtc);
+            const auto endMicros = calendarUtcMicros(endUtc);
+            if (!read->calendars.contains(calendar) || payload.value("kind").toString() != "event"
+                || !startMicros || !endMicros || *endMicros <= *startMicros)
+                continue;
+            const auto start = calendarLocalTime(*startMicros);
+            const auto end = calendarLocalTime(*endMicros);
+            read->events.insert(uuid, QVariantMap{
+                {"uuid", uuid}, {"calendar", calendar}, {"title", payload.value("title").toString()},
+                {"location", payload.value("location").toString()}, {"allDay", false},
+                {"participants", QStringList{}}, {"colorToken", QStringLiteral("accent")},
+                {"day", start.date().toString(Qt::ISODate)},
+                {"lastDay", calendarLocalTime(*endMicros - 1).date().toString(Qt::ISODate)},
+                {"start", start.time().toString("HH:mm")}, {"end", end.time().toString("HH:mm")},
+                {"startUtc", startUtc}, {"endUtc", endUtc},
+            });
+        }
+        if (!result.nextMarker.isEmpty()) {
+            read->markers.insert(result.nextMarker);
+            readCalendarPage(read, result.nextMarker);
+        } else if (!read->readingEvents && !read->calendars.isEmpty()) {
+            read->readingEvents = true;
+            read->markers.clear();
+            readCalendarPage(read);
+        } else {
+            finishCalendarWindow(*read, 200);
+        }
     });
+}
+
+void NativeController::finishCalendarWindow(const CalendarWindowRead &read, int status)
+{
+    m_calendar.inflight = false;
+    m_calendar.loading = false;
+    m_calendar.hasLoaded = status == 200;
+    m_calendar.error = status != 200 && status != 501;
+    m_calendar.calendars = status == 200 ? read.calendars.values() : QVariantList{};
+    m_calendar.events = status == 200 ? read.events.values() : QVariantList{};
+    const bool hasPending = m_calendar.hasPending;
+    const auto from = m_calendar.pendingFrom;
+    const auto to = m_calendar.pendingTo;
+    m_calendar.hasPending = false;
+    emit calendarChanged();
+    if (hasPending && read.version == m_calendar.version && read.owner == creationOwnerKey())
+        requestCalendarWindow(from, to);
 }
 
 void NativeController::retryCalendar()
@@ -9111,10 +9164,11 @@ void NativeController::resetCalendar()
 {
     // Same monotonic identity discipline as resetFeed (issue #356).
     const auto version = m_calendar.version + 1;
-    const bool hadSample = m_calendar.sample || !m_calendar.sampleEvents.isEmpty();
+    const bool hadData = m_calendar.sample || !m_calendar.sampleEvents.isEmpty()
+        || !m_calendar.calendars.isEmpty() || !m_calendar.events.isEmpty();
     m_calendar = CalendarState{};
     m_calendar.version = version;
-    if (hadSample)
+    if (hadData)
         emit calendarChanged();
 }
 

@@ -70,24 +70,12 @@ All strings are new user-visible `qsTr` keys; they must be added to
 `packages/native/translations/workspace_ru.ts` in the same PR (catalog guard
 `native-native-locale`).
 
-## Data: deterministic mock adapter (UI phase)
+## Calendar data
 
-Live API is #852; this phase is fixtures only (issue scope). The controller
-is filled from `GET /calendar/events?from&to` responses and exposes
-`calendarEvents` as a `QVariantList` projection with `stateChanged`
-announcements (the feed-page pattern of #38, `native-controller.cpp`).
-Amended during slice 2: a QAbstractListModel would only serve the agenda
-ListView - the week columns and month cells need random per-day access and
-would force a second index in JS anyway, so the list shape buys nothing in
-this phase. Late answers of a retired window are fenced by a monotonic
-version + owner guard exactly like `FeedState` (issue #356); a re-show of an
-already-loaded window is not re-fetched, so section re-entry is traffic-free
-and fixtures that never navigate to calendar see zero new requests. The
-window-test mock server serves fixed fixtures for a frozen reference date so
-cells are assertable. Events:
-`{uuid, day (YYYY-MM-DD), start, end, title, calendar (work|personal),
-colorToken}`. Loading/error drive the state cards; retry re-fetches the
-visible window.
+The initial UI phase used deterministic fixtures. The server view now reads
+the personal Calendar API described below. The controller projects calendar
+and event rows for QML and uses its own `calendarChanged` notification.
+The agenda, week columns and month cells share the same event collection.
 
 `pending-Figma`: header heights, chip metrics, mini-calendar cell size.
 
@@ -118,12 +106,10 @@ inside `18693:32760` (day view). The token was still 401 when this section
 was written, so metrics stay `pending-Figma` and follow native token
 conventions, exactly as the shell section above.
 
-Data contract additions on each event row from `GET /calendar/events`
-(parsed in `NativeController::requestCalendarWindow`): `location` (string),
-`all_day` (bool), `start_utc` / `end_utc` (ISO-8601 UTC instants), and
-`participants` (list of display names). Absent fields degrade: no `start_utc`
-falls back to the day + `start`/`end` strings; no location shows the
-`No location specified` placeholder.
+The detail uses each presenter's location, start/end UTC instants, local day
+and attendee display names. The live payload provides timed events and an
+optional location. The local detail fixture also covers all-day events and
+attendees. An absent location shows the `No location specified` placeholder.
 
 Rendering: `NativeCalendarEventDetail.qml`, a centered card overlay inside
 `NativeCalendarPage` (`page.detailEvent` selects the row; day and month agenda rows and
@@ -188,3 +174,20 @@ confirmation names the selected meeting and initially focuses Cancel. Cancel
 keeps the meeting and restores the previous surface. Confirming removes the
 UUID from all sample views. An event from the server feed has read-only detail
 and no sample edit or delete action.
+
+## Read personal calendars from Workspace
+
+The server view lists the active session's calendars from
+`GET /api/workspace/v1/calendar/calendars/` and reads overlapping events from
+`GET /api/workspace/v1/calendar/events/`. Both collections follow
+`X-Pagination-Marker` with `page_marker`. From the inclusive local date range
+the reader derives the UTC start of the first day and the UTC start of the day
+after the last, using `ends_after` and `starts_before` respectively. This
+covers 23-hour and 25-hour local days. Range boundaries and event instants
+use UTC on the wire. The grid, agenda and detail use the client's local zone.
+
+Filters use calendar UUIDs and display the server's calendar names. Calendar
+and event pages are accepted together for the current account/project and
+window. An event must reference a returned calendar in that project. Changing
+session retires pending pages. Server events are read-only here. The sample
+calendar remains the separate local editor for the UI phase.

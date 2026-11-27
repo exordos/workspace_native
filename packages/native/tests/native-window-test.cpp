@@ -1,4 +1,5 @@
 #include "mock-server.h"
+#include "support/calendar-fixtures.h"
 #include "native-app.h"
 #include "native-updater.h"
 #include "native-controller.h"
@@ -619,6 +620,10 @@ public:
     {
         server.handler = [this](const Request &request) -> Response {
             const auto path = request.target.path();
+            if (request.method == "GET" && path == "/api/workspace/v1/calendar/calendars/")
+                return {calendarList()};
+            if (request.method == "GET" && path == "/api/workspace/v1/calendar/events/")
+                return {QJsonArray{}};
             if (request.method == "GET" && path.endsWith("/messages/") && QUrlQuery(request.target).hasQueryItem("mentioned"))
                 return {QJsonArray{}};
             if (path.endsWith("/streams/") && request.method == "POST") {
@@ -735,10 +740,10 @@ public:
         auto parentHandler = std::move(server.handler);
         server.handler = [this, parentHandler](const Request &request) -> Response {
             const auto path = request.target.path();
-            if (request.method == "GET" && path.contains("/calendar/events")) {
+            if (request.method == "GET" && path == "/api/workspace/v1/calendar/events/") {
                 const QUrlQuery query(request.target);
-                calendarFrom.append(query.queryItemValue("from"));
-                calendarTo.append(query.queryItemValue("to"));
+                calendarFrom.append(calendarFirstDay(query));
+                calendarTo.append(calendarLastDay(query));
                 if (eventsStatus != 200)
                     return {QJsonObject{{"type", "NotImplementedError"}, {"code", eventsStatus},
                             {"message", "Not implemented ('method get in MessengerApiEndpointController')."}}
@@ -748,10 +753,8 @@ public:
                 // One event on a trailing day of the month BEFORE the pinned
                 // test month (February 2026): only a window that starts at the
                 // leading week can ever deliver it to the grid.
-                return {QJsonArray{QJsonObject{{"uuid", "90000000-0000-4000-8000-000000000001"},
-                    {"day", "2026-01-30"}, {"start", "09:00"}, {"end", "10:00"},
-                    {"title", "Adjacent-month review"}, {"calendar", "work"},
-                    {"color_token", "accent"}}}};
+                return {QJsonArray{calendarEvent("90000000-0000-4000-8000-000000000001", "2026-01-30",
+                    "09:00", "10:00", "Adjacent-month review")}};
             }
             return parentHandler(request);
         };
@@ -770,15 +773,12 @@ public:
         auto parentHandler = std::move(server.handler);
         server.handler = [this, parentHandler, today](const Request &request) -> Response {
             const auto path = request.target.path();
-            if (request.method == "GET" && path.contains("/calendar/events")) {
+            if (request.method == "GET" && path == "/api/workspace/v1/calendar/events/") {
                 return {QJsonArray{
-                    QJsonObject{{"uuid", longEventUuid()}, {"day", today}, {"start", "09:00"},
-                        {"end", "10:00"},
-                        {"title", "Quarterly alignment across all workspace squads and external partners"},
-                        {"calendar", "work"}, {"color_token", "accent"}},
-                    QJsonObject{{"uuid", QStringLiteral("90000000-0000-4000-8000-0000000000a2")},
-                        {"day", today}, {"start", "11:00"}, {"end", "11:30"},
-                        {"title", "Standup"}, {"calendar", "personal"}, {"color_token", "accent"}}}};
+                    calendarEvent(longEventUuid(), today, "09:00", "10:00",
+                        "Quarterly alignment across all workspace squads and external partners"),
+                    calendarEvent("90000000-0000-4000-8000-0000000000a2", today, "11:00", "11:30",
+                        "Standup", personalCalendarId)}};
             }
             return parentHandler(request);
         };
@@ -40022,6 +40022,68 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QVERIFY(chip->width() <= chip->parentItem()->width());
     }
 
+    void calendarLiveFiltersUseOwnedServerIdsAcrossViews()
+    {
+        WindowCalendarPolishFixture fixture;
+        fixture.sourceScene = true;
+        const auto fallback = fixture.server.handler;
+        const QString label = "R&D <b>shift</b>";
+        fixture.server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() == "/api/workspace/v1/calendar/calendars/") {
+                auto catalogs = calendarList();
+                for (int i = 0; i < catalogs.size(); ++i) {
+                    auto row = catalogs.at(i).toObject();
+                    row["name"] = label;
+                    catalogs[i] = row;
+                }
+                return {catalogs};
+            }
+            return fallback(request);
+        };
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        const auto work = "calendarFilter" + workCalendarId;
+        const auto personal = "calendarFilter" + personalCalendarId;
+        QTRY_VERIFY_WITH_TIMEOUT(view(work) && view(personal), 4000);
+        for (const auto &name : {work, personal}) {
+            QCOMPARE(view(name)->property("text").toString(), label);
+            const auto *content = view(name)->property("contentItem").value<QQuickItem *>();
+            QVERIFY(content);
+            QCOMPARE(content->property("textFormat").toInt(), 0 /* Text.PlainText */);
+        }
+        const auto workEvent = WindowCalendarPolishFixture::longEventUuid();
+        const QString personalEvent = "90000000-0000-4000-8000-0000000000a2";
+        QTRY_VERIFY(view("calendarAgendaRow-" + workEvent));
+        click(window, view(work));
+        QTRY_VERIFY(!view("calendarAgendaRow-" + workEvent));
+        QVERIFY(view("calendarAgendaRow-" + personalEvent));
+        click(window, view("viewTabWeek"));
+        QTRY_VERIFY(view("weekChip-" + personalEvent));
+        QVERIFY(!view("weekChip-" + workEvent));
+        click(window, view(work));
+        QTRY_VERIFY(view("weekChip-" + workEvent));
+        click(window, view("weekChip-" + personalEvent));
+        QTRY_VERIFY(view("calendarDetailTitle"));
+        QCOMPARE(view("calendarDetailTitle")->property("text").toString(), QStringLiteral("Standup"));
+        QCOMPARE(view("calendarDetailTime")->property("text").toString(),
+                 QDate::currentDate().toString("ddd, dd.MM.yyyy") + " 11:00 - 11:30");
+        QVERIFY(!view("calendarDetailEdit"));
+        for (const auto &request : fixture.server.requests)
+            if (request.target.path().startsWith("/api/workspace/v1/calendar/"))
+                QCOMPARE(request.method, QByteArray("GET"));
+    }
+
     // Issue #911: the month grid renders a FIXED 42-cell matrix that starts at
     // the leading week (weekStart) of the selected month, so a month whose 1st
     // is not a Monday renders trailing days of the previous month and leading
@@ -40036,7 +40098,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const auto serve = fixture.server.handler;
         fixture.server.handler = [serve](const Request &request) {
             auto response = serve(request);
-            if (request.target.path().endsWith("/calendar/events"))
+            if (request.target.path() == "/api/workspace/v1/calendar/events/")
                 response.delay = 200;
             return response;
         };
@@ -40197,7 +40259,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // One Tab from the control that precedes the grid enters it (no
         // 42-stop march), landing on the selected cell.
         auto *entry = view(grid == QLatin1String("mini")
-            ? "calendarSampleToggle" : "calendarFilterPersonal");
+            ? "calendarSampleToggle" : ("calendarFilter" + personalCalendarId));
         QVERIFY(entry);
         entry->forceActiveFocus();
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
@@ -40426,19 +40488,17 @@ QTRY_VERIFY(create->property("enabled").toBool());
         const auto inner = std::move(fixture.server.handler);
         fixture.server.handler = [&fixture, inner](const Request &request) -> Response {
             const auto path = request.target.path();
-            if (request.method == "GET" && path.contains("/calendar/events")) {
+            if (request.method == "GET" && path == "/api/workspace/v1/calendar/events/") {
                 const QUrlQuery query(request.target);
-                fixture.calendarFrom.append(query.queryItemValue("from"));
-                fixture.calendarTo.append(query.queryItemValue("to"));
-                const auto from = query.queryItemValue("from");
-                const auto to = query.queryItemValue("to");
+                fixture.calendarFrom.append(calendarFirstDay(query));
+                fixture.calendarTo.append(calendarLastDay(query));
+                const auto from = calendarFirstDay(query);
+                const auto to = calendarLastDay(query);
                 QJsonArray rows;
                 const auto add = [&](const QString &day, const QString &uuid,
                                      const QString &title) {
                     if (day >= from && day <= to)
-                        rows.append(QJsonObject{{"uuid", uuid}, {"day", day},
-                            {"start", "09:00"}, {"end", "10:00"}, {"title", title},
-                            {"calendar", "work"}, {"color_token", "accent"}});
+                        rows.append(calendarEvent(uuid, day, "09:00", "10:00", title));
                 };
                 add(QStringLiteral("2026-01-30"),
                     QStringLiteral("90000000-0000-4000-8000-000000009521"),
@@ -40479,7 +40539,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         // selection case uses) and rove 16 Lefts: from Feb 10 that pushes the
         // roved date to Jan 25, out of the matrix, and the grid re-anchors to
         // the January matrix (2025-12-29..2026-02-08).
-        auto *entry = view("calendarFilterPersonal"); QVERIFY(entry);
+        auto *entry = view(("calendarFilter" + personalCalendarId)); QVERIFY(entry);
         entry->forceActiveFocus();
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
         auto *gridItem = view("calendarMonthGrid"); QVERIFY(gridItem);
@@ -53384,7 +53444,6 @@ private slots:
     {
         QFETCH(QString, agendaName);
         WindowChannelFixture fixture; fixture.sourceScene = true;
-        const auto fallback = fixture.server.handler;
         const QString day = QDate::currentDate().toString(Qt::ISODate);
         const QString startUtc = day + "T09:30:00Z";
         const QString endUtc = day + "T11:00:00Z";
@@ -53395,15 +53454,10 @@ private slots:
             {"uuid", "7a5f0c21-9b0d-4a49-a96f-6f2e6b8d1c55"},
             {"day", day}, {"start", "09:30"}, {"end", "11:00"},
             {"title", "Design sync"}, {"calendar", "work"},
-            {"color_token", "accent"},
+            {"colorToken", "accent"},
             {"location", "Meeting room 4 <img src=\"http://inval.id/x.png\" onerror=\"x\">"},
-            {"all_day", false}, {"start_utc", startUtc}, {"end_utc", endUtc},
+            {"allDay", false}, {"startUtc", startUtc}, {"endUtc", endUtc},
             {"participants", people}};
-        fixture.server.handler = [&](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
-                return Response{QJsonArray{event}};
-            return fallback(request);
-        };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
@@ -53416,11 +53470,15 @@ private slots:
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.setSampleCalendar(true);
         click(window, view("sectionCalendarButton"));
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
         if (agendaName == QStringLiteral("calendarMonthAgenda"))
             click(window, view("viewTabMonth"));
         QTRY_VERIFY_WITH_TIMEOUT(view(agendaName), 5000);
+        // The live event schema has no participants. Feed the detail presenter
+        // its sample-model row while retaining real agenda selection and clicks.
+        QVERIFY(view("calendarSectionPage")->setProperty("events", QVariantList{event.toVariantMap()}));
         QPointer<QQuickItem> row;
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
             QQuickItem *first = nullptr;
@@ -53471,15 +53529,10 @@ private slots:
         while (longLocation.length() < 3000)
             longLocation += QStringLiteral(
                 "dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor. ");
-        const QJsonObject event{
-            {"uuid", "3c9d8b77-2f4e-4c1a-8e5b-9d0a6c4b8e11"},
-            {"day", day}, {"start", "09:00"}, {"end", "10:00"},
-            {"title", "Site walk"}, {"calendar", "work"},
-            {"color_token", "accent"}, {"location", longLocation},
-            {"all_day", false}, {"start_utc", day + "T09:00:00Z"},
-            {"end_utc", day + "T10:00:00Z"}};
+        const auto event = calendarEvent("3c9d8b77-2f4e-4c1a-8e5b-9d0a6c4b8e11", day,
+            "09:00", "10:00", "Site walk", workCalendarId, longLocation);
         fixture.server.handler = [&](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/calendar/events/")
                 return Response{QJsonArray{event}};
             return fallback(request);
         };
@@ -53540,15 +53593,10 @@ private slots:
         QString token = QStringLiteral("https://exordos.com/meet/x?ref=");
         while (token.length() < 2000)
             token += QStringLiteral("9kQ3tL7wZ2pR8mN5vB1xC");
-        const QJsonObject event{
-            {"uuid", "5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34"},
-            {"day", day}, {"start", "11:00"}, {"end", "12:00"},
-            {"title", "Token stress"}, {"calendar", "work"},
-            {"color_token", "accent"}, {"location", token},
-            {"all_day", false}, {"start_utc", day + "T11:00:00Z"},
-            {"end_utc", day + "T12:00:00Z"}};
+        const auto event = calendarEvent("5d4e3f2a-1b6c-4d8e-9a0f-2c7b8d9e0f34", day,
+            "11:00", "12:00", "Token stress", workCalendarId, token);
         fixture.server.handler = [&](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
+            if (request.method == "GET" && request.target.path() == "/api/workspace/v1/calendar/events/")
                 return Response{QJsonArray{event}};
             return fallback(request);
         };
@@ -53598,19 +53646,13 @@ private slots:
     void calendarDetailAllDayShowsDateOnlyWithLocationFallback()
     {
         WindowChannelFixture fixture; fixture.sourceScene = true;
-        const auto fallback = fixture.server.handler;
         const QString day = QDate::currentDate().toString(Qt::ISODate);
         const QJsonObject event{
             {"uuid", "2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8"},
             {"day", day}, {"start", ""}, {"end", ""},
             {"title", "Offsite"}, {"calendar", "work"},
-            {"color_token", "accent"}, {"all_day", true},
+            {"colorToken", "accent"}, {"allDay", true},
             {"participants", QJsonArray{QStringLiteral("Anna"), QStringLiteral("Boris")}}};
-        fixture.server.handler = [&](const Request &request) -> Response {
-            if (request.method == "GET" && request.target.path().endsWith("/calendar/events"))
-                return Response{QJsonArray{event}};
-            return fallback(request);
-        };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
@@ -53623,8 +53665,11 @@ private slots:
         QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
         QVERIFY(startComposerEmojiFixture(fixture, controller, session));
         const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        controller.setSampleCalendar(true);
         click(window, view("sectionCalendarButton"));
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        // All-day events and participant names belong to the local detail model.
+        QVERIFY(view("calendarSectionPage")->setProperty("events", QVariantList{event.toVariantMap()}));
         const QString rowName =
             QStringLiteral("calendarAgendaRow-2b1c9d4e-5a6f-4c7b-8e03-91f2d7a4b6c8");
         QTRY_VERIFY_WITH_TIMEOUT(view(rowName), 5000);
