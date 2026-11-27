@@ -249,6 +249,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     accountNestedBackRestoresRootAndFocus
     appearanceAndSidebarRestoreAfterQuickWindowRecreation
     archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling
+    calendarMonthGridRequestCoversAdjacentWeeks
     channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
     channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable

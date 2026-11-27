@@ -64,10 +64,15 @@ FocusScope {
         else if (viewMode === "week")
             visibleWindowChanged(calDate(weekStart(selectedDate)),
                                  calDate(shiftDate(weekStart(selectedDate), 6)));
-        else
-            visibleWindowChanged(calDate(monthStart(selectedDate)),
-                                 calDate(new Date(selectedDate.getFullYear(),
-                                                  selectedDate.getMonth() + 1, 0)));
+        else {
+            // Issue #911: the month grid renders a fixed 42-cell matrix that
+            // starts at the leading week of the month, so the requested window
+            // must span exactly those 42 cells - the leading/trailing rows
+            // show adjacent-month days and events on them are real content.
+            const gridStart = weekStart(monthStart(selectedDate));
+            visibleWindowChanged(calDate(gridStart),
+                                 calDate(shiftDate(gridStart, 41)));
+        }
     }
     onSelectedDateChanged: refreshWindow()
     onViewModeChanged: refreshWindow()
