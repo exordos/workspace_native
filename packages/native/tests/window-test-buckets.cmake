@@ -345,6 +345,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
     mediaViewerSingleImageHidesNavigationAndStrip
     mentionChipsReachedByTabWithoutPointer
     pollBubbleAddOptionRetryReusesClientUuid
+    profileAndSidebarReactToHoverAtTheirTitles
     savedStatusTracksMessagesWhenSwitchingChats
     sidebarSearchHotkeyFocusesSearchAndExpandsCollapsedSidebar
     topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks

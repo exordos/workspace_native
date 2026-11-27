@@ -181,6 +181,22 @@ static void pickComboOption(QQuickWindow *window, QQuickItem *combo, const QStri
     click(window, row);
 }
 
+// Exercise the visual binding at the painted glyph or text, including the return
+// to idle after the pointer leaves the control.
+static void checkControlHover(QQuickWindow *window, QQuickItem *control,
+                              const QPoint &point, const QPoint &away,
+                              const QString &property, QColor idle, QColor hovered)
+{
+    const auto color = [&] { return QQmlProperty::read(control, property).value<QColor>(); };
+    QVERIFY(idle.isValid() && hovered.isValid() && idle != hovered);
+    QTest::mouseMove(window, away);
+    QTRY_COMPARE(color(), idle);
+    QTest::mouseMove(window, point);
+    QTRY_COMPARE(color(), hovered);
+    QTest::mouseMove(window, away);
+    QTRY_COMPARE(color(), idle);
+}
+
 static int itemCountWithPrefix(QQuickItem *root, const QString &prefix)
 {
     int count = root->objectName().startsWith(prefix);
@@ -4138,6 +4154,12 @@ private slots:
         QVERIFY(!visibleItem("nativeAboutDrawer"));auto *indicator=visibleItem("nativeUpdateIndicator");QVERIFY(indicator);
         QCOMPARE(indicator->width(),qreal(36));QCOMPARE(indicator->height(),qreal(36));
         QCOMPARE(profile->mapToScene(QPointF{}),profilePosition);
+        const auto palette = window->property("colors").toMap();
+        auto *glyph = indicator->property("contentItem").value<QQuickItem *>();
+        QVERIFY(glyph);
+        checkControlHover(window, indicator, glyph->mapToScene(glyph->boundingRect().center()).toPoint(),
+                          QPoint(3, 3), "icon.color", QColor(palette.value("accent").toString()),
+                          QColor(palette.value("text-primary").toString()));
         click(window,indicator);QTRY_VERIFY(visibleItem("nativeAboutDrawer"));QCOMPARE(releases.requests.size(),2);
         click(window,visibleItem("nativeUpdateClose"));QTRY_VERIFY(!visibleItem("nativeAboutDrawer"));
         QCOMPARE(updater.state(),QString("downloading"));QCOMPARE(releases.requests.size(),2);
@@ -12482,6 +12504,55 @@ mv -Tf "$root/.current-new" "$root/current"
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(launcher->hasActiveFocus());
         QVERIFY(controller.property("cachedSearchResults").toList().isEmpty());
+    }
+
+    void profileAndSidebarReactToHoverAtTheirTitles()
+    {
+        WindowChannelFixture fixture;
+        fixture.sourceScene = true;
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setMode("light");
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        window->resize(1440, 900);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1);
+        session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1);
+        clickCurrentItem(window, "stream-" + streamId);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+
+        const auto palette = window->property("colors").toMap();
+        const auto color = [&](const QString &token) { return QColor(palette.value(token).toString()); };
+        const auto checkTitle = [&](const QString &rowName, const QString &labelName,
+                                    QColor idle, QColor hover) {
+            auto *row = visibleItem(window->contentItem(), rowName);
+            QQuickItem *label = nullptr;
+            QTRY_VERIFY((label = visibleItem(window->contentItem(), labelName)));
+            QVERIFY(row);
+            const qreal textWidth = qMin(label->width(), label->property("contentWidth").toReal());
+            QVERIFY(textWidth > 0);
+            const QPointF textCenter(textWidth / 2, label->height() / 2);
+            checkControlHover(window, row, label->mapToScene(textCenter).toPoint(), QPoint(3, 3),
+                              "background.color", idle, hover);
+        };
+        checkTitle("accountMenuButton", "profileDisplayName", Qt::transparent, color("card-bg-active"));
+        checkTitle("stream-" + streamId, "streamTitleName-" + streamId,
+                   color("card-bg"), color("sidebar-item-hover"));
+        checkTitle("topic-" + secondTopicId, "topicTitle-" + secondTopicId,
+                   color("card-bg"), color("sidebar-item-hover"));
     }
 
     void sidebarRowsRenderPreviewAndTime_data()
@@ -39545,6 +39616,14 @@ private slots:
             QVERIFY(control() && control()->hasActiveFocus());
             QTest::keyClick(window, Qt::Key_Space);
         } else {
+            const auto palette = window->property("colors").toMap();
+            auto *reply = control();
+            auto *text = reply->property("contentItem").value<QQuickItem *>();
+            QVERIFY(text);
+            const auto bubbleCenter = bubble->mapToScene(bubble->boundingRect().center()).toPoint();
+            checkControlHover(window, reply, text->mapToScene(text->boundingRect().center()).toPoint(),
+                              bubbleCenter, "background.color", QColor(palette.value("card-bg").toString()),
+                              QColor(palette.value("card-bg-active").toString()));
             click(window, control());
         }
         QTRY_COMPARE(controller.replyMessageId(), messageId);
