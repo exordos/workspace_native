@@ -2700,6 +2700,7 @@ private:
     void resetCalendar();
     void loadFeedPage(bool append);
     void interruptFeedRequest();
+    void interruptCalendarRequest();
     // Issue #423: settle a folder mutation retired by a generation bump.
     void interruptFolderMutation();
     bool interruptChannelTopicActions();

@@ -9042,6 +9042,25 @@ void NativeController::interruptFeedRequest()
     emit stateChanged();
 }
 
+// Issue #926: the same generation bump retires an in-flight calendar window
+// GET; the retired callback can never clear the calendar flags, so settle the
+// transient state here. Unlike Feed (interruptFeedRequest, which keeps the
+// accepted rows and stays error-free), the calendar window has nothing
+// accepted to show yet, so the settled state is the actionable error the page
+// already renders with its Retry row: retry, date navigation and reopening
+// all dispatch again under the renewed session. The version bump fences the
+// retired answer out of any newer request.
+void NativeController::interruptCalendarRequest()
+{
+    if (!m_calendar.inflight && !m_calendar.loading)
+        return;
+    ++m_calendar.version;
+    m_calendar.inflight = false;
+    m_calendar.loading = false;
+    m_calendar.error = true;
+    emit calendarChanged();
+}
+
 QVariantList NativeController::feedRows() const
 {
     QVariantList rows;
@@ -10764,6 +10783,10 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         // older page); settle its transient state so reopen/retry/load-more can
         // dispatch again under the renewed session.
         interruptFeedRequest();
+        // Issue #926: the same bump retires an in-flight calendar window GET;
+        // settle the page into the retryable error state so date navigation,
+        // reopening and Retry can dispatch again under the renewed session.
+        interruptCalendarRequest();
         // Issue #423: the same bump retires an in-flight folder create/rename/
         // delete; the retired callback can never clear the admission flag, so
         // settle the operation here with a retryable interrupted outcome.
