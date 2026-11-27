@@ -2246,9 +2246,15 @@ private:
     // applyHydratedRowActivity records the stamp in the same ledger noteActivityMerge
     // feeds and reports whether the projected order actually moved; that report gates one
     // coalesced streamsChanged - the QML binding edge that re-reads the projection.
+    // #861: topic rows own pointers too - a moved topic projection announces its own
+    // coalesced topicsChanged from inside the function (the stream report stays with
+    // the caller so the two projection edges stay independent).
     QVector<const Stream *> orderedStreamPointers() const;
+    QVector<const Topic *> orderedTopicPointers(const QVector<Topic> &topics,
+                                                const Stream *stream) const;
     bool applyHydratedRowActivity(const Message &message);
     void scheduleStreamsReorderAnnounce();
+    void scheduleTopicsReorderAnnounce();
     quint64 bumpRowPreviewFence(const QString &uuid);
     qint64 rowActivityMicros(const QString &lastMessage, qint64 updatedMicros) const;
     // Issue #867 (subtask A): single-row projection shared by streams() and
@@ -2316,6 +2322,7 @@ private:
     bool m_previewRevisionBumpQueued = false;
     // exordy finding on PR #866: coalesce flag for the activity-reorder streamsChanged.
     bool m_streamsReorderQueued = false;
+    bool m_topicsReorderQueued = false;
     // Issue #866 (finding 2): lazily created sidebar row model (parented here).
     NativeSidebarStreamListModel *m_sidebarStreamModel = nullptr;
     // #860: a disk miss is not an authoritative negative - the reference falls through to the

@@ -1664,6 +1664,80 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(([&] { return projection.count() >= 1; })(), 2000);
     }
 
+    // #861 (subtask 3): the same hydration corridor must move TOPIC rows, not
+    // only stream rows. Same misleading-catalog-updated_at fixture as the
+    // stream case: without opening any topic history, a background-resolved
+    // last-message stamp must reorder the topic projection.
+    void sidebarTopicHydrationReordersActivityOrder()
+    {
+        Fixture test;
+        test.aggregateMessages = true; // route the pump's GET /messages/?uuid= to test.messages
+        const auto hydrated = QStringLiteral("88888888-8888-4888-8888-000000000c03");
+        const auto topicRow = [](const QString &id, const QString &name, const QJsonValue &pointer,
+            const QString &updated) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"stream_uuid", streamId},
+                {"name", name}, {"is_done", false}, {"is_default", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", pointer}, {"updated_at", updated}};
+        };
+        test.topics = [&](const Request &) {
+            return Response{QJsonArray{
+                topicRow(topicId, "Hydrated topic", QString(hydrated), "2026-01-02T10:00:00Z"),
+                topicRow(secondTopicId, "Fallback lead", QJsonValue::Null, "2026-01-02T10:00:06Z")}};
+        };
+        test.counters = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith(secondTopicId))
+                return Response{topicRow(secondTopicId, "Fallback lead", QJsonValue::Null,
+                    "2026-01-02T10:00:06Z")};
+            if (path.endsWith(topicId))
+                return Response{topicRow(topicId, "Hydrated topic", QString(hydrated),
+                    "2026-01-02T10:00:00Z")};
+            return Response{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                {"name", "Native channel"}, {"encryption", false}, {"unread_count", 0},
+                {"active_unread_count", 0}, {"passive_unread_count", 0},
+                {"last_message_uuid", QJsonValue::Null}}};
+        };
+        auto lateBody = message("Late topic activity", hydrated);
+        lateBody["created_at"] = QStringLiteral("2026-01-03T09:00:00Z"); // newer than every fallback
+        auto gate = std::make_shared<std::function<void()>>();
+        test.messages = [&](const Request &request) {
+            if (request.method == "GET"
+                && QUrlQuery(request.target).queryItemValue("uuid") == hydrated) {
+                // Hold the pump's lookup so the fallback-sort baseline is deterministic.
+                Response held{QJsonArray{lateBody}};
+                held.defer = [gate](std::function<void()> send) { *gate = send; };
+                return held;
+            }
+            return Response{QJsonArray{}};
+        };
+        test.controller.login(test.server.origin().toString(), "synthetic-user", "synthetic-password", "");
+        QTRY_COMPARE(test.controller.projects().size(), 1);
+        test.controller.openProject(projectId);
+        // activateStream drops ids the catalog has not delivered yet (the same
+        // wait start() performs) - selecting before the streams GET lands would
+        // silently skip the topic fetch.
+        QTRY_COMPARE(test.controller.streams().size(), 1);
+        test.controller.selectStream(streamId);
+        QTRY_COMPARE(test.controller.topics().size(), 2);
+        QVERIFY(QTest::qWaitFor([&] { return *gate != nullptr; }, 3000));
+        // Baseline: the pointerless topic with the newer updated_at leads.
+        QCOMPARE(test.controller.topics().first().toMap().value("id").toString(), secondTopicId);
+        QSignalSpy projection(&test.controller, &NativeController::topicsChanged);
+        (*gate)(); // release the pump's in-flight lookup
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return test.controller.previewFields(hydrated, test.controller.previewRevision())
+                .value("previewText").toString() == QStringLiteral("Late topic activity");
+        })(), 5000);
+        // The resolved stamp must move the topic row to the top of the projection.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            return test.controller.topics().first().toMap().value("id").toString() == topicId;
+        })(), 5000);
+        // And the reorder travels as a topicsChanged announcement (one loop pass
+        // after the ledger write, coalesced like the stream reorder).
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { return projection.count() >= 1; })(), 2000);
+    }
+
     void sidebarPreviewHydrationKeepsEqualFallbackStampAgainstDrift()
     {
         Fixture test;

@@ -14590,6 +14590,9 @@ bool NativeController::applyHydratedRowActivity(const Message &message)
     // order actually moved - a memo that agrees with the old key, or reorders nothing,
     // must not cost the sidebar a projection rebuild (that is the whole point of the
     // preview-only announcement seam).
+    // #861: topic rows own last-message pointers too. A moved topic projection
+    // announces its own coalesced topicsChanged from here, so stream and topic
+    // projection edges stay independent; the stream report stays with the caller.
     if (message.uuid.isEmpty() || message.createdMicros <= 0) return false;
     bool keyMoves = false;
     bool rowOwnsPointer = false;
@@ -14601,8 +14604,17 @@ bool NativeController::applyHydratedRowActivity(const Message &message)
             break;
         }
     }
+    bool topicKeyMoves = false;
+    for (const auto &topic : std::as_const(m_topics)) {
+        if (topic.lastMessage != message.uuid) continue;
+        rowOwnsPointer = true;
+        if (rowActivityMicros(topic.lastMessage, topic.updatedMicros) != message.createdMicros) {
+            topicKeyMoves = true;
+            break;
+        }
+    }
     if (!rowOwnsPointer) return false;
-    if (!keyMoves) {
+    if (!keyMoves && !topicKeyMoves) {
         // exordy finding 4704344635 (PR #866 round 2): record the stamp even when it
         // equals the current fallback key. Skipping the write on an equal key lets a
         // later catalog bump of updated_at silently re-key the row from the drift
@@ -14612,11 +14624,36 @@ bool NativeController::applyHydratedRowActivity(const Message &message)
         return false;
     }
     QStringList orderBefore;
-    for (const auto *stream : orderedStreamPointers()) orderBefore << stream->uuid;
+    if (keyMoves)
+        for (const auto *stream : orderedStreamPointers()) orderBefore << stream->uuid;
+    QStringList topicOrderBefore;
+    if (topicKeyMoves)
+        for (const auto *topic : orderedTopicPointers(m_topics, currentStream()))
+            topicOrderBefore << topic->uuid;
     noteActivityTimestamps({message});
+    if (topicKeyMoves) {
+        QStringList topicOrderAfter;
+        for (const auto *topic : orderedTopicPointers(m_topics, currentStream()))
+            topicOrderAfter << topic->uuid;
+        if (topicOrderAfter != topicOrderBefore) scheduleTopicsReorderAnnounce();
+    }
+    if (!keyMoves) return false;
     QStringList orderAfter;
     for (const auto *stream : orderedStreamPointers()) orderAfter << stream->uuid;
     return orderAfter != orderBefore;
+}
+
+void NativeController::scheduleTopicsReorderAnnounce()
+{
+    // #861: coalesced exactly like scheduleStreamsReorderAnnounce - one
+    // topicsChanged per event loop pass no matter how many hydrated stamps
+    // moved the topic order in one pump batch.
+    if (m_topicsReorderQueued) return;
+    m_topicsReorderQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        m_topicsReorderQueued = false;
+        emit topicsChanged();
+    });
 }
 
 void NativeController::scheduleStreamsReorderAnnounce()
@@ -15661,18 +15698,26 @@ QVariantList NativeController::topics() const
     return topicRows(m_topics, currentStream());
 }
 
-QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Stream *stream) const
+// #861: shared mute/notification rank for topic ordering and the
+// effectivelyMuted indicator row (was a lambda local to topicRows before the
+// orderedTopicPointers refactor needed the same predicate).
+static int topicNotificationRank(const Topic *topic, const Stream *stream)
 {
-    // Issue #718: sort keys come from rowActivityMicros (observed-stamp cache
-    // with window/catalog fallbacks), not from the active window alone.
+    if (topic->done) return 2;
+    return topic->notificationMode == QLatin1String("mute") || (topic->notificationMode == QLatin1String("default")
+        && stream && stream->notificationMode == QLatin1String("muted")) ? 1 : 0;
+}
+
+QVector<const Topic *> NativeController::orderedTopicPointers(
+    const QVector<Topic> &topics, const Stream *stream) const
+{
+    // #861: factored out of topicRows so the reorder diff in
+    // applyHydratedRowActivity can probe the same order without touching the
+    // projection counters topicRows owns.
     QHash<QString, qint64> timestamps;
     for (const auto &topic : topics)
         timestamps.insert(topic.uuid, rowActivityMicros(topic.lastMessage, topic.updatedMicros));
-    const auto rank = [stream](const Topic *topic) {
-        if (topic->done) return 2;
-        return topic->notificationMode == "mute" || (topic->notificationMode == "default"
-            && stream && stream->notificationMode == "muted") ? 1 : 0;
-    };
+    const auto rank = [stream](const Topic *topic) { return topicNotificationRank(topic, stream); };
     QVector<const Topic *> sorted;
     for (const auto &topic : topics) sorted.append(&topic);
     std::stable_sort(sorted.begin(), sorted.end(), [&](const Topic *a, const Topic *b) {
@@ -15681,18 +15726,26 @@ QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Str
             && (a->activeUnread > 0) != (b->activeUnread > 0)) return a->activeUnread > 0;
         return timestamps.value(a->uuid) > timestamps.value(b->uuid);
     });
+    return sorted;
+}
+
+QVariantList NativeController::topicRows(const QVector<Topic> &topics, const Stream *stream) const
+{
+    // Issue #718: sort keys come from rowActivityMicros (observed-stamp cache
+    // with window/catalog fallbacks), not from the active window alone.
+    const auto sorted = orderedTopicPointers(topics, stream);
     QVariantList result;
     for (const auto *topic : sorted) {
         auto row = QVariantMap{{"id", topic->uuid}, {"name", topic->name.trimmed()},
             {"unread", topic->unread}, {"activeUnread", topic->activeUnread}, {"passiveUnread", topic->passiveUnread},
             {"lastMessage", topic->lastMessage}, {"done", topic->done},
-            {"activityMicros", timestamps.value(topic->uuid)}};
+            {"activityMicros", rowActivityMicros(topic->lastMessage, topic->updatedMicros)}};
         // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the raw topic
         // mode drives the indicator glyph (mute/unmute/follow render, default not);
         // effectivelyMuted is isWorkspaceTopicEffectivelyMuted - the same predicate
         // the rank lambda above ranks.
         row.insert(QStringLiteral("notificationMode"), topic->notificationMode);
-        row.insert(QStringLiteral("effectivelyMuted"), rank(topic) == 1);
+        row.insert(QStringLiteral("effectivelyMuted"), topicNotificationRank(topic, stream) == 1);
         // #866 review (finding 3): preview fields derive via previewFields() in QML now.
         result.append(row);
     }
