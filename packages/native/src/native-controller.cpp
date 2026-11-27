@@ -3554,7 +3554,7 @@ void NativeController::setPowerWatcher(PowerWatcher *watcher)
         m_sawSleepNotification = true;
     });
     connect(watcher, &PowerWatcher::resumed, this, [this] {
-        if (!m_realtime) return;
+        if (!m_realtime || m_workspaceNotifications) return;
         // Resume-triggered reconnects bypass the reconnect backoff, so bound
         // them (fix-round-1 finding 4, cid 4576526936): bare resumes inside a
         // floor window are ignored (the restored link stays up, and
@@ -10561,6 +10561,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     // like the reference click route (layout-workspace-notifications.hook.ts).
     connect(&m_notifications, &NotificationService::routeRequested, this,
         [this](const QString &stream, const QString &topic) {
+            if (m_backgroundWorkspace) return;
             if (!topic.isEmpty()) openTopic(topic, stream);
             else if (!stream.isEmpty()) selectStream(stream);
         });
@@ -10900,8 +10901,10 @@ void NativeController::startAuthenticatedWorkspace()
     m_topicChanging = false;
     ++m_topicMutation;
     m_recoveringMarker = m_resumeOlder = false;
-    m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
-    m_presenceHeartbeat.start();
+    if (!m_backgroundWorkspace) {
+        m_presenceHeartbeat.setInterval(presenceHeartbeatIntervalMs());
+        m_presenceHeartbeat.start();
+    }
     if (!m_realtimeMode) {
         refresh();
         m_poll.start();
@@ -12078,70 +12081,7 @@ void NativeController::useRealtime(RealtimeClient *client)
         QTimer::singleShot(1000, client, &RealtimeClient::retrySnapshot);
     });
     connect(this, &NativeController::resynchronizeRequested, client, &RealtimeClient::resynchronize);
-    connect(client, &RealtimeClient::connectionChanged, this, [this](const QString &state) {
-        // Issue #50: each backoff retry is one reconnect attempt for the
-        // diagnostics Connection card (connection.reconnectAttempt).
-        if (state == QLatin1String("retrying"))
-            ++m_realtimeReconnectAttempts;
-        // Issue #717: automatic recovery is silent in the reference
-        // (connection-health requestReconnect with showReconnecting:false),
-        // so the visible reconnecting phase is gated on escalation: a second
-        // retrying phase between two live links means the first reconnect
-        // retry also failed and the outage is sustained, not self-recovering.
-        if (state == QLatin1String("live"))
-            m_reconnectRetriesSinceLive = 0;
-        else if (state == QLatin1String("retrying"))
-            ++m_reconnectRetriesSinceLive;
-        // Issue #51: real connection-health transitions feed the session log
-        // (reference scope "connection-health", connection-health logger).
-        if (state == QLatin1String("live"))
-            m_sessionLog.append(QStringLiteral("info"), QStringLiteral("connection-health"),
-                QStringLiteral("Realtime connection live"));
-        else if (state == QLatin1String("retrying"))
-            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
-                QStringLiteral("Realtime reconnect attempt %1")
-                    .arg(m_realtimeReconnectAttempts));
-        else if (state != QLatin1String("connecting") && state != QLatin1String("catching_up"))
-            m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
-                QStringLiteral("Realtime connection state: %1").arg(state));
-        const bool previous = m_syncBlocked;
-        m_syncState = state;
-        // Issue #717 (exo-review finding 1): bounded escalation. A drop that
-        // parks in an unstable phase without entering further retry
-        // transitions (e.g. a catch-up request the server never answers)
-        // must not stay invisible forever: stamp the unstable streak and
-        // schedule one escalation notice for the window's expiry.
-        const bool unstablePhase = state == QLatin1String("connecting")
-            || state == QLatin1String("catching_up") || state == QLatin1String("retrying")
-            || state == QLatin1String("waiting_for_session");
-        if (unstablePhase && m_reconnectUnstableSinceMs == 0) {
-            m_reconnectUnstableSinceMs = QDateTime::currentMSecsSinceEpoch();
-            QTimer::singleShot(m_reconnectEscalationGraceMs, this, [this]() {
-                if (m_reconnectUnstableSinceMs)
-                    emit stateChanged();
-            });
-        } else if (!unstablePhase && m_reconnectUnstableSinceMs != 0) {
-            m_reconnectUnstableSinceMs = 0;
-        }
-        if (state == "live") {
-            m_syncBlocked = false;
-            if (previous) ++m_realtimeRecovery;
-            // A healthy realtime link proves reachability on its own: a
-            // stale transport-offline flag must not outlive the realtime
-            // recovery and mask live sync state with the offline banner.
-            m_transportOffline = false;
-        }
-        else if (state != "catching_up" && state != "connecting") m_syncBlocked = true;
-        if (!previous && m_syncBlocked) {
-            interruptChannelCreations();
-            interruptDirectChats();
-        }
-        if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
-            || state == "waiting_for_session" || state == "stopped") markCacheStale();
-        const QPointer<NativeController> guard(this);
-        if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
-        if (guard && previous && state == "live") retryInterruptedHistory();
-    });
+    connect(client, &RealtimeClient::connectionChanged, this, &NativeController::publishRealtimeState);
     connect(client, &RealtimeClient::eventReceived, this, [this, client](const QJsonObject &event) {
         // Issue #50: diagnostics realtime stats mirror
         // diagnostics-realtime.lib.ts:16-20 (recorded on every receive).
@@ -12162,6 +12102,72 @@ void NativeController::useRealtime(RealtimeClient *client)
         }
     });
     client->start();
+}
+
+void NativeController::publishRealtimeState(const QString &state)
+{
+    // Issue #50: each backoff retry is one reconnect attempt for the
+    // diagnostics Connection card (connection.reconnectAttempt).
+    if (state == QLatin1String("retrying"))
+        ++m_realtimeReconnectAttempts;
+    // Issue #717: automatic recovery is silent in the reference
+    // (connection-health requestReconnect with showReconnecting:false),
+    // so the visible reconnecting phase is gated on escalation: a second
+    // retrying phase between two live links means the first reconnect
+    // retry also failed and the outage is sustained, not self-recovering.
+    if (state == QLatin1String("live"))
+        m_reconnectRetriesSinceLive = 0;
+    else if (state == QLatin1String("retrying"))
+        ++m_reconnectRetriesSinceLive;
+    // Issue #51: real connection-health transitions feed the session log
+    // (reference scope "connection-health", connection-health logger).
+    if (state == QLatin1String("live"))
+        m_sessionLog.append(QStringLiteral("info"), QStringLiteral("connection-health"),
+            QStringLiteral("Realtime connection live"));
+    else if (state == QLatin1String("retrying"))
+        m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+            QStringLiteral("Realtime reconnect attempt %1")
+                .arg(m_realtimeReconnectAttempts));
+    else if (state != QLatin1String("connecting") && state != QLatin1String("catching_up"))
+        m_sessionLog.append(QStringLiteral("warn"), QStringLiteral("connection-health"),
+            QStringLiteral("Realtime connection state: %1").arg(state));
+    const bool previous = m_syncBlocked;
+    m_syncState = state;
+    // Issue #717 (exo-review finding 1): bounded escalation. A drop that
+    // parks in an unstable phase without entering further retry
+    // transitions (e.g. a catch-up request the server never answers)
+    // must not stay invisible forever: stamp the unstable streak and
+    // schedule one escalation notice for the window's expiry.
+    const bool unstablePhase = state == QLatin1String("connecting")
+        || state == QLatin1String("catching_up") || state == QLatin1String("retrying")
+        || state == QLatin1String("waiting_for_session");
+    if (unstablePhase && m_reconnectUnstableSinceMs == 0) {
+        m_reconnectUnstableSinceMs = QDateTime::currentMSecsSinceEpoch();
+        QTimer::singleShot(m_reconnectEscalationGraceMs, this, [this]() {
+            if (m_reconnectUnstableSinceMs)
+                emit stateChanged();
+        });
+    } else if (!unstablePhase && m_reconnectUnstableSinceMs != 0) {
+        m_reconnectUnstableSinceMs = 0;
+    }
+    if (state == "live") {
+        m_syncBlocked = false;
+        if (previous) ++m_realtimeRecovery;
+        // A healthy realtime link proves reachability on its own: a
+        // stale transport-offline flag must not outlive the realtime
+        // recovery and mask live sync state with the offline banner.
+        m_transportOffline = false;
+    }
+    else if (state != "catching_up" && state != "connecting") m_syncBlocked = true;
+    if (!previous && m_syncBlocked) {
+        interruptChannelCreations();
+        interruptDirectChats();
+    }
+    if (state == "retrying" || state == "invalid_data" || state == "authentication_required"
+        || state == "waiting_for_session" || state == "stopped") markCacheStale();
+    const QPointer<NativeController> guard(this);
+    if (previous != m_syncBlocked) notifyTrustChanged(); else emit stateChanged();
+    if (guard && previous && state == "live") retryInterruptedHistory();
 }
 
 ApiClient::RequestId NativeController::request(const QByteArray &method, const QString &path,
@@ -13212,14 +13218,14 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // filters own/read/non-DM/non-markdown/foreign-host messages, and the
         // store keeps the dedupe-by-id and ignore-while-active matrix, so the
         // call stays invisible unless every reference condition holds.
-        if (kind == QLatin1String("message.created"))
+        if (kind == QLatin1String("message.created") && !m_backgroundWorkspace)
             maybeOfferCallInvite(*message);
         if (kind == "message.read") {
             staleReadConversation(message->stream, message->topic);
             if (message->read && m_cache)
                 m_cache->markHistoryRead(m_cacheLease, message->stream, message->topic, {message->uuid});
             if (message->read)
-                m_notifications.onMessagesClosed(creationOwnerKey(), {message->uuid});
+                closeMessageNotifications({message->uuid});
             // A read event owns only a monotonic flag, even if its envelope also
             // carries an older complete message DTO.
             if (selected && message->read) {
@@ -13367,7 +13373,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         if (unreadMentionRemoved) emit sidebarStreamsChanged();
         // Deletion closes notifications the same way a read does in the
         // reference closeReadMessageNotifications flow.
-        m_notifications.onMessagesClosed(creationOwnerKey(), {id});
+        closeMessageNotifications({id});
         const auto outcome = std::find_if(m_chatOutcomeFacts.begin(), m_chatOutcomeFacts.end(),
             [&](const ChatOutcomeFact &fact) { return fact.id == id; });
         const bool knownOutcome = outcome != m_chatOutcomeFacts.end()
@@ -13428,7 +13434,7 @@ bool NativeController::applyRealtimeEvent(const QJsonObject &envelope)
         // old pagination boundary, and every retained page stays stale.
         staleCache(NativeCache::Kind::History);
         if (m_cache && !ids.isEmpty()) m_cache->markHistoryRead(m_cacheLease, {}, {}, ids);
-        m_notifications.onMessagesClosed(creationOwnerKey(), QList<QString>(ids.cbegin(), ids.cend()));
+        closeMessageNotifications(QList<QString>(ids.cbegin(), ids.cend()));
         staleCache(NativeCache::Kind::Streams);
         staleCache(NativeCache::Kind::Topics);
         ++m_messageRevision;
@@ -14169,14 +14175,19 @@ QVariantList NativeController::sessionSwitcherSessions() const
 void NativeController::publishSessionProjection(const QString &accountId, const QVariantMap &projection)
 {
     if (accountId.isEmpty()) return;
-    if (projection.isEmpty()) m_sessionProjections.remove(accountId);
-    else m_sessionProjections.insert(accountId, projection);
+    if (projection.isEmpty()) {
+        if (!m_sessionProjections.remove(accountId)) return;
+    } else {
+        if (m_sessionProjections.value(accountId) == projection) return;
+        m_sessionProjections.insert(accountId, projection);
+    }
     emit sessionSwitcherChanged();
 }
 
 void NativeController::selectWorkspaceSession(const QString &id)
 {
-    if (busy() || id.isEmpty() || id == m_session->currentSavedAccountId()) return;
+    if (id.isEmpty() || m_cacheForgettingAccount) return;
+    if (!m_session->hasWorkspaceManager() && (busy() || id == m_session->currentSavedAccountId())) return;
     bool remembered = false;
     for (const auto &account : m_session->savedAccounts()) remembered = remembered || account.id == id;
     if (!remembered) return;
@@ -14554,7 +14565,7 @@ void NativeController::mutateChat(const QString &id, const QString &name, bool r
             if (allRead) {
                 mentionIndexClearStream(id); inboxSlotStreamRead(id);
             } else for (const auto &message : loaded) mentionIndexRemove(message);
-            m_notifications.onMessagesClosed(creationOwnerKey(), QList<QString>(loaded.cbegin(), loaded.cend()));
+            closeMessageNotifications(QList<QString>(loaded.cbegin(), loaded.cend()));
             if (!owned()) return;
             ++m_messageRevision;
             emit messagesChanged(); if (!owned()) return;
@@ -16518,6 +16529,11 @@ QVariantMap NativeController::presentMessageSecrets(const QString &messageId, co
 
 void NativeController::offerNotificationCandidate(const Message &message)
 {
+    if (m_workspaceNotifications) return;
+    if (m_notificationViewport
+        && m_notificationViewport->creationOwnerKey() == creationOwnerKey()
+        && m_notificationViewport->inConversation(message))
+        return;
     NotificationCandidate candidate;
     candidate.owner = creationOwnerKey();
     candidate.messageUuid = message.uuid;
@@ -16531,9 +16547,31 @@ void NativeController::offerNotificationCandidate(const Message &message)
     candidate.mentioned = message.mentioned.value_or(false);
     candidate.createdMicros = message.createdMicros;
     // The caller only offers messages outside the on-screen conversation.
-    candidate.viewport.windowFocused = m_windowFocused;
+    candidate.viewport.windowFocused = m_notificationViewport
+        ? m_notificationViewport->m_windowFocused : m_windowFocused;
     candidate.viewport.conversationOnScreen = false;
     m_notifications.ingest(candidate);
+}
+
+void NativeController::closeMessageNotifications(const QList<QString> &messages)
+{
+    auto *service = m_workspaceNotifications ? m_workspaceNotifications.data() : &m_notifications;
+    service->onMessagesClosed(creationOwnerKey(), messages);
+}
+
+void NativeController::publishWorkspaceCatalog(const NativeController &source)
+{
+    if (!authenticated() || creationOwnerKey() != source.creationOwnerKey()
+        || !source.m_catalogVerified || !m_streams.isEmpty()) return;
+    m_streams = source.m_streams;
+    ++m_streamsMutation;
+    m_folders = source.m_folders;
+    m_names = source.m_names;
+    m_viewerDirectoryOwner = source.m_viewerDirectoryOwner;
+    m_channelDirectoryOwner = source.m_channelDirectoryOwner;
+    m_cacheHydrated = !m_streams.isEmpty();
+    emit streamsChanged();
+    emit foldersChanged();
 }
 
 void NativeController::setWindowFocused(bool focused)
@@ -19721,7 +19759,7 @@ void NativeController::noteActivityTimestamps(const QVector<Message> &rows)
 // reply re-arms the timer so completion, not polling, paces the batches.
 void NativeController::scheduleTopicPreload(int delayMs)
 {
-    if (!m_topicPreloadEnabled) return;
+    if (m_backgroundWorkspace || !m_topicPreloadEnabled) return;
     if (!m_topicPreloadTimer) {
         m_topicPreloadTimer = new QTimer(this);
         m_topicPreloadTimer->setSingleShot(true);
@@ -20280,6 +20318,7 @@ QString NativeController::takeRowPreviewCandidate(QQueue<QString> &queue) const
 
 void NativeController::seedRowPreviewHydrationFromCatalog()
 {
+    if (m_backgroundWorkspace) return;
     // #860: the reference primes the sidebar's last-message data for EVERY row on catalog
     // accept, not only the rendered ones (messenger-bootstrap.lib.ts L285-329,
     // messenger-last-messages-loader.lib.ts L96-129). Pointers are deduplicated, resolved
@@ -20370,6 +20409,7 @@ int NativeController::streamRowByUuid(const QString &uuid)
 // the channel list per topic accept; repeated for every background inbox accept too).
 void NativeController::seedRowPreviewHydrationForStream(const QString &streamUuid)
 {
+    if (m_backgroundWorkspace) return;
     const auto queue = [this](const QString &uuid) { enqueueRowPreviewDisk(uuid); };
     // #888 (exordy round 2): the row comes from the reusable uuid index - a sweep
     // of N background accepts inspects the streams catalog once, not N times.

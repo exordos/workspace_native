@@ -92,6 +92,7 @@ signals:
     void requestDispatched(QNetworkReply *reply);
 
 private:
+    friend class Session;
     struct Pending;
     bool originAllowed(const QUrl &origin) const;
     void invalidateRequests(bool sameOwnerRenewal = false);

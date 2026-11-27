@@ -46,6 +46,7 @@ class RealtimeClient;
 class PowerWatcher;
 class FileClient;
 class NativeChatKeyVault;
+class WorkspaceSessions;
 struct FileResult;
 
 // Issue #866 (finding 2): move-aware sidebar row model. The sidebar ListView
@@ -1298,6 +1299,10 @@ signals:
     void resynchronizeRequested();
 
 private:
+    friend class WorkspaceSessions;
+    void publishRealtimeState(const QString &state);
+    void publishWorkspaceCatalog(const NativeController &source);
+    void closeMessageNotifications(const QList<QString> &messages);
     void applyDeepLink(const QString &url);
     void openProfileShareLink(const QString &user);
     void applyStreamRoute(const QString &org, const QString &project,
@@ -2094,6 +2099,9 @@ private:
     void reportPresenceHeartbeat();
     QTimer m_presenceHeartbeat;
     QPointer<RealtimeClient> m_realtime;
+    QPointer<NativeController> m_notificationViewport;
+    QPointer<NotificationService> m_workspaceNotifications;
+    bool m_backgroundWorkspace = false;
     QPointer<PowerWatcher> m_powerWatcher;
     // Clock for the resume-reconnect floor (fix-round-1 finding 4): restarted
     // on every resume-triggered reconnectNow, resumes inside the floor ignored.

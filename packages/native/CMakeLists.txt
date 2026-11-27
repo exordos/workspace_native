@@ -116,6 +116,7 @@ add_library(workspace-native-core STATIC
     src/chat-background.cpp src/chat-background.h
     src/session.cpp src/session.h
     src/session-vault.cpp src/session-vault.h
+    src/workspace-sessions.cpp src/workspace-sessions.h
     src/realtime-client.cpp src/realtime-client.h
     src/native-realtime-cursor-store.cpp src/native-realtime-cursor-store.h
     src/power-watcher.cpp src/power-watcher.h
