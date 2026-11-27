@@ -51058,6 +51058,49 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(fill->property("color").value<QColor>().alpha() == 0, 2000);
     }
 
+    // Issue #946 site 5 witness: the logs-modal close button (NativeDiagnosticsPage.qml
+    // logsCloseButton, :1350) paints its fill through `logsCloseMouseArea.containsMouse`
+    // while its Image glyph sits on top. The pointer to the glyph center must
+    // switch the fill in and revert it when the pointer leaves.
+    void logsModalCloseButtonFillsOnGlyphCenterHover()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en");
+        WindowOwnStatusFixture fixture;
+        QVERIFY(fixture.start(controller));
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        const auto close = qScopeGuard([&] { closeIncubatedTestWindow(engine, window); });
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        click(window, visibleItem("accountMenuButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("diagnosticsAction"), 4000);
+        click(window, visibleItem("diagnosticsAction"));
+        QTRY_VERIFY_WITH_TIMEOUT(controller.section() == QStringLiteral("diagnostics"), 4000);
+        click(window, visibleItem("diagnosticsViewLogsButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(visibleItem("logsModalHeader"), 4000);
+        auto *closeButton = visibleItem("logsCloseButton");
+        QVERIFY(closeButton);
+        QVERIFY(closeButton->property("color").value<QColor>().alpha() == 0);
+        QTest::mouseMove(window,
+            closeButton->mapToScene(QPointF(closeButton->width() / 2.0,
+                closeButton->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() != 0, 2000);
+        // Neutral corner: the fill must revert.
+        QTest::mouseMove(window, QPoint(8, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(
+            closeButton->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
 };
 
 
