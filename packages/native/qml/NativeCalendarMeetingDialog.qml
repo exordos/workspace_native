@@ -13,6 +13,8 @@ Dialog {
     signal deleteRequested(string uuid, string title)
     property string editingUuid: ""
     property string originalTitle: ""
+    property string originalStartUtc: ""
+    property string originalEndUtc: ""
     property string errorMessage: ""
 
     title: editingUuid ? qsTr("Edit meeting") : qsTr("New meeting")
@@ -35,8 +37,10 @@ Dialog {
         subject.text = originalTitle
         people.text = meeting ? meeting.participants.join("\n") : ""
         calendarBox.currentIndex = meeting && meeting.calendar === "personal" ? 1 : 0
-        const start = meeting ? new Date(meeting.startUtc) : selectedDate
-        const end = meeting ? new Date(meeting.endUtc) : selectedDate
+        originalStartUtc = meeting ? meeting.startUtc : ""
+        originalEndUtc = meeting ? meeting.endUtc : ""
+        const start = meeting ? new Date(originalStartUtc) : selectedDate
+        const end = meeting ? new Date(originalEndUtc) : selectedDate
         startDate.text = Qt.formatDate(start, "yyyy-MM-dd")
         endDate.text = Qt.formatDate(end, "yyyy-MM-dd")
         startTime.text = meeting ? Qt.formatTime(start, "HH:mm") : "09:00"
@@ -46,8 +50,15 @@ Dialog {
         open()
     }
 
-    function localDateTime(day, clock) {
+    function localDateTime(day, clock, originalUtc) {
         const value = day + " " + clock
+        if (originalUtc) {
+            const original = new Date(originalUtc)
+            // The repeated hour at a DST transition has two valid instants.
+            // A title-only edit must also preserve seconds hidden by the form.
+            if (Qt.formatDateTime(original, "yyyy-MM-dd HH:mm") === value)
+                return original
+        }
         const instant = Date.fromLocaleString(Qt.locale("C"), value, "yyyy-MM-dd HH:mm")
         return !isNaN(instant.getTime()) && Qt.formatDateTime(instant, "yyyy-MM-dd HH:mm") === value
             ? instant : null
@@ -59,8 +70,8 @@ Dialog {
             subject.forceActiveFocus()
             return
         }
-        const start = localDateTime(startDate.text, startTime.text)
-        const end = localDateTime(endDate.text, endTime.text)
+        const start = localDateTime(startDate.text, startTime.text, originalStartUtc)
+        const end = localDateTime(endDate.text, endTime.text, originalEndUtc)
         if (!start || !end || end <= start) {
             errorMessage = qsTr("Enter valid dates and times. The end must be after the start.")
             return
