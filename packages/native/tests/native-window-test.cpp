@@ -11180,14 +11180,14 @@ mv -Tf "$root/.current-new" "$root/current"
         click(window, item(content, "projectLoginButton"));
         QTRY_COMPARE(controller.streams().size(), 1);
         perfPhase("project-open", clock.restart());
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         perfPhase("stream-open-1-cold", clock.restart());
         const QStringList topicPhaseNames{QStringLiteral("topic-select-1-cold"),
             QStringLiteral("topic-select-2-cold"), QStringLiteral("topic-select-3-warm")};
         int topicPhaseIndex = 0;
         for (const auto &id : {topicId, secondTopicId, topicId}) {
-            click(window, item(content, "topic-" + id));
+            clickIncubatedItem(window, "topic-" + id);
             QTRY_VERIFY(!controller.busy());
             QTRY_VERIFY(item(content, "message-content-" + (id == topicId ? messageId : returnedId)));
             QVERIFY(!controller.cacheStale());
@@ -11196,12 +11196,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QCOMPARE(historyGets, 2);
         QCOMPARE(aggregateGets, 1);
         QCOMPARE(topicGets, 1);
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 2);
         QTRY_VERIFY(!controller.busy());
         QTRY_COMPARE(controller.messages().size(), 2);
         perfPhase("stream-open-2-warm", clock.restart());
-        click(window, item(content, "topic-" + secondTopicId));
+        clickIncubatedItem(window, "topic-" + secondTopicId);
         QTRY_VERIFY(!controller.busy());
         QTRY_VERIFY(item(content, "message-content-" + returnedId));
         perfPhase("topic-select-4-warm", clock.restart());
@@ -14290,7 +14290,7 @@ mv -Tf "$root/.current-new" "$root/current"
             // its own real-window regressions.
             controller.cancelConversationOpening();
         }
-        else click(window, item(window->contentItem(), "stream-" + streamId));
+        else clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 3);
         // This was the first actual UI RED: stream selection had no source
         // topic-choice footer and retained the disabled composer frame instead.
@@ -14434,14 +14434,14 @@ mv -Tf "$root/.current-new" "$root/current"
             QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
             QTRY_VERIFY(visibleItem("messageComposerShell"));
             controller.setDraft("A topic draft survives the aggregate route");
-            click(window, item(window->contentItem(), "stream-" + streamId));
+            clickIncubatedItem(window, "stream-" + streamId);
             QTRY_VERIFY(visibleItem("streamTopicPrompt"));
             QVERIFY(!visibleItem("messageComposerShell"));
             QTRY_VERIFY(visibleItem("topicShortcut-" + secondTopicId));
-            click(window, item(window->contentItem(), "topicShortcut-" + secondTopicId));
+            clickIncubatedItem(window, "topicShortcut-" + secondTopicId);
             QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
             QCOMPARE(controller.draft(), QString("A topic draft survives the aggregate route"));
-            click(window, item(window->contentItem(), "stream-" + streamId));
+            clickIncubatedItem(window, "stream-" + streamId);
             QTRY_VERIFY(visibleItem("topicShortcut-" + closedTopicId));
             if (scenario == "ru-dark") {
                 window->resize(700, 600);
@@ -14459,7 +14459,7 @@ mv -Tf "$root/.current-new" "$root/current"
                 closedShortcut->forceActiveFocus(Qt::TabFocusReason);
                 QTRY_VERIFY(closedShortcut->hasActiveFocus());
                 QTest::keyClick(window, Qt::Key_Space);
-            } else click(window, item(window->contentItem(), "topicShortcut-" + closedTopicId));
+            } else clickIncubatedItem(window, "topicShortcut-" + closedTopicId);
             QTRY_COMPARE(controller.selectedTopic(), closedTopicId);
             QTRY_VERIFY(controller.topicClosed());
             QVERIFY(!visibleItem("messageComposerShell"));
@@ -16588,12 +16588,10 @@ mv -Tf "$root/.current-new" "$root/current"
         // after the click helper's readiness wait, the direct lookup returns
         // nullptr ('guard' FALSE), and every downstream scroll pin fails.
         // Wait for the delegate to exist before clicking it.
-        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), aggregate ? 2 : 1);
         if (!aggregate) {
-            QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
-            click(window, item(window->contentItem(), "topic-" + topicId));
+            clickIncubatedItem(window, "topic-" + topicId);
         }
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
@@ -19792,9 +19790,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         QVERIFY(controller.canAttach());
         auto *picker = window->findChild<QObject *>("attachmentPicker");
@@ -32635,9 +32633,9 @@ private:
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -48706,9 +48704,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 3);
         // Both downloads complete, so both file uuids have a downloaded entry.
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
