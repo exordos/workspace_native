@@ -3334,10 +3334,10 @@ struct NativeWindowScene {
         session.selectProject(projectId);
         if (!QTest::qWaitFor([&] { return controller.streams().size() == 25; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         if (!QTest::qWaitFor([&] { return controller.topics().size() == 1; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         if (!QTest::qWaitFor([&] { return controller.messages().size() == 50; }, 5000))
             return false;
         auto *list = item(window->contentItem(), "messageList");
@@ -14621,10 +14621,10 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(item(content, "sessionLogo-" + switcherLiveId)->property("status").toInt(), 1);
         QVERIFY(!item(content, "messageComposer")->isEnabled());
         QTRY_VERIFY(item(content, "stream-" + streamId));
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
         QTRY_VERIFY(item(content, "topic-" + topicId));
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 2);
         QTRY_VERIFY(item(content, "message-content-" + messageId));
         const auto peerHtml = item(content, "message-content-" + messageId)->property("text").toString();
@@ -17231,9 +17231,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -17662,9 +17662,9 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
         QVERIFY(composer);
@@ -17755,9 +17755,9 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
         QVERIFY(composer && composer->isEnabled());
@@ -17934,11 +17934,11 @@ mv -Tf "$root/.current-new" "$root/current"
                 QSignalSpy frame(window, &QQuickWindow::frameSwapped);
                 QVERIFY(frame.isValid());
                 window->update(); QTRY_VERIFY(!frame.isEmpty());
-                click(window, item(content, "stream-" + streamId));
+                clickIncubatedItem(window, "stream-" + streamId);
                 QTRY_COMPARE(controller.selectedStream(), streamId);
                 QTRY_VERIFY(item(content, "topic-" + secondTopicId));
                 frame.clear(); window->update(); QTRY_VERIFY(!frame.isEmpty());
-                click(window, item(content, "topic-" + secondTopicId));
+                clickIncubatedItem(window, "topic-" + secondTopicId);
             }
             QTRY_COMPARE_WITH_TIMEOUT(controller.selectedTopic(), secondTopicId, 2000);
             QCOMPARE(controller.selectedStream(), streamId);
@@ -42911,9 +42911,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.selectedTopic(), topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *content = window->contentItem();
@@ -48811,9 +48811,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
@@ -48880,9 +48880,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
@@ -48951,9 +48951,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
@@ -49628,9 +49628,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto tag = messageId + '-' + returnedId;
@@ -49725,9 +49725,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto tag = messageId + '-' + returnedId;
