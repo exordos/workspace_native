@@ -57,7 +57,7 @@ in `Main.qml` (the `section === "calendar"` branch). The objectName
   filters `calendarFilters`), main pane bound to the active view:
   - Day: agenda list `calendarAgenda` for the selected date, event rows
     (time pill, title, colour chip per calendar).
-  - Week: 7-column grid `calendarWeekGrid` with event chips per day cell.
+  - Week: seven weekday columns share a scrollable local-time axis. Meetings use their start and end times for vertical placement and duration. Overlapping meetings share the day width. All-day entries sit above the hour grid. The reference is Calendar / Week, Figma frame 18693:32323.
   - Month: 6x7 day grid `calendarMonthGrid` with day numbers, today mark,
     event dots, plus the agenda pane for the selected day. When the main
     pane cannot fit the grid beside a 200 px agenda, the agenda moves below

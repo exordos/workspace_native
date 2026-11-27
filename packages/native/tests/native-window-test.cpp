@@ -777,6 +777,8 @@ public:
                 return {QJsonArray{
                     calendarEvent(longEventUuid(), today, "09:00", "10:00",
                         "Quarterly alignment across all workspace squads and external partners"),
+                    calendarEvent("90000000-0000-4000-8000-0000000000a3", today, "09:30", "10:30",
+                        "Design review"),
                     calendarEvent("90000000-0000-4000-8000-0000000000a2", today, "11:00", "11:30",
                         "Standup", personalCalendarId)}};
             }
@@ -39940,7 +39942,7 @@ QTRY_VERIFY(create->property("enabled").toBool());
         click(window, view("sectionCalendarButton"));
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
         auto *page = view("calendarSectionPage");
-        QTRY_VERIFY_WITH_TIMEOUT(page->property("events").toList().size() == 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(page->property("events").toList().size() == 3, 5000);
         const QColor hoverTint("#cde6ff"); // card-bg-active light (same token as the #910-era chip pins)
         // Index of today in the 42-cell matrix: the grid starts at the leading
         // Monday of the selected month (weekStart contract, #911).
@@ -40020,6 +40022,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(chip->property("implicitWidth").toReal() > chip->width(), 5000);
         QVERIFY(chip->parentItem());
         QVERIFY(chip->width() <= chip->parentItem()->width());
+        auto *overlap = view("weekChip-90000000-0000-4000-8000-0000000000a3");
+        auto *standalone = view("weekChip-90000000-0000-4000-8000-0000000000a2");
+        QVERIFY(overlap);
+        QVERIFY(standalone);
+        const qreal hour = view("calendarWeekGrid")->property("hourHeight").toReal();
+        QVERIFY(hour >= 44);
+        QVERIFY(qAbs(overlap->y() - chip->y() - hour / 2) < 1);
+        QVERIFY(qAbs(standalone->y() - chip->y() - 2 * hour) < 1);
+        QVERIFY(overlap->y() < chip->y() + chip->height());
+        QVERIFY(chip->x() + chip->width() <= overlap->x());
+        QVERIFY(qAbs(standalone->height() + 1 - hour / 2) < 1);
+        QVERIFY(standalone->width() > chip->width());
     }
 
     void calendarCreatesEditsMovesAndDeletesServerMeeting()
@@ -53533,7 +53547,10 @@ private slots:
         click(window, view("viewTabWeek"));
         const auto chipName = "weekChip-" + uuid;
         QTRY_VERIFY(view(chipName));
-        QCOMPARE(view(chipName)->property("text").toString(), QStringLiteral("09:30 Updated plan"));
+        QCOMPARE(view(chipName)->property("text").toString(), QStringLiteral("Updated plan"));
+        const auto *time = view(chipName)->findChild<QQuickItem *>("weekTimeRange");
+        QVERIFY(time);
+        QVERIFY(time->property("text").toString().startsWith(QStringLiteral("09:30")));
         click(window, view(chipName));
         QTRY_VERIFY(view("calendarDetailDelete"));
         click(window, view("calendarDetailDelete"));

@@ -545,50 +545,12 @@ FocusScope {
                     }
                 }
 
-                // Week view: seven day columns with event chips.
-                Row {
-                    id: weekGrid
-                    objectName: "calendarWeekGrid"
-                    spacing: 1
-                    Repeater {
-                        objectName: "weekColumns"
-                        model: Array.from({ length: 7 }, (_, i) => i)
-                        delegate: Column {
-                            id: weekColumn
-                            required property int modelData
-                            width: (weekGrid.width - 6) / 7
-                            spacing: 2
-                            readonly property var cellDate: {
-                                page.selectedDate;
-                                return page.shiftDate(page.weekStart(page.selectedDate), modelData);
-                            }
-                            Label {
-                                color: page.colors["text-muted"]
-                                text: Qt.formatDate(weekColumn.cellDate, "dd")
-                            }
-                            Repeater {
-                                model: page.visibleEvents(
-                                    page.calDate(weekColumn.cellDate),
-                                    page.calDate(weekColumn.cellDate))
-                                delegate: Label {
-                                    id: weekChip
-                                    required property var modelData
-                                    objectName: "weekChip-" + modelData.uuid
-                                    // #924: bound to the day column and elided,
-                                    // long titles no longer spill past it.
-                                    width: weekColumn.width
-                                    elide: Text.ElideRight
-                                    text: modelData.start + " " + modelData.title
-                                    textFormat: Text.PlainText
-                                    color: page.colors["text-primary"]
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        onClicked: page.detailEvent = weekChip.modelData
-                                    }
-                                }
-                            }
-                        }
-                    }
+                NativeCalendarWeek {
+                    colors: page.colors
+                    localeName: page.uiLocale
+                    dates: Array.from({length: 7}, (_, day) => page.shiftDate(page.weekStart(page.selectedDate), day))
+                    eventsForDate: date => page.visibleEvents(page.calDate(date), page.calDate(date))
+                    onEventActivated: event => page.detailEvent = event
                 }
 
                 // Month view: 6x7 grid with event dots + agenda pane.
