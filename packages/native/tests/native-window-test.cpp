@@ -24074,6 +24074,34 @@ NativeAvatarImage {
             return qAbs(paintedCenter().y() - (beforePan.y() + 48.0)) < 0.75;
         })(), 2000);
         QCOMPARE(viewer->index(), 0);
+        // exordy finding 1: a second wheel notch at the SAME scene point must
+        // keep the pixel under the cursor fixed even though zoom != 1 now.
+        // The handler used to feed mediaImage-local (scaled) coords into the
+        // anchor, so the anchor offset diverged by hundreds of px here.
+        // State: zoom 5, pan (48, 48). One -120 notch at center+(200,0):
+        // applied = exp(-0.42); correct anchor = cx(1-a) + a*pan with
+        // cx = 200 (x of the cursor relative to the media-area center).
+        const double outA = std::exp(-0.42);
+        wheelAt(center + QPoint(200, 0), QPoint(0, -120));
+        const double anchoredPan = 200.0 * (1.0 - outA) + outA * 48.0;
+        QVERIFY2(qAbs(image->scale() - 5.0 * outA) < 1e-6,
+                 qPrintable(QString::number(image->scale())));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - (areaCenter.x() + anchoredPan)) < 1.0;
+        })(), 2000);
+        // exordy finding 2: a button/keyboard step while panned keeps the pan
+        // (picture center holds its offset) and only clamps into the new
+        // bounds; multiplying pan by the step ratio used to slide the center.
+        const double pannedX = paintedCenter().x();
+        QTest::keyClick(window, Qt::Key_Minus); // 3.29x -> 2.63x, no clamp
+        QCOMPARE(image->scale(), 5.0 * outA / 1.25);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{
+            return qAbs(paintedCenter().x() - pannedX) < 0.75;
+        })(), 2000);
+        // exordy finding 3: only the pill BACKGROUND carries the /80 alpha;
+        // item opacity on the whole bar faded its buttons and label too.
+        QCOMPARE(zoomBar->opacity(), 1.0);
+        QVERIFY(qAbs(QColor(zoomBar->property("color").toString()).alphaF() - 0.8) < 0.01);
         QTest::keyClick(window, Qt::Key_Right);
         QCOMPARE(viewer->index(), 1);
         QCOMPARE(image->scale(), 1.0);

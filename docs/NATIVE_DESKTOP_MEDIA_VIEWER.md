@@ -72,11 +72,16 @@ palette `shared/lib/themes/blue-cold.ts`, default palette `blue-cold`,
   at the cursor (Qt's pixelDelta when present, else angleDelta with 120 units
   per notch, so a mouse notch multiplies by ~1.52 where the reference's
   ~100-unit wheel step gives ~1.42 - the same interaction shape at Qt's wheel
-  units); the toolbar buttons and "+"/"="/"-" keys step by 1.25x anchored at
-  the image center and "0" resets to 100%; Shift+arrow pans 48 px only while
+  units). The wheel point is mapped from the scaled image's local coords into
+  the media area before the anchor math, so repeated notches at one scene
+  point keep the pixel under the cursor fixed. The toolbar buttons and
+  "+"/"="/"-" keys step by 1.25x holding the pan (the picture center keeps its
+  current offset, clamped into the new bounds) and "0" resets to 100%;
+  Shift+arrow pans 48 px only while
   zoomed and never pages the gallery, plain arrows keep paging. A new slot or
   gallery starts at 1 and its pan is centered. The zoom pill (bottom-centered,
-  minus / percent-reset / plus) renders only for a ready image slot - video
+  minus / percent-reset / plus; background at 80% alpha, controls opaque)
+  renders only for a ready image slot - video
   slots keep zoom disabled, though their wheel is still consumed so nothing
   behind the viewer scrolls. Both keep the covered conversation at its current
   scroll position.
