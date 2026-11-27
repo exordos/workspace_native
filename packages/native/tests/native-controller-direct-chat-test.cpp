@@ -348,7 +348,11 @@ private slots:
         if (change.startsWith("cache-")) test.fixture.controller.useCache(cache.get());
         QVERIFY(test.fixture.start()); auto &controller = test.fixture.controller;
         QTRY_VERIFY(controller.directChatDirectoryVerified());
-        const auto fallback = test.fixture.server.handler; bool delayed = false;
+        const auto fallback = test.fixture.server.handler; bool arrived = false;
+        std::function<void()> release;
+        // #923: defer-gate the staged response instead of a 150 ms sleep so the
+        // delayed completion can never settle before the context change under
+        // parallel load (the flips that reddened master pushes).
         test.fixture.server.handler = [&, fallback](const Request &request) {
             auto result = fallback(request); const auto path = request.target.path();
             const bool target = (stage == "lookup" && path.endsWith(directId) && test.gets == 1)
@@ -356,11 +360,14 @@ private slots:
                 || (stage == "canonical" && path.endsWith(directId) && test.gets == 2)
                 || (stage == "default" && path.endsWith("/stream_topics/") && !test.created.isEmpty())
                 || (stage == "catalog" && path.endsWith("/streams/") && request.method == "GET" && !test.created.isEmpty());
-            if (target && !delayed) { delayed = true; result.delay = 150; }
+            if (target && !arrived) {
+                arrived = true;
+                result.defer = [&release](auto send) { release = std::move(send); };
+            }
             return result;
         };
         QSignalSpy done(&controller, &NativeController::directChatOpened); controller.startDirectChat(channelMemberA);
-        QTRY_VERIFY(delayed); const auto form = controller.directChatForm(); const auto key = controller.directChatContextKey();
+        QTRY_VERIFY(arrived); const auto form = controller.directChatForm(); const auto key = controller.directChatContextKey();
         if (change == "route") controller.selectStream({});
         else if (change == "logout") controller.logout();
         else if (change == "cache-replace") controller.useCache(&replacement);
@@ -374,6 +381,7 @@ private slots:
             };
             test.fixture.session.requestRefresh();
         }
+        QVERIFY(release); release();
         QTRY_VERIFY(test.fixture.api.findChildren<QNetworkReply *>().isEmpty());
         QCOMPARE(done.size(), 0); QCOMPARE(test.posts, stage == "lookup" ? 0 : 1);
         QVERIFY(!controller.directChatBusy()); QVERIFY(controller.selectedStream() != directId);

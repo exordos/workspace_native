@@ -370,6 +370,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_15
     globalChannelRealtimeKeepsTheCorrectFormLifetime
     globalTopicSelectorKeepsSourceChevronAspect
     loginProjectStepDropdownScrollsOverflowingOptions
+    mediaViewerReferenceZoomToolbarStepsKeyboardPanAndClamps
     ownStatusActualMainClearCancelPickerAndFailurePreserveTheDraft
     pollBubbleAnonymousShowsNoVoterPreviews
     quotedMediaMessageShowsAThumbnailInBothPreviewFrames
@@ -433,6 +434,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_17
     integrationSettingsEntryDimsBackgroundWhilePressed
     loginProjectStepDropdownMatchesTheReference
     loginProjectStepLinkedProjectIsPreselectedAndEnforced
+    mediaViewerZoomPillSwallowsStripClicksBeneathIt
     messageTimeViewerPutsAccessibleFocusOnDialog
     ownStatusActualMainApiGenerationClosesAndClearsThePendingEditor
     pollVoterPreviewBudgetSurvivesEviction
