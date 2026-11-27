@@ -17392,9 +17392,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
