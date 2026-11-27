@@ -5923,6 +5923,14 @@
     <context>
         <name>NativeCalendarPage</name>
         <message>
+            <source>Selected date</source>
+            <translation>Дата выбрана</translation>
+        </message>
+        <message>
+            <source>Date not selected</source>
+            <translation>Дата не выбрана</translation>
+        </message>
+        <message>
             <source>Day</source>
             <translation>День</translation>
         </message>
