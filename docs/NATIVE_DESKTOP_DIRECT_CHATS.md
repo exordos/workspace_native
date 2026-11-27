@@ -32,6 +32,9 @@ participants have owner bindings. The global creator may be the peer;
 0152, so the returned peer must equal the selected person. Existing names,
 descriptions and ordinary flags need not equal their initial defaults.
 
+The focused person row accepts Enter or Space. Both start the same verified
+lookup used by a pointer click. Repeated Enter events do not start extra lookups.
+
 The native path is:
 
 1. Admit only a verified current session, fresh catalog and a non-self person

@@ -7,7 +7,8 @@ Issue #95 follows `workspace_ui` master at `75bd21f37de94728e2ebe100acfea24ac9c1
 unread badge on hover or when keyboard focus is on the row, its avatar, or its
 expansion control. The chevron toggles a stream without
 navigating, independently of the other expanded streams. Selecting a stream or
-topic keeps only that stream expanded. Expansion is scoped to the current server,
+topic keeps previously expanded streams open. Enter and Space both activate the
+focused expansion control. Expansion is scoped to the current server,
 project and user and stored using the existing native preferences mechanism.
 
 The existing owner-fenced background topic catalog supplies nonselected streams.

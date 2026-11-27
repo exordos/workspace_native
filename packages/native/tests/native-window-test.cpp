@@ -10156,6 +10156,18 @@ mv -Tf "$root/.current-new" "$root/current"
         if (scenario.endsWith("503")) fixture.postStatus = 503;
         if (scenario == "not-applied503") fixture.applyDirectPost = false;
         if (scenario == "403") fixture.lookupStatus = 403;
+        const auto handler = fixture.server.handler;
+        bool holdNextLookup = false;
+        std::function<void()> releaseLookup;
+        fixture.server.handler = [&](const Request &request) {
+            auto response = handler(request);
+            if (holdNextLookup && request.method == "GET"
+                && request.target.path().endsWith("/streams/" + windowDirectId())) {
+                holdNextLookup = false;
+                response.defer = [&](auto send) { releaseLookup = std::move(send); };
+            }
+            return response;
+        };
         ApiClient api(nullptr, true);
         Session session(&api);
         NativeController controller(&api, &session);
@@ -10171,13 +10183,16 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(visibleItem("direct-user-" + channelPeer));
         auto *peer = visibleItem("direct-user-" + channelPeer);
         peer->forceActiveFocus(Qt::TabFocusReason);
+        holdNextLookup = true;
         QTest::keyClick(window, scenario == "existing" ? Qt::Key_Return : Qt::Key_Space);
-        QTRY_VERIFY(controller.directChatBusy());
+        QTRY_VERIFY(releaseLookup);
+        QVERIFY(controller.directChatBusy());
         QVERIFY(!visibleItem("direct-user-" + channelPeer)->isEnabled());
         click(window, visibleItem("createChatTab-1"));
         visibleItem("channelNameInput")->setProperty("text", "No parallel channel write");
         QVERIFY(!visibleItem("channelCreateButton")->isEnabled());
         click(window, visibleItem("createChatTab-0"));
+        releaseLookup();
         QTRY_VERIFY(!controller.directChatBusy());
         if (scenario == "archived" || scenario == "403") {
             QCOMPARE(fixture.posts, 0); QCOMPARE(opened.size(), 0);
@@ -40168,7 +40183,6 @@ private slots:
     void windowSidebarZeroStreamColorRendersBlackCircle()
     {
         WindowStreamColorScene scene;
-        QVERIFY(scene.circle(scene.fixture.zeroStream));
         QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(scene.fixture.zeroStream, QColor("#000000")), 4000);
     }
 
@@ -40177,15 +40191,14 @@ private slots:
         WindowStreamColorScene scene;
         const auto fallback = QColor(scene.bgToken());
         QVERIFY(fallback.isValid());
-        QVERIFY(scene.circle(scene.fixture.plainStream));
         QTRY_VERIFY_WITH_TIMEOUT(scene.ringMatches(scene.fixture.plainStream, fallback), 4000);
     }
 
     void windowSidebarDirectRowKeepsPlainAvatarBackground()
     {
         WindowStreamColorScene scene;
-        auto *probe = scene.circle(scene.fixture.directStream);
-        QVERIFY(probe);
+        QQuickItem *probe = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((probe = scene.circle(scene.fixture.directStream)), 4000);
         QCOMPARE(probe->size(), QSizeF(40, 40));
         // The DTO carries 0xff0000; a direct row must ignore it (reference
         // WorkspaceAvatar path) and keep the letter/photo fallback surface.

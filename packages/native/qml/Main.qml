@@ -6947,6 +6947,12 @@ component NativeMentionChip: Item {
                                                     if (streamDelegate.expanded) root.setSidebarTopicReveal(streamDelegate.modelData.id, "collapsed");
                                                     root.controller.toggleSidebarStream(streamDelegate.modelData.id);
                                                 }
+                                                Keys.onPressed: event => {
+                                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                                        event.accepted = true;
+                                                        if (!event.isAutoRepeat) expandTopics.clicked();
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -15185,6 +15191,12 @@ component NativeMentionChip: Item {
                                 }
                                 Accessible.name: String(modelData.displayName) + (contentItem.secondary ? ", " + contentItem.secondary : "")
                                 onClicked: root.startDirectPeer(modelData.id)
+                                Keys.onPressed: event => {
+                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                        event.accepted = true;
+                                        if (!event.isAutoRepeat) directUser.clicked();
+                                    }
+                                }
                                 onActiveFocusChanged: if (activeFocus) directUserList.positionViewAtIndex(index, ListView.Contain)
                                 contentItem: ChatPickerRowBody {
                                     user: directUser.modelData
