@@ -1544,14 +1544,23 @@ private slots:
     // must not drop the navigation. The in-flight reply may only populate the
     // window it was sent for; the newest requested window has to be re-issued
     // once the current request settles (deterministic defer-gate repro).
+    void calendarNavigationDuringInflightReissuesNewestWindow_data()
+    {
+        QTest::addColumn<int>("firstStatus");
+        QTest::newRow("loaded") << 200;
+        QTest::newRow("feed-unavailable") << 501;
+        QTest::newRow("request-error") << 503;
+    }
+
     void calendarNavigationDuringInflightReissuesNewestWindow()
     {
+        QFETCH(int, firstStatus);
         Fixture fixture;
         auto gates = std::make_shared<std::vector<std::function<void()>>>();
         auto queries = std::make_shared<QStringList>();
-        fixture.calendar = [gates, queries](const Request &request) {
+        fixture.calendar = [gates, queries, firstStatus](const Request &request) {
             queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
-            Response response{QJsonArray{}};
+            Response response{QJsonArray{}, queries->size() == 1 ? firstStatus : 200};
             response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
             return response;
         };

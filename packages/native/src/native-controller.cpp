@@ -9009,6 +9009,16 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         const QString pendingFrom = m_calendar.pendingFrom;
         const QString pendingTo = m_calendar.pendingTo;
         m_calendar.hasPending = false;
+        // A server without a calendar feed shows an empty agenda. Recheck
+        // on the next visit so deploying the endpoint refreshes this window.
+        if (result.status == 501) {
+            m_calendar.events.clear();
+            m_calendar.hasLoaded = false;
+            m_calendar.loading = false;
+            m_calendar.error = false;
+            emit calendarChanged();
+            return;
+        }
         if (!result.ok() || !result.data.isArray()) {
             m_calendar.loading = false;
             m_calendar.error = true;
