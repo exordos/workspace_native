@@ -23699,7 +23699,12 @@ NativeAvatarImage {
         QTRY_VERIFY(viewer->open());
         QCOMPARE(viewer->index(), 1);
         QTRY_VERIFY(visibleItem(content, "mediaViewer-thumb-0"));
-        click(window, visibleItem(content, "mediaViewer-thumb-0"));
+        // The #919 zoom pill overlaps the middle of the strip and, like the
+        // reference pill div, consumes clicks inside its box. Hit the exposed
+        // top band of the thumbnail (above the pill) instead of its center.
+        auto *thumb0 = visibleItem(content, "mediaViewer-thumb-0");
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          thumb0->mapToScene(QPointF(thumb0->width() / 2.0, 4.0)).toPoint());
         QCOMPARE(viewer->index(), 0);
         QTest::mouseClick(window, Qt::LeftButton, {}, QPoint(8, 300));
         QTRY_VERIFY(!viewer->open());
@@ -24112,6 +24117,96 @@ NativeAvatarImage {
         })(), 2000);
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!viewer->open());
+    }
+
+    void mediaViewerZoomPillSwallowsStripClicksBeneathIt()
+    {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const QString fileA = QStringLiteral("9f000000-0000-4000-8000-00000000000a");
+        const QString fileB = QStringLiteral("9f000000-0000-4000-8000-00000000000b");
+        const QString first = QStringLiteral("9e000000-0000-4000-8000-000000000001");
+        const QString second = QStringLiteral("9e000000-0000-4000-8000-000000000002");
+        const QByteArray png = avatarProbePng(false);
+        WindowChannelFixture fixture;
+        const auto fallback = fixture.server.handler;
+        fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            for (const auto &fileUuid : {fileA, fileB}) {
+                const auto file = "/api/workspace/v1/messenger/files/" + fileUuid;
+                if (path.startsWith(file)) {
+                    if (path == file) {
+                        auto metadata = avatarProbeMetadata(fileUuid, png);
+                        metadata["stream_uuid"] = streamId; metadata["name"] = "shot.png";
+                        return Response{metadata};
+                    }
+                    if (path == file + "/actions/download") {
+                        Response result; result.rawBody = png; result.rawContentType = "image/png";
+                        return result;
+                    }
+                    return Response{QJsonObject{}, 404};
+                }
+            }
+            if (path.endsWith("/messages/") && request.method == "GET") {
+                ++fixture.historyGets;
+                return Response{QJsonArray{mediaViewerRow(first, fileA, png.size()),
+                                           mediaViewerRow(second, fileB, png.size())}};
+            }
+            return fallback(request);
+        };
+        ApiClient api(nullptr, true); Session session(&api); FileClient files(&api);
+        MessageImages images(&api, &session, &files);
+        NativeController controller(&api, &session); controller.useFiles(&files);
+        NativePreferences preferences(directory.filePath("zoom-pill-click.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences, nullptr, nullptr, &images);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto closeBeforeEngine = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data()))
+                QTest::qFail("Zoom pill click window did not settle before engine teardown", __FILE__, __LINE__);
+        });
+        window->resize(1440, 900); QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.server.origin(), "synthetic", "synthetic");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_COMPARE(controller.streams().size(), 1); QTRY_VERIFY(controller.channelMembersVerified());
+        auto *content = window->contentItem();
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "stream-" + streamId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "stream-" + streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return visibleItem(content, "topic-" + topicId) != nullptr; })(), 4000);
+        clickCurrentItem(window, "topic-" + topicId);
+        QTRY_COMPARE(controller.selectedTopic(), topicId);
+        auto *viewer = controller.mediaViewer(); QVERIFY(viewer);
+        clickActiveInlineImage(window, first);
+        QTRY_VERIFY(viewer->open());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *shot = visibleItem(content, "mediaViewer-image"); return shot && shot->isVisible(); })(), 4000);
+        QTRY_VERIFY(visibleItem(content, "mediaViewer-zoomBar"));
+        auto *zoomBar = visibleItem(content, "mediaViewer-zoomBar");
+        auto *counter = item(content, "mediaViewer-counter"); QVERIFY(counter);
+        // exordy finding 4717934505: the pill overlaps the bottom strip and its
+        // 4 px row gap sits exactly over the second thumbnail (the row spans
+        // center-68..center+68, so x=center+30 is the gap between the reset
+        // and the plus button; the thumbnails span center-60..center+60).
+        // A click inside the pill but outside its buttons must not fall
+        // through and select the slot underneath.
+        const QPointF gapInside(zoomBar->width() / 2.0 + 30.0, zoomBar->height() / 2.0);
+        auto *thumb = item(content, "mediaViewer-thumb-1"); QVERIFY(thumb);
+        const QPointF thumbPoint = thumb->mapFromItem(zoomBar, gapInside);
+        const QString gapProbe = QStringLiteral("gap point is not over thumb-1: %1,%2")
+                                     .arg(thumbPoint.x()).arg(thumbPoint.y());
+        QVERIFY2(thumb->contains(thumbPoint), qPrintable(gapProbe));
+        QCOMPARE(viewer->index(), 0);
+        const QPointF scenePoint = zoomBar->mapToScene(gapInside);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier, scenePoint.toPoint());
+        QCOMPARE(viewer->index(), 0);
+        QCOMPARE(counter->property("text").toString(), QStringLiteral("1 / 2"));
+        // The pill only swallows its own dead zones: the plus button on top
+        // of the swallow area must still zoom.
+        auto *percent = item(content, "mediaViewer-zoomPercent"); QVERIFY(percent);
+        auto *zoomIn = visibleItem(content, "mediaViewer-zoomInButton"); QVERIFY(zoomIn);
+        QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                          zoomIn->mapToScene(QPointF(zoomIn->width() / 2.0, zoomIn->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ return percent->property("text").toString() != QStringLiteral("100%"); })(), 2000);
     }
 
     void mediaViewerBackdropClickClosesWhileSlotLoadsAndStaysOpenWhenReady()

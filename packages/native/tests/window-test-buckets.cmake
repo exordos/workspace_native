@@ -441,6 +441,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_17
     loginProjectStepDropdownMatchesTheReference
     loginProjectStepLinkedProjectIsPreselectedAndEnforced
     mailSectionOpensMailboxMatchesReferenceContract
+    mediaViewerZoomPillSwallowsStripClicksBeneathIt
     messageTimeViewerPutsAccessibleFocusOnDialog
     ownStatusActualMainApiGenerationClosesAndClearsThePendingEditor
     pollVoterPreviewBudgetSurvivesEviction
