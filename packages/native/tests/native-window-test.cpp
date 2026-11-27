@@ -50973,6 +50973,31 @@ private slots:
         QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
     }
 
+    // Issue #946 witness: the channel-info member row fill (NativeChannelInfo.qml
+    // cardHover) must respond to the pointer over the row's text block, not only
+    // over the bare card background behind the labels. The witness moves the
+    // pointer to the member NAME center (the sibling claimant point) and asserts
+    // the hover-driven fill change, then pins the revert after the pointer leaves.
+    void channelInfoMemberRowFillsOnLabelCenterHover()
+    {
+        ChannelInfoWindowScene scene;
+        scene.openChannelInfo();
+        auto *row = visibleItemWithPrefix(QStringLiteral("channelInfoMember-"));
+        QVERIFY(row);
+        const QString prefix = QStringLiteral("channelInfoMember-");
+        const QString suffix = row->objectName().mid(prefix.size());
+        auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+        QVERIFY(name);
+        const QColor before = row->property("color").value<QColor>();
+        QVERIFY(before.isValid());
+        QTest::mouseMove(scene.window,
+            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
+        // Neutral corner away from the drawer: the fill must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
+    }
+
 };
 
 
