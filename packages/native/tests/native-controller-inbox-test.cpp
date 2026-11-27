@@ -1540,6 +1540,41 @@ private slots:
         QCOMPARE(fixture.controller.section(), QStringLiteral("chat"));
     }
 
+    // Issue #910: navigating the calendar while a window request is in flight
+    // must not drop the navigation. The in-flight reply may only populate the
+    // window it was sent for; the newest requested window has to be re-issued
+    // once the current request settles (deterministic defer-gate repro).
+    void calendarNavigationDuringInflightReissuesNewestWindow()
+    {
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto queries = std::make_shared<QStringList>();
+        fixture.calendar = [gates, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
+            Response response{QJsonArray{}};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        // Navigation lands while the first window is still in flight.
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        QTRY_VERIFY_WITH_TIMEOUT(queries->size() == 2, 3000);
+        QVERIFY(queries->at(1).contains("from=2026-12-01"));
+        QVERIFY(queries->at(1).contains("to=2026-12-31"));
+        // The settled newest window re-shows without re-fetching (guard intact).
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        QTest::qWait(200);
+        QCOMPARE(queries->size(), 2);
+    }
+
     // Issue #37: the recent-calls page is a rendered section (calls-page.ui.tsx
     // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af). The reference
     // top-bar Calls chip sits behind the TOP_BAR_CALLS_NAV build gate
