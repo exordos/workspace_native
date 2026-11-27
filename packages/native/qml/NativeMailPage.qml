@@ -321,6 +321,12 @@ Item {
                         font.pixelSize: 18
                         color: page.textColor
                         elide: Text.ElideRight
+                        // exordy finding 4714792891: keep the fill hint so the
+                        // title is column-constrained and elide engages; the
+                        // zero minimum lets the column shrink below the
+                        // implicit width instead of overflowing it.
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                     }
                     Text {
                         objectName: "mailReaderBody"
@@ -328,6 +334,8 @@ Item {
                         font.pixelSize: 13
                         color: page.mutedColor
                         wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                     }
                     Item { Layout.fillHeight: true }
                 }

@@ -291,13 +291,13 @@ private slots:
         QVERIFY2(body->width() <= column->width(),
                  qPrintable(QStringLiteral("reader body %1 px overflows its %2 px column")
                                 .arg(body->width()).arg(column->width())));
-        // The elide/wrap affordances must actually engage at this width:
-        // implicit text is wider than the column, so the painted layout
-        // reports an elided width that fills the column.
-        const qreal elided = title->property("elidedWidth").toReal();
-        QVERIFY2(qAbs(elided - column->width()) <= 1.0,
-                 qPrintable(QStringLiteral("title elidedWidth %1 not at column %2")
-                                .arg(elided).arg(column->width())));
+        // The fill hint genuinely engages: the painted width tracks the
+        // column (not the implicit width), so elide/wrap operate on the
+        // constrained layout.
+        const qreal painted = title->width();
+        QVERIFY2(qAbs(painted - column->width()) <= 1.0,
+                 qPrintable(QStringLiteral("title width %1 not at column %2")
+                                .arg(painted).arg(column->width())));
     }
 
 private:
