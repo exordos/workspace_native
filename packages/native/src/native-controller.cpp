@@ -14181,10 +14181,8 @@ void NativeController::selectWorkspaceSession(const QString &id)
     for (const auto &account : m_session->savedAccounts()) remembered = remembered || account.id == id;
     if (!remembered) return;
     m_error.clear();
-    // The live identity leaves memory (signedOut runs the standard reset) while
-    // every remembered identity survives, then the target resumes like the
-    // sign-in screen's Continue.
-    m_session->detach();
+    // Resume retires the previous identity itself. Detaching first would run
+    // the same signedOut teardown twice before the secure-store read.
     m_session->resumeSavedAccount(id);
 }
 
@@ -15583,16 +15581,32 @@ void NativeSidebarStreamListModel::sync()
     }
     if (!uniqueKeys) {
         beginResetModel();
-        m_rows = next;
+        m_rows = std::move(next);
         endResetModel();
         return;
     }
+    if (m_rows.isEmpty()) {
+        if (next.isEmpty()) return;
+        beginInsertRows({}, 0, next.size() - 1);
+        m_rows = std::move(next);
+        endInsertRows();
+        return;
+    }
+    if (next.isEmpty()) {
+        beginRemoveRows({}, 0, m_rows.size() - 1);
+        m_rows.clear();
+        endRemoveRows();
+        return;
+    }
     // Removals back-to-front so the remaining indices stay valid.
+    QSet<QString> survivors;
+    survivors.reserve(m_rows.size());
     for (int i = m_rows.size() - 1; i >= 0; --i) {
-        const auto key = m_rows.at(i).key;
-        if (std::any_of(next.cbegin(), next.cend(),
-                [&](const Row &row) { return row.key == key; }))
+        const auto &key = m_rows.at(i).key;
+        if (seenKeys.contains(key)) {
+            survivors.insert(key);
             continue;
+        }
         beginRemoveRows(QModelIndex(), i, i);
         m_rows.remove(i);
         endRemoveRows();
@@ -15606,8 +15620,7 @@ void NativeSidebarStreamListModel::sync()
     // multiset equals m_rows exactly - every round finds its key.
     QStringList survivorOrder;
     for (const Row &row : next) {
-        if (std::any_of(m_rows.cbegin(), m_rows.cend(),
-                [&](const Row &existing) { return existing.key == row.key; }))
+        if (survivors.contains(row.key))
             survivorOrder.append(row.key);
     }
     // Selection sort over the survivor order: everything below the cursor is
@@ -15674,16 +15687,14 @@ QVariantList NativeController::sidebarStreams() const
     // the sidebar projection (not streams()) so header, encryption and unread
     // lookups by selected stream still resolve the self stream while it is open.
     const auto selfUser = m_session->user();
-    const auto isSelfChat = [this, &selfUser](const QString &id) {
-        const auto entry = std::find_if(m_streams.cbegin(), m_streams.cend(),
-            [&id](const Stream &stream) { return stream.uuid == id; });
-        return entry != m_streams.cend() && entry->privateStream && isUuid(selfUser)
-            && entry->directUser == selfUser;
-    };
+    const bool hasSelfUser = isUuid(selfUser);
+    const auto ordered = orderedStreamPointers();
     QVariantList all;
-    for (const auto &value : streams()) {
-        if (isSelfChat(value.toMap().value("id").toString())) { continue; }
-        all.append(value);
+    all.reserve(ordered.size());
+    for (const auto *stream : ordered) {
+        if (hasSelfUser && stream->privateStream && stream->directUser == selfUser)
+            continue;
+        all.append(streamRowMap(*stream));
     }
     auto scoped = all;
     const auto effective = selectedFolder();

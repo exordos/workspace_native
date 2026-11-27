@@ -4003,8 +4003,12 @@ private slots:
                 return Response{refreshed ? secondList : firstList};
             return Response{firstList.first().toObject()};
         };
-        QVERIFY(test.start({}, 2));
         auto *model = test.controller.sidebarStreamListModel(); QVERIFY(model);
+        QSignalSpy inserted(model, &QAbstractItemModel::rowsInserted);
+        QVERIFY(test.start({}, 2));
+        QCOMPARE(inserted.size(), 1);
+        QCOMPARE(inserted.first().at(1).toInt(), 0);
+        QCOMPARE(inserted.first().at(2).toInt(), 1);
         const auto rowKeys = [model] {
             QStringList keys;
             for (int i = 0; i < model->rowCount(); ++i)
@@ -4030,6 +4034,12 @@ private slots:
         QCOMPARE(rowKeys(), projectionKeys());
         const QStringList expectedSwap{streamX, streamB, streamId};
         QCOMPARE(rowKeys(), expectedSwap);
+        QSignalSpy removed(model, &QAbstractItemModel::rowsRemoved);
+        test.controller.logout();
+        QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(removed.size(), 1);
+        QCOMPARE(removed.first().at(1).toInt(), 0);
+        QCOMPARE(removed.first().at(2).toInt(), 2);
     }
 
     // #888: candidate enumeration for preview seeding must grow LINEARLY in the

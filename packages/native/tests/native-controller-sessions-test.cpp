@@ -818,7 +818,9 @@ private slots:
         QVERIFY(controller.authenticated());
         QTRY_VERIFY(!controller.busy());
         // Switching keeps every remembered identity (reference behaviour).
+        QSignalSpy signedOut(&session, &Session::signedOut);
         controller.selectWorkspaceSession(b.id);
+        QCOMPARE(signedOut.size(), 1);
         QTRY_VERIFY(controller.authenticated());
         QTRY_COMPARE(controller.sessionSwitcherSessions().first().toMap().value("isCurrent"), QVariant(true));
         QCOMPARE(controller.savedAccounts().size(), 2);

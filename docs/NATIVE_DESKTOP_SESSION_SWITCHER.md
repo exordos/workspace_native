@@ -133,10 +133,9 @@ Controller additions in `src/native-controller.h/.cpp`:
 - `NativeController::unreadBadgeLabel(unread)`: `"37"` for 37, `"1000"` at
   the limit and `"1000+"` above it (see the deviation note above).
 - `selectWorkspaceSession(id)`: no-op for the current id; otherwise
-  `Session::detach()` (new: clears only in-memory session state and keeps the
-  vault entry, emitting `signedOut` so the existing controller `reset()`
-  teardown runs), then `resumeSavedAccount(id)`. Switching does not erase any
-  cache partition: identities stay remembered.
+  `Session::resumeSavedAccount(id)` retires the old in-memory identity through
+  one `signedOut` teardown and loads the selected account. The remembered
+  credentials and cache partitions remain available.
 - `logoutWorkspaceSession(id)`: for a non-current row this is the existing
   remembered-account removal (durable cache cleanup first). For the current
   row it detaches the live session, removes the remembered account, and then
@@ -167,6 +166,11 @@ wiring binds the authenticated owner, so automated tests that pin dark-palette
 tokens must call `setMode("dark")` after the window is wired, not before.
 
 ## Acceptance (CTest)
+
+The controller switch test counts one teardown per accepted account change.
+The sidebar model publishes the first catalog and clears an outgoing catalog
+as contiguous row ranges. Same-catalog refreshes keep granular row moves for
+surviving delegates so focus and scroll anchors can follow their rows.
 
 Controller group (`native-controller-test`): row list content/order and
 current marker from saved accounts; the ladder port covers the reference
