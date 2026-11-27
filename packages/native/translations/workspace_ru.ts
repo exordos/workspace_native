@@ -6179,6 +6179,10 @@
     <context>
         <name>NativeMailReader</name>
         <message>
+            <source>Attachment: %1</source>
+            <translation>Вложение: %1</translation>
+        </message>
+        <message>
             <source>Select a message</source>
             <translation>Выберите сообщение</translation>
         </message>
