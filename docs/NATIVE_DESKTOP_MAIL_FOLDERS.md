@@ -1,13 +1,21 @@
-# Native Mail UI: mock adapter, folder sidebar and message list
+# Native Mail folders, messages and previews
 
-Issue: #879 (part of #851, UI phase). Scope: the Mail section stops being the
-"temporarily unavailable" fallback card and becomes a working mock mailbox:
-navigation entry -> `MailPage` with a folder sidebar (six folders with unread
-counts), a message list for the selected folder (sender, subject, snippet,
-time), row selection opening the reader, and loading /
-empty-folder / adapter-error states with a retry control. No live mail API:
-fixtures are served by the in-process mock server used by the window tests;
-server integration is #852.
+The desktop Mail section reads the active account's folders and messages. It
+opens the Inbox when available and retains the selected folder across refreshes.
+The reader displays a local-time date, recipients, plain text and file references.
+
+## Workspace Mail API
+
+The client requests `/api/workspace/v1/mail/folders/` and
+`/api/workspace/v1/mail/messages/` through the authenticated session. It follows
+`X-Pagination-Marker` using `page_marker` and filters messages by the selected
+`folder_uuid`. A repeated marker or authorization error produces a retryable error.
+An empty folder collection produces an empty mailbox. A real response from the
+folders endpoint keeps all message requests on the Workspace API.
+
+The reader prefers text body parts. For HTML-only messages it converts the body
+to plain text locally with resource loading disabled. File URNs are shown as
+plain-text references. Draft and delivery actions are tracked in #852.
 
 ## Reference contract (workspace_ui e0194ff)
 
@@ -86,7 +94,7 @@ consulted; the node id recorded by the issue is Mailbox and folders
   the existing `controller.mail` property: `folders` (list of
   `{id, title, unread}`), `folderId`, `messages` (list of
   `{uuid, sender, subject, snippet, time, unread}`), `state`
-  (`loading|ready|error`), `refresh()` and `selectFolder(id)`. It issues
+  (`loading|ready|error`), `refresh()` and `selectFolder(id)`. The older preview adapter issues
   `GET /mail/folders` and `GET /mail/messages?folder=<id>` through the
   session `ApiClient` (token renewal Cancel; unauthenticated callers never see
   the page because the rail entry only exists inside a session).
@@ -106,7 +114,7 @@ consulted; the node id recorded by the issue is Mailbox and folders
   visibly disabled pending the live contract. Changing folders clears selection.
 - States: `loading` (spinner rows), `ready`, `empty` folder state per folder,
   `error` with a retry control re-invoking `refresh()`. A deployment that does
-  not serve the two endpoints yet (HTTP 404 - the live mail API is #852) falls
+  not serve the Workspace or preview endpoints (HTTP 404) falls
   back to the sample mailbox compiled into the client and reaches `ready`:
   opening Mail in a production build shows the promised folders instead of a
   dead error screen (fix round, exordy finding 4712325987). Real transport and

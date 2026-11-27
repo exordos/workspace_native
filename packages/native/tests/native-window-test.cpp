@@ -47543,7 +47543,8 @@ private slots:
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
         const auto openMenu = [&](const QString &rowName) {
-            auto *row = visibleItem(rowName); QVERIFY(row);
+            QPointer<QQuickItem> row;
+            QTRY_VERIFY_WITH_TIMEOUT((row = visibleItem(rowName)) && row->width() > 0 && row->height() > 0, 4000);
             QTest::mouseClick(window, Qt::RightButton, {},
                 row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
             auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);

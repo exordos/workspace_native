@@ -50,6 +50,15 @@ ScrollView {
             font.pixelSize: 14
             color: reader.colors["text-primary"]
         }
+        Repeater {
+            model: reader.message?.attachments ?? []
+            delegate: ReaderLine {
+                required property string modelData
+                required property int index
+                objectName: "mailReaderAttachment-" + index
+                text: qsTr("Attachment: %1").arg(modelData)
+            }
+        }
         Flow {
             visible: reader.message !== null
             width: reader.availableWidth

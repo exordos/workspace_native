@@ -136,6 +136,124 @@ private slots:
         QVERIFY(store->messages().isEmpty());
     }
 
+    void workspaceCollectionsUseFolderUuidsAndFollowBothMarkers()
+    {
+        const QString inbox = QStringLiteral("87654321-1111-4444-8888-111111111111");
+        const QString archive = QStringLiteral("87654321-1111-4444-8888-222222222222");
+        const QString first = QStringLiteral("87654321-1111-4444-8888-333333333333");
+        const QString second = QStringLiteral("87654321-1111-4444-8888-444444444444");
+        QStringList requests;
+        bool failFolderRefresh = false;
+        server.handler = [&](const Request &request) -> Response {
+            const QUrlQuery query(request.target);
+            const QString path = request.target.path();
+            const QString marker = query.queryItemValue("page_marker");
+            const QString folder = query.queryItemValue("folder_uuid");
+            requests << path + "|" + folder + "|" + marker;
+            if (path == "/api/workspace/v1/mail/folders/") {
+                if (failFolderRefresh) return Response{QJsonObject{}, 503};
+                Response page{QJsonArray{QJsonObject{{"uuid", marker.isEmpty() ? archive : inbox},
+                    {"name", marker.isEmpty() ? "Archive" : "Inbox"}, {"kind", marker.isEmpty() ? "archive" : "inbox"},
+                    {"unread_count", marker.isEmpty() ? 0 : 2}}}};
+                if (marker.isEmpty()) page.headers["X-Pagination-Marker"] = "next-folders";
+                return page;
+            }
+            if (path == "/api/workspace/v1/mail/messages/" && folder == archive)
+                return Response{QJsonArray{}};
+            if (path == "/api/workspace/v1/mail/messages/" && folder == inbox) {
+                const QJsonObject html{{"kind","html"},{"content","<p>Hello <b>team</b></p>"}};
+                const QJsonObject text{{"kind","text"},{"content","Hello as text"}};
+                auto parts = marker.isEmpty() ? QJsonArray{html, text} : QJsonArray{html};
+                Response page{QJsonArray{QJsonObject{{"uuid", marker.isEmpty() ? first : second},
+                    {"folder_uuid",inbox},{"from_address","robot@example.test"},
+                    {"to_addresses",QJsonArray{"team@example.test"}},{"subject","Updates"}, {"read",true},
+                    {"created_at","2026-11-27T12:30:00Z"},
+                    {"attachment_urns",QJsonArray{"urn:file:" + first, "unrecognized"}},
+                    {"payload",QJsonObject{{"kind","multipart"},{"parts",parts}}}}}};
+                if (marker.isEmpty()) page.headers["X-Pagination-Marker"] = "next-messages";
+                return page;
+            }
+            return Response{QJsonObject{}, 404};
+        };
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(store->folderId(), inbox);
+        QCOMPARE(store->folders().size(), 2);
+        QVERIFY(!store->hasSampleFolders() && !store->hasSampleMessages());
+        QCOMPARE(store->folders().last().toMap().value("unread").toInt(), 2);
+        QCOMPARE(store->messages().size(), 2);
+        const auto row = store->messages().first().toMap();
+        QCOMPARE(row.value("body").toString(), QStringLiteral("Hello as text"));
+        QCOMPARE(row.value("sender").toString(), QStringLiteral("robot@example.test"));
+        QCOMPARE(row.value("recipients").toStringList(), QStringList{"team@example.test"});
+        QVERIFY(!row.value("unread").toBool());
+        QCOMPARE(store->messages().last().toMap().value("body").toString(), QStringLiteral("Hello team"));
+        QQmlEngine engine;
+        QQuickWindow window;
+        window.resize(1024, 768);
+        auto *page = showMailWindow(engine, window, false);
+        QVERIFY(page);
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        store->selectMessage(first);
+        QTRY_VERIFY(visible(page, "mailReaderAttachment-0"));
+        QCOMPARE(item(page, "mailReaderAttachment-0")->property("text").toString(),
+                 QStringLiteral("Attachment: urn:file:") + first);
+        QVERIFY(!item(page, "mailReaderAttachment-1"));
+        store->selectFolder(archive);
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QVERIFY(store->messages().isEmpty());
+        QCOMPARE(requests.size(), 5);
+        QCOMPARE(requests.last(), QStringLiteral("/api/workspace/v1/mail/messages/|") + archive + "|");
+        failFolderRefresh = true;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("error"));
+        QVERIFY(store->folders().isEmpty() && store->messages().isEmpty());
+        failFolderRefresh = false;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(store->folderId(), archive);
+        QVERIFY(store->messages().isEmpty());
+    }
+
+    void emptyWorkspaceMailboxStaysEmpty()
+    {
+        QStringList paths;
+        server.handler = [&](const Request &request) -> Response {
+            paths.append(request.target.path());
+            return Response{QJsonArray{}};
+        };
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(paths, QStringList{"/api/workspace/v1/mail/folders/"});
+        QVERIFY(store->folders().isEmpty() && store->folderId().isEmpty() && store->messages().isEmpty());
+        QVERIFY(!store->hasSampleFolders() && !store->hasSampleMessages());
+    }
+
+    void workspaceCollectionErrorsDoNotShowSampleMail_data()
+    {
+        QTest::addColumn<bool>("loop");
+        QTest::newRow("forbidden") << false;
+        QTest::newRow("repeated-marker") << true;
+    }
+
+    void workspaceCollectionErrorsDoNotShowSampleMail()
+    {
+        QFETCH(bool, loop);
+        int hits = 0;
+        server.handler = [&](const Request &request) -> Response {
+            if (request.target.path() != "/api/workspace/v1/mail/folders/")
+                return Response{QJsonObject{}, 404};
+            ++hits;
+            Response response{QJsonArray{}, loop ? 200 : 403};
+            if (loop) response.headers["X-Pagination-Marker"] = "same";
+            return response;
+        };
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("error"));
+        QCOMPARE(hits, loop ? 2 : 1);
+        QVERIFY(!store->hasSampleFolders() && store->folders().isEmpty());
+    }
+
     void foldersLoadWithFixtureCounts()
     {
         store->refresh();
