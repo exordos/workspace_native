@@ -178,6 +178,7 @@ void loadNativeUi(QQmlApplicationEngine &engine, NativeController *controller, N
     preferences->setOwner(controller->ownerKey());
     bindNativeLocale(engine, preferences);
     QObject::connect(controller, &NativeController::stateChanged, preferences, [controller, preferences] {
+        if (controller->workspaceChanging() && !controller->authenticated()) return;
         preferences->setOwner(controller->ownerKey());
     });
     // Issue #637: chat backgrounds live in the same per-owner local store as

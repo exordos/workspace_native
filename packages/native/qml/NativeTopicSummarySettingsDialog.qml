@@ -394,8 +394,14 @@ Dialog {
                 readonly property bool editing: editingUuid.length > 0
                 // Opening an edit/delete confirmation is NOT a draft change:
                 // dirty counts only setField mutations after the session's start
-                // mark (finding 4687482010).
+                // mark (finding 4687482010). #837: the counter alone also ticks
+                // when a mutation is REVERTED, so an edit draft that matches its
+                // baseline again must not read as unsaved - the footer follows
+                // the same content divergence the Save gate uses. The create
+                // form keeps the revision semantics: it has no saved baseline to
+                // diverge from and its Save never disables on revert.
                 readonly property bool dirty: editing && formRevision !== draftStartRevision
+                    && (editingUuid === "new" || hasChanges)
                 // Mutable numeric fields with the reference bounds
                 // (topic-summary-endpoints.lib.ts validateInteger/validateNumber ranges).
                 readonly property var numberRules: ({
@@ -468,9 +474,24 @@ Dialog {
                 readonly property bool hasChanges: {
                     if (editingUuid === "new") return form && Object.keys(form).length > 0
                     const src = form || ({})
+                    // exordy findings 4692802566 + 4693183527: while THIS
+                    // endpoint's own save is in flight the pending-diff oracle is
+                    // the DISPATCHED values - what the held request is about to
+                    // persist - not the pre-save baseline. A revert typed during
+                    // flight diverges from the stale value the server will store,
+                    // so it must stay marked unsaved. The guard is tied to the
+                    // endpoint's own dispatch (pendingOp scope + session + the
+                    // retired identity): a FAILED save retires the identity in
+                    // the state-changed handler below, so a later unrelated busy
+                    // op never reopens the comparison onto the failed payload,
+                    // and after close/reopen the baseline comparison resumes.
+                    const inFlight = controller.topicSummarySettingsBusy
+                        && dlg.pendingOp === "endpoint"
+                        && dispatchRevision !== -1 && dispatchSession === draftSession
+                    const cmp = inFlight ? dispatchValues : editBaseline
                     for (const key in src) {
                         if (key === "api_key") { if (String(src.api_key || "").length > 0) return true; continue }
-                        if (String(src[key]) !== String(editBaseline[key])) return true
+                        if (String(src[key]) !== String(cmp[key])) return true
                     }
                     return false
                 }
@@ -936,7 +957,34 @@ Dialog {
                 }
                 dlg.pendingOp = ""
             }
-            else if (s === "error" && controller.topicSummarySettingsError === "forbidden") { dlg.tabs = allowedTabs() }
+            else if (s === "error") {
+                // exordy finding 4693183527: the failed request retires its
+                // dispatch identity. The draft survives for retry and equals
+                // the failed payload exactly - keeping the identity alive let a
+                // later, unrelated busy op reopen the in-flight comparison and
+                // read the pending draft as saved.
+                // exordy finding 4693632013: retire ONLY when the error names
+                // THIS dispatch's own op. pendingOp is the last DISPATCHED op
+                // and the family ledger collapses "endpoint-<uuid>" writes and
+                // the "endpoints" list read into one band, so gate on the
+                // exact errored key: a concurrent list-reload failing with a
+                // save in flight must leave the identity intact, or the save's
+                // own late success cannot rebase the draft and the dialog shows
+                // "Unsaved changes" forever. An interruption retired the whole
+                // ledger, so it always names the pending save.
+                const ownKey = endpointsTab.dispatchUuid === "new"
+                    ? "endpoint-new" : "endpoint-" + endpointsTab.dispatchUuid
+                if (dlg.pendingOp === "endpoint"
+                    && controller.topicSummarySettingsErrorOps.includes("endpoints")
+                    && (controller.topicSummarySettingsErrorKey === ownKey
+                        || controller.topicSummarySettingsError === "interrupted")
+                    && endpointsTab.dispatchSession === endpointsTab.draftSession) {
+                    endpointsTab.dispatchRevision = -1
+                    endpointsTab.dispatchUuid = ""
+                    endpointsTab.dispatchSession = -1
+                }
+                if (controller.topicSummarySettingsError === "forbidden") dlg.tabs = allowedTabs()
+            }
             // A seeded draft predates the on-demand GET: when the gates DTO lands
             // (map populated, no op in flight, no error) and nobody flipped a
             // switch yet, adopt the server values instead of showing the stale

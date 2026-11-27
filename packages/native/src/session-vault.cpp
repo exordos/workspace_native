@@ -2,9 +2,9 @@
 #include "domain.h"
 
 #include <qt6keychain/keychain.h>
+#include <QtConcurrentRun>
 #include <QCryptographicHash>
 #include <QDBusConnection>
-#include <QDBusConnectionInterface>
 #include <QDBusArgument>
 #include <QDBusMessage>
 #include <QDBusObjectPath>
@@ -12,6 +12,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QList>
@@ -102,11 +103,14 @@ SessionSecretStore::Error evaluateKeyringPromptDeadlock()
     using Error = SessionSecretStore::Error;
     const auto bus = QDBusConnection::sessionBus();
     if (!bus.isConnected()) return Error::None;
-    auto *iface = bus.interface();
-    if (!iface) return Error::None;
-    const auto registered = [iface](const char *name) {
-        return iface->isServiceRegistered(QLatin1String(name))
-            == QDBusConnectionInterface::ServiceRegistered;
+    const auto registered = [&bus](const char *name) {
+        auto query = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.DBus"),
+            QStringLiteral("/org/freedesktop/DBus"), QStringLiteral("org.freedesktop.DBus"),
+            QStringLiteral("NameHasOwner"));
+        query << QString::fromLatin1(name);
+        const auto reply = bus.call(query, QDBus::Block, 2000);
+        return reply.type() == QDBusMessage::ReplyMessage
+            && !reply.arguments().isEmpty() && reply.arguments().first().toBool();
     };
     if (!registered("org.freedesktop.secrets")) return Error::None;
     if (!registered("org.gnome.keyring")) return Error::None;
@@ -170,54 +174,61 @@ KeychainSessionSecretStore::KeychainSessionSecretStore(QObject *parent, JobStart
     if (!m_start) m_start = [](QKeychain::Job *job) { job->start(); };
 }
 
+void KeychainSessionSecretStore::afterKeyringProbe(Completion done)
+{
+    // The prompt guard can wait on several D-Bus replies. Keep those waits
+    // off the GUI thread and create the QKeychain job back on its owner thread.
+    auto *probe = new QFutureWatcher<Error>(this);
+    connect(probe, &QFutureWatcher<Error>::finished, this, [probe, done = std::move(done)] {
+        const auto result = probe->result();
+        probe->deleteLater();
+        done(result);
+    });
+    probe->setFuture(QtConcurrent::run(evaluateKeyringPromptDeadlock));
+}
+
 void KeychainSessionSecretStore::write(const QString &key, const QByteArray &secret, Completion done)
 {
-    if (const auto deadlock = evaluateKeyringPromptDeadlock(); deadlock != SessionSecretStore::Error::None) {
-        const auto error = deadlock;
-        QTimer::singleShot(0, this, [done, error] { done(error); });
-        return;
-    }
-    auto *job = new QKeychain::WritePasswordJob(Service, this);
-    job->setInsecureFallback(false);
-    job->setKey(key);
-    job->setBinaryData(secret);
-    connect(job, &QKeychain::Job::finished, this, [done = std::move(done)](QKeychain::Job *finished) {
-        done(secretError(finished->error()));
+    afterKeyringProbe([this, key, secret, done = std::move(done)](Error error) {
+        if (error != Error::None) { done(error); return; }
+        auto *job = new QKeychain::WritePasswordJob(Service, this);
+        job->setInsecureFallback(false);
+        job->setKey(key);
+        job->setBinaryData(secret);
+        connect(job, &QKeychain::Job::finished, this, [done](QKeychain::Job *finished) {
+            done(secretError(finished->error()));
+        });
+        m_start(job);
     });
-    m_start(job);
 }
 
 void KeychainSessionSecretStore::read(const QString &key, Loaded done)
 {
-    if (const auto deadlock = evaluateKeyringPromptDeadlock(); deadlock != SessionSecretStore::Error::None) {
-        const auto error = deadlock;
-        QTimer::singleShot(0, this, [done, error] { done({}, error); });
-        return;
-    }
-    auto *job = new QKeychain::ReadPasswordJob(Service, this);
-    job->setInsecureFallback(false);
-    job->setKey(key);
-    connect(job, &QKeychain::Job::finished, this, [job, done = std::move(done)](QKeychain::Job *) {
-        const auto error = secretError(job->error());
-        done(error == Error::None ? job->binaryData() : QByteArray{}, error);
+    afterKeyringProbe([this, key, done = std::move(done)](Error error) {
+        if (error != Error::None) { done({}, error); return; }
+        auto *job = new QKeychain::ReadPasswordJob(Service, this);
+        job->setInsecureFallback(false);
+        job->setKey(key);
+        connect(job, &QKeychain::Job::finished, this, [job, done](QKeychain::Job *) {
+            const auto result = secretError(job->error());
+            done(result == Error::None ? job->binaryData() : QByteArray{}, result);
+        });
+        m_start(job);
     });
-    m_start(job);
 }
 
 void KeychainSessionSecretStore::remove(const QString &key, Completion done)
 {
-    if (const auto deadlock = evaluateKeyringPromptDeadlock(); deadlock != SessionSecretStore::Error::None) {
-        const auto error = deadlock;
-        QTimer::singleShot(0, this, [done, error] { done(error); });
-        return;
-    }
-    auto *job = new QKeychain::DeletePasswordJob(Service, this);
-    job->setInsecureFallback(false);
-    job->setKey(key);
-    connect(job, &QKeychain::Job::finished, this, [done = std::move(done)](QKeychain::Job *finished) {
-        done(secretError(finished->error()));
+    afterKeyringProbe([this, key, done = std::move(done)](Error error) {
+        if (error != Error::None) { done(error); return; }
+        auto *job = new QKeychain::DeletePasswordJob(Service, this);
+        job->setInsecureFallback(false);
+        job->setKey(key);
+        connect(job, &QKeychain::Job::finished, this, [done](QKeychain::Job *finished) {
+            done(secretError(finished->error()));
+        });
+        m_start(job);
     });
-    m_start(job);
 }
 
 SessionVault::SessionVault(QString metadataFile, SessionSecretStore *backend, QObject *parent)

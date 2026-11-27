@@ -405,10 +405,14 @@ ApplicationWindow {
         }
         return true;
     }
-    readonly property bool selectedStreamEncrypted: selectedStreamIsEncrypted(root.controller)
+    readonly property var selectedCatalogStream: root.currentStream(root.controller.selectedStream)
+    readonly property string selectedCatalogStreamName: root.selectedCatalogStream ? root.selectedCatalogStream.name : ""
+    readonly property bool selectedStreamEncrypted: root.selectedCatalogStream
+        ? Boolean(root.selectedCatalogStream.encrypted) : selectedStreamIsEncrypted(root.controller)
     readonly property var chatEncryption: root.controller.encryption
     readonly property bool encryptedConversation: root.controller.authenticated && root.controller.hasConversation && root.selectedStreamEncrypted
-    readonly property string encryptedStreamName: root.controller.selectedStream.length ? root.selectedName(root.controller.streams, root.controller.selectedStream) || root.selectedName(root.controller.archivedChats, root.controller.selectedStream) : ""
+    readonly property string encryptedStreamName: root.controller.selectedStream.length
+        ? root.selectedCatalogStreamName || root.selectedName(root.controller.archivedChats, root.controller.selectedStream) : ""
     // Issue #90 (docs/NATIVE_DESKTOP_E2EE_HEADER_AVATAR.md): the reference
     // paints the encrypted header lock avatar with
     // resolveAvatarBackgroundColor(stream.color) (chat-header-channel.ui.tsx:56,
@@ -424,9 +428,7 @@ ApplicationWindow {
     readonly property string encryptedHeaderAvatarColor: {
         const selected = root.controller.selectedStream
         if (!selected.length) return ""
-        const streams = root.controller.streams
-        for (let i = 0; i < streams.length; ++i)
-            if (streams[i].id === selected) return String(streams[i].avatarColor || "")
+        if (root.selectedCatalogStream) return String(root.selectedCatalogStream.avatarColor || "")
         const archived = root.controller.archivedChats
         for (let i = 0; i < archived.length; ++i) {
             if (archived[i].id !== selected) continue
@@ -1380,11 +1382,11 @@ ApplicationWindow {
     property string chatActionMode: ""
     property bool chatActionSubmitted: false
     readonly property var chatActionState: {
-        const rows = root.controller.streams;
+        const catalog = root.streamsCatalogTick;
         return root.controller.chatActionState(chatActionTarget);
     }
     readonly property var streamMenuState: {
-        const rows = root.controller.streams;
+        const catalog = root.streamsCatalogTick;
         return root.controller.chatActionState(streamMenuTarget);
     }
     // Issue #97 (docs/NATIVE_DESKTOP_SIDEBAR_MUTE_INDICATORS.md): the stream menu
@@ -1392,7 +1394,6 @@ ApplicationWindow {
     // direct-private streams exclude the mentions_only default level
     // (DIRECT_PRIVATE_STREAM_NOTIFICATION_OPTIONS), matching the reference filter.
     readonly property var streamMenuNotificationOptions: {
-        const rows = root.controller.streams;
         const stream = root.currentStream(streamMenuTarget);
         const options = [
             {mode: "mentions_only", objectName: "streamMenuNotifDefault",
@@ -1511,7 +1512,13 @@ ApplicationWindow {
     readonly property bool globalTopicIntent: globalTopicTarget.length > 0 && globalTopicTarget === root.controller.topicCreationStream && globalTopicAttempt === root.controller.topicCreationAttemptId
     readonly property bool globalTopicUncertain: globalTopicIntent && root.controller.topicCreationUncertain
     readonly property bool globalTopicFrozen: root.chatMutationBusy || globalTopicUncertain
-    readonly property var globalTopicStreams: root.controller.streams.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+    readonly property var globalTopicStreams: {
+        if (!createChatDialog.visible || chatTabs.currentIndex !== 2) return [];
+        const catalog = root.streamsCatalogTick;
+        // An invokable returns a detached list. Slicing the QML reference
+        // sequence rebuilds the full controller projection for each row.
+        return root.controller.streamPickerRows(false).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    }
     function selectGlobalTopic(id) {
         globalTopicTarget = id;
         const stream = currentStream(id);
@@ -2155,7 +2162,7 @@ component NativeMentionChip: Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.margins: 12
-        visible: !root.controller.authenticated && !root.controller.startupCacheMode
+        visible: !root.controller.authenticated && !root.controller.startupCacheMode && !root.controller.workspaceChanging
         text: qsTr("Report a problem")
         onClicked: supportPopup.active = true
     }
@@ -2191,7 +2198,7 @@ component NativeMentionChip: Item {
             && root.controller.loginStep === "organization"
         // Issue #789: while the cached shell paints from the startup identity,
         // the sign-in form must not cover it; the refresh runs in background.
-        visible: !root.controller.authenticated && !root.controller.startupCacheMode
+        visible: !root.controller.authenticated && !root.controller.startupCacheMode && !root.controller.workspaceChanging
         onVisibleChanged: if (!visible) showSavedAccounts = false
         width: Math.min(root.width - 32, 448)
         height: Math.min(root.height - 32, loginContent.implicitHeight)
@@ -3074,7 +3081,7 @@ component NativeMentionChip: Item {
         id: topBar
         Keys.onEscapePressed: event => root.handleChatEscape(event)
         objectName: "topBar"
-        visible: root.controller.authenticated
+        visible: root.controller.authenticated || root.controller.workspaceChanging
         anchors.top: profileLinkFailure.bottom
         width: parent.width
         readonly property real titleStripHeight: Qt.platform.os === "osx" ? 28 : 0
@@ -5372,7 +5379,7 @@ component NativeMentionChip: Item {
         Keys.onEscapePressed: event => root.handleChatEscape(event)
         // Issue #789: the cached shell of the saved startup identity paints
         // while the session refresh chain is still in flight (startupCacheMode).
-        visible: root.controller.authenticated || root.controller.startupCacheMode
+        visible: root.controller.authenticated || root.controller.startupCacheMode || root.controller.workspaceChanging
         anchors.top: topBar.bottom
         anchors.topMargin: 4
         anchors.bottom: parent.bottom
@@ -7443,7 +7450,7 @@ component NativeMentionChip: Item {
                     spacing: 0
                     Text {
                         Layout.maximumWidth: streamTitle.visible ? parent.width * 0.65 : parent.width
-                        text: root.selectedName(root.controller.topics, root.controller.selectedTopic) || root.selectedName(root.controller.streams, root.controller.selectedStream) || qsTr("Choose a conversation")
+                        text: root.selectedName(root.controller.topics, root.controller.selectedTopic) || root.selectedCatalogStreamName || qsTr("Choose a conversation")
                         textFormat: Text.PlainText
                         color: root.colors["text-primary"]
                         font.pixelSize: 14
@@ -7454,7 +7461,7 @@ component NativeMentionChip: Item {
                         id: streamTitle
                         Layout.fillWidth: true
                         visible: root.controller.selectedTopic.length > 0
-                        text: " · " + root.selectedName(root.controller.streams, root.controller.selectedStream)
+                        text: " · " + root.selectedCatalogStreamName
                         textFormat: Text.PlainText
                         color: root.colors["text-muted"]
                         font.pixelSize: 14

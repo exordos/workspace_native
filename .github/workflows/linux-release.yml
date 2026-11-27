@@ -12,6 +12,8 @@ on:
     tags:
       - "[0-9]*"
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 # Superseded PR runs are cancelled; push/tag runs always finish.
 concurrency:
@@ -22,8 +24,95 @@ permissions:
   contents: write
 
 jobs:
+  master-gate-reuse:
+    # Tag publishing reuses the full-suite verdict of the master push on the
+    # same commit (process decision 2026-11-26). The tagged sha is the master
+    # tip, whose push pipeline runs the identical package-linux and
+    # full-gate-linux checks. Waiting for that verdict removes a duplicated
+    # full-suite run from the publish path without weakening it: a release
+    # still requires a green full gate on exactly the released sha. Without a
+    # complete green push verdict within the window the publish job falls back
+    # to running the full gate itself; a red push verdict blocks the release.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      checks: read
+    timeout-minutes: 75
+    outputs:
+      reuse: ${{ steps.lookup.outputs.reuse }}
+    steps:
+      - name: Check out the gate verdict script
+        uses: actions/checkout@v6
+      - name: Wait for the master-push gate verdict on this commit
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          deadline=$(( SECONDS + 3000 ))
+          reuse=false
+          while :; do
+            # exordy findings 4712353365/369: the commit check-runs listing
+            # is paginated and a TRUNCATED listing must never authorize
+            # reuse. Pagination lives in the tested script (--fetch mode):
+            # it fetches every page until a short page ends the listing and
+            # exits non-zero on truncation or gh failure, so the verdict
+            # below is only ever computed from complete pages.
+            # exordy finding 4714995326: the fetch itself reports rc 2 when
+            # a fetched page already shows a completed non-success - that
+            # block is honoured even on a truncated listing, because the
+            # in-job fallback gate must never outrace an observed red.
+            fetch_rc=0
+            rm -f check-runs-page-*.json
+            python3 packages/native/scripts/master-gate-verdict.py \
+                --fetch "${GATE_SHA}" --repo "${GITHUB_REPOSITORY}" \
+                --out-prefix check-runs-page- || fetch_rc=$?
+            if [ "${fetch_rc}" -eq 2 ]; then
+              echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
+              exit 1
+            fi
+            fetch_ok=false
+            if [ "${fetch_rc}" -eq 0 ]; then
+              fetch_ok=true
+            fi
+            if [ "${fetch_ok}" = true ]; then
+              # The decision lives in one script that is covered by a
+              # regression test (packages/native/tests/
+              # master-gate-verdict-test.py). Verdicts:
+              #   block = a matching master-push check completed non-success,
+              #           fail at once - one red must never be outraced;
+              #   wait  = keep polling. Reuse is only accepted once EVERY
+              #           matching run has completed: an older green pair
+              #           must not authorize publication while a newer
+              #           matching run (re-check, rerun, or a second master
+              #           push of the same sha) may still return red;
+              #   reuse = completed green verdicts for each required name.
+              verdict=$(python3 packages/native/scripts/master-gate-verdict.py \
+                  check-runs-page-*.json) || true
+              if [[ "${verdict}" == block ]]; then
+                echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
+                exit 1
+              fi
+              if [[ "${verdict}" == reuse ]]; then
+                echo "The master-push gate on ${GATE_SHA} is green with no matching run still in flight; publishing reuses its verdict."
+                reuse=true
+                break
+              fi
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "No complete master-push gate verdict within the window; the publish job runs the full gate itself."
+              break
+            fi
+            sleep 30
+          done
+          echo "reuse=${reuse}" >> "${GITHUB_OUTPUT}"
+
   package-linux:
-    if: github.event_name != 'pull_request' || github.base_ref == 'master'
+    needs: master-gate-reuse
+    if: ${{ always() && (needs.master-gate-reuse.result == 'success' || needs.master-gate-reuse.result == 'skipped') && (github.event_name != 'pull_request' || github.base_ref == 'master') }}
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
     timeout-minutes: 90
@@ -136,6 +225,8 @@ jobs:
           python3 packages/native/tests/matched-screenshot-acceptance-test.py -v
           python3 packages/native/tests/warm-navigation-benchmark-test.py -v
           python3 packages/native/tests/live-workspace-acceptance-test.py -v
+          python3 packages/native/tests/master-gate-verdict-test.py -v
+          python3 packages/native/tests/linux-merge-group-workflow-test.py -v
 
       - name: Configure Release and installed runtime probe
         shell: bash
@@ -156,7 +247,7 @@ jobs:
           --output-on-failure --no-tests=error
 
       - name: Run the full release gate on Xvnc and Openbox
-        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+        if: (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && needs.master-gate-reuse.outputs.reuse != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -173,6 +264,10 @@ jobs:
             trap 'kill "$system_bus_pid"' EXIT
           fi
           runuser -u cassi-native-ci -- bash packages/native/tests/full-linux-gate.sh build/linux-release
+
+      - name: Finish the release build when the push-gate verdict was reused
+        if: (github.event_name == 'workflow_dispatch' || github.ref_type == 'tag') && needs.master-gate-reuse.outputs.reuse == 'true'
+        run: cmake --build build/linux-release --parallel "$(nproc)"
 
       - name: Package installed runtime
         shell: bash
@@ -209,7 +304,7 @@ jobs:
             --probe "${GITHUB_WORKSPACE}/build/linux-release/native-runtime-probe"
 
       - name: Upload Linux packages for review
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: workspace-native-linux-${{ github.sha }}
@@ -238,7 +333,7 @@ jobs:
 
   headless-tests:
     name: Headless ${{ matrix.suite }} tests
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    if: &validation-event github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/master'
     strategy:
       fail-fast: false
       matrix:
@@ -290,6 +385,58 @@ jobs:
           ctest --test-dir build/headless -L '${{ matrix.include_label }}' -LE '${{ matrix.exclude_label }}'
           --parallel ${{ matrix.workers }} --output-on-failure --no-tests=error
 
+  full-gate-build:
+    name: Build Linux full gate
+    if: *validation-event
+    runs-on: ubuntu-24.04
+    container: ubuntu:26.04
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env: *linux-env
+    steps:
+      - *mirror
+      - *dependencies
+      - &full-gate-desktop-dependencies
+        name: Install desktop gate dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get install --no-install-recommends -y \
+            tigervnc-standalone-server openbox xauth x11-utils pulseaudio \
+            qml6-module-qtwebengine qml6-module-qtwebchannel qt6-gtk-platformtheme \
+            fonts-noto-core fonts-noto-color-emoji libgl1-mesa-dri libglib2.0-bin \
+            xdg-desktop-portal xdg-desktop-portal-gtk zstd
+      - *checkout
+      - name: Restore compiler cache for the full gate
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: linux-full-gate-ccache-v1-${{ github.sha }}
+          restore-keys: |
+            linux-full-gate-ccache-v1-
+            linux-release-ccache-v1-
+      - name: Configure and build the full gate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          ccache --zero-stats
+          cmake -S packages/native -B build/linux-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/linux-release --parallel "$(nproc)"
+          ccache --show-stats
+      - name: Archive the full gate build tree
+        run: tar -C build -I 'zstd -T2 -3 --long=27' -cf build/linux-full-gate.tar.zst linux-release
+      - name: Upload the shared test build
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-full-gate-${{ github.sha }}
+          path: build/linux-full-gate.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+
   full-gate:
     # The whole CTest suite (gui + headless + controller) runs in CI as parallel
     # shards, each with its own private Xvnc/Openbox desktop, so a green PR or
@@ -297,7 +444,8 @@ jobs:
     # Each shard runs the stride slice -I <shard>,<total>,<shards> of the full
     # test list; slices are equal-sized by registration order.
     name: Full gate shard ${{ matrix.shard }}
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    needs: full-gate-build
+    if: *validation-event
     strategy:
       fail-fast: false
       matrix:
@@ -311,31 +459,18 @@ jobs:
     steps:
       - *mirror
       - *dependencies
-      - name: Install desktop gate dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          apt-get update
-          apt-get install --no-install-recommends -y \
-            tigervnc-standalone-server openbox xauth x11-utils pulseaudio \
-            qml6-module-qtwebengine qml6-module-qtwebchannel qt6-gtk-platformtheme \
-            fonts-noto-core fonts-noto-color-emoji libgl1-mesa-dri libglib2.0-bin \
-            xdg-desktop-portal xdg-desktop-portal-gtk
+      - *full-gate-desktop-dependencies
       - *checkout
-      - name: Restore compiler cache for the full gate
-        uses: actions/cache/restore@v4
+      - name: Download the shared test build from this workflow run
+        uses: actions/download-artifact@v8
         with:
-          path: .ccache
-          key: linux-release-ccache-v1-${{ github.sha }}
-          restore-keys: linux-release-ccache-v1-
-      - name: Configure and build the full gate tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S packages/native -B build/linux-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build/linux-release --parallel "$(nproc)"
-          ccache --show-stats
+          name: linux-full-gate-${{ github.sha }}
+          path: build
+          digest-mismatch: error
+      # CTest embeds absolute source and build paths. Both jobs check out the
+      # same revision and use the same Actions workspace and build directory.
+      - name: Restore the full gate tree at its original path
+        run: tar -C build -xf build/linux-full-gate.tar.zst
       - name: Run the gate shard on a private Xvnc and Openbox desktop
         shell: bash
         run: |
@@ -356,7 +491,7 @@ jobs:
   full-gate-linux:
     name: full-gate-linux
     needs: full-gate
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
+    if: &report-validation ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/master') }}
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -367,7 +502,7 @@ jobs:
 
   quick-linux:
     needs: headless-tests
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
+    if: *report-validation
     runs-on: ubuntu-24.04
     permissions: {}
     steps:

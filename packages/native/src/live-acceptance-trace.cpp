@@ -2,7 +2,7 @@
 #include "api-client.h"
 #include "native-cache-service.h"
 #include "native-controller.h"
-#include "realtime-client.h"
+#include "workspace-sessions.h"
 
 #include <QEvent>
 #include <QHash>
@@ -143,7 +143,7 @@ void configureLiveAcceptanceNetwork()
 }
 
 void observeLiveAcceptance(QQuickWindow *window, ApiClient &api, NativeController &controller,
-                           NativeCacheService &cache, RealtimeClient &realtime)
+                           NativeCacheService &cache, WorkspaceSessions &workspaces)
 {
     bool ok = false;
     const int fd = qEnvironmentVariableIntValue("WORKSPACE_NATIVE_ACCEPTANCE_FD", &ok);
@@ -187,7 +187,7 @@ void observeLiveAcceptance(QQuickWindow *window, ApiClient &api, NativeControlle
     });
     const auto peerMessage = qgetenv("WORKSPACE_NATIVE_ACCEPTANCE_PEER_MESSAGE");
     const auto peerIdentity = qgetenv("WORKSPACE_NATIVE_ACCEPTANCE_PEER_ID");
-    QObject::connect(&realtime, &RealtimeClient::eventReceived, trace, [trace, peerMessage, peerIdentity](const QJsonObject &event) {
+    QObject::connect(&workspaces, &WorkspaceSessions::eventReceived, trace, [trace, peerMessage, peerIdentity](const QJsonObject &event) {
         static const QStringList kinds{"message.created", "message.updated", "message.deleted", "message.read",
             "messages.read", "message_reaction.created", "message_reaction.updated", "user.updated"};
         const auto payload = event.value("payload").toObject();

@@ -13,6 +13,7 @@
 #include "message-images.h"
 #include "support/heif-test-fixtures.h"
 #include "workspace-reference.h"
+#include "gui-phase-trace.h"
 
 #include <functional>
 #include <algorithm>
@@ -456,8 +457,9 @@ static void openStreamTopicForm(QQuickWindow *window, const QString &id)
         const auto path = QDir(directory).filePath(QString("cassi-native-topic-failure-%1.png").arg(QCoreApplication::applicationPid()));
         if (window->grabWindow().save(path)) qWarning() << "Failure screenshot" << path;
     });
-    auto *stream = item(window->contentItem(), "stream-" + id);
-    QVERIFY(stream);
+    const auto streamName = "stream-" + id;
+    QTRY_VERIFY(item(window->contentItem(), streamName));
+    auto *stream = item(window->contentItem(), streamName);
     QTest::mouseClick(window, Qt::RightButton, {},
         stream->mapToScene(QPointF(20, stream->height() / 2)).toPoint());
     QTRY_VERIFY(visibleItem("streamNewTopicAction"));
@@ -9698,6 +9700,12 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 4);
         QTRY_VERIFY(controller.canCreateTopicIn(target));
+        if (kind == "ordinary") {
+            const int projections = controller.streamsProjectionCountForTest();
+            emit controller.streamsChanged();
+            QVERIFY(window->property("globalTopicStreams").toList().isEmpty());
+            QCOMPARE(controller.streamsProjectionCountForTest(), projections);
+        }
         if (kind == "shared-sidebar") {
             openStreamTopicForm(window, target);
             visibleItem("topicNameInput")->setProperty("text", "Native metadata topic");
@@ -14086,6 +14094,7 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_VERIFY(controller.canCreateTopicIn(streamId));
         if (global) openGlobalTopic(window); else openStreamTopicForm(window, streamId);
         const auto inputName = global ? "globalTopicNameInput" : "topicNameInput";
+        QVERIFY(visibleItem(inputName));
         visibleItem(inputName)->setProperty("text", "Same name");
         click(window, visibleItem(global ? "globalTopicCreateButton" : "topicFormSubmit"));
         QTRY_VERIFY(reentered);
@@ -16574,10 +16583,18 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
+        // Issue #932: sidebar delegates incubate one polish pass after the
+        // controller collection changed. Under shard load that pass can land
+        // after the click helper's readiness wait, the direct lookup returns
+        // nullptr ('guard' FALSE), and every downstream scroll pin fails.
+        // Wait for the delegate to exist before clicking it.
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
         click(window, item(window->contentItem(), "stream-" + streamId));
         QTRY_COMPARE(controller.topics().size(), aggregate ? 2 : 1);
-        if (!aggregate)
+        if (!aggregate) {
+            QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
             click(window, item(window->contentItem(), "topic-" + topicId));
+        }
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -16997,9 +17014,11 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), reentry ? 2 : 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), reentry ? 20 : 40);
         auto *list = item(window->contentItem(), "messageList"); QVERIFY(list);
         QTRY_VERIFY(list->property("atYEnd").toBool());
@@ -17059,8 +17078,7 @@ mv -Tf "$root/.current-new" "$root/current"
             // The identical page must restore the saved reading anchor exactly.
             // The topic rail re-incubates its rows while the visible-read
             // batch lands, so aim only once the target delegate identity is
-            // stable across two polls (click helper QFAILs on a disappearing
-            // target mid-readiness-wait).
+            // stable across two polls, then resolve it again at click time.
             const auto clickTopic = [&](const QString &id) {
                 QVERIFY(QTest::qWaitFor([&] {
                     auto *first = item(window->contentItem(), "topic-" + id);
@@ -17069,7 +17087,7 @@ mv -Tf "$root/.current-new" "$root/current"
                     auto *second = item(window->contentItem(), "topic-" + id);
                     return second && first == second && second->isVisible();
                 }, 6000));
-                click(window, item(window->contentItem(), "topic-" + id));
+                clickCurrentItem(window, "topic-" + id);
             };
             clickTopic(secondTopicId);
             QTRY_COMPARE(controller.selectedTopic(), secondTopicId);
@@ -29703,6 +29721,453 @@ NativeAvatarImage {
         click(scene.window, visibleItem("channelTopicSummaryEndpointAdd"));
         QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
         checkForm();
+    }
+
+    // #837: restoring an edited endpoint field to its original value must clear
+    // the unsaved marker. The endpoints-tab dirty read used the raw revision
+    // counter, which ticks for the change AND its reversal, so the yellow
+    // warning stayed visible next to a Save button the field-vs-baseline gate
+    // had already disabled: a warning to save a draft with nothing to submit.
+    void channelTopicSummaryEndpointRevertedEditClearsUnsavedMarker()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        // Opening an unchanged edit is not a draft change (#795).
+        QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        QCOMPARE(original, QStringLiteral("Synthetic GPT"));
+        name->setProperty("text", original + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        auto *save = visibleItem("channelTopicSummarySave");
+        QVERIFY(save);
+        QVERIFY(save->property("enabled").toBool());
+        // Backspace the extra character back out: the field equals the baseline
+        // again, nothing is left to submit, so the warning must disappear with
+        // the Save gate instead of outranking it.
+        name->setProperty("text", original);
+        QTRY_VERIFY(!save->property("enabled").toBool());
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QString());
+    }
+
+    // exordy finding 4692802566 [medium]: reverting a field while the endpoint's
+    // save is still in flight must NOT clear the unsaved marker. While the PUT
+    // is pending the row's truth is the DISPATCHED value - the pending request
+    // persists the pre-revert value - so a revert typed during flight diverges
+    // from what the server is about to store and still needs saving. The edit
+    // path therefore compares against dispatchValues while the op is in flight;
+    // after the success rebases the baseline the re-applied edit stays unsaved.
+    void channelTopicSummaryEndpointRevertDuringInFlightSaveKeepsUnsavedMarker()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        std::function<void()> releasePut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response{endpointDto};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        QCOMPARE(original, QStringLiteral("Synthetic GPT"));
+        name->setProperty("text", original + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the PUT reached the server and is held: op in flight
+        // Revert WHILE in flight: the pre-save baseline is not the oracle while a
+        // request is pending, so the yellow marker must stay visible.
+        name->setProperty("text", original);
+        QTest::qWait(50); // the setField write-back runs on callLater
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        // Let the save settle: the success rebases the baseline onto the DISPATCHED
+        // (pre-revert) name, so the reverted form still diverges and the marker
+        // survives the "saved" echo (dirty outranks saved, #795).
+        releasePut();
+        releasePut = nullptr;
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+    }
+
+    // exordy finding 4693183527 [medium]: a FAILED endpoint save must retire its
+    // dispatch identity. The draft is kept for retry and equals the failed
+    // payload exactly, so a retained identity lets any later, unrelated busy op
+    // on the shared topicSummarySettings flag reopen the in-flight comparison -
+    // which then reads the kept draft as saved and hides it. With the identity
+    // retired, the baseline comparison keeps running and the marker survives.
+    void channelTopicSummaryEndpointFailedSaveKeepsMarkerUnderUnrelatedBusy()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        std::function<void()> releasePut;
+        std::function<void()> releaseGates;
+        bool gatesHeld = false;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response{QJsonObject{{"detail", "synthetic outage"}}, 500};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_settings/") && !gatesHeld) {
+                gatesHeld = true;
+                Response response{QJsonObject{{"project_id", QStringLiteral("p-synthetic")},
+                    {"global_enabled", true}, {"project_enabled", true}}};
+                response.defer = [&releaseGates](std::function<void()> send) { releaseGates = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        name->setProperty("text", original + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the PUT reached the server and is held
+        releasePut();
+        releasePut = nullptr;
+        // The save failed: the values stay for retry and the marker shows them.
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        // An UNRELATED op now holds the shared busy flag: the gates GET that the
+        // tab switch dispatches is deferred, so the flag is set with nothing of
+        // this endpoint's in flight.
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(releaseGates);
+        // The failed dispatch must not reopen the in-flight comparison: the draft
+        // still diverges from the saved baseline and must stay marked unsaved.
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        releaseGates();
+        releaseGates = nullptr;
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+    }
+
+    // exordy finding 4693632013: retiring the dispatch identity on error keyed
+    // on dlg.pendingOp - the LAST dispatched op - rather than on the error's
+    // producer family. When a gates GET fails while an endpoint save is still
+    // in flight, that unrelated error retired the endpoint's dispatch identity,
+    // so the save's own late success could no longer reset the draft: the
+    // server accepted the values yet the dialog kept showing "Unsaved changes"
+    // forever. The identity may only retire when the error names the endpoint
+    // operation family.
+    void channelTopicSummaryEndpointSaveSurvivesConcurrentGatesError()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        auto updated = endpointDto;
+        updated["name"] = QStringLiteral("Synthetic GPTx");
+        std::function<void()> releasePut;
+        std::function<void()> releaseGates;
+        bool gatesHeld = false;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response{updated};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_settings/") && !gatesHeld) {
+                gatesHeld = true;
+                Response response{QJsonObject{{"detail", "synthetic outage"}}, 503};
+                response.defer = [&releaseGates](std::function<void()> send) { releaseGates = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        name->setProperty("text", name->property("text").toString() + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the endpoint save is in flight, held by the mock
+        // While that save is still in flight the user visits Common settings:
+        // the tab switch dispatches the gates GET, and THAT request fails.
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        QTRY_VERIFY(releaseGates);
+        releaseGates();
+        releaseGates = nullptr;
+        QTRY_VERIFY(scene.controller.property("topicSummarySettingsStatus").toString()
+                       == QStringLiteral("error"));
+        const QStringList gatesOnly{QStringLiteral("gates")};
+        QCOMPARE(scene.controller.property("topicSummarySettingsErrorOps").toStringList(),
+                 gatesOnly);
+        // The endpoint save is still pending: its draft IS the in-flight
+        // payload, so the footer shows no marker yet - and above all it must
+        // not claim "saved" while the request is unsettled (pre-fix, the
+        // unrelated error had already retired the identity).
+        QVERIFY(dialog->property("footerStatus").toString()
+                != QStringLiteral("saved"));
+        // The save itself now succeeds: its own success must rebase the draft
+        // and clear the marker - impossible if the unrelated error had already
+        // retired the endpoint dispatch identity.
+        releasePut();
+        releasePut = nullptr;
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+    }
+
+    // exordy finding 4693632013, round 5: the endpoint-tab reload (controller
+    // ledger key "endpoints") is a DIFFERENT operation from the in-flight save
+    // (key "endpoint-<uuid>") but both failures attribute to the same error
+    // family. The read failure must not retire the in-flight save's dispatch
+    // identity: the save's late success then cannot rebase the draft and the
+    // footer would claim "Unsaved changes" forever for values the server
+    // accepted. The tab strip is never busy-gated, so this interleaving is
+    // exactly what a user reaches by visiting Common settings and back.
+    void channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity()
+    {
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject gatesDto{
+            {"project_id", projectId}, {"global_enabled", true}, {"project_enabled", false}};
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        auto updated = endpointDto;
+        updated["name"] = QStringLiteral("Synthetic GPTx");
+        std::function<void()> releasePut;
+        std::function<void()> releaseRead;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_settings/"))
+                return Response{gatesDto};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response{updated};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/")) {
+                if (releasePut) { // the save is in flight: this GET is the tab reload
+                    Response response{QJsonObject{{"detail", "synthetic outage"}}, 503};
+                    response.defer = [&releaseRead](std::function<void()> send) { releaseRead = std::move(send); };
+                    return response;
+                }
+                return Response{QJsonArray{endpointDto}};
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        name->setProperty("text", name->property("text").toString() + QStringLiteral("x"));
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the endpoint save is in flight, held by the mock
+        click(scene.window, visibleItem("channelTopicSummaryTab-gates"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(releaseRead);
+        releaseRead();
+        releaseRead = nullptr;
+        QTRY_VERIFY(scene.controller.property("topicSummarySettingsStatus").toString()
+                       == QStringLiteral("error"));
+        QVERIFY(scene.controller.property("topicSummarySettingsErrorOps").toStringList()
+                    .contains(QStringLiteral("endpoints")));
+        // exo-review finding 4693632013 oracle: the errored request's own
+        // ledger key. For this read it is "endpoints" - never an
+        // "endpoint-<uuid>" save key, so the in-flight save's identity must
+        // survive and its late success must rebase the draft below.
+        QCOMPARE(scene.controller.property("topicSummarySettingsErrorKey").toString(),
+                 QStringLiteral("endpoints"));
+        // The save is still unsettled: the footer must not claim saved.
+        QVERIFY(dialog->property("footerStatus").toString() != QStringLiteral("saved"));
+        // The save's own success must rebase the draft - impossible if the read
+        // error retired the dispatch identity through the family-only gate.
+        releasePut();
+        releasePut = nullptr;
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+    }
+
+    // exordy thread 4692802566 hostile-row sweep on head 6f4d67f4: the two
+    // unpinned permutations of "revert while the save is in flight".
+    // Row own-error: the revert holds, the save fails with its OWN op key, the
+    // dispatch identity retires and the reverted draft equals the untouched
+    // server row again - the marker must CLEAR (nothing needs saving).
+    // Row retype-dispatched: the revert is typed back to the dispatched value
+    // while still in flight, then the save succeeds - the rebase onto
+    // dispatchValues leaves no pending diff, the footer settles on "saved".
+    void channelTopicSummaryEndpointRevertDuringInFlightSaveSettlesByOutcome_data()
+    {
+        QTest::addColumn<bool>("saveFails");
+        QTest::addColumn<bool>("retypeDispatched");
+        QTest::newRow("own-error") << true << false;
+        QTest::newRow("retype-dispatched") << false << true;
+    }
+    void channelTopicSummaryEndpointRevertDuringInFlightSaveSettlesByOutcome()
+    {
+        QFETCH(bool, saveFails);
+        QFETCH(bool, retypeDispatched);
+        ChannelInfoWindowScene scene(true,
+            QStringLiteral("workspace.topic_summary_settings.manage"),
+            QStringLiteral("workspace.topic_summary_endpoint.manage"));
+        const QJsonObject endpointDto{
+            {"uuid", QStringLiteral("0e3a4b9c-7d2e-4f61-9a05-2b8c6d1f4e77")},
+            {"name", QStringLiteral("Synthetic GPT")},
+            {"base_url", QStringLiteral("https://llm.invalid/v1")},
+            {"model", QStringLiteral("gpt-synthetic")},
+            {"enabled", true}, {"supports_vision", false}, {"supports_reasoning", true},
+            {"credential_present", true}, {"priority", 100}, {"temperature", 0.2},
+            {"max_output_tokens", 512}, {"top_p", 1.0}, {"presence_penalty", 0.0},
+            {"frequency_penalty", 0.0}, {"failure_count", 0}};
+        std::function<void()> releasePut;
+        const auto base = scene.fixture.server.handler;
+        scene.fixture.server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (request.method == "GET" && path.contains("/topic_summary_endpoints/"))
+                return Response{QJsonArray{endpointDto}};
+            if (request.method == "PUT" && path.contains("/topic_summary_endpoints/")) {
+                Response response = saveFails
+                    ? Response{QJsonObject{{"detail", "synthetic outage"}}, 500}
+                    : Response{endpointDto};
+                response.defer = [&releasePut](std::function<void()> send) { releasePut = std::move(send); };
+                return response;
+            }
+            return base(request);
+        };
+        scene.openChannelInfo();
+        click(scene.window, visibleItem("channelTopicSummarySettings"));
+        click(scene.window, visibleItem("channelTopicSummaryTab-endpoints"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpoint-0"));
+        click(scene.window, visibleItem("channelTopicSummaryEndpointEdit"));
+        QTRY_VERIFY(visibleItem("channelTopicSummaryEndpointForm"));
+        auto *dialog = scene.window->findChild<QObject *>("channelTopicSummarySettingsDialog");
+        QVERIFY(dialog);
+        auto *name = visibleItem("channelTopicSummaryField-name");
+        QVERIFY(name);
+        const QString original = name->property("text").toString();
+        QCOMPARE(original, QStringLiteral("Synthetic GPT"));
+        const QString dispatched = original + QStringLiteral("x");
+        name->setProperty("text", dispatched);
+        QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        QTest::qWait(50); // the setField write-back runs on callLater
+        click(scene.window, visibleItem("channelTopicSummarySave"));
+        QTRY_VERIFY(releasePut); // the PUT reached the server and is held: op in flight
+        // Shared prologue: revert WHILE in flight must read as unsaved (pinned by
+        // the sibling case); this sweep follows the revert past its two outcomes.
+        name->setProperty("text", original);
+        QTest::qWait(50);
+        QCOMPARE(dialog->property("footerStatus").toString(), QStringLiteral("unsaved"));
+        if (retypeDispatched) {
+            name->setProperty("text", dispatched); // back onto the in-flight payload
+            QTest::qWait(50);
+            QCOMPARE(dialog->property("footerStatus").toString(), QString());
+        }
+        releasePut();
+        releasePut = nullptr;
+        if (saveFails)
+            QTRY_COMPARE(dialog->property("footerStatus").toString(), QString());
+        else
+            QTRY_COMPARE(dialog->property("footerStatus").toString(), QStringLiteral("saved"));
+        QCOMPARE(name->property("text").toString(), retypeDispatched ? dispatched : original);
     }
 
     void channelTopicMenuAndSummarySaveUseTheSelectedTopic()
@@ -50986,6 +51451,233 @@ private slots:
         QVERIFY(!topicRow(tailOne));
         QVERIFY(!topicRow(tailTwo));
     }
+
+    // Issue #893 (#855 subtask 1): the GUI-phase trace attributes nested,
+    // GUI-thread spans for a scripted login -> select-project -> open-topic
+    // sequence. Proves attribution only; no timing budgets are asserted yet.
+    void guiPhaseTraceAttributesNestedStartupSpans()
+    {
+        QTemporaryDir preferencesDirectory;
+        NativePreferences preferences(preferencesDirectory.filePath("preferences.ini"));
+        preferences.setMode("light");
+        MockServer server;
+        server.handler = [&](const Request &request) {
+            const auto path = request.target.path();
+            if (path.endsWith("/streams/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", streamId}, {"project_id", projectId},
+                    {"name", "Product team"}, {"description", "Native preview"}, {"encryption", false}, {"unread_count", 2}}}};
+            if (path.endsWith("/users/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", userId}, {"username", "cassi"}}}};
+            if (path.endsWith("/stream_topics/"))
+                return Response{QJsonArray{QJsonObject{{"uuid", topicId}, {"project_id", projectId},
+                    {"stream_uuid", streamId}, {"name", "Native desktop"}, {"unread_count", 2}}}};
+            if (path.endsWith("/messages/") && request.method == "GET")
+                return Response{QJsonArray{message("Phase attribution probe.")}};
+            if (path.endsWith("/server_settings"))
+                return Response{QJsonObject{{"result", "success"}, {"msg", ""},
+                    {"realm_name", "Acme Realm"}, {"registration_url", "https://reg.example/signup"}}};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/introspect"))
+                response.data = QJsonObject{{"project_id", projectId},
+                    {"user_info", QJsonObject{{"uuid", userId}, {"username", "cassi"},
+                        {"first_name", "Cassandra"}, {"last_name", "Volkova"}, {"email", "cassi@example.invalid"}}}};
+            return response;
+        };
+        // Arm the controller-hosted stall sampler through its env seam (same
+        // issue #855): it must be set BEFORE the controller is constructed,
+        // and the report path must outlive the case.
+        QTemporaryDir stallDirectory;
+        QVERIFY(stallDirectory.isValid());
+        const QString stallReport = stallDirectory.filePath("stall.json");
+        qputenv("WORKSPACE_NATIVE_STALL_PROBE", stallReport.toLocal8Bit());
+        ApiClient api(nullptr, true);
+        Session session(&api);
+        NativeController controller(&api, &session);
+        controller.setPreferences(&preferences);
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        auto *content = window->contentItem();
+        // Telemetry is inert until the seam is queried: before the first reset
+        // the recorder must report nothing for the rendered login shell.
+        QVERIFY(controller.guiPhaseTraceForTest().value("spans").toMap().isEmpty());
+        controller.resetGuiPhaseTraceForTest();
+        auto *serverInput = item(content, "serverInput");
+        QVERIFY(serverInput);
+        serverInput->setProperty("text", server.origin().toString());
+        click(window, item(content, "organizationNextButton"));
+        QTRY_VERIFY(item(content, "userInput"));
+        item(content, "userInput")->setProperty("text", "synthetic-user");
+        item(content, "passwordInput")->setProperty("text", "synthetic-password");
+        click(window, item(content, "signInButton"));
+        QTRY_COMPARE(controller.projects().size(), 1);
+        QTRY_VERIFY(item(content, "projectSelect"));
+        click(window, item(content, "projectLoginButton"));
+        QTRY_COMPARE(controller.streams().size(), 1);
+        // Enter the stream first: openTopic is scoped to the open conversation.
+        controller.selectStream(streamId);
+        QTRY_VERIFY(!controller.topics().isEmpty());
+        // The network catalog publish is attributable to the GUI thread.
+        {
+            const auto published = controller.guiPhaseTraceForTest().value("spans").toMap();
+            QVERIFY2(published.value("startup.catalog-publish-network").toMap().value("count").toInt() >= 1,
+                     qPrintable(QVariant(published).toString()));
+        }
+        // Scripted open-topic runs inside a named parent span: the seam must
+        // report the child span nested under it on the GUI thread.
+        const auto scriptedId = controller.beginGuiPhaseSpan("test.scripted-navigate");
+        QVERIFY(scriptedId > 0);
+        QMetaObject::invokeMethod(&controller, "openTopic",
+                                  Q_ARG(QString, topicId), Q_ARG(QString, QString()));
+        controller.endGuiPhaseSpan(scriptedId);
+        QTRY_VERIFY(!controller.messages().isEmpty());
+        const auto trace = controller.guiPhaseTraceForTest();
+        QCOMPARE(trace.value("guiThreadId").toLongLong(), trace.value("currentThreadId").toLongLong());
+        const auto spans = trace.value("spans").toMap();
+        QVERIFY2(spans.value("chat.open-topic").toMap().value("count").toInt() >= 1,
+                 qPrintable(QVariant(spans).toString()));
+        QVERIFY2(spans.value("chat.history-projection").toMap().value("count").toInt() >= 1,
+                 qPrintable(QVariant(spans).toString()));
+        QVERIFY2(spans.value("chat.row-application").toMap().value("count").toInt() >= 1,
+                 qPrintable(QVariant(spans).toString()));
+        bool nestedUnderScriptedStep = false;
+        const qint64 guiThread = trace.value("guiThreadId").toLongLong();
+        const auto records = trace.value("records").toList();
+        QStringList offThreadRecords;
+        for (const auto &record : records) {
+            const auto row = record.toMap();
+            // Per-record thread identity (review finding): guiThreadId names
+            // only the first span's thread, so each record must carry its own.
+            QVERIFY2(row.contains(QStringLiteral("threadId")),
+                     qPrintable(QJsonDocument::fromVariant(row)
+                                    .toJson(QJsonDocument::Compact)));
+            // Every phase this case instruments runs on the GUI thread
+            // (cache and network callbacks are delivered through the
+            // receiver's event loop), so every record must name it. Checking
+            // only the scripted child left the other records free to record
+            // on any thread unnoticed.
+            if (row.value("threadId").toLongLong() != guiThread)
+            {
+                offThreadRecords << QJsonDocument::fromVariant(row)
+                                    .toJson(QJsonDocument::Compact);
+            }
+            const bool scriptedChild = row.value("name").toString() == QLatin1String("chat.open-topic")
+                && row.value("parent").toString() == QLatin1String("test.scripted-navigate");
+            if (scriptedChild)
+                nestedUnderScriptedStep = true;
+        }
+        QVERIFY2(offThreadRecords.isEmpty(),
+                 qPrintable(QStringLiteral("records not on the GUI thread (")
+                            + QString::number(guiThread)
+                            + QStringLiteral("):\n") + offThreadRecords.join(QLatin1Char('\n'))));
+        QVERIFY2(nestedUnderScriptedStep, qPrintable(QVariant(records).toString()));
+        // Sampler semantics (#855): a GUI-thread block of known length must be
+        // visible in the flushed report. The first smoke run froze at
+        // worst_gap_ms=0 because the beat divided QElapsedTimer::restart()
+        // (milliseconds) by 1e6 as if it were nanoseconds - every gap floored
+        // to 0.0 and no over-threshold beat ever counted.
+        QTest::qSleep(300); // no event loop runs here: the next beat sees a >=300 ms gap
+        const auto readStall = [&stallReport]() {
+            QFile file(stallReport);
+            if (!file.open(QIODevice::ReadOnly)) return QVariantMap{};
+            return QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+        };
+        QVariantMap stall;
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(), stall.value("samples").toLongLong() > 1), 5000);
+        // The report lags the beats by up to a flush cycle (500 ms): keep
+        // re-reading until the report has caught up past the qSleep block.
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
+            stall.value("worst_gap_ms").toDouble() >= 100.0), 5000);
+        QVERIFY2(stall.value("worst_gap_ms").toDouble() >= 100.0,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+        QVERIFY(stall.value("beats_over_50ms").toLongLong() >= 1);
+        // Periodic flush is live, not a one-shot first write: samples advance
+        // across a later flush cycle (interval 500 ms).
+        const qint64 samplesAtFirstRead = stall.value("samples").toLongLong();
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
+            stall.value("samples").toLongLong() > samplesAtFirstRead), 5000);
+        qunsetenv("WORKSPACE_NATIVE_STALL_PROBE");
+    }
+
+    void guiStallSamplerCountsFirstGapBeforeFirstBeat()
+    {
+        // The constructor armed the elapsed clock before the beat timer, but
+        // the first beat only re-armed it and reported nothing, so startup
+        // work that blocked the GUI thread before the first beat could never
+        // reach the report. The first gap must be counted like any other.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString report = dir.filePath("stall.json");
+        GuiStallSampler sampler(report);
+        QTest::qSleep(260); // no event loop runs here: the first beat sees a >=260 ms gap
+        const auto readStall = [&report]() {
+            QFile file(report);
+            if (!file.open(QIODevice::ReadOnly)) return QVariantMap{};
+            return QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+        };
+        QVariantMap stall;
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(), stall.value("samples").toLongLong() >= 1), 5000);
+        // The flush cycle lags the beats by up to 500 ms: re-read until the
+        // flushed report shows the first gap.
+        QTRY_VERIFY_WITH_TIMEOUT((stall = readStall(),
+            stall.value("worst_gap_ms").toDouble() >= 200.0), 5000);
+        QVERIFY2(stall.value("worst_gap_ms").toDouble() >= 200.0,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+        QVERIFY2(stall.value("beats_over_50ms").toLongLong() >= 1,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+        // The mean divides by the counted gaps, so it stays plausible.
+        QVERIFY2(stall.value("mean_gap_ms").toDouble() > 0.0,
+                 qPrintable(QJsonDocument::fromVariant(stall).toJson(QJsonDocument::Compact)));
+    }
+
+    // PR #898 review: the periodic flush must REPLACE the report atomically.
+    // The old flush truncated the destination and only then wrote the payload,
+    // so a live perf probe polling the file in between could read an empty or
+    // partial JSON document. Reproduction: seed the report path with a
+    // previous complete report, then arm the fault seam so the next flush's
+    // write dies after a few bytes (deterministic stand-in for ENOSPC or a
+    // crash between truncate and write completion). The destination must keep
+    // the previous report verbatim, and a later flush must still land a fresh
+    // complete report (the consumed fault must not wedge the sampler).
+    void guiStallSamplerFlushNeverExposesPartialReport()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString report = dir.filePath("stall.json");
+        const QByteArray previous = QJsonDocument::fromVariant(QVariantMap{
+            {QStringLiteral("samples"), 4242},
+            {QStringLiteral("worst_gap_ms"), 7.5}}).toJson(QJsonDocument::Compact);
+        {
+            QFile seed(report);
+            QVERIFY(seed.open(QIODevice::WriteOnly));
+            QVERIFY(seed.write(previous) == previous.size());
+        }
+        GuiStallSampler sampler(report);
+        sampler.failNextFlushWriteForTest(3);
+        // The flush timer fires every 500 ms: wait for the faulted flush to
+        // actually run rather than assuming a duration.
+        QTRY_VERIFY_WITH_TIMEOUT(sampler.flushFaultConsumedForTest(), 5000);
+        const auto readReport = [&report]() {
+            QFile file(report);
+            if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+            return file.readAll();
+        };
+        // The failed write must not touch the destination at all: an empty
+        // file or a 3-byte partial here is the torn report the probe would
+        // reject as invalid JSON.
+        QCOMPARE(QString::fromUtf8(readReport()), QString::fromUtf8(previous));
+        // The fault applies to one flush only: the next cycle must publish the
+        // sampler's own complete report again.
+        QTRY_VERIFY_WITH_TIMEOUT((readReport() != previous), 5000);
+        const QVariantMap fresh = QJsonDocument::fromJson(readReport()).toVariant().toMap();
+        QVERIFY2(fresh.contains(QStringLiteral("samples")),
+                 qPrintable(QString::fromUtf8(readReport())));
+        QVERIFY(fresh.value(QStringLiteral("samples")).toLongLong() >= 1);
+    }
+
 };
 
 

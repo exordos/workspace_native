@@ -23,10 +23,10 @@
 #include "native-updater-taskbar.h"
 #include "native-preferences.h"
 #include "native-realtime-cursor-store.h"
-#include "realtime-client.h"
 #include "power-watcher.h"
 #include "session.h"
 #include "session-vault.h"
+#include "workspace-sessions.h"
 
 #include <QApplication>
 #include <QEvent>
@@ -40,7 +40,6 @@
 #include <QTimer>
 #include <QWindow>
 #include <openssl/ssl.h>
-#include <limits>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #include <shobjidl.h>
@@ -53,19 +52,23 @@ namespace {
 // same activation changes onto the controller for notification gating.
 class WindowFocusWatcher final : public QObject {
 public:
-    explicit WindowFocusWatcher(workspace::NativeController *target) : QObject(target), m_target(target) {}
+    WindowFocusWatcher(workspace::NativeController *target, workspace::WorkspaceSessions *workspaces)
+        : QObject(target), m_target(target), m_workspaces(workspaces) {}
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
         auto *window = qobject_cast<QWindow *>(watched);
-        if (window && event->type() == QEvent::ActivationChange)
+        if (window && event->type() == QEvent::ActivationChange) {
             m_target->setWindowFocused(window->isActive());
+            m_workspaces->setWindowFocused(window->isActive());
+        }
         return false;
     }
 
 private:
     workspace::NativeController *m_target;
+    workspace::WorkspaceSessions *m_workspaces;
 };
 
 } // namespace
@@ -171,15 +174,14 @@ int main(int argc, char **argv)
     controller.useDrafts(&drafts);
     controller.useFiles(&files);
     workspace::RealtimeCursorStore realtimeCursors;
-    workspace::RealtimeClient realtime(&api, &session);
-    realtime.useCursorStore(&realtimeCursors);
-    controller.useRealtime(&realtime);
     // System-bus power observer: resume reconnects realtime at once, and a
     // battery source widens the presence heartbeat (issue #78). With no
     // logind/UPower on the bus both paths silently stay at mains behaviour.
     workspace::PowerWatcher powerWatcher;
     controller.setPowerWatcher(&powerWatcher);
     powerWatcher.start();
+    workspace::WorkspaceSessions workspaces(session, controller, vault, realtimeCursors);
+    workspaces.setPowerWatcher(&powerWatcher);
     workspace::CallAwareness callAwareness;
     callAwareness.start(*controller.callWindow());
     QQmlApplicationEngine engine;
@@ -190,7 +192,7 @@ int main(int argc, char **argv)
         return 1;
     auto *window = qobject_cast<QWindow *>(engine.rootObjects().first());
 #ifdef Q_OS_LINUX
-    workspace::observeLiveAcceptance(qobject_cast<QQuickWindow *>(window), api, controller, cache, realtime);
+    workspace::observeLiveAcceptance(qobject_cast<QQuickWindow *>(window), api, controller, cache, workspaces);
 #endif
     workspace::NativeDesktop desktop(window);
     // The tray tooltip follows the call state (issue #86): the room with an
@@ -204,13 +206,12 @@ int main(int argc, char **argv)
     workspace::UpdaterTaskbarProgress updaterTaskbar;
     updaterTaskbar.attach(window, &updater);
     // Desktop notifications over the session bus with X11 attention support.
-    auto *notifications = controller.notifications();
     auto *desktopNotifications = new workspace::DBusNotificationTransport(
         [window] { return window ? window->winId() : quintptr{}; }, &controller);
     desktopNotifications->setClickCallback(
-        [notifications](const QString &tag) { notifications->click(tag); });
-    notifications->setTransport(desktopNotifications);
-    QObject::connect(notifications, &workspace::NotificationService::soundRequested,
+        [&workspaces](const QString &tag) { workspaces.clickNotification(tag); });
+    workspaces.setNotificationTransport(desktopNotifications);
+    QObject::connect(&workspaces, &workspace::WorkspaceSessions::soundRequested,
         &preferences, &workspace::NativePreferences::previewNotificationSound);
     QHash<QString, QSoundEffect *> sounds;
     QObject::connect(&preferences, &workspace::NativePreferences::notificationSoundRequested, &app,
@@ -223,9 +224,10 @@ int main(int argc, char **argv)
             sound->play();
         });
     if (window) {
-        auto *focusWatcher = new WindowFocusWatcher(&controller);
+        auto *focusWatcher = new WindowFocusWatcher(&controller, &workspaces);
         window->installEventFilter(focusWatcher);
         controller.setWindowFocused(window->isActive());
+        workspaces.setWindowFocused(window->isActive());
         // hide/show/minimize map onto the reference hidden WindowActivityState
         // for the presence cadence (issue #78); Qt delivers it as the
         // visibilityChanged signal rather than a filterable event type. Qt
@@ -295,21 +297,14 @@ int main(int argc, char **argv)
     // A valid notification click reuses this same guarded activation path as
     // tray activation and second-instance deep links (issue #117); expired or
     // unknown tags emit nothing and keep the window untouched.
-    QObject::connect(notifications, &workspace::NotificationService::activationRequested,
+    QObject::connect(&workspaces, &workspace::WorkspaceSessions::activationRequested,
                      &app, activate);
     QObject::connect(&preferences, &workspace::NativePreferences::localeChanged,
                      &desktop, &workspace::NativeDesktop::refreshLabels);
     QString badgeOwner;
     const auto updateUnread = [&controller, &desktop, &badgeOwner] {
         badgeOwner = controller.ownerKey();
-        qint64 count = 0;
-        if (controller.authenticated()) {
-            for (const auto &value : controller.streams()) {
-                const auto unread = qMax<qint64>(0, value.toMap().value("unread").toLongLong());
-                count += qMin(unread, (std::numeric_limits<qint64>::max)() - count);
-            }
-        }
-        desktop.setUnreadCount(count);
+        desktop.setUnreadCount(controller.desktopUnreadCount());
     };
     QObject::connect(&controller, &workspace::NativeController::streamsChanged, &desktop, updateUnread);
     QObject::connect(&controller, &workspace::NativeController::stateChanged, &desktop,
@@ -325,7 +320,7 @@ int main(int argc, char **argv)
         });
     if (instance.activationPending()) activate();
     if (!startupDeepLink.isEmpty()) controller.openMessageLink(startupDeepLink);
-    QTimer::singleShot(0, &session, &workspace::Session::resumeCurrentAccount);
+    QTimer::singleShot(0, &workspaces, &workspace::WorkspaceSessions::start);
     const int code = app.exec();
     if (!restartExecutable.isEmpty()) {
         // A successor must acquire the primary lock after cache/key shutdown.

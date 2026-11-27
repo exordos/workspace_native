@@ -4003,8 +4003,12 @@ private slots:
                 return Response{refreshed ? secondList : firstList};
             return Response{firstList.first().toObject()};
         };
-        QVERIFY(test.start({}, 2));
         auto *model = test.controller.sidebarStreamListModel(); QVERIFY(model);
+        QSignalSpy inserted(model, &QAbstractItemModel::rowsInserted);
+        QVERIFY(test.start({}, 2));
+        QCOMPARE(inserted.size(), 1);
+        QCOMPARE(inserted.first().at(1).toInt(), 0);
+        QCOMPARE(inserted.first().at(2).toInt(), 1);
         const auto rowKeys = [model] {
             QStringList keys;
             for (int i = 0; i < model->rowCount(); ++i)
@@ -4030,6 +4034,213 @@ private slots:
         QCOMPARE(rowKeys(), projectionKeys());
         const QStringList expectedSwap{streamX, streamB, streamId};
         QCOMPARE(rowKeys(), expectedSwap);
+        QSignalSpy removed(model, &QAbstractItemModel::rowsRemoved);
+        test.controller.logout();
+        QCOMPARE(model->rowCount(), 0);
+        QCOMPARE(removed.size(), 1);
+        QCOMPARE(removed.first().at(1).toInt(), 0);
+        QCOMPARE(removed.first().at(2).toInt(), 2);
+    }
+
+    // #888: candidate enumeration for preview seeding must grow LINEARLY in the
+    // inspected catalog, including when there are no preview pointers. Pre-#888 the
+    // seed scanned m_streams twice and all of m_topics PER candidate, so a catalog
+    // accept cost O(N^2 + N*t_open) inspections and stalled publication of large
+    // channel lists (report: 39-44 ms master vs 387-397 ms at 3,000 channels).
+    // The work counter counts every catalog record inspection attributed to
+    // seeding; the 4x-per-size-growth bound is where the quadratic version fails.
+    void previewSeedWorkGrowsLinearlyInCatalogSize()
+    {
+        struct Sample { int size; qint64 work; };
+        QVector<Sample> samples;
+        for (const int size : {500, 1500, 3000}) {
+            Fixture test;
+            const auto channelRow = [](const QString &uuid) {
+                return QJsonObject{{QStringLiteral("uuid"), uuid},
+                    {QStringLiteral("project_id"), projectId},
+                    {QStringLiteral("name"), QStringLiteral("Channel")},
+                    {QStringLiteral("encryption"), false},
+                    {QStringLiteral("unread_count"), 0},
+                    {QStringLiteral("active_unread_count"), 0},
+                    {QStringLiteral("passive_unread_count"), 0},
+                    // Empty pointers on purpose (issue repro): the enumeration cost
+                    // must be linear even when ZERO previews exist to fetch.
+                    {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                    {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+            };
+            test.streams = [size, channelRow](const Request &request) {
+                if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                    QJsonArray rows;
+                    rows.append(channelRow(streamId)); // the default-opened channel
+                    for (int i = 1; i < size; ++i)
+                        rows.append(channelRow(QStringLiteral("77777777-7777-4777-7777-%1")
+                            .arg(i, 12, 16, QLatin1Char('0'))));
+                    return Response{rows};
+                }
+                const auto uuid = request.target.path().section(QLatin1Char('/'), -2, -2);
+                return Response{channelRow(uuid)};
+            };
+            QVERIFY(test.start({}, size));
+            const qint64 work = test.controller.rowPreviewSeedWorkForTest();
+            QVERIFY2(work > 0, "the seed work oracle never fired");
+            samples.append({size, work});
+        }
+        for (int i = 1; i < samples.size(); ++i) {
+            // Sizes triple each step: linear growth is <=3x, the quadratic shape
+            // is 9x - the 4x bound separates them with margin for per-run constants.
+            const qint64 bound = samples.at(i - 1).work * 4;
+            QVERIFY2(samples.at(i).work <= bound, qPrintable(QStringLiteral(
+                "catalog %1 work %2 exceeds the linear bound %3 (previous: size %4 work %5)"
+                " - enumeration grew super-linearly").arg(samples.at(i).size)
+                .arg(samples.at(i).work).arg(bound)
+                .arg(samples.at(i - 1).size).arg(samples.at(i - 1).work)));
+        }
+    }
+
+    // #888: accepting the open channel's topic catalog must seed ONLY the owning
+    // stream's rows. Pre-#888 this path re-ran the catalog-wide seed, so every topic
+    // accept re-enumerated all unrelated candidates (quadratic per accept in the
+    // channel list). The scoped cost is bounded by ~N + topics-of-this-stream.
+    void topicCatalogAcceptSeedsOnlyTheOpenStream()
+    {
+        Fixture test;
+        const int size = 500;
+        test.streams = [size](const Request &request) {
+            const auto row = [](const QString &uuid) {
+                return QJsonObject{{QStringLiteral("uuid"), uuid},
+                    {QStringLiteral("project_id"), projectId},
+                    {QStringLiteral("name"), QStringLiteral("Channel")},
+                    {QStringLiteral("encryption"), false},
+                    {QStringLiteral("unread_count"), 0},
+                    {QStringLiteral("active_unread_count"), 0},
+                    {QStringLiteral("passive_unread_count"), 0},
+                    {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                    {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+            };
+            if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                QJsonArray rows;
+                rows.append(row(streamId));
+                for (int i = 1; i < size; ++i)
+                    rows.append(row(QStringLiteral("77777777-7777-4777-7777-%1")
+                        .arg(i, 12, 16, QLatin1Char('0'))));
+                return Response{rows};
+            }
+            return Response{row(request.target.path().section(QLatin1Char('/'), -2, -2))};
+        };
+        QVERIFY(test.start({}, size));
+        test.controller.resetRowPreviewSeedWorkForTest();
+        test.controller.seedStreamPreviewsForTest(streamId);
+        const qint64 work = test.controller.rowPreviewSeedWorkForTest();
+        // Streams are located by a single linear pass and only this stream's topics
+        // are enumerated - the catalog-wide re-seed cost grew as ~2*N^2 instead.
+        QVERIFY2(work <= 4 * size + 64, qPrintable(QStringLiteral(
+            "scoped topic-accept seed inspected %1 records for a %2-channel catalog"
+            " - it is re-enumerating unrelated candidates").arg(work).arg(size)));
+    }
+
+    // #888 round 2 (exordy finding 4713852581): background inbox sweeps accept one
+    // stream's topic catalog per stream, so the scoped seed runs once per stream.
+    // Locating the owning stream record must not scan the streams catalog once PER
+    // accept: a sweep of N accepts would then inspect N(N+1)/2 stream records and
+    // the quadratic hot path would survive inside the scoped seed. The sweep below
+    // accepts each background stream once; total inspected records must grow
+    // linearly in the catalog size (quadratic shape is 9x per tripling, bound 4x).
+    void repeatedScopedAcceptsSweepGrowsLinearly()
+    {
+        struct Sample { int size; qint64 work; };
+        QVector<Sample> samples;
+        for (const int size : {500, 1500, 3000}) {
+            Fixture test;
+            const auto channelRow = [](const QString &uuid) {
+                return QJsonObject{{QStringLiteral("uuid"), uuid},
+                    {QStringLiteral("project_id"), projectId},
+                    {QStringLiteral("name"), QStringLiteral("Channel")},
+                    {QStringLiteral("encryption"), false},
+                    {QStringLiteral("unread_count"), 0},
+                    {QStringLiteral("active_unread_count"), 0},
+                    {QStringLiteral("passive_unread_count"), 0},
+                    {QStringLiteral("last_message_uuid"), QJsonValue::Null},
+                    {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+            };
+            test.streams = [size, channelRow](const Request &request) {
+                if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                    QJsonArray rows;
+                    rows.append(channelRow(streamId)); // the default-opened channel
+                    for (int i = 1; i < size; ++i)
+                        rows.append(channelRow(QStringLiteral("77777777-7777-4777-7777-%1")
+                            .arg(i, 12, 16, QLatin1Char('0'))));
+                    return Response{rows};
+                }
+                const auto uuid = request.target.path().section(QLatin1Char('/'), -2, -2);
+                return Response{channelRow(uuid)};
+            };
+            QVERIFY(test.start({}, size));
+            test.controller.resetRowPreviewSeedWorkForTest();
+            // One scoped accept per background stream - exactly what an inbox or
+            // sidebar-search sweep produces as its per-stream replies settle.
+            for (int i = 1; i < size; ++i)
+                test.controller.seedStreamPreviewsForTest(QStringLiteral("77777777-7777-4777-7777-%1")
+                    .arg(i, 12, 16, QLatin1Char('0')));
+            const qint64 work = test.controller.rowPreviewSeedWorkForTest();
+            QVERIFY2(work > 0, "the seed work oracle never fired");
+            samples.append({size, work});
+        }
+        for (int i = 1; i < samples.size(); ++i) {
+            const qint64 bound = samples.at(i - 1).work * 4;
+            const QString message = QStringLiteral(
+                "sweep over a %1-channel catalog inspected %2 records; the linear"
+                " bound is %3 (previous: size %4 work %5)"
+                " - the per-accept stream lookup re-scans the catalog");
+            QVERIFY2(samples.at(i).work <= bound, qPrintable(message
+                .arg(samples.at(i).size).arg(samples.at(i).work).arg(bound)
+                .arg(samples.at(i - 1).size).arg(samples.at(i - 1).work)));
+        }
+    }
+
+    // #888 round 3 (exordy finding 4713938731): the reusable uuid index must keep
+    // the first-match semantics of the scan it replaced. The finding's premise is
+    // pinned where it actually lives: every accepted stream list is deduplicated
+    // by uuid - catalog ingestion REJECTS a duplicate - so a duplicate uuid can
+    // never reach the scoped seed at all. The guard in streamRowByUuid keeps
+    // first-row resolution for the case a producer ever changes that contract.
+    void duplicateStreamUuidsNeverReachTheScopedSeed()
+    {
+        Fixture test;
+        const QString dupUuid = QStringLiteral("66666666-6666-4666-6666-000000000001");
+        const QString shadowMsg = QStringLiteral("88888888-8888-4888-8888-000000000001");
+        const auto channelRow = [](const QString &uuid, const QString &lastMessage) {
+            return QJsonObject{{QStringLiteral("uuid"), uuid},
+                {QStringLiteral("project_id"), projectId},
+                {QStringLiteral("name"), QStringLiteral("Channel")},
+                {QStringLiteral("encryption"), false},
+                {QStringLiteral("unread_count"), 0},
+                {QStringLiteral("active_unread_count"), 0},
+                {QStringLiteral("passive_unread_count"), 0},
+                {QStringLiteral("last_message_uuid"), lastMessage},
+                {QStringLiteral("updated_at"), QStringLiteral("2026-01-02T10:00:05Z")}};
+        };
+        test.streams = [&](const Request &request) {
+            if (request.target.path().endsWith(QStringLiteral("/streams/"))) {
+                QJsonArray rows;
+                rows.append(channelRow(streamId, QString()));
+                // The same uuid twice; the second row carries a preview pointer
+                // that only a last-row-resolution index could ever seed.
+                rows.append(channelRow(dupUuid, QString()));
+                rows.append(channelRow(dupUuid, shadowMsg));
+                return Response{rows};
+            }
+            return Response{channelRow(
+                request.target.path().section(QLatin1Char('/'), -2, -2), QString())};
+        };
+        QVERIFY(!test.start({}, 3)); // the catalog never accepts a duplicate list
+        QCOMPARE(test.controller.streams().size(), 0);
+        QCOMPARE(test.controller.error(),
+            QStringLiteral("The server returned an invalid channel list."));
+        test.controller.resetRowPreviewSeedWorkForTest();
+        test.controller.seedStreamPreviewsForTest(dupUuid);
+        QVERIFY2(test.controller.rowPreviewStreamOfForTest(shadowMsg).isEmpty(),
+            "the scoped seed attributed a preview pointer to a stream row that"
+            " catalog ingestion had rejected");
     }
 };
 

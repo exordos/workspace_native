@@ -46,6 +46,7 @@ class RealtimeClient;
 class PowerWatcher;
 class FileClient;
 class NativeChatKeyVault;
+class WorkspaceSessions;
 struct FileResult;
 
 // Issue #866 (finding 2): move-aware sidebar row model. The sidebar ListView
@@ -80,6 +81,8 @@ public slots:
     void sync();
 
 private:
+    friend class NativeController;
+    void scheduleSync();
     struct Row {
         QString key;
         QVariantMap map;
@@ -88,6 +91,7 @@ private:
 
     NativeController *m_controller;
     QVector<Row> m_rows;
+    bool m_syncScheduled = false;
 };
 
 class NativeController final : public QObject {
@@ -98,6 +102,7 @@ class NativeController final : public QObject {
     // flight. Leaving it flips back to the authenticated projection or to the
     // sign-in screen; cached rows are never blanked by the handover.
     Q_PROPERTY(bool startupCacheMode READ startupCacheMode NOTIFY stateChanged)
+    Q_PROPERTY(bool workspaceChanging READ workspaceChanging NOTIFY stateChanged)
     Q_PROPERTY(bool sessionRenewalUnavailable READ sessionRenewalUnavailable NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
@@ -373,6 +378,14 @@ public:
     // deterministic (swap-on-ready itself is unaffected - slices remembered
     // from real navigation keep working).
     bool hasPreparedTopicSlice(const QString &topicUuid) const;
+    // Issue #893 (#855 subtask 1): GUI-thread phase attribution seam.
+    // Recording is disabled by default (inert telemetry); reset enables it.
+    Q_INVOKABLE void resetGuiPhaseTraceForTest();
+    Q_INVOKABLE QVariantMap guiPhaseTraceForTest() const;
+    // Begin/end pair used by QML instrumentation sites (no-op unless enabled).
+    Q_INVOKABLE qint64 beginGuiPhaseSpan(const QString &name);
+    Q_INVOKABLE void endGuiPhaseSpan(qint64 id);
+
     void setTopicPreloadIntervalMsForTest(int ms);
     void setTopicPreloadEnabledForTest(bool enabled);
     // #860: disables the network fallback stage of row-preview hydration (disk-only mode)
@@ -382,6 +395,28 @@ public:
     // stage has actually dispatched. The mock's HTTP/1 connection pool cannot show an
     // over-dispatch at the server, so the cap is observed at the client seam.
     int rowPreviewNetworkIssuedForTest() const { return m_rowPreviewNetIssued; }
+    // #888 witness: catalog-record inspections attributed to preview candidate
+    // enumeration (streams + topics). Tests reset it, drive catalog/topic accepts (or
+    // the scoped seam directly) and bound the GROWTH between catalog sizes - the old
+    // quadratic enumeration cannot satisfy those bounds. Timing-independent by design.
+    qint64 rowPreviewSeedWorkForTest() const { return m_rowPreviewSeedWork; }
+    // #888 (exordy round 2): the reset also forces the reusable stream-uuid index
+    // cold, so a bounded sweep measurement always starts from the same clean
+    // state - the quadratic shape pays a scan per accept from cold too.
+    void resetRowPreviewSeedWorkForTest() { m_rowPreviewSeedWork = 0; m_streamsRowTag = ~0ull; }
+    // #888 witness: drive the scoped topic-accept seed exactly as the catalog parser
+    // does after accepting one stream's topic rows.
+    void seedStreamPreviewsForTest(const QString &streamUuid)
+    {
+        seedRowPreviewHydrationForStream(streamUuid);
+    }
+    // #888 round 3 witness (exordy finding 4713938731): which preview pointer the
+    // scoped seed actually attributed - used to pin that a duplicate-uuid stream
+    // list never reaches the seed at all (catalog ingestion rejects it).
+    QString rowPreviewStreamOfForTest(const QString &messageUuid) const
+    {
+        return m_rowPreviewStreamOf.value(messageUuid);
+    }
     // #866 witness (exordy finding 2): drive the network pump's queue exactly as a
     // catalog seed would (owner map + enqueue) and take candidates with the very
     // pick function the pump uses. Mock arrival order over the HTTP connection
@@ -487,6 +522,7 @@ public:
     bool applyRealtimeEvent(const QJsonObject &envelope);
     bool authenticated() const { return m_session->ready(); }
     bool startupCacheMode() const { return m_startupCacheMode; }
+    bool workspaceChanging() const { return m_workspaceChanging; }
     // Issue #836: forwards the session's degraded-renewal flag (transient
     // failure while resuming a saved account) so the cache shell can show a
     // recovery status and gate the manual retry.
@@ -597,6 +633,8 @@ public:
     // Returns an empty map for an unknown or archived id; the caller early-
     // returns on an empty target.
     Q_INVOKABLE QVariantMap streamById(const QString &id) const;
+    Q_INVOKABLE QVariantList streamPickerRows(bool forwarding) const;
+    qint64 desktopUnreadCount() const;
     // Issue #867 test-only oracle: how many full streams() projections ran.
     // Intentionally has no NOTIFY - nothing in QML may bind to it.
     int streamsProjectionCountForTest() const { return m_streamsProjectionCount; }
@@ -1268,6 +1306,13 @@ signals:
     void resynchronizeRequested();
 
 private:
+    friend class WorkspaceSessions;
+    friend class NativeSidebarStreamListModel;
+    void publishRealtimeState(const QString &state);
+    void publishWorkspaceCatalog(const NativeController &source);
+    QString sidebarSortMode() const;
+    QString sidebarSortLocale() const;
+    void closeMessageNotifications(const QList<QString> &messages);
     void applyDeepLink(const QString &url);
     void openProfileShareLink(const QString &user);
     void applyStreamRoute(const QString &org, const QString &project,
@@ -2064,6 +2109,10 @@ private:
     void reportPresenceHeartbeat();
     QTimer m_presenceHeartbeat;
     QPointer<RealtimeClient> m_realtime;
+    QPointer<NativeController> m_notificationViewport;
+    QPointer<NotificationService> m_workspaceNotifications;
+    bool m_backgroundWorkspace = false;
+    bool m_workspaceChanging = false;
     QPointer<PowerWatcher> m_powerWatcher;
     // Clock for the resume-reconnect floor (fix-round-1 finding 4): restarted
     // on every resume-triggered reconnectNow, resumes inside the floor ignored.
@@ -2346,6 +2395,9 @@ private:
     bool m_topicsReorderQueued = false;
     // Issue #866 (finding 2): lazily created sidebar row model (parented here).
     NativeSidebarStreamListModel *m_sidebarStreamModel = nullptr;
+    const NativeSidebarStreamListModel *m_preparedSidebar = nullptr;
+    QString m_backgroundSidebarSortMode = QStringLiteral("last_message");
+    QString m_backgroundSidebarLocale;
     // #860: a disk miss is not an authoritative negative - the reference falls through to the
     // project-scoped messages lookup during bootstrap (messenger-last-messages-loader.lib.ts
     // L96-129). The network stage is bounded per tick like the disk pump, retries transient
@@ -2357,6 +2409,11 @@ private:
     // disk-stage re-reads before the quiet memo is finally stored.
     static constexpr int rowPreviewLateDiskRetries = 2;
     void seedRowPreviewHydrationFromCatalog();
+    // #888: a single stream's topic catalog accept seeds only its own rows.
+    void seedRowPreviewHydrationForStream(const QString &streamUuid);
+    // #888: work oracle for the linear-enumeration contract - counts every catalog
+    // record inspection (stream row or topic row) attributed to preview seeding.
+    void recordRowPreviewSeedWork(int inspections) const { m_rowPreviewSeedWork += inspections; }
     void scheduleRowPreviewNetworkHydration();
     void pumpRowPreviewNetworkHydration();
     // #866 review (exordy finding 2): the pumps consume their pending queues in a
@@ -2389,6 +2446,17 @@ private:
     QSet<QString> m_rowPreviewNetInFlight;
     QHash<QString, int> m_rowPreviewNetRetries;
     int m_rowPreviewNetIssued = 0; // test-only dispatch counter (rowPreviewNetworkIssuedForTest)
+    mutable qint64 m_rowPreviewSeedWork = 0; // #888 test-only inspection counter
+    // #888 (exordy round 2, finding 4713852581): the scoped topic-accept seed runs
+    // once per accepted stream; locating the owning record with a full scan made a
+    // sweep of N accepts quadratic in the channel list. This index maps a stream
+    // uuid to its row in m_streams and is rebuilt only after a structural change
+    // of the streams collection (m_streamsMutation), so repeated accepts reuse one
+    // linear pass instead of re-scanning per accept.
+    int streamRowByUuid(const QString &uuid);
+    quint64 m_streamsMutation = 0;   // bumped by every structural m_streams change
+    quint64 m_streamsRowTag = ~0ull; // mutation tag m_streamsRow was built at
+    QHash<QString, int> m_streamsRow;
     // #860: per-uuid budget for the late disk re-reads a network negative buys.
     QHash<QString, int> m_rowPreviewLateDiskRetries;
     // Issue #116: per-uuid revision bumped whenever the authoritative payload moves (edit
@@ -3008,6 +3076,12 @@ public:
     // interruption can retire in-flight ops of both families at once, hence a
     // list: every affected family stays attributed (finding 4687482019).
     Q_PROPERTY(QStringList topicSummarySettingsErrorOps READ topicSummarySettingsErrorOps NOTIFY topicSummaryStateChanged)
+    // exo-review finding 4693632013: the EXACT ledger key of the request that
+    // produced the current error ("endpoints" list read vs "endpoint-new" /
+    // "endpoint-<uuid>" write). ErrorOps stays the tab family for the bands;
+    // the dialog retires an in-flight save identity only on the write's own
+    // key, never on a concurrent list-read failure that shares the family.
+    Q_PROPERTY(QString topicSummarySettingsErrorKey READ topicSummarySettingsErrorKey NOTIFY topicSummaryStateChanged)
 
     QVariantMap topicSummaryGates() const { return m_topicSummaryGates; }
     bool topicSummaryGatesLoaded() const { return m_topicSummaryGatesLoaded; }
@@ -3016,6 +3090,7 @@ public:
     QString topicSummarySettingsStatus() const { return m_topicSummarySettingsStatus; }
     QString topicSummarySettingsError() const { return m_topicSummarySettingsError; }
     QStringList topicSummarySettingsErrorOps() const { return m_topicSummarySettingsErrorOps; }
+    QString topicSummarySettingsErrorKey() const { return m_topicSummarySettingsErrorKey; }
 
     // "allowed" | "denied" | "unknown" for tab "topic" | "gates" | "endpoints",
     // mirroring messenger-topic-summary-permissions.lib.ts.
@@ -3040,11 +3115,12 @@ private:
     bool finishTopicSummaryOp(const QString &key, quint64 token);
     void interruptTopicSummaryOps();
     void setTopicSummaryStatus(const QString &status, const QString &error = {},
-        const QString &errorOp = {});
+        const QString &errorOp = {}, const QString &errorKey = {});
     // Multi-producer variant used by the interruption sweep: every family whose
-    // op was retired stays attributed (finding 4687482019).
+    // op was retired stays attributed (finding 4687482019). errorKey is the
+    // exact ledger key the current error is attributed to (empty = none).
     void setTopicSummaryStatusOps(const QString &status, const QString &error,
-        const QStringList &errorOps);
+        const QStringList &errorOps, const QString &errorKey = {});
     // Issue #840: a successful load of one family must not erase a live error
     // belonging to the other family (the bands filter on the ops ledger).
     void settleTopicSummaryLoadSuccess(const QString &family);
@@ -3058,6 +3134,7 @@ private:
     QString m_topicSummarySettingsStatus;
     QString m_topicSummarySettingsError;
     QStringList m_topicSummarySettingsErrorOps;
+    QString m_topicSummarySettingsErrorKey;
 };
 
 }
