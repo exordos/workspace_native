@@ -2695,6 +2695,10 @@ private:
         QString from, to;
         bool loading = false, error = false, inflight = false, hasLoaded = false;
         quint64 version = 0;
+        // Issue #910: the newest window requested while a fetch is in flight,
+        // re-issued the moment the current reply settles.
+        QString pendingFrom, pendingTo;
+        bool hasPending = false;
     };
     CalendarState m_calendar;
     void resetCalendar();
