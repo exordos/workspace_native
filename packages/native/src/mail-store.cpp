@@ -229,6 +229,8 @@ void MailStore::loadWorkspacePage(bool folders, quint64 token, QJsonArray rows,
             if (self->m_project.isEmpty() || object.value("project_id").toString() != self->m_project
                 || !isUuid(id) || seen.contains(id))
                 continue;
+            // Workspace's JSON packer omits null fields, so a local row may
+            // carry an explicit null or omit its external account.
             if (!externalAccount.isNull() && !externalAccount.isUndefined() && !isUuid(account))
                 continue;
             if (!folders && (selectedFolder == self->m_folders.cend()

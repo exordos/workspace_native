@@ -173,7 +173,13 @@ private slots:
                     {"created_at","2026-11-27T12:30:00Z"},
                     {"attachment_urns",QJsonArray{"urn:file:" + first, "unrecognized"}},
                     {"payload",QJsonObject{{"kind","multipart"},{"parts",parts}}}}}};
-                if (marker.isEmpty()) page.headers["X-Pagination-Marker"] = "next-messages";
+                if (marker.isEmpty()) {
+                    page.headers["X-Pagination-Marker"] = "next-messages";
+                } else {
+                    auto message = page.data.toArray().first().toObject();
+                    message["external_account_uuid"] = QJsonValue::Null;
+                    page.data = QJsonArray{message};
+                }
                 return page;
             }
             return Response{QJsonObject{}, 404};
