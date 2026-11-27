@@ -46177,6 +46177,45 @@ private:
         clipboard->setText(QStringLiteral("f4-sentinel-after"));
     }
 
+    // Issue #944 witness: the code-copy chip floats above the bubble body,
+    // so under Qt 6.10 claimant-centered hover its own interior hover area
+    // never sees the pointer - the bubble-layer claimant above it wins. The
+    // fill must be observable by hovering the LABEL CENTER (the claimant
+    // point); a transparent fill there proves the hover wiring is dead.
+    void codeCopyButtonFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        BodyCopyWindowFixture fixture;
+        QTemporaryDir directory;
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        NativePreferences preferences(directory.filePath("appearance.ini")); preferences.setLocale("en");
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        const auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard && !closeIncubatedTestWindow(engine, guard.data())) QTest::qFail("CodeCopy hover teardown", __FILE__, __LINE__);
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate(); QVERIFY(QTest::qWaitForWindowActive(window));
+        session.login(fixture.base.server.origin(), "cassi-codecopy-hover", "synthetic-password");
+        QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
+        QTRY_VERIFY(!controller.busy() && !controller.streams().isEmpty());
+        controller.selectStream(streamId);
+        QTRY_COMPARE(controller.topics().size(), 1);
+        if (controller.selectedTopic() != topicId) controller.selectTopic(topicId);
+        QTRY_VERIFY_WITH_TIMEOUT(controller.messages().size() == 2, 12000);
+        auto *content = window->contentItem();
+        QTRY_VERIFY(visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0"));
+        auto *button = visibleItem(content, "codeCopyButton-" + fixture.codeMessageId + "-0");
+        auto *label = visibleItem(content, "codeCopyButtonText-" + fixture.codeMessageId + "-0"); QVERIFY(label);
+        QVERIFY2(button->property("color").value<QColor>().alpha() == 0,
+            "the code-copy chip no longer starts transparent");
+        QTest::mouseMove(window,
+            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() > 0, 2000);
+        // Neutral corner away from the bubble: the fill must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(button->property("color").value<QColor>().alpha() == 0, 2000);
+    }
+
     // Issue #110 review r3 (finding 4639247928): a message whose body is split
     // around an inline image still mounts a working copy button into its fence.
     void codeCopyButtonAppearsInMediaSplitBody()
