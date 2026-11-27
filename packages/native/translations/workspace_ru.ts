@@ -5963,4 +5963,27 @@
             <translation>На этот день событий нет.</translation>
         </message>
     </context>
+    <context>
+        <name>NativeCalendarEventDetail</name>
+        <message>
+            <source>(untitled)</source>
+            <translation>(без названия)</translation>
+        </message>
+        <message>
+            <source>Location</source>
+            <translation>Место</translation>
+        </message>
+        <message>
+            <source>No location specified</source>
+            <translation>Место не указано</translation>
+        </message>
+        <message>
+            <source>Participants</source>
+            <translation>Участники</translation>
+        </message>
+        <message>
+            <source>+%1 more</source>
+            <translation>и ещё %1</translation>
+        </message>
+    </context>
 </TS>

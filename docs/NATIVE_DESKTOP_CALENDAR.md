@@ -98,3 +98,39 @@ New ctest group `native-native-calendar` (window layer):
 4. Mini-calendar selection and visibility filters react.
 5. loading/empty/error render; `calendarRetry` re-fetches.
 Bucket registration via `gen-test-buckets.py` with measured timings.
+
+## Event detail (#907, part of #882)
+
+Figma oracle for this slice: `18693:33117`-adjacent event-details frames
+inside `18693:32760` (day view). The token was still 401 when this section
+was written, so metrics stay `pending-Figma` and follow native token
+conventions, exactly as the shell section above.
+
+Data contract additions on each event row from `GET /calendar/events`
+(parsed in `NativeController::requestCalendarWindow`): `location` (string),
+`all_day` (bool), `start_utc` / `end_utc` (ISO-8601 UTC instants), and
+`participants` (list of display names). Absent fields degrade: no `start_utc`
+falls back to the day + `start`/`end` strings; no location shows the
+`No location specified` placeholder.
+
+Rendering: `NativeCalendarEventDetail.qml`, a centered card overlay inside
+`NativeCalendarPage` (`page.detailEvent` selects the row; day and month agenda rows and
+week chips open it, `calendarDetailClose` clears it). Fields: title
+(`(untitled)` fallback, elided with `Layout.minimumWidth: 0` per #879),
+time line, location block, participants (first three + `+%1 more` via
+`calendarDetailParticipantsOverflow`).
+
+Time-zone rule: stored instants are UTC; the card converts with the JS Date
+pipeline (`new Date(isoWithZ)` + `Qt.format*`, i.e. the host local zone), so
+DST boundaries print correctly with no offset math. All-day events render the
+local date only, no time. Window tests derive expectations from
+`QDateTime::fromString(instant).toLocalTime()` - never hardcoded day/weekday
+names (TZ-pinned flake rule).
+
+Acceptance (window layer, calendar cases in `native-window-test.cpp`):
+clicking a fixture row in either the day or month agenda opens the detail with the fixture title,
+time range, location and participants; an all-day fixture shows the date
+only; five participants render three rows + `+2 more`; the DST fixture
+instant renders the locally derived day/time; `calendarDetailClose` hides
+the card. New `qsTr` strings ship in `workspace_ru.ts` (context
+`NativeCalendarEventDetail`) in the same PR.
