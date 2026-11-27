@@ -106,6 +106,20 @@ class FetchTests(unittest.TestCase):
                 result, _ = self.fetch(pages, limit)
                 self.assertEqual(result, ([workflow()], False))
 
+    def test_all_pages_and_both_listings_share_the_poll_budget(self):
+        first = self.response([workflow()], 1)
+        # The workflow listing takes most of the remaining budget. The check
+        # listing times out; no third network request may start afterwards.
+        with (unittest.mock.patch("time.monotonic", side_effect=[10, 11, 14, 16]),
+              unittest.mock.patch.object(subprocess, "run", side_effect=[
+                  first, subprocess.TimeoutExpired("gh", 1)]) as gh):
+            verdict = gate.resolve_verdict("o/r", SHA, budget_seconds=5)
+        self.assertEqual(verdict, "incomplete")
+        self.assertEqual([call.kwargs["timeout"] for call in gh.call_args_list], [4, 1])
+        with unittest.mock.patch.object(subprocess, "run") as gh:
+            self.assertEqual(gate.resolve_verdict("o/r", SHA, budget_seconds=0), "incomplete")
+            gh.assert_not_called()
+
     def test_red_with_missing_owner_triggers_a_suite_specific_lookup(self):
         red = check("package-linux", suite=20, conclusion="failure")
         for lookup, expected in [

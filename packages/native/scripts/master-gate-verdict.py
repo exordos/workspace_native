@@ -4,6 +4,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 import urllib.parse
 
 
@@ -12,15 +13,18 @@ WORKFLOW = ".github/workflows/linux-release.yml"
 
 
 def fetch_listing(repo, endpoint, params, key, gh_bin="gh", per_page=100,
-                  max_pages=50):
+                  max_pages=50, deadline=None):
     """Return every observed item, plus whether the listing was exhausted."""
     items = []
     for page in range(1, max_pages + 1):
         query = urllib.parse.urlencode(dict(params, per_page=per_page, page=page))
         url = f"repos/{repo}/{endpoint}?{query}"
+        timeout = 45 if deadline is None else min(45, deadline - time.monotonic())
+        if timeout <= 0:
+            return items, False
         try:
             result = subprocess.run([gh_bin, "api", url], capture_output=True,
-                                    check=True, timeout=45)
+                                    check=True, timeout=timeout)
             payload = json.loads(result.stdout)
             batch = payload[key]
             if not isinstance(batch, list) or not all(isinstance(item, dict)
@@ -59,11 +63,12 @@ def decide(sha, workflows, checks, complete):
     return "wait"
 
 
-def resolve_verdict(repo, sha):
+def resolve_verdict(repo, sha, budget_seconds=3000):
+    deadline = time.monotonic() + budget_seconds
     filters = {"head_sha": sha, "event": "push", "branch": "master"}
-    workflows, runs_complete = fetch_listing(repo, "actions/runs", filters, "workflow_runs")
+    workflows, runs_complete = fetch_listing(repo, "actions/runs", filters, "workflow_runs", deadline=deadline)
     checks, checks_complete = fetch_listing(
-        repo, f"commits/{sha}/check-runs", {"filter": "latest"}, "check_runs")
+        repo, f"commits/{sha}/check-runs", {"filter": "latest"}, "check_runs", deadline=deadline)
     unresolved_red = False
     if not runs_complete:
         # A missing page can hide the master run that owns a visible red.
@@ -77,7 +82,7 @@ def resolve_verdict(repo, sha):
         for suite_id in failed_suites - known:
             matches, complete = fetch_listing(repo, "actions/runs",
                                               dict(filters, check_suite_id=suite_id),
-                                              "workflow_runs")
+                                              "workflow_runs", deadline=deadline)
             workflows.extend(matches)
             if not complete:
                 unresolved_red = True
@@ -93,8 +98,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fetch", required=True, metavar="SHA")
     parser.add_argument("--repo", required=True)
+    parser.add_argument("--budget-seconds", type=int, default=3000)
     args = parser.parse_args()
-    verdict = resolve_verdict(args.repo, args.fetch)
+    verdict = resolve_verdict(args.repo, args.fetch, args.budget_seconds)
     print(verdict)
     return {"reuse": 0, "wait": 1, "block": 2, "unknown-red": 3, "incomplete": 4}[verdict]
 
