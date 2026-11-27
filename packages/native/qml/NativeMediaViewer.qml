@@ -97,7 +97,7 @@ Popup {
     readonly property int keyboardPanStep: 48
     readonly property bool zoomableSlot: currentSlot.state === "ready"
         && String(currentSlot.kind || "") !== "video"
-    function zoomByWheel(wheel) {
+    function zoomByWheel(wheel, anchorX, anchorY) {
         wheel.accepted = true;
         if (!zoomableSlot)
             return;
@@ -106,20 +106,23 @@ Popup {
                                                  zoom * Math.exp(delta * 0.0035)));
         const applied = next / zoom;
         // Cursor anchoring: the pixel under the cursor stays under the
-        // cursor. Offsets are measured from the media area center, where
-        // the scaled picture is centered at pan 0.
-        panX = (wheel.x - mediaArea.width / 2) * (1 - applied) + panX * applied;
-        panY = (wheel.y - mediaArea.height / 2) * (1 - applied) + panY * applied;
+        // cursor. The caller maps the wheel position into mediaArea
+        // coordinates first (exordy finding #920: the handler lives on the
+        // scaled mediaImage, whose local coords are compressed by 1/zoom,
+        // so feeding them in directly moved the anchored pixel once
+        // zoom != 1). Offsets are measured from the media area center,
+        // where the scaled picture is centered at pan 0.
+        panX = (anchorX - mediaArea.width / 2) * (1 - applied) + panX * applied;
+        panY = (anchorY - mediaArea.height / 2) * (1 - applied) + panY * applied;
         zoom = next; // onZoomChanged re-clamps the pan into the new bounds
     }
-    // Button/keyboard step anchored at the image center: the picture center
-    // keeps its on-screen offset while the scale changes.
+    // Button/keyboard step anchored at the picture center: the center keeps
+    // its current on-screen offset, so the pan is held untouched and the
+    // #730 bound-change clamp only pulls it in when the new bounds demand
+    // it (exordy finding #920: scaling the pan by the step ratio slid the
+    // panned picture's center on every step even without clamping).
     function zoomByStep(factor) {
-        const next = Math.max(minScale, Math.min(maxScale, zoom * factor));
-        const applied = next / zoom;
-        panX = panX * applied;
-        panY = panY * applied;
-        zoom = next;
+        zoom = Math.max(minScale, Math.min(maxScale, zoom * factor));
     }
     function resetZoom() {
         zoom = 1;
@@ -266,7 +269,13 @@ Popup {
         MouseArea {
             parent: mediaImage
             anchors.fill: parent
-            onWheel: (wheel) => viewerRoot.zoomByWheel(wheel)
+            // The handler sits under mediaImage's scale transform, so wheel
+            // coords are image-local (compressed by 1/zoom); map the point
+            // into mediaArea before the anchor math (exordy finding #920).
+            onWheel: (wheel) => {
+                const p = mediaImage.mapToItem(mediaArea, wheel.x, wheel.y);
+                viewerRoot.zoomByWheel(wheel, p.x, p.y);
+            }
             enabled: mediaImage.visible
             // #730: drag-to-pan with the primary button. mouse.x/y are
             // mediaImage-local and the image slides under the cursor while
@@ -957,8 +966,10 @@ Popup {
         width: zoomRow.implicitWidth + 8
         height: zoomRow.implicitHeight + 8
         radius: 8
-        color: viewerRoot.colors["bg-elevated"]
-        opacity: 0.8
+        // The reference pill is bg-bg-elevated/80 - the /80 alpha belongs to
+        // the background only; item opacity would fade the buttons and the
+        // percentage label with it (exordy finding #920).
+        color: Qt.alpha(viewerRoot.colors["bg-elevated"], 0.8)
         Accessible.ignored: true
         Row {
             id: zoomRow
