@@ -5966,6 +5966,14 @@
     <context>
         <name>NativeMailPage</name>
         <message>
+            <source>Sample mailbox. These messages and unread counts are examples.</source>
+            <translation>Демоящик. Письма и счётчики непрочитанных показаны для примера.</translation>
+        </message>
+        <message>
+            <source>Sample folders. The unread counts are examples.</source>
+            <translation>Демопапки. Счётчики непрочитанных показаны для примера.</translation>
+        </message>
+        <message>
             <source>Mail</source>
             <translation>Почта</translation>
         </message>
