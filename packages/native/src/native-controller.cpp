@@ -8973,6 +8973,12 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
             m_calendar.pendingFrom = from;
             m_calendar.pendingTo = to;
             m_calendar.hasPending = true;
+        } else {
+            // Review on #910: returning to the window that is currently in
+            // flight makes every queued window stale - the in-flight request
+            // already answers the newest requested window, so drop the queue
+            // instead of re-fetching the abandoned one when the reply lands.
+            m_calendar.hasPending = false;
         }
         return;
     }

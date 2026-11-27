@@ -1575,6 +1575,41 @@ private slots:
         QCOMPARE(queries->size(), 2);
     }
 
+    // Review follow-up on #910: returning to the window that is CURRENTLY in
+    // flight makes every queued window stale - the newest requested window is
+    // the one being fetched, so the queue must be dropped instead of fired
+    // when the in-flight reply settles.
+    void calendarReturnToInflightWindowDropsQueuedWindow()
+    {
+        Fixture fixture;
+        auto gates = std::make_shared<std::vector<std::function<void()>>>();
+        auto queries = std::make_shared<QStringList>();
+        fixture.calendar = [gates, queries](const Request &request) {
+            queries->append(QUrlQuery(request.target).query(QUrl::FullyEncoded));
+            Response response{QJsonArray{}};
+            response.defer = [gates](std::function<void()> send) { gates->push_back(std::move(send)); };
+            return response;
+        };
+        QVERIFY(fixture.start());
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        QTRY_VERIFY_WITH_TIMEOUT(!gates->empty(), 2000); // the first window is in flight
+        // A newer window is queued, then the user returns to the in-flight one.
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-12-01"),
+                                                 QStringLiteral("2026-12-31"));
+        fixture.controller.requestCalendarWindow(QStringLiteral("2026-11-01"),
+                                                 QStringLiteral("2026-11-30"));
+        for (auto &release : *gates)
+            release();
+        gates->clear();
+        // The in-flight reply settles as the newest requested window; the
+        // dropped queue must never fire afterwards.
+        QTest::qWait(400);
+        QCOMPARE(queries->size(), 1);
+        QVERIFY(gates->empty());
+        QTRY_VERIFY_WITH_TIMEOUT(!fixture.controller.calendarLoading(), 3000);
+    }
+
     // Issue #37: the recent-calls page is a rendered section (calls-page.ui.tsx
     // at workspace_ui 61dacef78dab2f5d0be76f283bebf49fe29b84af). The reference
     // top-bar Calls chip sits behind the TOP_BAR_CALLS_NAV build gate
