@@ -676,6 +676,12 @@ if(BUILD_TESTING)
         Qt6::Test Qt6::DBus Qt6::Widgets)
     target_compile_definitions(native-controller-test-support PUBLIC
         WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE="${WORKSPACE_NATIVE_E2EE_OPENSSL_EXECUTABLE}")
+    add_executable(native-window-warm-restore-test tests/native-window-warm-restore-test.cpp)
+    target_link_libraries(native-window-warm-restore-test PRIVATE native-controller-test-support)
+    qt_add_resources(native-window-warm-restore-test native_qml
+        PREFIX /workspace/qml BASE qml FILES ${native_qml_files})
+    add_test(NAME native-native-window-warm-restore COMMAND native-window-warm-restore-test)
+    set_tests_properties(native-native-window-warm-restore PROPERTIES TIMEOUT 60 LABELS "gui" RESOURCE_LOCK "xdisplay")
     set(native_controller_suites
         activity calls channels diagnostics direct-chat encrypted-channels ext-provider feed forward history inbox keys media mentions
         navigation notifications outbox polls profiles reactions replies sessions sidebar topics transfers)

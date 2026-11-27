@@ -3333,10 +3333,10 @@ struct NativeWindowScene {
         session.selectProject(projectId);
         if (!QTest::qWaitFor([&] { return controller.streams().size() == 25; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         if (!QTest::qWaitFor([&] { return controller.topics().size() == 1; }, 5000))
             return false;
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         if (!QTest::qWaitFor([&] { return controller.messages().size() == 50; }, 5000))
             return false;
         auto *list = item(window->contentItem(), "messageList");
