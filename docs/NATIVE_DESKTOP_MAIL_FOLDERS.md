@@ -6,6 +6,12 @@ The reader displays a local-time date, recipients, plain text and file reference
 
 ## Workspace Mail API
 
+The client displays Workspace folders from the selected project. Messages must
+also match the selected folder and its linked account. The server can omit
+`external_account_uuid` for a local row because the JSON serializer skips null
+values. Rows with unusable UUIDs are skipped before
+deduplication. Selecting a folder uses the IDs from the loaded mailbox.
+
 The client requests `/api/workspace/v1/mail/folders/` and
 `/api/workspace/v1/mail/messages/` through the authenticated session. It follows
 `X-Pagination-Marker` using `page_marker` and filters messages by the selected

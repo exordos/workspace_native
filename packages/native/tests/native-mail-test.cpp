@@ -2,6 +2,8 @@
 // folder list with unread counts, per-folder message lists, row selection
 // driving the reader placeholder, and the loading / empty / error+retry states
 // against the in-process mock server. Live mail integration is #852.
+#include <QNetworkReply>
+#include <QScopeGuard>
 #include <QtTest>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -91,6 +93,7 @@ private slots:
         api.setServer(server.origin());
         api.setAccessToken("test-token");
         store = new MailStore(&api, this);
+        store->setProject(projectId);
     }
     void cleanup()
     {
@@ -154,7 +157,7 @@ private slots:
                 if (failFolderRefresh) return Response{QJsonObject{}, 503};
                 Response page{QJsonArray{QJsonObject{{"uuid", marker.isEmpty() ? archive : inbox},
                     {"name", marker.isEmpty() ? "Archive" : "Inbox"}, {"kind", marker.isEmpty() ? "archive" : "inbox"},
-                    {"unread_count", marker.isEmpty() ? 0 : 2}}}};
+                    {"project_id", projectId}, {"unread_count", marker.isEmpty() ? 0 : 2}}}};
                 if (marker.isEmpty()) page.headers["X-Pagination-Marker"] = "next-folders";
                 return page;
             }
@@ -165,12 +168,18 @@ private slots:
                 const QJsonObject text{{"kind","text"},{"content","Hello as text"}};
                 auto parts = marker.isEmpty() ? QJsonArray{html, text} : QJsonArray{html};
                 Response page{QJsonArray{QJsonObject{{"uuid", marker.isEmpty() ? first : second},
-                    {"folder_uuid",inbox},{"from_address","robot@example.test"},
+                    {"project_id", projectId},{"folder_uuid",inbox},{"from_address","robot@example.test"},
                     {"to_addresses",QJsonArray{"team@example.test"}},{"subject","Updates"}, {"read",true},
                     {"created_at","2026-11-27T12:30:00Z"},
                     {"attachment_urns",QJsonArray{"urn:file:" + first, "unrecognized"}},
                     {"payload",QJsonObject{{"kind","multipart"},{"parts",parts}}}}}};
-                if (marker.isEmpty()) page.headers["X-Pagination-Marker"] = "next-messages";
+                if (marker.isEmpty()) {
+                    page.headers["X-Pagination-Marker"] = "next-messages";
+                } else {
+                    auto message = page.data.toArray().first().toObject();
+                    message["external_account_uuid"] = QJsonValue::Null;
+                    page.data = QJsonArray{message};
+                }
                 return page;
             }
             return Response{QJsonObject{}, 404};
@@ -215,6 +224,86 @@ private slots:
         QVERIFY(store->messages().isEmpty());
     }
 
+    void workspaceMailboxKeepsRowsInTheSelectedScope()
+    {
+        const QString inbox = "87654321-3333-4444-8888-000000000001";
+        const QString otherFolder = "87654321-3333-4444-8888-000000000002";
+        const QString account = "87654321-3333-4444-8888-000000000003";
+        const QString otherAccount = "87654321-3333-4444-8888-000000000004";
+        const QString message = "87654321-3333-4444-8888-000000000005";
+        const auto folder = [&](const QString &id, const QString &project, const QJsonValue &accountId) {
+            return QJsonObject{{"uuid", id}, {"project_id", project}, {"external_account_uuid", accountId},
+                               {"kind", "inbox"}, {"name", project}};
+        };
+        const auto row = [&](const QString &id, const QString &project, const QJsonValue &accountId,
+                             const QString &folderId, const QString &subject) {
+            return QJsonObject{{"uuid", id}, {"project_id", project}, {"external_account_uuid", accountId},
+                               {"folder_uuid", folderId}, {"subject", subject}};
+        };
+        QString requestedProject = projectId;
+        QStringList openedFolders;
+        bool holdOldPage = false;
+        std::function<void()> releaseOldPage;
+        QPointer<QNetworkReply> oldReply;
+        auto trackOldReply = connect(&api, &ApiClient::requestDispatched, this,
+            [&](QNetworkReply *reply) {
+                if (holdOldPage && reply->url().path().endsWith("/messages/"))
+                    oldReply = reply;
+            });
+        auto disconnectTracker = qScopeGuard([&] { disconnect(trackOldReply); });
+        server.handler = [&](const Request &request) -> Response {
+            const auto path = request.target.path();
+            if (path == "/api/workspace/v1/mail/folders/") {
+                if (requestedProject == streamId)
+                    return {QJsonArray{folder(inbox, streamId, account)}};
+                return {QJsonArray{folder(otherFolder, streamId, account), folder(inbox, streamId, account),
+                                   folder("invalid", projectId, account), folder(inbox, projectId, account)}};
+            }
+            if (path == "/api/workspace/v1/mail/messages/") {
+                openedFolders.append(QUrlQuery(request.target).queryItemValue("folder_uuid"));
+                if (requestedProject == streamId)
+                    return {QJsonArray{row(message, streamId, account, inbox, "Current project")}};
+                if (holdOldPage) {
+                    Response response{QJsonArray{row(message, projectId, account, inbox, "Retired project")}};
+                    response.defer = [&](auto send) { releaseOldPage = std::move(send); };
+                    return response;
+                }
+                return {QJsonArray{row(message, projectId, otherAccount, inbox, "Other account"),
+                                   row(message, streamId, account, inbox, "Other project"),
+                                   row(message, projectId, account, otherFolder, "Other folder"),
+                                   row("invalid", projectId, account, inbox, "Invalid identifier"),
+                                   row(message, projectId, account, inbox, "Selected folder")}};
+            }
+            return {QJsonObject{}, 404};
+        };
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(store->folders().size(), 1);
+        QCOMPARE(store->folderId(), inbox);
+        QCOMPARE(store->messages().size(), 1);
+        QCOMPARE(store->messages().first().toMap().value("subject").toString(), QStringLiteral("Selected folder"));
+        store->selectFolder(otherFolder);
+        QCOMPARE(store->folderId(), inbox);
+        QCOMPARE(openedFolders, QStringList{inbox});
+
+        holdOldPage = true;
+        store->refresh();
+        QTRY_VERIFY(releaseOldPage && oldReply);
+        holdOldPage = false;
+        requestedProject = streamId;
+        store->setProject(streamId);
+        QCOMPARE(store->state(), QStringLiteral("idle"));
+        QVERIFY(store->messages().isEmpty());
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QSignalSpy updates(store, &MailStore::mailChanged);
+        releaseOldPage();
+        QTRY_VERIFY(!oldReply || oldReply->isFinished());
+        QCOMPARE(updates.size(), 0);
+        QCOMPARE(store->messages().size(), 1);
+        QCOMPARE(store->messages().first().toMap().value("subject").toString(), QStringLiteral("Current project"));
+    }
+
     void workspaceReaderAppliesOnlyValidActions()
     {
         const QString inbox = "87654321-2222-4444-8888-000000000001";
@@ -225,17 +314,18 @@ private slots:
         QString location = inbox;
         bool read = false, starred = false, forbidden = false;
         QStringList actions;
-        const auto folder = [](const QString &id, const QString &kind, const QString &account = {}) {
-            return QJsonObject{{"uuid", id}, {"name", kind}, {"kind", kind}, {"external_account_uuid", account}};
+        const auto folder = [](const QString &id, const QString &kind, const QJsonValue &account = QJsonValue::Null) {
+            return QJsonObject{{"uuid", id}, {"project_id", projectId}, {"name", kind}, {"kind", kind},
+                               {"external_account_uuid", account}};
         };
         server.handler = [&](const Request &req) -> Response {
             const auto path = req.target.path();
             if (path == "/api/workspace/v1/mail/folders/") {
                 return Response{QJsonArray{folder(inbox, "inbox"), folder(archive, "archive"),
-                    folder(trash, "trash"), folder(foreign, "archive", "other-account")}};
+                    folder(trash, "trash"), folder(foreign, "archive", QStringLiteral("87654321-2222-4444-8888-000000000006"))}};
             }
             const auto message = [&] {
-                return QJsonObject{{"uuid", uuid}, {"folder_uuid", location}, {"read", read},
+                return QJsonObject{{"uuid", uuid}, {"project_id", projectId}, {"folder_uuid", location}, {"read", read},
                     {"starred", starred}, {"subject", "Test message"}, {"from_address", "team@example.test"}};
             };
             if (path == "/api/workspace/v1/mail/messages/") {

@@ -10829,6 +10829,7 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
         if (owner != m_sessionGenerationOwner) {
             if (!m_sessionGenerationOwner.isEmpty())
                 m_mail->reset();
+            m_mail->setProject(m_session->project());
             ++m_sessionGeneration;
             m_sessionGenerationOwner = owner;
             m_sessionLog.beginSupportScope();
