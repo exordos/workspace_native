@@ -111,3 +111,30 @@ releases - the same role the cache-component baselines play for the worker.
 ### Reopening a cached topic after a realtime deletion
 
 When another member deletes a message, the desktop removes its body and its indexed copies from saved topic and aggregate history. A page with other messages retains its cursor and original age, and the client revalidates it on the next visit. If the connection is unavailable, those remaining messages can still be displayed. The controller regression opens a three-message topic, receives the deletion, changes topics and returns while the history request fails.
+
+## Warm saved-stream restore
+
+The `native-native-window-warm-restore` CTest opens the actual Qt Quick
+window. It resumes the saved account through `WorkspaceSessions`, using a
+temporary SQLite cache, a loopback HTTPS/WebSocket server, 120 channels,
+800 user records, 364 topics in the saved channel and 100 messages. The
+fixture holds the refresh grant until the cached channel is visible. It then
+checks the restored aggregate route, the last message in the viewport, and
+the reaction control when the pointer enters that message.
+
+The `WARM_RESTORE` JSON line records time from loading the window to its
+first exposure and to visible history. Its 10 ms `GuiStallSampler` starts
+after exposure and continues through the initial layout and revalidation.
+The same line includes the controller phase aggregates in milliseconds.
+
+On the desktop performance host, enable the 300 ms heartbeat budget:
+
+```sh
+WORKSPACE_NATIVE_STRICT_STALL_BUDGET=1 ctest --test-dir build \
+  -V -R '^native-native-window-warm-restore$'
+```
+
+Shared software-rendered CI uses a 3 s upper guard and also checks the
+visible route, viewport buffer and on-demand controls. For comparisons,
+warm the Qt disk cache once per executable, then alternate baseline and
+candidate runs on the same display, build configuration and CPU allocation.
