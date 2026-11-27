@@ -50982,9 +50982,12 @@ private slots:
     {
         ChannelInfoWindowScene scene;
         scene.openChannelInfo();
-        auto *row = visibleItemWithPrefix(QStringLiteral("channelInfoMember-"));
-        QVERIFY(row);
+        // Members arrive asynchronously with the info fetch: the lookup must be
+        // re-run inside the wait (#718 wrapped-assignment QTRY), never one-shot.
         const QString prefix = QStringLiteral("channelInfoMember-");
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&] { row = visibleItemWithPrefix(prefix); return row != nullptr; })(), 4000);
         const QString suffix = row->objectName().mid(prefix.size());
         auto *name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
         QVERIFY(name);
