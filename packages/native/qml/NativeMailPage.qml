@@ -7,8 +7,7 @@ import QtQuick.Layouts
 // unavailable-fallback card with the reference demo mailbox measured from
 // workspace_ui e0194ff embeds/mail-placeholder.html: header + non-functional
 // search affordance, 220 px folder sidebar with unread counts, thread list
-// (sender / subject / snippet / time) and a reader column that shows the
-// selected row's title only - the full reader is the next subtask (#880).
+// (sender / subject / snippet / time) and a reader for the selected message.
 Item {
     id: page
     objectName: "mailPage"
@@ -296,50 +295,17 @@ Item {
                 color: page.borderColor
             }
 
-            // Reader placeholder column: subject + sender of the selected
-            // row and an empty-body note; the real reader is #880. Plain
-            // Item wrapper: see the thread column above.
             Item {
                 Layout.fillWidth: true
                 Layout.preferredWidth: 0
                 Layout.minimumWidth: 0
                 Layout.fillHeight: true
-                ColumnLayout {
+                NativeMailReader {
                     anchors.fill: parent
                     anchors.margins: 16
-                    spacing: 8
-                    Text {
-                        objectName: "mailReaderLabel"
-                        text: qsTr("Preview")
-                        font.pixelSize: 12
-                        color: page.mutedColor
-                    }
-                    Text {
-                        objectName: "mailReaderTitle"
-                        text: page.mail && page.mail.selectedMessageUuid
-                            ? page.mail.messages.find(m => m.uuid === page.mail.selectedMessageUuid).subject
-                            : qsTr("Select a message")
-                        textFormat: Text.PlainText
-                        font.pixelSize: 18
-                        color: page.textColor
-                        elide: Text.ElideRight
-                        // exordy finding 4714792891: keep the fill hint so the
-                        // title is column-constrained and elide engages; the
-                        // zero minimum lets the column shrink below the
-                        // implicit width instead of overflowing it.
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                    }
-                    Text {
-                        objectName: "mailReaderBody"
-                        text: qsTr("Message bodies arrive with the mail server integration.")
-                        font.pixelSize: 13
-                        color: page.mutedColor
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
-                        Layout.minimumWidth: 0
-                    }
-                    Item { Layout.fillHeight: true }
+                    colors: page.colors
+                    message: (page.mail && page.mail.messages.find(
+                        row => row.uuid === page.mail.selectedMessageUuid)) || null
                 }
             }
         }

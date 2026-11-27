@@ -4,7 +4,7 @@ Issue: #879 (part of #851, UI phase). Scope: the Mail section stops being the
 "temporarily unavailable" fallback card and becomes a working mock mailbox:
 navigation entry -> `MailPage` with a folder sidebar (six folders with unread
 counts), a message list for the selected folder (sender, subject, snippet,
-time), row selection driving an empty reader placeholder, and loading /
+time), row selection opening the reader, and loading /
 empty-folder / adapter-error states with a retry control. No live mail API:
 fixtures are served by the in-process mock server used by the window tests;
 server integration is #852.
@@ -52,6 +52,15 @@ row rest -> `card-bg` / active `card-bg-active`, text -> `text` /
 instead of freezing the placeholder's light-only hexes; deviation is allowed
 here because this is brand-new functionality (#851 UI phase).
 
+## Reader reference
+
+The opened-message and selection frames in the Exordos Core file
+(`18687:30325` and `18687:31139`) show the subject above the sender, recipients
+and date, followed by the message text and actions. In the native mock mailbox
+the reader occupies its existing column. The test fixture exercises an empty
+selection and a long selected message in English and Russian in both color
+modes. The API integration in #852 owns delivery and write actions.
+
 ## Figma
 
 `FIGMA_TOKEN` returns HTTP 403 from this host as of 2026-11-26 - mockups not
@@ -74,9 +83,14 @@ consulted; the node id recorded by the issue is Mailbox and folders
 - QML `NativeMailPage.qml` replaces `mailSectionPage`
   (`packages/native/qml/Main.qml:13244` block); the rail entry
   `sectionMailButton` (Main.qml:3098) and `controller.section == "mail"`
-  routing already exist and stay untouched. The reader column renders subject +
-  sender + "no body in mock phase" placeholder driven by the selected row -
-  the full reader lands in the next subtask (#880).
+  routing share the existing desktop shell. Selecting a row opens
+  `NativeMailReader.qml` with the subject, sender, optional list of recipients,
+  supplied display date and plain-text body. The reader accepts the optional
+  adapter fields `recipients` (array of names/addresses), `date` (display
+  string) and `body` (plain text). Older summaries use their existing `time`
+  and show that the full body is unavailable. Long headers wrap and the pane
+  scrolls vertically. Reply, forward, read-state and deletion controls are
+  visibly disabled pending the live contract. Changing folders clears selection.
 - States: `loading` (spinner rows), `ready`, `empty` folder state per folder,
   `error` with a retry control re-invoking `refresh()`. A deployment that does
   not serve the two endpoints yet (HTTP 404 - the live mail API is #852) falls
@@ -87,8 +101,7 @@ consulted; the node id recorded by the issue is Mailbox and folders
   solely by the folders response: if `/mail/folders` answered `200`, a `404` on
   `/mail/messages` stays `error` with an empty list, so sample rows can never be
   listed under server-provided folders (exordy finding 4712650373).
-- All server-supplied strings (folder title, sender, subject, snippet, time and
-  the reader title) render with `textFormat: Text.PlainText`, so HTML-shaped
+- All server-supplied strings (folder title, message rows, reader headers and body) render with `textFormat: Text.PlainText`, so HTML-shaped
   content can never be interpreted as rich text or request remote images
   (exordy finding 4712325992).
 - Fixtures: window tests answer the two endpoints from a deterministic mock

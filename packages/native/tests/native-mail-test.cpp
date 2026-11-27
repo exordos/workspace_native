@@ -10,6 +10,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QTranslator>
 #include <QUrlQuery>
 #include <QVariant>
 
@@ -40,8 +41,18 @@ QJsonArray fixtureMessages(const QString &folder)
     if (folder == "inbox") {
         auto row = [](const char *uuid, const char *sender, const char *subject,
                       const char *snippet, const char *time) {
-            return QJsonObject{{"uuid", uuid}, {"sender", sender}, {"subject", subject},
-                               {"snippet", snippet}, {"time", time}, {"unread", true}};
+            QJsonObject message{{"uuid", uuid}, {"sender", sender}, {"subject", subject},
+                                {"snippet", snippet}, {"time", time}, {"unread", true}};
+            if (message.value("uuid") == "mail-inbox-1") {
+                message["subject"] = "A deliberately long subject for our upcoming workspace planning meeting";
+                message["recipients"] = QJsonArray{"design-team@example.test", "workspace-team@example.test",
+                                                   "product-team@example.test"};
+                message["date"] = "13 October 2026, 10:24";
+                message["body"] = "Hello team,\n\n<Review the fixtures> before Friday.";
+            }
+            if (message.value("uuid") == "mail-inbox-3")
+                message["body"] = QStringLiteral("");
+            return message;
         };
         return {row("mail-inbox-1", "Build Bot", "Release 0.5.0 checks passed",
                     "All pipelines are green and artifacts are ready.", "10:24"),
@@ -63,7 +74,7 @@ QVariantMap lightColors()
     return {{"dark", false}, {"bg", "#f4f7fc"}, {"bg-elevated", "#ffffff"},
             {"border-subtle", "#d9e2f0"}, {"text-primary", "#162033"}, {"text-muted", "#64738d"},
             {"accent", "#4a73ff"}, {"accent-soft", "#eaf0ff"}, {"card-bg-active", "#f4f7ff"},
-            {"on-accent", "#ffffff"}};
+            {"on-accent", "#ffffff"}, {"card-bg", "#ffffff"}};
 }
 
 } // namespace
@@ -269,6 +280,96 @@ private slots:
         // Empty folder: the empty-state label shows for a ready-but-empty list.
         store->selectFolder(QStringLiteral("archive"));
         QTRY_VERIFY_WITH_TIMEOUT(visible(page, "mailEmptyState"), 5000);
+    }
+
+    void selectedMessageOpensReader_data()
+    {
+        QTest::addColumn<bool>("russian");
+        QTest::addColumn<bool>("dark");
+        QTest::newRow("en-light") << false << false;
+        QTest::newRow("en-dark") << false << true;
+        QTest::newRow("ru-light") << true << false;
+        QTest::newRow("ru-dark") << true << true;
+    }
+
+    void selectedMessageOpensReader()
+    {
+        QFETCH(bool, russian);
+        QFETCH(bool, dark);
+        QTranslator translation;
+        if (russian) {
+            QVERIFY(translation.load(":/workspace/i18n/workspace_ru.qm"));
+            QVERIFY(QCoreApplication::installTranslator(&translation));
+        }
+        QQmlEngine engine;
+        QQmlComponent palette(&engine, QUrl::fromLocalFile(QStringLiteral(
+            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeTheme.qml")));
+        QScopedPointer<QObject> theme(palette.createWithInitialProperties(
+            {{"paletteId", QStringLiteral("orange-warm")}, {"dark", dark}}));
+        QVERIFY2(theme, qPrintable(palette.errorString()));
+        auto colors = theme->property("colors").value<QJSValue>().toVariant().toMap();
+        QVERIFY(colors.contains("bg"));
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(
+            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeMailPage.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        const QVariantMap properties{{"colors", colors}, {"dark", dark}, {"mail", QVariant::fromValue(store)}};
+        QScopedPointer<QObject> object(component.createWithInitialProperties(properties));
+        auto *page = qobject_cast<QQuickItem *>(object.data());
+        QVERIFY(page);
+        QQuickWindow window;
+        window.setColor(colors.value("bg").value<QColor>());
+        window.resize(900, 700);
+        page->setSize(window.size());
+        page->setParentItem(window.contentItem());
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(textOf(page, "mailReaderTitle"),
+                 russian ? QStringLiteral("Выберите сообщение") : QStringLiteral("Select a message"));
+        QVERIFY(!visible(page, "mailReaderActionNotice"));
+        auto *row = item(page, "mailMessageRow-mail-inbox-1");
+        QVERIFY(row);
+        QTRY_VERIFY(row->width() > 0 && row->height() > 0);
+        QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                          row->mapToScene(row->boundingRect().center()).toPoint());
+        QTRY_COMPARE(store->selectedMessageUuid(), QStringLiteral("mail-inbox-1"));
+        const auto message = fixtureMessages("inbox").first().toObject();
+        QCOMPARE(textOf(page, "mailReaderTitle"), message.value("subject").toString());
+        QCOMPARE(textOf(page, "mailReaderFrom"), russian ? QStringLiteral("От: Build Bot") : QStringLiteral("From: Build Bot"));
+        QCOMPARE(textOf(page, "mailReaderDate"),
+                 (russian ? QStringLiteral("Дата: ") : QStringLiteral("Date: ")) + message.value("date").toString());
+        QCOMPARE(textOf(page, "mailReaderTo"),
+                 (russian ? QStringLiteral("Кому: ") : QStringLiteral("To: "))
+                 + message.value("recipients").toVariant().toStringList().join(", "));
+        QCOMPARE(textOf(page, "mailReaderBody"), message.value("body").toString());
+        QCOMPARE(item(page, "mailReaderBody")->property("textFormat").toInt(), int(Qt::PlainText));
+        QTRY_VERIFY(item(page, "mailReaderTitle")->property("lineCount").toInt() > 1);
+        QVERIFY(item(page, "mailReaderTo")->property("lineCount").toInt() > 1);
+        QCOMPARE(textOf(page, "mailReaderActionNotice"),
+                 russian ? QStringLiteral("Действия с письмами недоступны в режиме предпросмотра.")
+                         : QStringLiteral("Mail actions are unavailable in this preview."));
+        const auto requests = server.requests.size();
+        for (const auto &key : {"reply", "forward", "mark", "delete"}) {
+            auto *action = item(page, QStringLiteral("mailReaderAction-") + key);
+            QVERIFY(action && action->isVisible());
+            QVERIFY(!action->isEnabled());
+            const QPoint position = action->mapToScene(action->boundingRect().center()).toPoint();
+            QVERIFY(QRect(QPoint(), window.size()).contains(position));
+            QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, position);
+        }
+        QCOMPARE(store->selectedMessageUuid(), QStringLiteral("mail-inbox-1"));
+        QCOMPARE(server.requests.size(), requests);
+        store->selectMessage("mail-inbox-2");
+        QCOMPARE(textOf(page, "mailReaderBody"),
+                 russian ? QStringLiteral("Текст письма недоступен") : QStringLiteral("Message body unavailable"));
+        store->selectMessage("mail-inbox-3");
+        QVERIFY(visible(page, "mailReaderBody"));
+        QCOMPARE(textOf(page, "mailReaderBody"), QStringLiteral(""));
+        store->selectFolder("archive");
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QVERIFY(!visible(page, "mailReaderBody"));
+        QVERIFY(!visible(page, "mailReaderAction-reply"));
     }
 
     // exordy finding 4714792891: the reader wrapper's title and body Text
