@@ -39311,6 +39311,119 @@ QTRY_VERIFY(create->property("enabled").toBool());
         }
     }
 
+    // Issue #925: both date grids must be reachable from the keyboard as ONE
+    // tab stop with arrow-key roving focus, Enter/Space running the same
+    // date-selection action the pointer uses. The regression drives each grid
+    // end to end: Tab enters the grid at the selected cell, arrows roam to
+    // the adjacent-month cell (the fixture's only event lives on 2026-01-30),
+    // Enter selects it and the same-view agenda updates, Tab leaves and
+    // Shift+Tab re-enters on the selected cell.
+    void calendarGridsSupportKeyboardDateSelection_data()
+    {
+        QTest::addColumn<QString>("grid");
+        QTest::newRow("mini-calendar") << QString("mini");
+        QTest::newRow("month-grid") << QString("month");
+    }
+    void calendarGridsSupportKeyboardDateSelection()
+    {
+        QFETCH(QString, grid);
+        WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        preferences.setLocale("en"); preferences.setMode("light");
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        click(window, view("sectionCalendarButton"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
+        auto *page = view("calendarSectionPage");
+        if (grid == QLatin1String("month"))
+        {
+            click(window, view("viewTabMonth"));
+            QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        }
+        // Pin February 2026 (as the #911 grid case does): the 1st is a Sunday,
+        // so the 42-cell grids start at 2026-01-26; the served event
+        // (2026-01-30) sits on cell index 4 while the selection (Feb 10)
+        // sits at index 15.
+        page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0)));
+        auto *gridItem = view(grid == QLatin1String("mini") ? "calendarMini" : "calendarMonthGrid");
+        QVERIFY(gridItem);
+        const QString agendaHandle = grid == QLatin1String("mini")
+            ? QStringLiteral("calendarAgenda") : QStringLiteral("calendarMonthAgenda");
+        const QString ringName = grid == QLatin1String("mini")
+            ? QStringLiteral("miniFocusRing") : QStringLiteral("monthFocusRing");
+
+        const auto delegateAt = [&](int index) -> QQuickItem* {
+            const auto kids = gridItem->childItems();
+            for (auto *kid : kids)
+                if (kid->property("modelData").isValid() && kid->property("modelData").toInt() == index)
+                    return kid;
+            return nullptr;
+        };
+
+        // One Tab from the control that precedes the grid enters it (no
+        // 42-stop march), landing on the selected cell.
+        auto *entry = view(grid == QLatin1String("mini")
+            ? "calendarToday" : "calendarFilterPersonal");
+        QVERIFY(entry);
+        entry->forceActiveFocus();
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == entry, 2000);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
+        QCOMPARE(gridItem->property("selectedGridIndex").toInt(), 15);
+        QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(), 15);
+
+        // Arrow roaming: Right steps one date and moves the visible ring.
+        QTest::keyClick(window, Qt::Key_Right);
+        QTRY_COMPARE(gridItem->property("focusIndex").toInt(), 16);
+        auto *stepped = delegateAt(16); QVERIFY(stepped);
+        QTRY_VERIFY(stepped->property("keyboardFocused").toBool());
+        auto *oldFocus = delegateAt(15); QVERIFY(oldFocus);
+        QVERIFY(!oldFocus->property("keyboardFocused").toBool());
+        // Up + 4x Left walk back to the adjacent-month cell (Feb 11 ->
+        // Feb 4 -> Jan 30).
+        QTest::keyClick(window, Qt::Key_Up);
+        for (int i = 0; i < 4; ++i) QTest::keyClick(window, Qt::Key_Left);
+        QTRY_COMPARE(gridItem->property("focusIndex").toInt(), 4);
+        auto *jan30 = delegateAt(4); QVERIFY(jan30);
+        QCOMPARE(jan30->property("cellDate").toDate(), QDate(2026, 1, 30));
+        QTRY_VERIFY(jan30->property("keyboardFocused").toBool());
+        auto *ring = jan30->findChild<QQuickItem*>(ringName); QVERIFY(ring);
+        QTRY_VERIFY(ring->isVisible());
+        auto *otherRing = stepped->findChild<QQuickItem*>(ringName); QVERIFY(otherRing);
+        QVERIFY(!otherRing->isVisible());
+        // The cell exposes a localized full date and selection state.
+        QAccessible::setActive(true);
+        auto *jan30Iface = QAccessible::queryAccessibleInterface(jan30); QVERIFY(jan30Iface);
+        const QString expectedName =
+            QLocale(QLocale::system()).toString(QDate(2026, 1, 30), QLocale::LongFormat);
+        QCOMPARE(jan30Iface->text(QAccessible::Name), expectedName);
+        QVERIFY(!jan30Iface->state().selected);
+        // Enter runs the same selection action: the date moves and the agenda
+        // in the same view updates (the fixture's only event is on Jan 30).
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            page->property("selectedDate").toDateTime().date(), QDate(2026, 1, 30), 5000);
+        auto *agenda = view(agendaHandle); QVERIFY(agenda);
+        QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
+        auto *selectedIface = QAccessible::queryAccessibleInterface(jan30);
+        QVERIFY(selectedIface);
+        QTRY_VERIFY(selectedIface->state().selected);
+        // Tab leaves the grid; Shift+Tab re-enters it on the selected cell.
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() != gridItem, 2000);
+        QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+        QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
+        QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(), 4);
+    }
+
     // Issue #35 review 4581320967: the reference available-chip class string
     // is `border border-transparent hover:border-border-subtle`
     // (top-bar.lib.ts resolveTopBarSectionButtonClassName at workspace_ui

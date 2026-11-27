@@ -58,6 +58,12 @@ FocusScope {
         const day = calDate(selectedDate);
         return visibleEvents(day, day);
     }
+    // #925: whole-day difference between two dates (UTC math, DST-proof),
+    // used by the grids to map a date to its cell index.
+    function dayDiff(from, to) {
+        return Math.round((Date.UTC(to.getFullYear(), to.getMonth(), to.getDate())
+                          - Date.UTC(from.getFullYear(), from.getMonth(), from.getDate())) / 86400000);
+    }
     function refreshWindow() {
         if (viewMode === "day")
             visibleWindowChanged(calDate(selectedDate), calDate(selectedDate));
@@ -218,6 +224,47 @@ FocusScope {
                     objectName: "calendarMini"
                     columns: 7
                     spacing: 2
+                    // #925: the grid is ONE tab stop. Roving keyboard focus is
+                    // kept as an index into the 42-cell matrix (never 42 tab
+                    // stops), arrow keys roam it, and Enter/Space runs the
+                    // same selection action the pointer uses.
+                    activeFocusOnTab: true
+                    property int focusIndex: -1
+                    readonly property int selectedGridIndex: {
+                        page.selectedDate; // re-evaluate on selection
+                        const first = page.monthStart(page.selectedDate);
+                        const offset = (first.getDay() + 6) % 7;
+                        return page.dayDiff(first, page.selectedDate) + offset;
+                    }
+                    readonly property int effectiveFocusIndex:
+                        focusIndex >= 0 ? focusIndex : selectedGridIndex
+                    function moveFocus(delta)
+                    {
+                        const next = miniGrid.effectiveFocusIndex + delta;
+                        if (next >= 0 && next < miniRepeater.count)
+                            miniGrid.focusIndex = next;
+                    }
+                    function selectFocused()
+                    {
+                        const cell = miniRepeater.itemAt(miniGrid.effectiveFocusIndex);
+                        if (cell)
+                            page.selectedDate = cell.cellDate;
+                    }
+                    onActiveFocusChanged: if (!miniGrid.activeFocus)
+                        miniGrid.focusIndex = -1
+                    Keys.onPressed: (event) => {
+                        switch (event.key) {
+                        case Qt.Key_Left:  miniGrid.moveFocus(-1); break;
+                        case Qt.Key_Right: miniGrid.moveFocus(1); break;
+                        case Qt.Key_Up:    miniGrid.moveFocus(-7); break;
+                        case Qt.Key_Down:  miniGrid.moveFocus(7); break;
+                        case Qt.Key_Return:
+                        case Qt.Key_Enter:
+                        case Qt.Key_Space: miniGrid.selectFocused(); break;
+                        default: return;
+                        }
+                        event.accepted = true;
+                    }
                     Repeater {
                         id: miniRepeater
                         objectName: "miniCells"
@@ -236,6 +283,21 @@ FocusScope {
                             readonly property bool inMonth: cellDate.getMonth() === page.selectedDate.getMonth()
                             readonly property bool isToday: page.calDate(cellDate) === page.calDate(new Date())
                             readonly property bool isSelected: page.calDate(cellDate) === page.calDate(page.selectedDate)
+                            readonly property bool keyboardFocused: miniGrid.activeFocus
+                                && miniGrid.effectiveFocusIndex === modelData
+                            Accessible.role: Accessible.Button
+                            Accessible.name: Qt.formatDate(miniCell.cellDate, Qt.locale(), QLocale.LongFormat)
+                            Accessible.selected: miniCell.isSelected
+                            Accessible.onPressAction: page.selectedDate = miniCell.cellDate
+                            Rectangle {
+                                objectName: "miniFocusRing"
+                                anchors.fill: parent
+                                radius: 6
+                                color: "transparent"
+                                border.width: 2
+                                border.color: page.colors["accent"]
+                                visible: miniCell.keyboardFocused
+                            }
                             Rectangle {
                                 anchors.fill: parent
                                 radius: 6
@@ -377,7 +439,48 @@ FocusScope {
                         anchors.verticalCenter: monthView.stacked ? undefined : parent.verticalCenter
                         columns: 7
                         spacing: 1
+                        // #925: same roving-focus keyboard contract as the
+                        // mini-calendar (one tab stop, arrows roam, Enter
+                        // selects).
+                        activeFocusOnTab: true
+                        property int focusIndex: -1
+                        readonly property int selectedGridIndex: {
+                            page.selectedDate; // re-evaluate on selection
+                            const first = page.monthStart(page.selectedDate);
+                            const offset = (first.getDay() + 6) % 7;
+                            return page.dayDiff(first, page.selectedDate) + offset;
+                        }
+                        readonly property int effectiveFocusIndex:
+                            focusIndex >= 0 ? focusIndex : selectedGridIndex
+                        function moveFocus(delta)
+                        {
+                            const next = monthGrid.effectiveFocusIndex + delta;
+                            if (next >= 0 && next < monthRepeater.count)
+                                monthGrid.focusIndex = next;
+                        }
+                        function selectFocused()
+                        {
+                            const cell = monthRepeater.itemAt(monthGrid.effectiveFocusIndex);
+                            if (cell)
+                                page.selectedDate = cell.cellDate;
+                        }
+                        onActiveFocusChanged: if (!monthGrid.activeFocus)
+                            monthGrid.focusIndex = -1
+                        Keys.onPressed: (event) => {
+                            switch (event.key) {
+                            case Qt.Key_Left:  monthGrid.moveFocus(-1); break;
+                            case Qt.Key_Right: monthGrid.moveFocus(1); break;
+                            case Qt.Key_Up:    monthGrid.moveFocus(-7); break;
+                            case Qt.Key_Down:  monthGrid.moveFocus(7); break;
+                            case Qt.Key_Return:
+                            case Qt.Key_Enter:
+                            case Qt.Key_Space: monthGrid.selectFocused(); break;
+                            default: return;
+                            }
+                            event.accepted = true;
+                        }
                         Repeater {
+                            id: monthRepeater
                             objectName: "monthCells"
                             model: Array.from({ length: 42 }, (_, i) => i)
                             delegate: Rectangle {
@@ -393,8 +496,24 @@ FocusScope {
                                 }
                                 readonly property int eventCount: page.visibleEvents(
                                     page.calDate(cellDate), page.calDate(cellDate)).length
+                                readonly property bool isSelected: page.calDate(cellDate) === page.calDate(page.selectedDate)
+                                readonly property bool keyboardFocused: monthGrid.activeFocus
+                                    && monthGrid.effectiveFocusIndex === modelData
+                                Accessible.role: Accessible.Button
+                                Accessible.name: Qt.formatDate(monthCell.cellDate, Qt.locale(), QLocale.LongFormat)
+                                Accessible.selected: monthCell.isSelected
+                                Accessible.onPressAction: page.selectedDate = monthCell.cellDate
                                 color: monthCell.eventCount > 0 ? page.colors["bg-elevated"] : "transparent"
                                 radius: 4
+                                Rectangle {
+                                    objectName: "monthFocusRing"
+                                    anchors.fill: parent
+                                    radius: 4
+                                    color: "transparent"
+                                    border.width: 2
+                                    border.color: page.colors["accent"]
+                                    visible: monthCell.keyboardFocused
+                                }
                                 Label {
                                     anchors.top: parent.top
                                     anchors.left: parent.left
