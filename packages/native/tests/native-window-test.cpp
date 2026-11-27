@@ -39253,7 +39253,22 @@ QTRY_VERIFY(create->property("enabled").toBool());
             page->property("selectedDate").toDateTime().date(), QDate(2026, 1, 30), 5000);
         auto *agenda = view(agendaHandle); QVERIFY(agenda);
         QTRY_COMPARE_WITH_TIMEOUT(agenda->property("count").toInt(), 1, 5000);
-        auto *selectedIface = QAccessible::queryAccessibleInterface(jan30);
+        // The grids re-anchor to the month of the newly selected date (the
+        // Jan 30 selection pulls the grid to January 2026), so the selected
+        // cell must be located by date again before its state is asserted.
+        const auto delegateWithDate = [&](const QDate &d) -> QQuickItem* {
+            const auto kids = gridItem->childItems();
+            for (auto *kid : kids)
+                if (kid->property("cellDate").toDate() == d)
+                    return kid;
+            return nullptr;
+        };
+        QQuickItem *selectedCell = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            ([&]{ selectedCell = delegateWithDate(QDate(2026, 1, 30));
+                  return selectedCell != nullptr; })(), 5000);
+        QVERIFY(selectedCell != jan30); // the grid really re-anchored
+        auto *selectedIface = QAccessible::queryAccessibleInterface(selectedCell);
         QVERIFY(selectedIface);
         QTRY_VERIFY(selectedIface->state().selected);
         // Tab leaves the grid; Shift+Tab re-enters it on the selected cell.
@@ -39261,7 +39276,8 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() != gridItem, 2000);
         QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
         QTRY_VERIFY_WITH_TIMEOUT(window->activeFocusItem() == gridItem, 2000);
-        QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(), 4);
+        QCOMPARE(gridItem->property("effectiveFocusIndex").toInt(),
+                 selectedCell->property("modelData").toInt());
     }
 
     // Issue #35 review 4581320967: the reference available-chip class string
