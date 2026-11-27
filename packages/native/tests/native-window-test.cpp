@@ -6662,12 +6662,17 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *row = view("inbox-row-" + releasesId); QVERIFY(row);
         auto *title = view("inbox-row-title-" + releasesId); QVERIFY(title);
         const QColor before = row->property("color").value<QColor>();
+        const QColor borderBefore = QQmlProperty(row, "border.color").read().value<QColor>();
+        QVERIFY(borderBefore.isValid());
         QTest::mouseMove(window,
             title->mapToScene(QPointF(title->width() / 2.0, title->height() / 2.0)).toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
-        // Neutral corner away from the card: the fill must revert.
+        // Both hover channels must move: the fill AND the border accent.
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before
+            && QQmlProperty(row, "border.color").read().value<QColor>() != borderBefore, 2000);
+        // Neutral corner away from the card: fill and border must revert.
         QTest::mouseMove(window, QPoint(window->width() - 40, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before
+            && QQmlProperty(row, "border.color").read().value<QColor>() == borderBefore, 2000);
     }
 
     // Issue #945 witness: the starred card fill and the hover-revealed action
