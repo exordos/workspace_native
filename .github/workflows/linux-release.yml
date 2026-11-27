@@ -12,6 +12,8 @@ on:
     tags:
       - "[0-9]*"
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 # Superseded PR runs are cancelled; push/tag runs always finish.
 concurrency:
@@ -224,6 +226,7 @@ jobs:
           python3 packages/native/tests/warm-navigation-benchmark-test.py -v
           python3 packages/native/tests/live-workspace-acceptance-test.py -v
           python3 packages/native/tests/master-gate-verdict-test.py -v
+          python3 packages/native/tests/linux-merge-group-workflow-test.py -v
 
       - name: Configure Release and installed runtime probe
         shell: bash
@@ -301,7 +304,7 @@ jobs:
             --probe "${GITHUB_WORKSPACE}/build/linux-release/native-runtime-probe"
 
       - name: Upload Linux packages for review
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: workspace-native-linux-${{ github.sha }}
@@ -330,7 +333,7 @@ jobs:
 
   headless-tests:
     name: Headless ${{ matrix.suite }} tests
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    if: &validation-event github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/master'
     strategy:
       fail-fast: false
       matrix:
@@ -384,7 +387,7 @@ jobs:
 
   full-gate-build:
     name: Build Linux full gate
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    if: *validation-event
     runs-on: ubuntu-24.04
     container: ubuntu:26.04
     permissions:
@@ -442,7 +445,7 @@ jobs:
     # test list; slices are equal-sized by registration order.
     name: Full gate shard ${{ matrix.shard }}
     needs: full-gate-build
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/master'
+    if: *validation-event
     strategy:
       fail-fast: false
       matrix:
@@ -488,7 +491,7 @@ jobs:
   full-gate-linux:
     name: full-gate-linux
     needs: full-gate
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
+    if: &report-validation ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/master') }}
     runs-on: ubuntu-24.04
     permissions: {}
     steps:
@@ -499,7 +502,7 @@ jobs:
 
   quick-linux:
     needs: headless-tests
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/master') }}
+    if: *report-validation
     runs-on: ubuntu-24.04
     permissions: {}
     steps:

@@ -847,7 +847,7 @@ from the QtTest inventory, including every data row. CTest reserves one worker
 slot per process. The two 100 ms encrypted-read responsiveness checks run in a
 separate group with exclusive access.
 The full configuration runs the original suites and retains the shared-display
-locks. On pull requests and master pushes, CI builds the full Release tree once
+locks. On pull requests, master pushes and merge groups, CI builds the full Release tree once
 and uses the [same workflow artifact](decisions/0012-linux-full-gate-build.md)
 in all six test shards. Each shard restores it at the original build path for
 CTest and starts its own desktop session. If the artifact has expired, rerun
@@ -866,6 +866,42 @@ push verdict exists, the tag build runs the full gate itself. The gate uses a
 platform theme and portal provide system color schemes and keyboard activation.
 Controller fixtures receive a separate session bus so they can own their synthetic
 desktop service names.
+
+### GitHub merge queue
+
+The Linux workflow accepts `merge_group.checks_requested`. GitHub supplies
+the merge-group commit and temporary ref, which the standard checkout step
+uses for the package build, both headless suites and all six full-gate shards.
+The required `package-linux` and `full-gate-linux` checks report against that
+commit. Only the one-day build tree used to run the shards is uploaded for a
+merge group. Package archives and release publication keep their existing
+push, dispatch and tag conditions.
+
+Enable the queue after this workflow is on `master`. An administrator enables
+**Require merge queue** for the exact `master` branch and retains the required
+status contexts. The maintainer can then choose **Merge when ready** on an
+approved PR or use `gh pr merge NUMBER --repo exordos/workspace_native`
+without a merge strategy. A required queue sends the PR through the composed
+revision checks. If several queued PRs pass alone but fail together, inspect
+the failed merge-group run and GitHub's queue removal reason before requeueing.
+
+The implementer's digest can read the queue ordering directly. This read-only
+query returns each PR number, position and state in the batch. A null
+`mergeQueue` means the branch has no active queue configuration.
+
+```sh
+gh api graphql -f query='
+  { repository(owner:"exordos", name:"workspace_native") {
+    mergeQueue(branch:"master") {
+      entries(first:100) { nodes { position state pullRequest { number } } }
+    }
+  } }'
+```
+
+To verify activation, enqueue two eligible PRs and inspect the
+`merge_group` workflow runs. Confirm GitHub requested both required checks on
+the composed revision and will only advance the branch once they succeed.
+[GitHub merge queue setup](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)
 
 ### Updater metadata transport
 
