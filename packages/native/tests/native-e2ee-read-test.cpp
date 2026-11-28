@@ -11138,11 +11138,14 @@ private slots:
             filled = row && row->property("color").value<QColor>() != before;
         }
         QVERIFY2(filled, "protected member row fill never appeared on label-center hover");
-        QTRY_COMPARE_WITH_TIMEOUT(([&] { return remove ? remove->property("opacity").toReal() : qreal(-1.0); })(), qreal(1.0), 2000);
+        // #983 exordy finding 1: re-fetch remove on every poll pass - a
+        // re-incubation mid-reveal nulls the old handle and the retry would
+        // otherwise never see the replacement delegate's opacity.
+        QTRY_COMPARE_WITH_TIMEOUT(([&] { remove = scene.item(removeName); return remove ? remove->property("opacity").toReal() : qreal(-1.0); })(), qreal(1.0), 2000);
         // Neutral corner away from the drawer: fill and reveal must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 20, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(([&] { return !row || row->property("color").value<QColor>() == before; })(), 2000);
-        QTRY_COMPARE_WITH_TIMEOUT(([&] { return remove ? remove->property("opacity").toReal() : qreal(-1.0); })(), qreal(0.0), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = scene.item(rowName); return !row || row->property("color").value<QColor>() == before; })(), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(([&] { remove = scene.item(removeName); return remove ? remove->property("opacity").toReal() : qreal(-1.0); })(), qreal(0.0), 2000);
     }
 
     void uiEncryptedChatInfoSettingsScreenNavigation_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
