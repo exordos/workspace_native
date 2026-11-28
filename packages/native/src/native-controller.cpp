@@ -8985,6 +8985,16 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         if (version != m_calendar.version || owner != creationOwnerKey())
             return; // a newer window or an owner switch owns the state now
         m_calendar.inflight = false;
+        // A server without a calendar feed shows an empty agenda. Recheck
+        // on the next visit so deploying the endpoint refreshes this window.
+        if (result.status == 501) {
+            m_calendar.events.clear();
+            m_calendar.hasLoaded = false;
+            m_calendar.loading = false;
+            m_calendar.error = false;
+            emit calendarChanged();
+            return;
+        }
         if (!result.ok() || !result.data.isArray()) {
             m_calendar.loading = false;
             m_calendar.error = true;
