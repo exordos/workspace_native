@@ -11114,9 +11114,20 @@ private slots:
         const QColor before = row->property("color").value<QColor>();
         QVERIFY(before.isValid());
         QCOMPARE(remove->property("opacity").toReal(), qreal(0.0));
-        QTest::mouseMove(scene.window,
-            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
+        // #950 CI flake: re-target the row and label on every poll pass; one
+        // early move that raced the member list settling never re-arms hover.
+        bool filled = false;
+        for (int i = 0; i < 60 && !filled; ++i) {
+            row = scene.item(rowName);
+            QVERIFY(row);
+            name = scene.item(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid);
+            QVERIFY(name);
+            QTest::mouseMove(scene.window,
+                name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            filled = row->property("color").value<QColor>() != before;
+        }
+        QVERIFY2(filled, "protected member row fill never appeared on label-center hover");
         QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toReal(), qreal(1.0), 2000);
         // Neutral corner away from the drawer: fill and reveal must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 20, 8));

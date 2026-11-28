@@ -50993,9 +50993,21 @@ private slots:
         QVERIFY(name);
         const QColor before = row->property("color").value<QColor>();
         QVERIFY(before.isValid());
-        QTest::mouseMove(scene.window,
-            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before, 2000);
+        // #950 shard5 CI flake: a single move that races the member list still
+        // settling never re-arms hover, so the fill never shows. Re-target the
+        // row and its label on every poll pass instead of trusting one move.
+        bool filled = false;
+        for (int i = 0; i < 60 && !filled; ++i) {
+            row = visibleItemWithPrefix(prefix);
+            QVERIFY(row);
+            name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+            QVERIFY(name);
+            QTest::mouseMove(scene.window,
+                name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            filled = row->property("color").value<QColor>() != before;
+        }
+        QVERIFY2(filled, "channel member row fill never appeared on label-center hover");
         // Neutral corner away from the drawer: the fill must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
         QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
