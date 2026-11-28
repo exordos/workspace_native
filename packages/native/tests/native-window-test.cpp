@@ -48629,9 +48629,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
@@ -48698,9 +48698,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
@@ -48769,9 +48769,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         const auto first = messageId + '-' + returnedId;
         const auto second = messageId + '-' + messageId;
@@ -48863,9 +48863,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 3);
         // Both downloads complete, so both file uuids have a downloaded entry.
         controller.downloadFile(returnedId, QUrl::fromLocalFile(directory.filePath("report.txt")));
@@ -49446,9 +49446,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto tag = messageId + '-' + returnedId;
@@ -49543,9 +49543,9 @@ private slots:
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         auto *content = window->contentItem();
-        click(window, item(content, "stream-" + streamId));
+        clickCurrentItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(content, "topic-" + topicId));
+        clickCurrentItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *saveDialog = window->findChild<QObject *>("attachmentSaveDialog"); QVERIFY(saveDialog);
         const auto tag = messageId + '-' + returnedId;
