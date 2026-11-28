@@ -49,10 +49,10 @@ def check(name, status="completed", conclusion="success", suite=PUSH_SUITE):
 
 
 def push_run(suite=PUSH_SUITE, status="completed", conclusion="success",
-             event="push", branch="master"):
+             event="push", branch="master", run_id=46095110765):
     """actions/runs listing record for the master-push workflow run."""
     return {
-        "id": 46095110765,
+        "id": run_id,
         "name": "Linux release artifacts",
         "event": event,
         "head_branch": branch,
@@ -246,12 +246,21 @@ if not is_runs and os.environ.get("STUB_COUNTER"):
         h.write("x")
     with open(os.environ["STUB_COUNTER"], encoding="utf-8") as h:
         call_no = len(h.read())
+runs_no = 1
+if is_runs and os.environ.get("STUB_RUNS_COUNTER"):
+    with open(os.environ["STUB_RUNS_COUNTER"], "a", encoding="utf-8") as h:
+        h.write("x")
+    with open(os.environ["STUB_RUNS_COUNTER"], encoding="utf-8") as h:
+        runs_no = len(h.read())
 if spec.get("fail_at") == page and (spec.get("fail_on", "check") ==
                                     ("runs" if is_runs else "check")):
     sys.exit(1)
 key = "runs_pages" if is_runs else "pages"
 if not is_runs and call_no >= 2 and "late_pages" in spec:
     key = "late_pages"
+extra_key = "extra_records"
+if is_runs and runs_no >= 2 and "late_extra_records" in spec:
+    extra_key = "late_extra_records"
 count = spec.get(key, {}).get(str(page), 0)
 if is_runs:
     records = []
@@ -260,7 +269,7 @@ if is_runs:
                         "event": "push", "head_branch": "master",
                         "status": "completed", "conclusion": "success",
                         "check_suite_id": 900000 + page * 1000 + i})
-    records.extend(spec.get("extra_records", {}).get(str(page), []))
+    records.extend(spec.get(extra_key, {}).get(str(page), []))
     print(json.dumps({"workflow_runs": records}))
 else:
     runs = [{"name": "pad-%d-%d" % (page, i),
@@ -291,7 +300,8 @@ class FetchModeTests(unittest.TestCase):
                 handle.write(STUB_GH)
             os.chmod(stub, 0o755)
             env = dict(os.environ, STUB_SPEC=json.dumps(spec),
-                       STUB_COUNTER=os.path.join(tmp, "calls"))
+                       STUB_COUNTER=os.path.join(tmp, "calls"),
+                       STUB_RUNS_COUNTER=os.path.join(tmp, "runs_calls"))
             prefix = os.path.join(tmp, "check-runs-page-")
             proc = subprocess.run(
                 [sys.executable, SCRIPT, "--fetch", "deadbeef",
@@ -396,6 +406,51 @@ class FetchModeTests(unittest.TestCase):
                                         push_run(red_suite,
                                                  conclusion="failure")]}}
         rc, out, _written = self.invoke_fetch(spec, max_pages=1)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
+    def test_new_push_run_after_runs_listing_fails_closed(self):
+        # exordy finding 4725926994: a master-push run created AFTER the
+        # actions/runs listing must not be ignored when deciding reuse.
+        # The revalidation re-fetches the runs listing too; seeing a new
+        # in-flight run makes the joined window untrustworthy, so the fetch
+        # must fail closed (non-complete, caller retries) instead of letting
+        # the older green pair authorize reuse.
+        new_suite = PUSH_SUITE + 1
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", status="in_progress",
+                              suite=new_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 0}, "late_extra_runs": {"1": late},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run()]},
+                "late_extra_records": {"1": [
+                    push_run(),
+                    push_run(new_suite, status="queued",
+                             run_id=46095110999)]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
+        self.assertNotEqual(rc, 0, out)
+        self.assertNotEqual(out.split(" ")[0], "complete")
+
+    def test_new_red_run_after_runs_listing_blocks(self):
+        # exordy finding 4725926998: a push run created after the runs
+        # listing may already be finished RED by the time the revalidation
+        # runs. Joining the fresh checks against the OLD runs snapshot
+        # ignored that suite and let the earlier green pair authorize reuse;
+        # the re-fetched runs listing attributes the red - it must block.
+        new_suite = PUSH_SUITE + 2
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", conclusion="failure",
+                              suite=new_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 0}, "late_extra_runs": {"1": late},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run()]},
+                "late_extra_records": {"1": [
+                    push_run(),
+                    push_run(new_suite, conclusion="failure",
+                             run_id=46095111000)]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
         self.assertEqual(rc, 2, out)
         self.assertEqual(out.split(" ")[0], "block")
 

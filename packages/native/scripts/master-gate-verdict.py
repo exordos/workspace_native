@@ -159,6 +159,18 @@ def fetch_runs_pages(sha, out_prefix, repo, gh_bin="gh", per_page=100,
                      per_page, max_pages)
 
 
+def _runs_window(run_paths):
+    """Signature of the observed master-push runs (id, status, suite). When
+    two observations of the listing differ, a run appeared or changed status
+    inside the observation window, so a check snapshot taken in that window
+    cannot be trusted for a reuse verdict (exordy findings 4725926994 and
+    4725926998)."""
+    records = master_push_records(
+        {"master_push_runs": load_merged(run_paths, "workflow_runs")})
+    return sorted((str(r.get("id")), str(r.get("status")),
+                   str(r.get("check_suite_id"))) for r in records)
+
+
 def main(argv):
     args = argv[1:]
     if args and args[0] == "--fetch":
@@ -205,12 +217,24 @@ def main(argv):
         # exordy finding 4725262771: a rerun can finish RED between the
         # check-runs snapshot and the runs listing - the stale snapshot
         # would not carry that red and the join could still accept reuse.
-        # After observing the workflow runs, re-fetch the check-runs
-        # listing and let the FRESH snapshot be authoritative for the
-        # verdict files (the caller decides from these same files). Honor a
-        # red that only the re-fetch revealed; fail closed (incomplete) if
-        # the re-fetch itself cannot establish completeness.
+        # After observing the workflow runs, re-fetch BOTH listings and let
+        # the fresh pair be authoritative for the verdict files (the caller
+        # decides from these same files). Honor a red that only the re-fetch
+        # revealed; fail closed (incomplete) if the re-fetch itself cannot
+        # establish completeness. exordy findings 4725926994/4725926998:
+        # joining fresh checks against the OLD runs snapshot is not enough -
+        # a master-push run created after the first runs listing (rerun,
+        # re-check or a second push of the same sha) would stay unattributed
+        # while an older green pair authorizes reuse. The runs listing is
+        # re-fetched too, the fresh pair is the join the caller decides from,
+        # and if the observed master-push runs changed between the two
+        # listings the window is untrustworthy: fail closed and let the
+        # caller start over.
         if status == "complete" and rstatus == "complete" and paths and rpaths:
+            try:
+                first_window = _runs_window(rpaths)
+            except (OSError, ValueError):
+                first_window = None
             for stale in paths:
                 try:
                     os.remove(stale)
@@ -239,15 +263,48 @@ def main(argv):
                     print("block (%d check-run pages, %d run pages)"
                           % (len(paths), len(rpaths)))
                     return 2
+            for stale in rpaths:
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+            rpaths, rstatus = fetch_runs_pages(sha, runs_prefix, opts["repo"],
+                                               gh_bin=gh_bin,
+                                               per_page=per_page,
+                                               max_pages=max_pages)
+            if not rpaths:
+                rstatus = "error"
+            elif status == "complete":
+                try:
+                    fresh = load_payload(paths, rpaths)
+                except (OSError, ValueError):
+                    fresh = None
+                if fresh is None:
+                    status = "error"
+                elif decide(fresh) == "block":
+                    print("block (%d check-run pages, %d run pages)"
+                          % (len(paths), len(rpaths)))
+                    return 2
+                else:
+                    try:
+                        second_window = _runs_window(rpaths)
+                    except (OSError, ValueError):
+                        second_window = None
+                    if (first_window is not None
+                            and second_window != first_window):
+                        status = "unstable"
         if status == "complete" and rstatus == "complete":
             combined = "complete"
+        elif status == "unstable":
+            combined = "unstable"
         elif "error" in (status, rstatus):
             combined = "error"
         else:
             combined = "truncated"
         print("%s (%d check-run pages, %d run pages)"
               % (combined, len(paths), len(rpaths)))
-        return {"complete": 0, "truncated": 3, "error": 4}[combined]
+        return {"complete": 0, "truncated": 3, "error": 4,
+                "unstable": 3}[combined]
     check_paths = []
     run_paths = []
     mode = None
