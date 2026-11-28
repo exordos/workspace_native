@@ -58,18 +58,23 @@ jobs:
             # exordy findings 4712353365/369: the commit check-runs listing
             # is paginated and a TRUNCATED listing must never authorize
             # reuse. Pagination lives in the tested script (--fetch mode):
-            # it fetches every page until a short page ends the listing and
-            # exits non-zero on truncation or gh failure, so the verdict
-            # below is only ever computed from complete pages.
+            # it fetches every page of BOTH listings until a short page ends
+            # each and exits non-zero on truncation or gh failure, so the
+            # verdict below is only ever computed from complete pages.
             # exordy finding 4714995326: the fetch itself reports rc 2 when
             # a fetched page already shows a completed non-success - that
             # block is honoured even on a truncated listing, because the
             # in-job fallback gate must never outrace an observed red.
+            # Issue #955: check-runs carry no event/branch metadata, so the
+            # master-push attribution comes from a second listing -
+            # actions/runs?head_sha&event=push&branch=master - and BOTH must
+            # be complete before a reuse verdict is considered.
             fetch_rc=0
-            rm -f check-runs-page-*.json
+            rm -f check-runs-page-*.json master-push-runs-page-*.json
             python3 packages/native/scripts/master-gate-verdict.py \
                 --fetch "${GATE_SHA}" --repo "${GITHUB_REPOSITORY}" \
-                --out-prefix check-runs-page- || fetch_rc=$?
+                --out-prefix check-runs-page- \
+                --runs-out-prefix master-push-runs-page- || fetch_rc=$?
             if [ "${fetch_rc}" -eq 2 ]; then
               echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
               exit 1
@@ -91,7 +96,8 @@ jobs:
               #           push of the same sha) may still return red;
               #   reuse = completed green verdicts for each required name.
               verdict=$(python3 packages/native/scripts/master-gate-verdict.py \
-                  check-runs-page-*.json) || true
+                  --check-runs check-runs-page-*.json \
+                  --runs master-push-runs-page-*.json) || true
               if [[ "${verdict}" == block ]]; then
                 echo "::error::A master-push gate check on ${GATE_SHA} completed non-success; refusing to publish this tag."
                 exit 1
