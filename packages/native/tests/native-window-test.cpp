@@ -18163,8 +18163,15 @@ mv -Tf "$root/.current-new" "$root/current"
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
         controller.setRealtimeMode(true);
+        // #980: controller-side QTRY proves the DATA landed, not that the
+        // sidebar delegate has incubated; a one-shot item() lookup under CPU
+        // load hands click() a null target and it dies on 'guard' while the
+        // later topics()-compare reports the empty follow-on. Gate the
+        // delegate, then click.
+        QTRY_VERIFY(item(window->contentItem(), "stream-" + streamId));
         click(window, item(window->contentItem(), "stream-" + streamId));
         QTRY_COMPARE(controller.topics().size(), 1);
+        QTRY_VERIFY(item(window->contentItem(), "topic-" + topicId));
         click(window, item(window->contentItem(), "topic-" + topicId));
         QTRY_COMPARE(controller.messages().size(), 1);
         auto *composer = item(window->contentItem(), "messageComposer");
@@ -47151,7 +47158,15 @@ private slots:
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
         const auto openMenu = [&](const QString &rowName) {
-            auto *row = visibleItem(rowName); QVERIFY(row);
+            // #980: under CPU load the sidebar delegate may still be
+            // incubating when the probe runs; a one-shot visibleItem read
+            // returns null and the case fails on 'row' (the CI flake
+            // family). Re-resolve the lookup until the delegate lands.
+            QQuickItem *row = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                row = visibleItem(rowName);
+                return row != nullptr;
+            })(), 4000);
             QTest::mouseClick(window, Qt::RightButton, {},
                 row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
             auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
@@ -47160,13 +47175,18 @@ private slots:
         // The channel menu offers all three levels with the Notifications heading.
         openMenu("stream-" + streamId);
         auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
-        QVERIFY(visibleItem("streamNotificationsHeading"));
-        QVERIFY(visibleItem("streamMenuNotifDefault"));
-        QVERIFY(visibleItem("streamMenuNotifMuted"));
-        QVERIFY(visibleItem("streamMenuNotifSubscribed"));
+        // #980: the menu delegates materialize a few event-loop passes after
+        // the opened flip; under CPU load the one-shot reads raced them.
+        QTRY_VERIFY(visibleItem("streamNotificationsHeading"));
+        QTRY_VERIFY(visibleItem("streamMenuNotifDefault"));
+        QTRY_VERIFY(visibleItem("streamMenuNotifMuted"));
+        QTRY_VERIFY(visibleItem("streamMenuNotifSubscribed"));
         // Switching to Muted closes the menu and persists through the invoke endpoint.
-        QVERIFY(visibleItem(missingMode ? "streamMenuNotifDefault" : "streamMenuNotifSubscribed")
-            ->property("isCurrent").toBool());
+        QTRY_VERIFY(([&] {
+            auto *level = visibleItem(
+                missingMode ? "streamMenuNotifDefault" : "streamMenuNotifSubscribed");
+            return level && level->property("isCurrent").toBool();
+        })());
         click(window, visibleItem("streamMenuNotifMuted"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 1);
@@ -47182,9 +47202,12 @@ private slots:
         QCOMPARE(notifPosts, 1);
         // The direct-private menu excludes the mentions-only default level.
         openMenu("stream-" + direct);
+        QTRY_VERIFY(visibleItem("streamMenuNotifMuted"));
         QVERIFY(!visibleItem("streamMenuNotifDefault"));
-        QVERIFY(visibleItem("streamMenuNotifMuted"));
-        QVERIFY(visibleItem("streamMenuNotifSubscribed")->property("isCurrent").toBool());
+        QTRY_VERIFY(([&] {
+            auto *level = visibleItem("streamMenuNotifSubscribed");
+            return level && level->property("isCurrent").toBool();
+        })());
         menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
         menu->setProperty("visible", false);
     }
@@ -47318,7 +47341,15 @@ private slots:
         QTRY_COMPARE(session.projects().size(), 1); session.selectProject(projectId);
         QTRY_COMPARE_WITH_TIMEOUT(controller.streams().size(), 2, 4000);
         const auto openMenu = [&](const QString &rowName) {
-            auto *row = visibleItem(rowName); QVERIFY(row);
+            // #980: under CPU load the sidebar delegate may still be
+            // incubating when the probe runs; a one-shot visibleItem read
+            // returns null and the case fails on 'row' (the CI flake
+            // family). Re-resolve the lookup until the delegate lands.
+            QQuickItem *row = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT(([&] {
+                row = visibleItem(rowName);
+                return row != nullptr;
+            })(), 4000);
             QTest::mouseClick(window, Qt::RightButton, {},
                 row->mapToScene(QPointF(20, row->height() / 2)).toPoint());
             auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
@@ -47332,6 +47363,7 @@ private slots:
         deferNext = true;
         openMenu("stream-" + streamId);
         auto *menu = window->findChild<QObject *>("streamContextMenu"); QVERIFY(menu);
+        QTRY_VERIFY(visibleItem("streamMenuNotifMuted")); // #980 incubation gate
         click(window, visibleItem("streamMenuNotifMuted"));
         QTRY_VERIFY(!menu->property("opened").toBool());
         QTRY_COMPARE(notifPosts, 1);
@@ -47342,6 +47374,12 @@ private slots:
         // treats it as an outside press and dismisses) but never posts a
         // second same-stream request.
         openMenu("stream-" + streamId);
+        // #980: levelEnabled reports false for a MISSING delegate, so the
+        // negative pins would pass vacuously while the block is still
+        // incubating - gate on presence first, then pin the disabled state.
+        QTRY_VERIFY(visibleItem("streamMenuNotifDefault")
+            && visibleItem("streamMenuNotifMuted")
+            && visibleItem("streamMenuNotifSubscribed"));
         QVERIFY(!levelEnabled("streamMenuNotifDefault"));
         QVERIFY(!levelEnabled("streamMenuNotifMuted"));
         QVERIFY(!levelEnabled("streamMenuNotifSubscribed"));
@@ -47351,7 +47389,7 @@ private slots:
         // Per-stream busy: the other stream's menu is untouched by stream A's
         // in-flight write.
         openMenu("stream-" + other);
-        QVERIFY(levelEnabled("streamMenuNotifMuted"));
+        QTRY_VERIFY(levelEnabled("streamMenuNotifMuted")); // #980 incubation gate
         QVERIFY(levelEnabled("streamMenuNotifSubscribed"));
         // Back on A: disabled again while its write is still held.
         openMenu("stream-" + streamId);
@@ -52876,9 +52914,23 @@ private slots:
         auto *remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
         QVERIFY(remove);
         QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 2000);
-        QTest::mouseMove(scene.window,
-            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 3000);
+        // Same #950 incubation-gate shape as the sibling fill witness above: a
+        // single move that races the member list still settling never re-arms
+        // hover, so the reveal never shows (4 CI heads under load). Re-target
+        // the label and the button on every poll pass, never a stale pointer.
+        bool revealed = false;
+        for (int i = 0; i < 60 && !revealed; ++i) {
+            name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+            QVERIFY(name);
+            remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
+            QVERIFY(remove);
+            QTest::mouseMove(scene.window,
+                name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            revealed = remove->property("opacity").toDouble() > 0.99;
+        }
+        QVERIFY2(revealed,
+                 "channel member remove button never revealed on label-center hover");
         // Neutral corner away from the drawer: the reveal must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
         QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
