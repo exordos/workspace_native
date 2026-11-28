@@ -39637,8 +39637,11 @@ QTRY_VERIFY(create->property("enabled").toBool());
             witnessLeaks << QStringLiteral("4722010307: no visible focus ring on the selected cell");
         if (grid == QLatin1String("mini"))
         {
+            // #924 renamed the per-cell fill for the hover witnesses; the
+            // stackability witness follows the rename (cell-root scoped).
             auto *fill = selectedCell->findChild<QQuickItem*>(
-                QStringLiteral("miniSelectionFill"));
+                QStringLiteral("miniCellBg-%1")
+                    .arg(selectedCell->property("modelData").toInt()));
             if (!fill)
                 witnessLeaks << QStringLiteral("4722010307: selection fill not stackable-provable");
             else if (ringOnSelected
