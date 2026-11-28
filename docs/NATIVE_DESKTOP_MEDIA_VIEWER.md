@@ -66,11 +66,25 @@ palette `shared/lib/themes/blue-cold.ts`, default palette `blue-cold`,
   this release does not introduce a second download behaviour.
 - "Open in new tab" is omitted deliberately: the reference shows it only in
   browser builds.
-- Wheel input on a ready image changes its scale by 0.001 per vertical delta
-  unit and clamps it between 0.5 and 3. A new slot or gallery starts at 1.
-  The pinned web overlay binds the zoom hook to the image. The native video
-  slot also supports the wheel interaction specified in issue #204. Both keep
-  the covered conversation at its current scroll position.
+- Zoom follows the reference zoom hook (`media-viewer-zoom.hook.ts`, issue
+  #919, superseding the #204 additive 0.5x-3x contract): the scale clamps to
+  [1, 5]; the wheel is multiplicative `scale * exp(0.0035 * delta)` anchored
+  at the cursor (Qt's pixelDelta when present, else angleDelta with 120 units
+  per notch, so a mouse notch multiplies by ~1.52 where the reference's
+  ~100-unit wheel step gives ~1.42 - the same interaction shape at Qt's wheel
+  units). The wheel point is mapped from the scaled image's local coords into
+  the media area before the anchor math, so repeated notches at one scene
+  point keep the pixel under the cursor fixed. The toolbar buttons and
+  "+"/"="/"-" keys step by 1.25x holding the pan (the picture center keeps its
+  current offset, clamped into the new bounds) and "0" resets to 100%;
+  Shift+arrow pans 48 px only while
+  zoomed and never pages the gallery, plain arrows keep paging. A new slot or
+  gallery starts at 1 and its pan is centered. The zoom pill (bottom-centered,
+  minus / percent-reset / plus; background at 80% alpha, controls opaque)
+  renders only for a ready image slot - video
+  slots keep zoom disabled, though their wheel is still consumed so nothing
+  behind the viewer scrolls. Both keep the covered conversation at its current
+  scroll position.
 - While the viewer is open, its localized loading label is a status region
   with polite announcements. A download or display failure exposes an alert
   with an assertive announcement. Ready and closed slots are silent.
