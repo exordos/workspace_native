@@ -10,6 +10,7 @@
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QTranslator>
 #include <QUrlQuery>
 #include <QVariant>
 
@@ -87,6 +88,7 @@ private slots:
         slowInboxOnce = false;
         missingMailEndpoints = false;
         missingMessagesOnly = false;
+        missingFoldersOnly = false;
     }
 
     // exordy finding 4712325987: a real deployment has no /mail endpoints yet
@@ -271,6 +273,70 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(visible(page, "mailEmptyState"), 5000);
     }
 
+    void sampleNoticeTracksDisplayedMailbox_data()
+    {
+        QTest::addColumn<bool>("russian");
+        QTest::newRow("en") << false;
+        QTest::newRow("ru") << true;
+    }
+
+    void sampleNoticeTracksDisplayedMailbox()
+    {
+        QFETCH(bool, russian);
+        QTranslator translation;
+        if (russian) {
+            QVERIFY(translation.load(":/workspace/i18n/workspace_ru.qm"));
+            QVERIFY(QCoreApplication::installTranslator(&translation));
+        }
+        QQmlEngine engine;
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QStringLiteral(
+            WORKSPACE_NATIVE_MAIL_QML_SOURCE_DIR "/NativeMailPage.qml")));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        const QVariantMap properties{{"colors", lightColors()}, {"mail", QVariant::fromValue(store)}};
+        QScopedPointer<QObject> object(component.createWithInitialProperties(properties));
+        auto *page = qobject_cast<QQuickItem *>(object.data());
+        QVERIFY(page);
+        QQuickWindow window;
+        window.resize(900, 700);
+        page->setSize(window.size());
+        page->setParentItem(window.contentItem());
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        missingMailEndpoints = true;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QVERIFY(store->selectedMessageUuid().isEmpty());
+        QVERIFY(visible(page, "mailSampleNotice"));
+        QCOMPARE(textOf(page, "mailSampleNotice"),
+                 russian ? QStringLiteral("Демоящик. Письма и счётчики непрочитанных показаны для примера.")
+                         : QStringLiteral("Sample mailbox. These messages and unread counts are examples."));
+        auto *sent = item(page, "mailFolderRow-sent");
+        QVERIFY(sent);
+        QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                          sent->mapToScene(sent->boundingRect().center()).toPoint());
+        QTRY_COMPARE(store->folderId(), QStringLiteral("sent"));
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QVERIFY(visible(page, "mailSampleNotice"));
+        // If the messages endpoint is enabled first, its real rows must not
+        // be labelled as sample messages alongside the built-in folder counts.
+        missingMailEndpoints = false;
+        missingFoldersOnly = true;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QCOMPARE(textOf(page, "mailSampleNotice"),
+                 russian ? QStringLiteral("Демопапки. Счётчики непрочитанных показаны для примера.")
+                         : QStringLiteral("Sample folders. The unread counts are examples."));
+        missingFoldersOnly = false;
+        store->refresh();
+        QTRY_COMPARE(store->state(), QStringLiteral("ready"));
+        QVERIFY(!visible(page, "mailSampleNotice"));
+
+        brokenFoldersOnce = true;
+        store->refresh();
+        QTRY_VERIFY(visible(page, "mailRetryButton"));
+        QVERIFY(!visible(page, "mailSampleNotice"));
+    }
+
     // exordy finding 4714792891: the reader wrapper's title and body Text
     // items must keep their fill-width hints. Without them both retain their
     // implicit widths, so a long subject (and the body note) overflows the
@@ -338,7 +404,8 @@ private:
             response.status = 404;
             return response;
         }
-        if (missingMessagesOnly && path == "/mail/messages") {
+        if ((missingFoldersOnly && path == "/mail/folders")
+            || (missingMessagesOnly && path == "/mail/messages")) {
             response.status = 404;
             return response;
         }
@@ -404,6 +471,7 @@ private:
     bool slowInboxOnce = false;
     bool missingMailEndpoints = false;
     bool missingMessagesOnly = false;
+    bool missingFoldersOnly = false;
 };
 
 int main(int argc, char **argv)

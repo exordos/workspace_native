@@ -20,6 +20,8 @@ class MailStore final : public QObject {
     Q_PROPERTY(QVariantList folders READ folders NOTIFY mailChanged)
     Q_PROPERTY(QString folderId READ folderId NOTIFY mailChanged)
     Q_PROPERTY(QVariantList messages READ messages NOTIFY mailChanged)
+    Q_PROPERTY(bool sampleFolders READ hasSampleFolders NOTIFY mailChanged)
+    Q_PROPERTY(bool sampleMessages READ hasSampleMessages NOTIFY mailChanged)
     Q_PROPERTY(QString state READ state NOTIFY mailChanged)
     Q_PROPERTY(QString selectedMessageUuid READ selectedMessageUuid NOTIFY mailChanged)
 
@@ -29,6 +31,8 @@ public:
     QVariantList folders() const { return m_folders; }
     QString folderId() const { return m_folderId; }
     QVariantList messages() const { return m_messages; }
+    bool hasSampleFolders() const { return m_sampleMode; }
+    bool hasSampleMessages() const { return m_sampleMessages; }
     QString state() const { return m_state; }
     QString selectedMessageUuid() const { return m_selectedMessage; }
 
@@ -58,6 +62,7 @@ private:
     // the messages endpoint stays an error - never sample rows mixed under
     // server-provided folders.
     bool m_sampleMode = false;
+    bool m_sampleMessages = false;
 };
 
 } // namespace workspace
