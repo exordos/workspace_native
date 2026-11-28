@@ -640,16 +640,18 @@ FocusScope {
                                     id: monthHover
                                     cursorShape: Qt.PointingHandCursor
                                 }
-                                // #924 + exordy finding: the selected fill wins
+                                // #924 + exordy finding 4725081117: the selected fill wins
                                 // over hover (same precedence as the mini grid),
                                 // so the clicked day stays identifiable while the
                                 // agenda below already shows its events. The hover
                                 // tint stays distinct from both selected and the
-                                // event-day fill. Bound to the root HoverHandler:
-                                // in Qt 6.10 a sibling MouseArea never receives
-                                // hover once a Label claims the point (probe-verified).
+                                // event-day fill. Bound to the cell-root HoverHandler
+                                // so the tint is stacking-order independent: a probe
+                                // sweep on 65f2a914 measured no dead point for the
+                                // sibling MouseArea, but the sibling binding breaks
+                                // the moment any child moves above it in z-order.
                                 color: monthCell.isSelected ? page.colors["accent"]
-                                                           : (monthCellInput.containsMouse
+                                                           : (monthHover.hovered
                                                               ? page.colors["card-bg-active"]
                                                               : (monthCell.eventCount > 0
                                                                  ? page.colors["bg-elevated"] : "transparent"))

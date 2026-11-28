@@ -39311,6 +39311,27 @@ QTRY_VERIFY(create->property("enabled").toBool());
                  "the un-hovered fill must be distinguishable from the hover tint");
         QTest::mouseMove(window, cellPoint(monthIdle));
         QTRY_COMPARE_WITH_TIMEOUT(monthIdle->property("color").value<QColor>(), hoverTint, 2000);
+        // exordy #941 finding 4725081117: the tint must survive the pointer
+        // sitting over the cell's overlapping siblings (day Label top-left,
+        // event dots bottom-left), not just the bare cell centre. Sweep the
+        // whole cell and report EVERY dead point (a failing QCOMPARE would
+        // abort at the first and hide the rest of the zone).
+        QStringList monthDeadPoints;
+        const int idleW = int(monthIdle->width());
+        const int idleH = int(monthIdle->height());
+        for (int px = 4; px < idleW - 2; px += 6) {
+            for (int py = 4; py < idleH - 2; py += 6) {
+                QTest::mouseMove(window, monthIdle->mapToScene(QPoint(px, py)).toPoint());
+                QTest::qWait(40);
+                const QColor probeFill = monthIdle->property("color").value<QColor>();
+                if (probeFill != hoverTint) {
+                    monthDeadPoints << QStringLiteral("(%1,%2) fill=%3")
+                                           .arg(px).arg(py).arg(probeFill.name());
+                }
+            }
+        }
+        QVERIFY2(monthDeadPoints.isEmpty(),
+                qPrintable(QStringLiteral("month cell hover dead points: ") + monthDeadPoints.join(QStringLiteral("; "))));
         QTest::mouseMove(window, QPoint(4, 4));
         QTRY_COMPARE_WITH_TIMEOUT(monthIdle->property("color").value<QColor>(), monthIdleFill, 2000);
         // --- narrow window: the long-titled rows elide inside their containers.
