@@ -17404,9 +17404,13 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        // Same #917 root cause as the anchor-jump cases above: the sidebar row
+        // delegate materializes a view pass after the controller reports it, so
+        // a one-shot click can miss (topics().size() stays 0). Click through the
+        // incubation-safe helper.
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 5);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -17933,9 +17937,9 @@ mv -Tf "$root/.current-new" "$root/current"
         QTRY_COMPARE(session.projects().size(), 1);
         session.selectProject(projectId);
         QTRY_COMPARE(controller.streams().size(), 1);
-        click(window, item(window->contentItem(), "stream-" + streamId));
+        clickIncubatedItem(window, "stream-" + streamId);
         QTRY_COMPARE(controller.topics().size(), 1);
-        click(window, item(window->contentItem(), "topic-" + topicId));
+        clickIncubatedItem(window, "topic-" + topicId);
         QTRY_COMPARE(controller.messages().size(), 50);
         auto *list = item(window->contentItem(), "messageList");
         QVERIFY(list);
@@ -39946,6 +39950,15 @@ QTRY_VERIFY(create->property("enabled").toBool());
     void calendarMonthGridRequestCoversAdjacentWeeks()
     {
         WindowCalendarRouteFixture fixture; fixture.sourceScene = true;
+        // Separate request arrival from delivery so each navigation must
+        // wait for the controller to consume the previous response.
+        const auto serve = fixture.server.handler;
+        fixture.server.handler = [serve](const Request &request) {
+            auto response = serve(request);
+            if (request.target.path().endsWith("/calendar/events"))
+                response.delay = 200;
+            return response;
+        };
         QTemporaryDir directory; QVERIFY(directory.isValid());
         NativePreferences preferences(directory.filePath("preferences.ini"));
         preferences.setLocale("en"); preferences.setMode("light");
@@ -39963,15 +39976,18 @@ QTRY_VERIFY(create->property("enabled").toBool());
         QTRY_VERIFY_WITH_TIMEOUT(view("calendarSectionPage"), 5000);
         // Opening the section fires the initial day-view window; the calendar
         // fetch guard drops requests while one is in flight, so advance the
-        // sequence only after each window has been served (delay 0 in the mock).
+        // sequence only after the controller has consumed each response.
         QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 1, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
         click(window, view("viewTabMonth"));
         QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 2, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
         auto *page = view("calendarSectionPage"); QVERIFY(page);
         // Pin February 2026: the 1st is a Sunday, so the 42-cell grid spans
         // 2026-01-26 .. 2026-03-08 - six full weeks of rendered cells.
         QVERIFY(page->setProperty("selectedDate", QDateTime(QDate(2026, 2, 10), QTime(12, 0))));
         QTRY_COMPARE_WITH_TIMEOUT(fixture.calendarFrom.size(), 3, 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(!controller.calendarLoading(), 5000);
         QCOMPARE(fixture.calendarFrom.at(2), QStringLiteral("2026-01-26"));
         QCOMPARE(fixture.calendarTo.at(2), QStringLiteral("2026-03-08"));
         // The served adjacent-month event (2026-01-30) is inside the window,
