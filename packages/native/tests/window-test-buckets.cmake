@@ -242,6 +242,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_10
     folderRailContextMenuKeepsBlackFolderColorOnRename
     folderRailContextMenuRenamesAndDeletesCustomFolders
     globalChatTabsUseSourceIntrinsicPressureAndBreakpoint
+    largeTopicNavigationStallBudget
     ownStatusPickerAcceptsImmediateTypingWithoutAnotherSearchClick
     ownStatusPickerHoverAndArrowKeepFocusOnTheActualEmojiButton
     profileFocusRingFollowsKeyboardRatherThanMouseFocus
