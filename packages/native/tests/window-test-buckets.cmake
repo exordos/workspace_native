@@ -282,6 +282,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     replyMenuQuotesTheDraggedBubbleFragment
     rightDrawerBackPopsNestedScreensOnly
     sidebarTopicSwitchDropsWritingSessionAfterExplicitFocusMove
+    starredCardFillsAndRevealsActionsOnLabelCenterHover
     startupPaintsSavedCacheWhileRefreshIsInFlight
     topicContextMenuMarkReadVisibilityAndAction
     upToEditLastAndSaveUseTheComposerEditMode
@@ -352,6 +353,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_14
     mentionChipsReachedByTabWithoutPointer
     pollBubbleAddOptionRetryReusesClientUuid
     savedStatusTracksMessagesWhenSwitchingChats
+    sessionSwitcherRowFillsOnLabelCenterHover
     sidebarSearchHotkeyFocusesSearchAndExpandsCollapsedSidebar
     topOverlayBannerRendersAboveSplitWithoutBlockingHeaderClicks
     topicContextMenuNotificationSwitchPostsAndGuardsPending
@@ -446,6 +448,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_18
     activityStarredErrorAndEmptyStates
     channelTopicSummaryEndpointSaveSurvivesConcurrentGatesError
     diagnosticsPingSettlesAcrossApiGenerationChange
+    inboxRowFillsOnLabelCenterHover
     lastConversationRestoresInANewActualMainAfterSettingsReopen
     licensesExternalLinkHandsOffToTheBrowser
     mediaViewerVideoControlsVisibleAndSeekRoundTrip

@@ -6593,6 +6593,281 @@ mv -Tf "$root/.current-new" "$root/current"
         QVERIFY(fixture.starredLists >= 2);
     }
 
+    // Issue #945 witness: the inbox row fill/border was driven by the row's
+    // own MouseArea (`rowArea`, NativeInboxPage.qml). Qt 6.10 delivers hover
+    // only to the claimant under the pointer and its ancestors, so the oracle
+    // hovers the ROW LABEL CENTER and requires the fill to light there; the
+    // pre-migration site only lit from its own surface.
+    void inboxRowFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        class WindowInboxHoverFixture final : public WindowChannelFixture {
+        public:
+            WindowInboxHoverFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const auto path = request.target.path();
+                    if (path.endsWith("/streams/") && request.method == "GET") {
+                        auto dm = windowChannel(dmStreamId, "Alice");
+                        dm["private"] = true;
+                        dm["direct_user_uuid"] = channelPeer;
+                        dm["unread_count"] = 5;
+                        dm["active_unread_count"] = 5;
+                        auto team = windowChannel(streamId, "Product team");
+                        team["default_topic_uuid"] = topicId;
+                        team["unread_count"] = 3;
+                        team["active_unread_count"] = 3;
+                        return {QJsonArray{team, dm}};
+                    }
+                    if (path.endsWith("/stream_topics/")) {
+                        const auto stream = QUrlQuery(request.target).queryItemValue("stream_uuid");
+                        if (stream == streamId) {
+                            // Same scene as the base fixture, but Releases
+                            // carries active unreads so it surfaces in the inbox.
+                            auto releases = windowChannelTopic(
+                                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", streamId, "Releases");
+                            releases["is_default"] = false;
+                            releases["is_done"] = true;
+                            releases["unread_count"] = 3;
+                            releases["active_unread_count"] = 3;
+                            auto planning = windowChannelTopic(secondTopicId, streamId, "Planning");
+                            planning["is_default"] = false;
+                            return {QJsonArray{
+                                windowChannelTopic(topicId, streamId, "General Topic"),
+                                planning, releases}};
+                        }
+                        if (stream == dmStreamId) {
+                            auto dmTopic = windowChannelTopic(dmTopicId, dmStreamId, "");
+                            dmTopic["is_default"] = false;
+                            dmTopic["unread_count"] = 5;
+                            dmTopic["active_unread_count"] = 5;
+                            return {QJsonArray{dmTopic}};
+                        }
+                    }
+                    return fallback(request);
+                };
+            }
+            QString dmStreamId = "a2000000-0000-4000-8000-000000000002";
+            QString dmTopicId = "b2000000-0000-4000-8000-000000000002";
+        };
+        WindowInboxHoverFixture fixture;
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-inbox"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.inboxVisible() && view("nativeInboxPage"));
+        const QString releasesId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        QTRY_VERIFY_WITH_TIMEOUT(view("inbox-row-" + releasesId)
+            && view("inbox-row-title-" + releasesId), 5000);
+        auto *row = view("inbox-row-" + releasesId); QVERIFY(row);
+        auto *title = view("inbox-row-title-" + releasesId); QVERIFY(title);
+        const QColor before = row->property("color").value<QColor>();
+        const QColor borderBefore = QQmlProperty(row, "border.color").read().value<QColor>();
+        QVERIFY(borderBefore.isValid());
+        // CI flake (merge group): a single move that races the inbox rows still
+        // settling never re-arms hover, so the fill never shows. Re-target the
+        // row and its title on every poll pass instead of trusting one move.
+        bool filled = false;
+        for (int i = 0; i < 60 && !filled; ++i) {
+            row = view("inbox-row-" + releasesId); QVERIFY(row);
+            title = view("inbox-row-title-" + releasesId); QVERIFY(title);
+            QTest::mouseMove(window,
+                title->mapToScene(QPointF(title->width() / 2.0, title->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            // Both hover channels must move: the fill AND the border accent.
+            filled = row->property("color").value<QColor>() != before
+                && QQmlProperty(row, "border.color").read().value<QColor>() != borderBefore;
+        }
+        QVERIFY2(filled, "inbox row hover fill/border never appeared on label-center hover");
+        // Neutral corner away from the card: fill and border must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before
+            && QQmlProperty(row, "border.color").read().value<QColor>() == borderBefore, 2000);
+    }
+
+    // Issue #945 witness: the starred card fill and the hover-revealed action
+    // cluster (NativeStarredPage.qml `cardHover`/`actionsHover`) must respond
+    // to the pointer over the card's text, not only over the bare card
+    // background behind the labels.
+    void starredCardFillsAndRevealsActionsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        class WindowStarredHoverFixture final : public WindowChannelFixture {
+        public:
+            int starredLists = 0;
+            QJsonArray all;
+            QJsonObject one(const QString &id, const QString &text, int minute)
+            {
+                auto row = message(text, id, topicId);
+                row["author_uuid"] = channelPeer;
+                row["is_own"] = false;
+                row["read"] = true;
+                row["starred"] = true;
+                row["created_at"] = QDateTime::fromString("2026-01-02T10:00:00.000Z", Qt::ISODateWithMs)
+                    .addSecs(minute * 60).toString(Qt::ISODateWithMs);
+                return row;
+            }
+            WindowStarredHoverFixture()
+            {
+                sourceScene = true;
+                const auto fallback = server.handler;
+                server.handler = [this, fallback](const Request &request) -> Response {
+                    const QUrlQuery query(request.target);
+                    if (request.target.path().endsWith("/messages/") && query.hasQueryItem("starred")) {
+                        ++starredLists;
+                        return {all};
+                    }
+                    return fallback(request);
+                };
+            }
+        };
+        WindowStarredHoverFixture fixture;
+        const QString hoveredId = "7b7b7b7b-7b7b-4b7b-8b7b-000000000009";
+        fixture.all = {fixture.one(hoveredId, "Starred hover witness", 30)};
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("p.ini"));
+        ApiClient api(nullptr, true); Session session(&api); NativeController controller(&api, &session);
+        QQmlApplicationEngine engine; loadNativeUi(engine, &controller, &preferences);
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        QVERIFY(startComposerEmojiFixture(fixture, controller, session));
+        const auto view = [&](const QString &name) { return visibleItem(window->contentItem(), name); };
+        auto *chip = view("activity-starred"); QVERIFY(chip && chip->isEnabled());
+        click(window, chip);
+        QTRY_VERIFY(controller.starredVisible() && view("nativeStarredPage"));
+        QTRY_VERIFY_WITH_TIMEOUT(view("starred-card-" + hoveredId), 5000);
+        auto *card = view("starred-card-" + hoveredId); QVERIFY(card);
+        auto *author = view("starred-author-" + hoveredId); QVERIFY(author);
+        auto *actions = item(window->contentItem(), "starredActions-" + hoveredId); QVERIFY(actions);
+        QCOMPARE(card->property("color").value<QColor>().alpha(), 0); // starts transparent
+        // Same re-target hardening as the inbox twin: a single move can land
+        // before the starred list settles and never re-arm the hover.
+        bool revealed = false;
+        for (int i = 0; i < 60 && !revealed; ++i) {
+            card = view("starred-card-" + hoveredId); QVERIFY(card);
+            author = view("starred-author-" + hoveredId); QVERIFY(author);
+            actions = item(window->contentItem(), "starredActions-" + hoveredId); QVERIFY(actions);
+            QTest::mouseMove(window,
+                author->mapToScene(QPointF(author->width() / 2.0, author->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            revealed = card->property("color").value<QColor>().alpha() > 0
+                && actions->property("opacity").toReal() > 0.99;
+        }
+        QVERIFY2(revealed, "starred card fill/actions never appeared on label-center hover");
+        // Neutral corner: both the fill and the reveal must revert.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() == 0, 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(actions->property("opacity").toReal() < 0.01, 2000);
+    }
+
+    // Issue #945 witness: a remembered-session row in the switcher dropdown
+    // (SessionSwitcher.qml `rowMouse`) must light its hover fill when the
+    // pointer sits on the row's text column, not only on the bare row
+    // background beside it.
+    void sessionSwitcherRowFillsOnLabelCenterHover()
+    {
+        QTest::failOnWarning();
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        NativePreferences preferences(directory.filePath("preferences.ini"));
+        WindowSecrets backend;
+        SessionVault vault(directory.filePath("accounts.ini"), &backend);
+        const QUrl server("https://switcher-hover.invalid");
+        struct Identity { QString user; QString project; };
+        QVector<Identity> identities{
+            {userId, projectId},
+            {"66666666-6666-4666-8666-666666666661", "77777777-7777-4777-8777-777777777771"}};
+        auto byToken = std::make_shared<QHash<QString, QPair<QString, QString>>>();
+        for (int index = 0; index < identities.size(); ++index) {
+            SavedAccount account{SessionVault::accountId(server, identities[index].project,
+                identities[index].user), server, identities[index].project, identities[index].user,
+                QStringLiteral("synthetic-user-%1").arg(index), QStringLiteral("Project %1").arg(index)};
+            const QString token = QStringLiteral("switch-refresh-%1").arg(index);
+            byToken->insert(token, {identities[index].user, identities[index].project});
+            bool stored = false;
+            vault.save(account, token.toUtf8(), [&](const QString &error) { QVERIFY(error.isEmpty()); stored = true; });
+            QTRY_VERIFY(stored);
+        }
+        auto expected = std::make_shared<QPair<QString, QString>>();
+        ApiClient api;
+        Session session(&api, nullptr, [byToken, expected, &api](const QByteArray &method,
+            const QString &path, const QJsonValue &body, const QUrlQuery &,
+            ApiClient::Callback done, bool, const QMap<QByteArray, QByteArray> &) {
+            Request request{method, QUrl(path), {}, body.toObject()};
+            auto response = sessionResponse(request);
+            if (path.endsWith("/actions/get_token/invoke")) {
+                const QString refresh = body.toObject().value("refresh_token").toString();
+                *expected = byToken->value(refresh);
+                auto data = response.data.toObject();
+                data.insert("refresh_token", refresh);
+                response.data = data;
+            } else if (path.endsWith("/actions/introspect")) {
+                response.data = QJsonObject{{"user_info", QJsonObject{{"uuid", expected->first}}},
+                    {"project_id", expected->second}, {"otp_verified", true},
+                    {"permissions", QJsonArray{}}};
+                response.status = 200;
+            } else if (path == "/api/core/v1/iam/projects/") {
+                response.data = QJsonArray{QJsonObject{{"uuid", expected->second},
+                    {"name", "Switcher project"}, {"status", "ACTIVE"}}};
+                response.status = 200;
+            }
+            const ApiResult result{response.data, response.status, {}, {}};
+            QTimer::singleShot(0, &api, [done, result] { done(result); });
+        });
+        session.setVault(&vault);
+        NativeController controller(&api, &session);
+        const auto order = controller.savedAccounts();
+        QCOMPARE(order.size(), 2);
+        QStringList ids;
+        for (const auto &row : order) ids.append(row.toMap().value("id").toString());
+        controller.resumeSavedAccount(ids.first());
+        QTRY_VERIFY(controller.authenticated());
+        QTRY_VERIFY(!controller.busy());
+        QQmlApplicationEngine engine;
+        loadNativeUi(engine, &controller, &preferences);
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first()); QVERIFY(window);
+        auto close = qScopeGuard([&engine, guard = QPointer<QQuickWindow>(window)] {
+            if (guard) closeIncubatedTestWindow(engine, guard.data());
+        });
+        QVERIFY(QTest::qWaitForWindowExposed(window)); window->requestActivate();
+        auto *content = window->contentItem();
+        preferences.setMode("dark"); QTRY_VERIFY(preferences.dark());
+        click(window, item(content, "sessionMenuTrigger"));
+        QTRY_VERIFY_WITH_TIMEOUT(([&]{ auto *m = item(content, "sessionSwitcherPopup");
+            return m && m->isVisible(); })(), 5000);
+        auto *row = item(content, "sessionRow-" + ids[1]); QVERIFY(row);
+        auto *label = item(content, "sessionRowPrimary-" + ids[1]); QVERIFY(label);
+        QCOMPARE(row->property("color").value<QColor>().alpha(), 0); // non-current row starts transparent
+        // Same re-target hardening as the inbox twin (hover races the popup's
+        // row list still settling when the single move lands early).
+        bool lit = false;
+        for (int i = 0; i < 60 && !lit; ++i) {
+            row = item(content, "sessionRow-" + ids[1]); QVERIFY(row);
+            label = item(content, "sessionRowPrimary-" + ids[1]); QVERIFY(label);
+            QTest::mouseMove(window,
+                label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            lit = row->property("color").value<QColor>().alpha() > 0;
+        }
+        QVERIFY2(lit, "session switcher row hover fill never appeared on label-center hover");
+        // Neutral corner: the hover fill must revert to transparent.
+        QTest::mouseMove(window, QPoint(window->width() - 40, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() == 0, 2000);
+    }
     // Issue #41: bottom-edge pagination follows the measured contract
     // (fire once within 64 px of the bottom, re-arm beyond 96 px, exact
     // page_marker continuation) on the rendered list, activity-page.ui.tsx:518-555.
