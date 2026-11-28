@@ -351,6 +351,10 @@ FocusScope {
                             required property int modelData
                             width: 30
                             height: 30
+                            HoverHandler {
+                                id: miniHover
+                                cursorShape: Qt.PointingHandCursor
+                            }
                             readonly property var cellDate: {
                                 miniGrid.gridAnchor; // re-evaluate when the grid re-anchors
                                 const first = miniGrid.gridAnchor;
@@ -368,10 +372,19 @@ FocusScope {
                             Accessible.selected: miniCell.isSelected
                             Accessible.onPressAction: page.selectedDate = miniCell.cellDate
                             Rectangle {
-                                objectName: "miniSelectionFill"
+                                objectName: "miniCellBg-" + miniCell.modelData
                                 anchors.fill: parent
                                 radius: 6
-                                color: miniCell.isSelected ? page.colors["accent"] : "transparent"
+                                // #924: hover tint per the #665 interaction-state
+                                // pattern, distinct from the selected accent fill.
+                                // Qt 6.10 hit-pick: a sibling MouseArea NEVER
+                                // receives hover when a label claims the point
+                                // (probe-reproduced), so the tint binds the
+                                // HoverHandler attached to the cell root.
+                                color: miniCell.isSelected ? page.colors["accent"]
+                                                           : (miniHover.hovered
+                                                              ? page.colors["card-bg-active"]
+                                                              : "transparent")
                             }
                             // The ring paints AFTER the selection fill so it
                             // stays visible over it, with a contrasting border
@@ -481,7 +494,8 @@ FocusScope {
                     spacing: 1
                     Repeater {
                         objectName: "weekColumns"
-                        model: Array.from({ length: 7 }, (_, i) => i)
+                        // #924 follow-up: same hidden-incubation gate.
+                        model: weekGrid.visible ? Array.from({ length: 7 }, (_, i) => i) : []
                         delegate: Column {
                             id: weekColumn
                             required property int modelData
@@ -502,6 +516,10 @@ FocusScope {
                                 delegate: Label {
                                     required property var modelData
                                     objectName: "weekChip-" + modelData.uuid
+                                    // #924: bound to the day column and elided,
+                                    // long titles no longer spill past it.
+                                    width: weekColumn.width
+                                    elide: Text.ElideRight
                                     text: modelData.start + " " + modelData.title
                                     color: page.colors["text-primary"]
                                 }
@@ -589,10 +607,18 @@ FocusScope {
                         Repeater {
                             id: monthRepeater
                             objectName: "monthCells"
-                            model: Array.from({ length: 42 }, (_, i) => i)
+                            // #924 follow-up: the StackLayout incubates this
+                            // page while hidden, and Qt never positions
+                            // delegates incubated in a hidden ancestor (cells
+                            // stay at (0,0), the grid reports 0x0 and the
+                            // pointer never reaches them). Incubate on show.
+                            model: monthView.visible
+                                   ? Array.from({ length: 42 }, (_, i) => i)
+                                   : []
                             delegate: Rectangle {
                                 id: monthCell
                                 required property int modelData
+                                objectName: "monthCell-" + modelData
                                 width: Math.max(0, Math.min(64, Math.floor((monthView.width - 6 * monthGrid.spacing) / monthGrid.columns)))
                                 height: monthView.stacked ? Math.min(48, width) : 64
                                 readonly property var cellDate: {
@@ -610,7 +636,25 @@ FocusScope {
                                 Accessible.name: page.localizedCellDate(monthCell.cellDate)
                                 Accessible.selected: monthCell.isSelected
                                 Accessible.onPressAction: page.selectedDate = monthCell.cellDate
-                                color: monthCell.eventCount > 0 ? page.colors["bg-elevated"] : "transparent"
+                                HoverHandler {
+                                    id: monthHover
+                                    cursorShape: Qt.PointingHandCursor
+                                }
+                                // #924 + exordy finding 4725081117: the selected fill wins
+                                // over hover (same precedence as the mini grid),
+                                // so the clicked day stays identifiable while the
+                                // agenda below already shows its events. The hover
+                                // tint stays distinct from both selected and the
+                                // event-day fill. Bound to the cell-root HoverHandler
+                                // so the tint is stacking-order independent: a probe
+                                // sweep on 65f2a914 measured no dead point for the
+                                // sibling MouseArea, but the sibling binding breaks
+                                // the moment any child moves above it in z-order.
+                                color: monthCell.isSelected ? page.colors["accent"]
+                                                           : (monthHover.hovered
+                                                              ? page.colors["card-bg-active"]
+                                                              : (monthCell.eventCount > 0
+                                                                 ? page.colors["bg-elevated"] : "transparent"))
                                 radius: 4
                                 Rectangle {
                                     objectName: "monthFocusRing"
@@ -626,7 +670,8 @@ FocusScope {
                                     anchors.left: parent.left
                                     anchors.margins: 4
                                     text: monthCell.cellDate.getDate()
-                                    color: page.colors["text-primary"]
+                                    color: monthCell.isSelected ? page.colors["on-accent"]
+                                                                : page.colors["text-primary"]
                                 }
                                 Row {
                                     anchors.bottom: parent.bottom
@@ -635,17 +680,20 @@ FocusScope {
                                     spacing: 2
                                     Repeater {
                                         model: monthCell.eventCount > 3 ? 3 : monthCell.eventCount
-                                        Rectangle { width: 6; height: 6; radius: 3; color: page.colors["accent"] }
+                                        Rectangle { width: 6; height: 6; radius: 3; color: monthCell.isSelected ? page.colors["on-accent"] : page.colors["accent"] }
                                     }
                                 }
                                 MouseArea {
+                                    id: monthCellInput
                                     anchors.fill: parent
+                                    hoverEnabled: true
                                     onClicked: page.selectedDate = monthCell.cellDate
                                 }
                             }
                         }
                     }
                     ListView {
+                        id: monthAgendaList
                         objectName: "calendarMonthAgenda"
                         anchors.left: monthView.stacked ? parent.left : monthGrid.right
                         anchors.leftMargin: monthView.stacked ? 0 : 12
@@ -654,9 +702,15 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         clip: true
-                        model: page.dayEvents()
+                        // #924 follow-up: same hidden-incubation gate as cells.
+                        model: monthView.visible ? page.dayEvents() : []
                         delegate: Label {
                             required property var modelData
+                            objectName: "monthAgendaRow-" + modelData.uuid
+                            // #924: width bound to the agenda pane, long titles
+                            // elide instead of spilling past the pane edge.
+                            width: monthAgendaList.width
+                            elide: Text.ElideRight
                             text: modelData.start + " " + modelData.title
                             color: page.colors["text-primary"]
                         }
