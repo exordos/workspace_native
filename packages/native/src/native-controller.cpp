@@ -1,4 +1,5 @@
 #include "native-controller.h"
+#include "mail-store.h"
 #include "messages/time/message-time.h"
 #include <QCollator>
 #include "call/incoming-call.h"
@@ -10417,6 +10418,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
 
     m_externalAccounts = new NativeExternalAccounts(api, session, this);
     m_externalProviderAdmin = new NativeExternalProviderAdmin(api, session, this);
+    // #879: mock mailbox store; fetches only when the Mail page asks (visible).
+    m_mail = new MailStore(api, this);
     m_mediaViewer = new MediaViewerModel(this, this);
     // Issue #51: the log viewer modal subscribes to the ring buffer like the
     // reference subscribeLogHistory (logger.ts), so forward every change.
@@ -10527,6 +10530,8 @@ NativeController::NativeController(ApiClient *api, Session *session, QObject *pa
     connect(m_session, &Session::authenticated, this, [this] {
         const auto owner = creationOwnerKey();
         if (owner != m_sessionGenerationOwner) {
+            if (!m_sessionGenerationOwner.isEmpty())
+                m_mail->reset();
             ++m_sessionGeneration;
             m_sessionGenerationOwner = owner;
             m_sessionLog.beginSupportScope();

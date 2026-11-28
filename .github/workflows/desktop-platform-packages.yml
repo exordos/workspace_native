@@ -219,4 +219,5 @@ jobs:
             exit 1
           fi
           python3 packages/native/tests/platform-package/macos-startup-icons.py "$startup"
+          python3 packages/native/tests/platform-package/test-hosted-join.py -v
           python3 packages/native/tests/platform-package/desktop-account-acceptance.py "$destination/workspace-native.app/Contents/MacOS/workspace-native" --check-updater --check-capture

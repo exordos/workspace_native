@@ -303,7 +303,6 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_12
     diagnosticsAdvancedToggleScrollsIntoViewport
     incomingCallCompactInviteMatchesReferenceGeometry
     loginCardRealmBlurStartsDiscovery
-    mailSectionUnavailableCardMatchesReferenceContract
     mediaViewerVolumeAndMuteBinding
     ownStatusPickerMatchesMeasuredSourcePreviewAndSearch
     pollBubbleInlineAddOptionFlow
@@ -440,6 +439,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_17
     integrationSettingsEntryDimsBackgroundWhilePressed
     loginProjectStepDropdownMatchesTheReference
     loginProjectStepLinkedProjectIsPreselectedAndEnforced
+    mailSectionOpensMailboxMatchesReferenceContract
     messageTimeViewerPutsAccessibleFocusOnDialog
     ownStatusActualMainApiGenerationClosesAndClearsThePendingEditor
     pollVoterPreviewBudgetSurvivesEviction

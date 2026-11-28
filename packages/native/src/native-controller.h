@@ -43,6 +43,7 @@ class MediaViewerModel;
 class NativePreferences;
 class NativeAuthGuard;
 class RealtimeClient;
+class MailStore;
 class PowerWatcher;
 class FileClient;
 class NativeChatKeyVault;
@@ -106,6 +107,10 @@ class NativeController final : public QObject {
     Q_PROPERTY(bool sessionRenewalUnavailable READ sessionRenewalUnavailable NOTIFY stateChanged)
     Q_PROPERTY(workspace::NativeExternalAccounts* externalAccounts READ externalAccounts CONSTANT)
     Q_PROPERTY(workspace::NativeExternalProviderAdmin* externalProviderAdmin READ externalProviderAdmin CONSTANT)
+    // Mail mailbox mock (#879, part of #851): the page owns its fetch lifecycle
+    // (refresh on first visibility); the store stays idle for every session
+    // that never opens the Mail section, so unrelated traffic pins are intact.
+    Q_PROPERTY(workspace::MailStore* mail READ mail CONSTANT)
     Q_PROPERTY(bool profileLinkFailed READ profileLinkFailed NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(QVariantList downloadEntries READ downloadEntries NOTIFY downloadsChanged)
@@ -839,6 +844,7 @@ public:
     Q_INVOKABLE void setWindowVisible(bool visible);
     Q_INVOKABLE void setWindowMinimized(bool minimized);
     NativeExternalAccounts *externalAccounts() const { return m_externalAccounts; }
+    MailStore *mail() const { return m_mail; }
     NativeExternalProviderAdmin *externalProviderAdmin() const { return m_externalProviderAdmin; }
     NotificationService *notifications() { return &m_notifications; }
     Q_INVOKABLE void refresh();
@@ -2044,6 +2050,7 @@ private:
 
     NativeExternalAccounts *m_externalAccounts;
     NativeExternalProviderAdmin *m_externalProviderAdmin;
+    MailStore *m_mail = nullptr;
     ApiClient *m_api;
     // Per-saved-account background projection facts keyed by saved account id
     // (issue #144); unread badges for remembered sessions derive from these.

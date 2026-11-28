@@ -5971,4 +5971,39 @@
             <translation>На этот день событий нет.</translation>
         </message>
     </context>
+    <context>
+        <name>NativeMailPage</name>
+        <message>
+            <source>Mail</source>
+            <translation>Почта</translation>
+        </message>
+        <message>
+            <source>Search mail...</source>
+            <translation>Поиск в почте...</translation>
+        </message>
+        <message>
+            <source>No messages in this folder</source>
+            <translation>В этой папке нет сообщений</translation>
+        </message>
+        <message>
+            <source>Couldn't load mail</source>
+            <translation>Не удалось загрузить почту</translation>
+        </message>
+        <message>
+            <source>Retry</source>
+            <translation>Повторить</translation>
+        </message>
+        <message>
+            <source>Preview</source>
+            <translation>Предпросмотр</translation>
+        </message>
+        <message>
+            <source>Select a message</source>
+            <translation>Выберите сообщение</translation>
+        </message>
+        <message>
+            <source>Message bodies arrive with the mail server integration.</source>
+            <translation>Тексты писем появятся с интеграцией почтового сервера.</translation>
+        </message>
+    </context>
 </TS>
