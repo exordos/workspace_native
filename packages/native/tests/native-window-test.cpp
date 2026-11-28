@@ -52330,9 +52330,23 @@ private slots:
         auto *remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
         QVERIFY(remove);
         QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 2000);
-        QTest::mouseMove(scene.window,
-            name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 1.0, 3000);
+        // Same #950 incubation-gate shape as the sibling fill witness above: a
+        // single move that races the member list still settling never re-arms
+        // hover, so the reveal never shows (4 CI heads under load). Re-target
+        // the label and the button on every poll pass, never a stale pointer.
+        bool revealed = false;
+        for (int i = 0; i < 60 && !revealed; ++i) {
+            name = visibleItem(QStringLiteral("channelInfoMemberName-") + suffix);
+            QVERIFY(name);
+            remove = visibleItem(QStringLiteral("channelInfoRemove-") + suffix);
+            QVERIFY(remove);
+            QTest::mouseMove(scene.window,
+                name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            revealed = remove->property("opacity").toDouble() > 0.99;
+        }
+        QVERIFY2(revealed,
+                 "channel member remove button never revealed on label-center hover");
         // Neutral corner away from the drawer: the reveal must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 40, 8));
         QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toDouble(), 0.0, 3000);
