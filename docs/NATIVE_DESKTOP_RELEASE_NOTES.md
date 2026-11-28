@@ -1,3 +1,17 @@
+# Workspace Native 0.52.0 - Linux development preview
+
+- New: the Mail section opens with the measured mailbox view - folder rail, message list and reading pane rendering the seeded mock mailbox, the first slice of the mail rollout (issue #879, PR #900).
+- New: keyboard date selection in both calendar grids - arrow keys move the focused day across the visible month, selection re-anchors after switching months, and cell announcements follow the locale (issue #925, PR #952).
+- Improved: calendar cells now show hover states and event rows elide cleanly at narrow widths (issue #924, PR #941).
+- Improved: opening a large channel or topic now schedules far less GUI work up front, so switching into busy conversations no longer blocks the interface (issue #895, PR #972).
+- Fixed: calendar navigation that arrives while a window fetch is still in flight is queued instead of dropped - the newest requested month or date is fetched and shown (issue #910, PR #913).
+
+The published Linux archive targets Ubuntu 26.04 x86_64 with glibc 2.43 or later. Existing Linux installations can use the built-in updater. Windows and macOS preview packages for x64 and ARM64 are available through the desktop packaging workflow.
+
+[Full changelog from 0.51.1 to 0.52.0](https://github.com/exordos/workspace_native/compare/0.51.1...0.52.0)
+
+---
+
 # Workspace Native 0.51.1 - Linux development preview
 
 - Fixed: a calendar data fetch that races a same-account token renewal now settles correctly, so the calendar page no longer waits on a retired fetch (issue #926, PR #931).
