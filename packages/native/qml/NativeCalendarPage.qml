@@ -494,7 +494,8 @@ FocusScope {
                     spacing: 1
                     Repeater {
                         objectName: "weekColumns"
-                        model: Array.from({ length: 7 }, (_, i) => i)
+                        // #924 follow-up: same hidden-incubation gate.
+                        model: weekGrid.visible ? Array.from({ length: 7 }, (_, i) => i) : []
                         delegate: Column {
                             id: weekColumn
                             required property int modelData
@@ -606,7 +607,14 @@ FocusScope {
                         Repeater {
                             id: monthRepeater
                             objectName: "monthCells"
-                            model: Array.from({ length: 42 }, (_, i) => i)
+                            // #924 follow-up: the StackLayout incubates this
+                            // page while hidden, and Qt never positions
+                            // delegates incubated in a hidden ancestor (cells
+                            // stay at (0,0), the grid reports 0x0 and the
+                            // pointer never reaches them). Incubate on show.
+                            model: monthView.visible
+                                   ? Array.from({ length: 42 }, (_, i) => i)
+                                   : []
                             delegate: Rectangle {
                                 id: monthCell
                                 required property int modelData
@@ -641,7 +649,7 @@ FocusScope {
                                 // in Qt 6.10 a sibling MouseArea never receives
                                 // hover once a Label claims the point (probe-verified).
                                 color: monthCell.isSelected ? page.colors["accent"]
-                                                           : (monthHover.hovered
+                                                           : (monthCellInput.containsMouse
                                                               ? page.colors["card-bg-active"]
                                                               : (monthCell.eventCount > 0
                                                                  ? page.colors["bg-elevated"] : "transparent"))
@@ -674,7 +682,9 @@ FocusScope {
                                     }
                                 }
                                 MouseArea {
+                                    id: monthCellInput
                                     anchors.fill: parent
+                                    hoverEnabled: true
                                     onClicked: page.selectedDate = monthCell.cellDate
                                 }
                             }
@@ -690,7 +700,8 @@ FocusScope {
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         clip: true
-                        model: page.dayEvents()
+                        // #924 follow-up: same hidden-incubation gate as cells.
+                        model: monthView.visible ? page.dayEvents() : []
                         delegate: Label {
                             required property var modelData
                             objectName: "monthAgendaRow-" + modelData.uuid

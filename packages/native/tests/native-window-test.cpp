@@ -718,7 +718,7 @@ public:
                 return {QJsonArray{
                     QJsonObject{{"uuid", longEventUuid()}, {"day", today}, {"start", "09:00"},
                         {"end", "10:00"},
-                        {"title", "Quarterly alignment across all workspace squads and external partners"},
+                        {"title", "Quarterly alignment across all workspace squads and external partners, covering roadmap sequencing, capacity planning, and cross-team dependency handoff"},
                         {"calendar", "work"}, {"color_token", "accent"}},
                     QJsonObject{{"uuid", QStringLiteral("90000000-0000-4000-8000-0000000000a2")},
                         {"day", today}, {"start", "11:00"}, {"end", "11:30"},
