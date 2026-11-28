@@ -1,4 +1,5 @@
 accountPreferencePanelsApplyAndPersist=3.21926
+activityPanelRowsHighlightOnLabelCenterHover=1.37998
 archiveMatchesPinnedGeometryAndVirtualSearch=9.46883
 avatarComponentKeepsNestedScopeAndReferenceLease=0.75643
 channelInfoRemoveButtonRevealsOnLabelCenterHover=1.3153

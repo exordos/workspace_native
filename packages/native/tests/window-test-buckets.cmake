@@ -77,6 +77,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_3
 )
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_4
     accountPreferencePanelsApplyAndPersist
+    activityPanelRowsHighlightOnLabelCenterHover
     archiveMatchesPinnedGeometryAndVirtualSearch
     avatarComponentKeepsNestedScopeAndReferenceLease
     channelInfoRemoveButtonRevealsOnLabelCenterHover
@@ -139,6 +140,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_6
     diagnosticsMemoryPanelPollsWhileVisibleAndStopsOnLeave
     draftsActualMainConflictButtonsUseConditionalOwnedActions
     favoritesTopicCompletionFollowsCurrentPage
+    folderRailChipLabelCenterHoverFillsViaStripHoverKey
     incomingCallInviteAvatarPhotoReplacesFallbacks
     logsModalCloseButtonFillsOnGlyphCenterHover
     mentionLongBodyLocatorWorkStaysBounded
@@ -259,6 +261,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_11
     appearanceAndSidebarRestoreAfterQuickWindowRecreation
     archiveScrollbarMatchesPinnedPaintAndKeepsRealScrolling
     calendarMonthGridRequestCoversAdjacentWeeks
+    cancelEditNoticeLabelCenterHoverFillsStrip
     channelTopicSummaryDialogEndpointEditSendsCoercedDiffPatch
     channelTopicSummaryDialogGatesOnlyUserSeesGatesSection
     channelTopicSummaryDialogRevertedFieldAfterSavedUpdateStaysSavable
@@ -398,6 +401,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_16
     composerTimePickerPreservesBothFallBackInstants
     diagnosticsNewPingCancelsPendingFeedbackReset
     favoritesEnsureFailureShowsErrorCardAndRetry
+    folderGridCellLabelCenterHoverTintsIcon
     folderRailLayoutTogglesHorizontallyAndSurvivesRestart
     fullscreenExitRecapturesUserMoveMadeDuringTheTransitionGate
     globalChannelFormKeepsNarrowKeyboardFieldsVisible
@@ -570,6 +574,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_22
 set(WORKSPACE_NATIVE_WINDOW_BUCKET_23
     activityReactionsDeeplinkRendersUnsupportedState
     activityStarredChipOpensPageAndCloseFlow
+    cancelReplyNoticeLabelCenterHoverFillsStrip
     codeCopyButtonIsKeyboardOperableAndAccessible
     confirmedSlowClipboardCopyRemainsVisibleAndCancellable
     diagnosticsLogViewerModalFiltersClearAndExports
@@ -658,6 +663,7 @@ set(WORKSPACE_NATIVE_WINDOW_BUCKET_27
     channelTopicSummaryDialogInvalidEndpointNumberReportsFieldError
     channelTopicSummaryEndpointFailedSaveKeepsMarkerUnderUnrelatedBusy
     channelTopicSummaryEndpointListErrorDuringInFlightSaveKeepsDispatchIdentity
+    codeCopyButtonFillsOnLabelCenterHover
     existingEditAttachmentCardsLoadFailAndRemove
     existingEncryptedDirectFromNewChatOpensWithoutChangingThePair
     externalAccountEditRetainsProviderOptionsAndReconnectUsesTheOwnedRevision
