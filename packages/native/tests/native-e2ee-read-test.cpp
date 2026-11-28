@@ -11088,6 +11088,53 @@ private slots:
             {"ownCard", ownCard}, {"peerCard", peerCard}}).toJson(QJsonDocument::Compact);
     }
 
+    // Issue #946 site 4 witness: the protected member row fill
+    // (NativeEncryptedChatInfo.qml protectedMemberHover, :462) and the row-wide
+    // remove reveal (:565) must respond to the pointer over the text block,
+    // mirroring the ordinary drawer's site 1/2 contract. The pointer moves to
+    // the member NAME center (the sibling claimant point): the fill flips and
+    // the remove button reveals, then both revert once the pointer leaves.
+    void uiEncryptedChatInfoMemberRowFillsOnLabelCenterHover()
+    {
+        ProtectedChatInfoScene scene(QStringLiteral("en"), QStringLiteral("light"), true);
+        QVERIFY(scene.open());
+        const auto closeWindow = qScopeGuard([window = QPointer<QQuickWindow>(scene.window)] {
+            if (!closeEncryptedVisualWindow(window.data()))
+                QTest::qFail("Protected chat info window did not close", __FILE__, __LINE__);
+        });
+        scene.openChatInfo();
+        QTRY_VERIFY(scene.item("encryptedChatInfoLayer"));
+        const QString rowName = QStringLiteral("protectedChatMember-") + scene.memberBindingUuid;
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((row = scene.item(rowName)) != nullptr, 4000);
+        auto *name = scene.item(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid);
+        QVERIFY(name);
+        auto *remove = scene.item(QStringLiteral("protectedChatRemove-") + scene.memberBindingUuid);
+        QVERIFY(remove);
+        const QColor before = row->property("color").value<QColor>();
+        QVERIFY(before.isValid());
+        QCOMPARE(remove->property("opacity").toReal(), qreal(0.0));
+        // #950 CI flake: re-target the row and label on every poll pass; one
+        // early move that raced the member list settling never re-arms hover.
+        bool filled = false;
+        for (int i = 0; i < 60 && !filled; ++i) {
+            row = scene.item(rowName);
+            QVERIFY(row);
+            name = scene.item(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid);
+            QVERIFY(name);
+            QTest::mouseMove(scene.window,
+                name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            filled = row->property("color").value<QColor>() != before;
+        }
+        QVERIFY2(filled, "protected member row fill never appeared on label-center hover");
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toReal(), qreal(1.0), 2000);
+        // Neutral corner away from the drawer: fill and reveal must revert.
+        QTest::mouseMove(scene.window, QPoint(scene.window->width() - 20, 8));
+        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toReal(), qreal(0.0), 2000);
+    }
+
     void uiEncryptedChatInfoSettingsScreenNavigation_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
     void uiEncryptedChatInfoSettingsScreenNavigation() {
         QFETCH(QString, locale); QFETCH(QString, mode);
