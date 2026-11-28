@@ -6664,11 +6664,21 @@ mv -Tf "$root/.current-new" "$root/current"
         const QColor before = row->property("color").value<QColor>();
         const QColor borderBefore = QQmlProperty(row, "border.color").read().value<QColor>();
         QVERIFY(borderBefore.isValid());
-        QTest::mouseMove(window,
-            title->mapToScene(QPointF(title->width() / 2.0, title->height() / 2.0)).toPoint());
-        // Both hover channels must move: the fill AND the border accent.
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() != before
-            && QQmlProperty(row, "border.color").read().value<QColor>() != borderBefore, 2000);
+        // CI flake (merge group): a single move that races the inbox rows still
+        // settling never re-arms hover, so the fill never shows. Re-target the
+        // row and its title on every poll pass instead of trusting one move.
+        bool filled = false;
+        for (int i = 0; i < 60 && !filled; ++i) {
+            row = view("inbox-row-" + releasesId); QVERIFY(row);
+            title = view("inbox-row-title-" + releasesId); QVERIFY(title);
+            QTest::mouseMove(window,
+                title->mapToScene(QPointF(title->width() / 2.0, title->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            // Both hover channels must move: the fill AND the border accent.
+            filled = row->property("color").value<QColor>() != before
+                && QQmlProperty(row, "border.color").read().value<QColor>() != borderBefore;
+        }
+        QVERIFY2(filled, "inbox row hover fill/border never appeared on label-center hover");
         // Neutral corner away from the card: fill and border must revert.
         QTest::mouseMove(window, QPoint(window->width() - 40, 8));
         QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before
@@ -6733,10 +6743,20 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *author = view("starred-author-" + hoveredId); QVERIFY(author);
         auto *actions = item(window->contentItem(), "starredActions-" + hoveredId); QVERIFY(actions);
         QCOMPARE(card->property("color").value<QColor>().alpha(), 0); // starts transparent
-        QTest::mouseMove(window,
-            author->mapToScene(QPointF(author->width() / 2.0, author->height() / 2.0)).toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() > 0, 2000);
-        QTRY_VERIFY_WITH_TIMEOUT(actions->property("opacity").toReal() > 0.99, 2000);
+        // Same re-target hardening as the inbox twin: a single move can land
+        // before the starred list settles and never re-arm the hover.
+        bool revealed = false;
+        for (int i = 0; i < 60 && !revealed; ++i) {
+            card = view("starred-card-" + hoveredId); QVERIFY(card);
+            author = view("starred-author-" + hoveredId); QVERIFY(author);
+            actions = item(window->contentItem(), "starredActions-" + hoveredId); QVERIFY(actions);
+            QTest::mouseMove(window,
+                author->mapToScene(QPointF(author->width() / 2.0, author->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            revealed = card->property("color").value<QColor>().alpha() > 0
+                && actions->property("opacity").toReal() > 0.99;
+        }
+        QVERIFY2(revealed, "starred card fill/actions never appeared on label-center hover");
         // Neutral corner: both the fill and the reveal must revert.
         QTest::mouseMove(window, QPoint(window->width() - 40, 8));
         QTRY_VERIFY_WITH_TIMEOUT(card->property("color").value<QColor>().alpha() == 0, 2000);
@@ -6821,9 +6841,18 @@ mv -Tf "$root/.current-new" "$root/current"
         auto *row = item(content, "sessionRow-" + ids[1]); QVERIFY(row);
         auto *label = item(content, "sessionRowPrimary-" + ids[1]); QVERIFY(label);
         QCOMPARE(row->property("color").value<QColor>().alpha(), 0); // non-current row starts transparent
-        QTest::mouseMove(window,
-            label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() > 0, 2000);
+        // Same re-target hardening as the inbox twin (hover races the popup's
+        // row list still settling when the single move lands early).
+        bool lit = false;
+        for (int i = 0; i < 60 && !lit; ++i) {
+            row = item(content, "sessionRow-" + ids[1]); QVERIFY(row);
+            label = item(content, "sessionRowPrimary-" + ids[1]); QVERIFY(label);
+            QTest::mouseMove(window,
+                label->mapToScene(QPointF(label->width() / 2.0, label->height() / 2.0)).toPoint());
+            QTest::qWait(50);
+            lit = row->property("color").value<QColor>().alpha() > 0;
+        }
+        QVERIFY2(lit, "session switcher row hover fill never appeared on label-center hover");
         // Neutral corner: the hover fill must revert to transparent.
         QTest::mouseMove(window, QPoint(window->width() - 40, 8));
         QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>().alpha() == 0, 2000);
