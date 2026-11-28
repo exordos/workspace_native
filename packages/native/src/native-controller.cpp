@@ -8962,8 +8962,26 @@ void NativeController::resetFeed()
 
 void NativeController::requestCalendarWindow(const QString &from, const QString &to)
 {
-    if (!authenticated() || m_calendar.inflight)
+    if (!authenticated())
         return;
+    if (m_calendar.inflight) {
+        // Issue #910: a navigation that lands while a window fetch is in
+        // flight must not be dropped. Remember the newest window; the
+        // in-flight reply populates only its own window (version guard), and
+        // the queued window is re-issued when the request settles.
+        if (m_calendar.from != from || m_calendar.to != to) {
+            m_calendar.pendingFrom = from;
+            m_calendar.pendingTo = to;
+            m_calendar.hasPending = true;
+        } else {
+            // Review on #910: returning to the window that is currently in
+            // flight makes every queued window stale - the in-flight request
+            // already answers the newest requested window, so drop the queue
+            // instead of re-fetching the abandoned one when the reply lands.
+            m_calendar.hasPending = false;
+        }
+        return;
+    }
     // Re-showing the same loaded window must not re-storm the server; the
     // window only re-fetches after an error or an explicit retry.
     if (m_calendar.hasLoaded && !m_calendar.error
@@ -8985,6 +9003,15 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         if (version != m_calendar.version || owner != creationOwnerKey())
             return; // a newer window or an owner switch owns the state now
         m_calendar.inflight = false;
+        // Issue #910: drain the newest window requested while this reply
+        // was in flight (both the success and the failure path re-issue it).
+        // The capture runs before the 501 branch so a stale queued slot can
+        // never outlive this reply; a server without a feed has no window
+        // worth re-issuing for, so the 501 path legitimately swallows it.
+        const bool hasPending = m_calendar.hasPending;
+        const QString pendingFrom = m_calendar.pendingFrom;
+        const QString pendingTo = m_calendar.pendingTo;
+        m_calendar.hasPending = false;
         // A server without a calendar feed shows an empty agenda. Recheck
         // on the next visit so deploying the endpoint refreshes this window.
         if (result.status == 501) {
@@ -8999,6 +9026,8 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
             m_calendar.loading = false;
             m_calendar.error = true;
             emit calendarChanged();
+            if (hasPending)
+                requestCalendarWindow(pendingFrom, pendingTo);
             return;
         }
         QVariantList events;
@@ -9019,6 +9048,8 @@ void NativeController::requestCalendarWindow(const QString &from, const QString 
         m_calendar.loading = false;
         m_calendar.error = false;
         emit calendarChanged();
+        if (hasPending)
+            requestCalendarWindow(pendingFrom, pendingTo);
     });
 }
 
