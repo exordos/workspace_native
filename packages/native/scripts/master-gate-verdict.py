@@ -221,13 +221,20 @@ def main(argv):
                                         max_pages=max_pages)
             if not paths:
                 status = "error"
-            elif status == "complete":
+            else:
+                # exordy findings 4725333009/4725333014: an attributed red
+                # on ANY fetched revalidation page must block, even when
+                # the re-fetch itself ends error or truncated - the same
+                # discipline as finding 4714995326 on the first fetch.
+                # Incompleteness still forbids reuse via the combined
+                # status below; it only never discards an observed red.
                 try:
                     merged = load_payload(paths, rpaths)
                 except (OSError, ValueError):
                     merged = None
                 if merged is None:
-                    status = "error"
+                    if status == "complete":
+                        status = "error"
                 elif decide(merged) == "block":
                     print("block (%d check-run pages, %d run pages)"
                           % (len(paths), len(rpaths)))

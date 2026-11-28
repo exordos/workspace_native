@@ -360,6 +360,45 @@ class FetchModeTests(unittest.TestCase):
         self.assertEqual(rc, 2, out)
         self.assertEqual(out.split(" ")[0], "block")
 
+    def test_refetch_error_after_visible_red_blocks(self):
+        # exordy finding 4725333009: the re-fetch sees a failed gate on
+        # page 1, then page 2 errors - the already observed attributed red
+        # must block the publish even though the re-fetch is incomplete
+        # (same discipline as finding 4714995326 on the first fetch).
+        red_suite = PUSH_SUITE + 1
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", conclusion="failure",
+                              suite=red_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 100}, "late_extra_runs": {"1": late},
+                "fail_at": 2, "fail_on": "check",
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run(),
+                                        push_run(red_suite,
+                                                 conclusion="failure")]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
+    def test_refetch_truncation_after_visible_red_blocks(self):
+        # exordy finding 4725333014: the same contract for truncation -
+        # the re-fetch's page 1 shows an attributed red and the page budget
+        # is exhausted on that full page; the caller's fallback gate must
+        # not proceed over the observed red.
+        red_suite = PUSH_SUITE + 1
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", conclusion="failure",
+                              suite=red_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 100}, "late_extra_runs": {"1": late},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run(),
+                                        push_run(red_suite,
+                                                 conclusion="failure")]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=1)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
     def test_revalidation_green_pair_still_completes(self):
         # The revalidation re-fetch must not disturb the happy path: when
         # the later snapshot shows the same green pair, --fetch stays
