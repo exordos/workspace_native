@@ -454,6 +454,52 @@ class FetchModeTests(unittest.TestCase):
         self.assertEqual(rc, 2, out)
         self.assertEqual(out.split(" ")[0], "block")
 
+    def test_refetch_error_fresh_runs_attributed_red_blocks(self):
+        # exordy finding 4726301458: the red of a newly created suite lands
+        # on re-fetch check page 1 and page 2 then fails, so the refreshed
+        # check listing is incomplete; the fresh runs page attributes the
+        # suite. The old runs snapshot cannot attribute it and the fresh
+        # pair is what proves the red - an incomplete check re-fetch must
+        # never discard that observed red (rc 2, not the bare incomplete 4).
+        new_suite = PUSH_SUITE + 3
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", conclusion="failure",
+                              suite=new_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 100, "2": 0}, "fail_at": 2,
+                "fail_on": "check", "late_extra_runs": {"1": late},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run()]},
+                "late_extra_records": {"1": [
+                    push_run(),
+                    push_run(new_suite, conclusion="failure",
+                             run_id=46095111001)]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
+    def test_refetch_truncated_fresh_runs_attributed_red_blocks(self):
+        # exordy finding 4726301461: the refreshed check listing ends
+        # truncated (page budget exhausted on a full page) and the red on
+        # the fetched page is attributed by the fresh runs page - the
+        # partial fresh pair must surface the block BEFORE any completeness
+        # requirement applies (rc 2, not the bare incomplete 3).
+        new_suite = PUSH_SUITE + 4
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", conclusion="failure",
+                              suite=new_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 100}, "late_extra_runs": {"1": late},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run()]},
+                "late_extra_records": {"1": [
+                    push_run(),
+                    push_run(new_suite, conclusion="failure",
+                             run_id=46095111002)]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=1)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
     def test_revalidation_green_pair_still_completes(self):
         # The revalidation re-fetch must not disturb the happy path: when
         # the later snapshot shows the same green pair, --fetch stays

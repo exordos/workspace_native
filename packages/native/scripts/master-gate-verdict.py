@@ -274,18 +274,31 @@ def main(argv):
                                                max_pages=max_pages)
             if not rpaths:
                 rstatus = "error"
-            elif status == "complete":
+            else:
+                # exordy findings 4726301458/4726301461: a red attributed
+                # by the FRESH pair must block even when the check re-fetch
+                # ended incomplete (error or truncated) - a red check on a
+                # fetched revalidation page plus a fresh runs page naming
+                # its suite is an observed red, and the same discipline as
+                # findings 4714995326/4725333009/4725333014 applies: never
+                # discard an observed red. Incompleteness still forbids
+                # reuse through the combined status below; the block only
+                # rides on pages we actually fetched and attributed.
                 try:
                     fresh = load_payload(paths, rpaths)
                 except (OSError, ValueError):
                     fresh = None
-                if fresh is None:
-                    status = "error"
-                elif decide(fresh) == "block":
+                if fresh is not None and decide(fresh) == "block":
                     print("block (%d check-run pages, %d run pages)"
                           % (len(paths), len(rpaths)))
                     return 2
-                else:
+                if fresh is None:
+                    if status == "complete":
+                        status = "error"
+                elif status == "complete":
+                    # exordy findings 4725926994/98: a changed runs window
+                    # between the two listings makes the check snapshot
+                    # untrustworthy - fail closed and let the caller retry.
                     try:
                         second_window = _runs_window(rpaths)
                     except (OSError, ValueError):
