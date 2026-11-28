@@ -28,6 +28,7 @@ Output: one verdict on stdout, one exit code:
         block -> 2  (a matching check completed non-success: never publish)
 """
 import json
+import os
 import sys
 
 REQUIRED_NAMES = ("package-linux", "full-gate-linux")
@@ -201,6 +202,36 @@ def main(argv):
                 print("block (%d check-run pages, %d run pages)"
                       % (len(paths), len(rpaths)))
                 return 2
+        # exordy finding 4725262771: a rerun can finish RED between the
+        # check-runs snapshot and the runs listing - the stale snapshot
+        # would not carry that red and the join could still accept reuse.
+        # After observing the workflow runs, re-fetch the check-runs
+        # listing and let the FRESH snapshot be authoritative for the
+        # verdict files (the caller decides from these same files). Honor a
+        # red that only the re-fetch revealed; fail closed (incomplete) if
+        # the re-fetch itself cannot establish completeness.
+        if status == "complete" and rstatus == "complete" and paths and rpaths:
+            for stale in paths:
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+            paths, status = fetch_pages(sha, opts["out-prefix"], opts["repo"],
+                                        gh_bin=gh_bin, per_page=per_page,
+                                        max_pages=max_pages)
+            if not paths:
+                status = "error"
+            elif status == "complete":
+                try:
+                    merged = load_payload(paths, rpaths)
+                except (OSError, ValueError):
+                    merged = None
+                if merged is None:
+                    status = "error"
+                elif decide(merged) == "block":
+                    print("block (%d check-run pages, %d run pages)"
+                          % (len(paths), len(rpaths)))
+                    return 2
         if status == "complete" and rstatus == "complete":
             combined = "complete"
         elif "error" in (status, rstatus):

@@ -240,10 +240,18 @@ url = sys.argv[-1]
 page = int(url.split("page=")[-1])
 spec = json.loads(os.environ["STUB_SPEC"])
 is_runs = "actions/runs" in url
+call_no = 1
+if not is_runs and os.environ.get("STUB_COUNTER"):
+    with open(os.environ["STUB_COUNTER"], "a", encoding="utf-8") as h:
+        h.write("x")
+    with open(os.environ["STUB_COUNTER"], encoding="utf-8") as h:
+        call_no = len(h.read())
 if spec.get("fail_at") == page and (spec.get("fail_on", "check") ==
                                     ("runs" if is_runs else "check")):
     sys.exit(1)
 key = "runs_pages" if is_runs else "pages"
+if not is_runs and call_no >= 2 and "late_pages" in spec:
+    key = "late_pages"
 count = spec.get(key, {}).get(str(page), 0)
 if is_runs:
     records = []
@@ -259,7 +267,8 @@ else:
              "status": "completed", "conclusion": "success",
              "check_suite": {"id": 555}}
             for i in range(count)]
-    runs.extend(spec.get("extra_runs", {}).get(str(page), []))
+    runs.extend(spec.get("late_extra_runs" if key == "late_pages"
+                         else "extra_runs", {}).get(str(page), []))
     print(json.dumps({"check_runs": runs}))
 """
 
@@ -281,7 +290,8 @@ class FetchModeTests(unittest.TestCase):
             with open(stub, "w", encoding="utf-8") as handle:
                 handle.write(STUB_GH)
             os.chmod(stub, 0o755)
-            env = dict(os.environ, STUB_SPEC=json.dumps(spec))
+            env = dict(os.environ, STUB_SPEC=json.dumps(spec),
+                       STUB_COUNTER=os.path.join(tmp, "calls"))
             prefix = os.path.join(tmp, "check-runs-page-")
             proc = subprocess.run(
                 [sys.executable, SCRIPT, "--fetch", "deadbeef",
@@ -329,6 +339,38 @@ class FetchModeTests(unittest.TestCase):
             {"pages": {"1": 0}, "runs_pages": {"1": 100, "2": 0},
              "fail_at": 2, "fail_on": "runs"}, max_pages=50)
         self.assertEqual(rc, 4)
+
+    def test_rerun_red_between_listings_blocks(self):
+        # exordy finding 4725262771: a rerun finishes RED between the
+        # check-runs snapshot and the actions/runs listing. The first
+        # snapshot still holds only the older green pair, so the join would
+        # authorize reuse from stale checks; the revalidation re-fetch after
+        # the runs observation must expose the red suite and block.
+        red_suite = PUSH_SUITE + 1
+        green = [check("package-linux"), check("full-gate-linux")]
+        late = green + [check("full-gate-linux", conclusion="failure",
+                              suite=red_suite)]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 0}, "late_extra_runs": {"1": late},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run(),
+                                        push_run(red_suite,
+                                                 conclusion="failure")]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(out.split(" ")[0], "block")
+
+    def test_revalidation_green_pair_still_completes(self):
+        # The revalidation re-fetch must not disturb the happy path: when
+        # the later snapshot shows the same green pair, --fetch stays
+        # complete (rc 0) and the verdict files hold the fresh snapshot.
+        green = [check("package-linux"), check("full-gate-linux")]
+        spec = {"pages": {"1": 0}, "extra_runs": {"1": green},
+                "late_pages": {"1": 0}, "late_extra_runs": {"1": green},
+                "runs_pages": {"1": 0},
+                "extra_records": {"1": [push_run()]}}
+        rc, out, _written = self.invoke_fetch(spec, max_pages=50)
+        self.assertEqual(rc, 0, out)
 
     def test_truncated_listing_with_visible_red_blocks(self):
         # exordy finding 4714995326: the in-job fallback gate must never
