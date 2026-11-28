@@ -11105,34 +11105,47 @@ private slots:
         scene.openChatInfo();
         QTRY_VERIFY(scene.item("encryptedChatInfoLayer"));
         const QString rowName = QStringLiteral("protectedChatMember-") + scene.memberBindingUuid;
-        QQuickItem *row = nullptr;
+        const QString nameName = QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid;
+        const QString removeName = QStringLiteral("protectedChatRemove-") + scene.memberBindingUuid;
+        // #983 CI flake: the member page re-incubates its delegates under shard
+        // load, so every handle captured across an event-loop turn can dangle
+        // (SIGSEGV at address 0x2 on run 46113300274). QPointer keeps a dead
+        // delegate null instead of crash-prone; each pass re-fetches before use.
+        QPointer<QQuickItem> row;
         QTRY_VERIFY_WITH_TIMEOUT((row = scene.item(rowName)) != nullptr, 4000);
-        auto *name = scene.item(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid);
+        QPointer<QQuickItem> name = scene.item(nameName);
         QVERIFY(name);
-        auto *remove = scene.item(QStringLiteral("protectedChatRemove-") + scene.memberBindingUuid);
+        QPointer<QQuickItem> remove = scene.item(removeName);
         QVERIFY(remove);
         const QColor before = row->property("color").value<QColor>();
         QVERIFY(before.isValid());
         QCOMPARE(remove->property("opacity").toReal(), qreal(0.0));
         // #950 CI flake: re-target the row and label on every poll pass; one
         // early move that raced the member list settling never re-arms hover.
+        // #983: a re-incubation can drop the handles mid-loop - re-fetch and
+        // skip the pass instead of dereferencing a stale pointer.
         bool filled = false;
         for (int i = 0; i < 60 && !filled; ++i) {
             row = scene.item(rowName);
-            QVERIFY(row);
-            name = scene.item(QStringLiteral("protectedChatMemberName-") + scene.memberBindingUuid);
-            QVERIFY(name);
+            name = scene.item(nameName);
+            if (!row || !name) {
+                QTest::qWait(50);
+                continue;
+            }
             QTest::mouseMove(scene.window,
                 name->mapToScene(QPointF(name->width() / 2.0, name->height() / 2.0)).toPoint());
             QTest::qWait(50);
-            filled = row->property("color").value<QColor>() != before;
+            filled = row && row->property("color").value<QColor>() != before;
         }
         QVERIFY2(filled, "protected member row fill never appeared on label-center hover");
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toReal(), qreal(1.0), 2000);
+        // #983 exordy finding 1: re-fetch remove on every poll pass - a
+        // re-incubation mid-reveal nulls the old handle and the retry would
+        // otherwise never see the replacement delegate's opacity.
+        QTRY_COMPARE_WITH_TIMEOUT(([&] { remove = scene.item(removeName); return remove ? remove->property("opacity").toReal() : qreal(-1.0); })(), qreal(1.0), 2000);
         // Neutral corner away from the drawer: fill and reveal must revert.
         QTest::mouseMove(scene.window, QPoint(scene.window->width() - 20, 8));
-        QTRY_VERIFY_WITH_TIMEOUT(row->property("color").value<QColor>() == before, 2000);
-        QTRY_COMPARE_WITH_TIMEOUT(remove->property("opacity").toReal(), qreal(0.0), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(([&] { row = scene.item(rowName); return !row || row->property("color").value<QColor>() == before; })(), 2000);
+        QTRY_COMPARE_WITH_TIMEOUT(([&] { remove = scene.item(removeName); return remove ? remove->property("opacity").toReal() : qreal(-1.0); })(), qreal(0.0), 2000);
     }
 
     void uiEncryptedChatInfoSettingsScreenNavigation_data() { uiEncryptedReadUsesActualSourceGrantAndSafeCopy_data(); }
